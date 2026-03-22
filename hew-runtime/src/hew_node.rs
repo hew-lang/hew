@@ -1447,9 +1447,10 @@ mod tests {
         }
     }
 
-    fn reserve_tcp_port() -> u16 {
+    fn reserve_tcp_port() -> (u16, TcpListener) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local ephemeral port");
-        listener.local_addr().expect("read local address").port()
+        let port = listener.local_addr().expect("read local address").port();
+        (port, listener)
     }
 
     #[test]
@@ -1514,39 +1515,50 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "can be flaky on shared CI networking"]
+    #[ignore = "deadlocks: node handshake blocks indefinitely (needs investigation)"]
     fn two_node_connect_and_handshake() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
 
         crate::registry::hew_registry_clear();
 
-        let node2_port = reserve_tcp_port();
+        // Hold the listener to prevent port reuse until node2 binds.
+        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").expect("valid bind addr");
         let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).expect("valid bind addr");
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(201, &node1_bind) };
+        // Drop the listener so node2 can bind to the port.
+        drop(port_guard);
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node2 = unsafe { TestNode::new(202, &node2_bind) };
         assert!(!node1.as_ptr().is_null());
         assert!(!node2.as_ptr().is_null());
 
+        // Start node2 first (listener) then node1 (connector).
         // SAFETY: pointers are valid for this scope.
         unsafe {
             assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+        // Allow node2 listener to initialise before node1 connects.
+        thread::sleep(Duration::from_millis(50));
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
         }
 
         let connect_addr =
             CString::new(format!("202@127.0.0.1:{node2_port}")).expect("valid connect addr");
         let mut connected = false;
+        let mut backoff = Duration::from_millis(25);
         for _ in 0..20 {
             // SAFETY: pointers are valid and connect_addr is a valid C string.
             if unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) } == 0 {
                 connected = true;
                 break;
             }
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(backoff);
+            backoff = (backoff * 2).min(Duration::from_millis(200));
         }
         assert!(connected, "node1 failed to connect to node2");
 
@@ -1564,7 +1576,7 @@ mod tests {
             );
         }
 
-        let handshake_complete = (0..40).any(|_| {
+        let handshake_complete = (0..80).any(|i| {
             // SAFETY: node pointers and conn manager pointers are valid while nodes live.
             let ready = unsafe {
                 let n1 = &*node1.as_ptr();
@@ -1573,7 +1585,14 @@ mod tests {
                     && connection::hew_connmgr_count(n2.conn_mgr) > 0
             };
             if !ready {
-                thread::sleep(Duration::from_millis(25));
+                let sleep_ms = if i < 20 {
+                    25
+                } else if i < 50 {
+                    50
+                } else {
+                    100
+                };
+                thread::sleep(Duration::from_millis(sleep_ms));
             }
             ready
         });

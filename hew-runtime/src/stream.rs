@@ -718,6 +718,32 @@ pub unsafe extern "C" fn hew_stream_pair_free(pair: *mut HewStreamPair) {
     }
 }
 
+// Bytes-typed aliases for `hew_stream_pair_sink` / `hew_stream_pair_stream`.
+// The runtime handles are type-erased, so these are thin wrappers that let
+// the Hew type checker distinguish `Sink<String>` from `Sink<bytes>`.
+
+/// Extract the `Sink` from a pair (bytes-typed alias).
+///
+/// # Safety
+///
+/// Same preconditions as `hew_stream_pair_sink`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pair_sink_bytes(pair: *mut HewStreamPair) -> *mut HewSink {
+    // SAFETY: caller guarantees pair is valid; delegates to hew_stream_pair_sink.
+    unsafe { hew_stream_pair_sink(pair) }
+}
+
+/// Extract the `Stream` from a pair (bytes-typed alias).
+///
+/// # Safety
+///
+/// Same preconditions as `hew_stream_pair_stream`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pair_stream_bytes(pair: *mut HewStreamPair) -> *mut HewStream {
+    // SAFETY: caller guarantees pair is valid; delegates to hew_stream_pair_stream.
+    unsafe { hew_stream_pair_stream(pair) }
+}
+
 /// Open a file for streaming reads.
 ///
 /// Returns a `*mut HewStream` that yields the file contents in 4096-byte

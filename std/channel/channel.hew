@@ -66,11 +66,11 @@ trait SenderMethods {
 
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
-    fn send(tx: Sender, data: String) { hew_channel_send(tx, data); }
+    fn send(tx: Sender, data: String) { unsafe { hew_channel_send(tx, data) }; }
     /// Clone this sender for multi-producer use.
-    fn clone(tx: Sender) -> Sender { hew_channel_sender_clone(tx) }
+    fn clone(tx: Sender) -> Sender { unsafe { hew_channel_sender_clone(tx) } }
     /// Close this sender and release resources.
-    fn close(tx: Sender) { hew_channel_sender_close(tx); }
+    fn close(tx: Sender) { unsafe { hew_channel_sender_close(tx) }; }
 }
 
 // ── Receiver methods ─────────────────────────────────────────────────
@@ -95,11 +95,11 @@ trait ReceiverMethods {
 
 impl ReceiverMethods for Receiver {
     /// Block until a string message is available and return it.
-    fn recv(rx: Receiver) -> Option<String> { hew_channel_recv(rx) }
+    fn recv(rx: Receiver) -> Option<String> { unsafe { hew_channel_recv(rx) } }
     /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> Option<String> { hew_channel_try_recv(rx) }
+    fn try_recv(rx: Receiver) -> Option<String> { unsafe { hew_channel_try_recv(rx) } }
     /// Close this receiver and release resources.
-    fn close(rx: Receiver) { hew_channel_receiver_close(rx); }
+    fn close(rx: Receiver) { unsafe { hew_channel_receiver_close(rx) }; }
 }
 
 // ── Module-level functions ───────────────────────────────────────────
@@ -117,11 +117,13 @@ impl ReceiverMethods for Receiver {
 /// println(rx.recv());     // infers Receiver<String>
 /// ```
 pub fn new(capacity: i64) -> (Sender, Receiver) {
-    let pair = hew_channel_new(capacity);
-    let tx = hew_channel_pair_sender(pair);
-    let rx = hew_channel_pair_receiver(pair);
-    hew_channel_pair_free(pair);
-    (tx, rx)
+    unsafe {
+        let pair = hew_channel_new(capacity);
+        let tx = hew_channel_pair_sender(pair);
+        let rx = hew_channel_pair_receiver(pair);
+        hew_channel_pair_free(pair);
+        (tx, rx)
+    }
 }
 
 // ── FFI bindings ─────────────────────────────────────────────────────
@@ -137,8 +139,8 @@ extern "C" {
     fn hew_channel_send(tx: Sender, data: String);
     fn hew_channel_send_int(tx: Sender, data: int);
     // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
-    // hew_channel_try_recv_int are declared by codegen with the correct
-    // ABI (Option wrapping / out-parameter).
+    // hew_channel_try_recv_int use an out-parameter ABI for Option<T> and
+    // are declared by codegen with the correct calling convention.
     fn hew_channel_sender_clone(tx: Sender) -> Sender;
     fn hew_channel_sender_close(tx: Sender);
     fn hew_channel_receiver_close(rx: Receiver);

@@ -543,9 +543,39 @@ Input types:
 mod tests {
     use super::*;
 
+    /// Verifies the full compilation toolchain is available by attempting a
+    /// trivial `hew build`. Returns false (and prints a skip message) when
+    /// `hew-codegen` or `libhew_runtime.a` aren't built yet.
+    fn require_toolchain() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| {
+            let Ok(hew) = find_hew_binary() else {
+                eprintln!("REPL integration tests skipped: hew binary not found");
+                return false;
+            };
+            let dir = tempfile::tempdir().expect("temp dir");
+            let src = dir.path().join("probe.hew");
+            std::fs::write(&src, "fn main() { println(\"ok\"); }\n").expect("write");
+            let ok = std::process::Command::new(&hew)
+                .args(["build", src.to_str().unwrap(), "-o"])
+                .arg(dir.path().join("probe"))
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if !ok {
+                eprintln!(
+                    "REPL integration tests skipped: \
+                     hew build failed (codegen/runtime not available)"
+                );
+            }
+            ok
+        })
+    }
+
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_arithmetic() {
+        if !require_toolchain() {
+            return;
+        }
         let mut session = ReplSession::new();
         let result = session.eval("1 + 2");
         assert!(!result.had_errors, "errors: {:?}", result.errors);
@@ -553,8 +583,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_binding_persists() {
+        if !require_toolchain() {
+            return;
+        }
         let mut session = ReplSession::new();
         let r1 = session.eval("let x = 42;");
         assert!(!r1.had_errors, "errors: {:?}", r1.errors);
@@ -564,8 +596,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_function_persists() {
+        if !require_toolchain() {
+            return;
+        }
         let mut session = ReplSession::new();
         let r1 = session.eval("fn double(x: i64) -> i64 { x * 2 }");
         assert!(!r1.had_errors, "errors: {:?}", r1.errors);
@@ -575,8 +609,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_clear_resets() {
+        if !require_toolchain() {
+            return;
+        }
         let mut session = ReplSession::new();
         let _ = session.eval("let x = 10;");
         let r = session.eval(":clear");
@@ -610,15 +646,19 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_one_expression() {
+        if !require_toolchain() {
+            return;
+        }
         let result = eval_one("2 * 3");
         assert_eq!(result.unwrap(), "6\n");
     }
 
     #[test]
-    #[ignore = "integration test: requires full toolchain (hew-codegen + libhew_runtime.a)"]
     fn eval_file_multiline() {
+        if !require_toolchain() {
+            return;
+        }
         let dir = std::env::temp_dir();
         let path = dir.join("hew_eval_multiline_test.hew");
         std::fs::write(

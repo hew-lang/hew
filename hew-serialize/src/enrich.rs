@@ -6,8 +6,8 @@
 //! can consume without its own type inference.
 
 use hew_parser::ast::{
-    ActorDecl, Block, CallArg, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param,
-    Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
+    Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;
@@ -123,17 +123,35 @@ fn require_converted(
     ty_to_type_expr(ty).map_err(|diagnostic| diagnostic.with_context(context))
 }
 
+/// Convert a callable type (function or closure) to a `TypeExpr::Function`.
+fn convert_callable_type(
+    params: &[Ty],
+    ret: &Ty,
+    label: &str,
+) -> Result<TypeExpr, TypeExprConversionError> {
+    let param_exprs = params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| require_converted(param, format!("{label} parameter {index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ret_expr = require_converted(ret, format!("{label} return type"))?;
+    Ok(TypeExpr::Function {
+        params: param_exprs,
+        return_type: Box::new(ret_expr),
+    })
+}
+
 /// Extract a short element-type name from a `Ty` for stream method dispatch.
 ///
 /// Returns `"bytes"` for `Ty::Bytes`, `"String"` for `Ty::String`, or the
 /// `name` for `Ty::Named`.  Used by the enricher to select the correct
 /// runtime C symbol (e.g. `hew_stream_next` vs `hew_stream_next_bytes`).
-fn ty_element_name(ty: &Ty) -> String {
+fn ty_element_name(ty: &Ty) -> Option<&str> {
     match ty {
-        Ty::Bytes => "bytes".to_string(),
-        Ty::String => "String".to_string(),
-        Ty::Named { name, .. } => name.clone(),
-        _ => String::new(),
+        Ty::Bytes => Some("bytes"),
+        Ty::String => Some("String"),
+        Ty::Named { name, .. } => Some(name),
+        _ => None,
     }
 }
 
@@ -189,16 +207,10 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                         err: Box::new(err_expr),
                     }
                 }
-                ("Generator", _) => {
+                ("Generator" | "AsyncGenerator", _) => {
                     return Err(TypeExprConversionError::unsupported(
                         ty,
                         "generator type is not representable in serialized TypeExpr",
-                    ));
-                }
-                ("AsyncGenerator", _) => {
-                    return Err(TypeExprConversionError::unsupported(
-                        ty,
-                        "async generator type is not representable in serialized TypeExpr",
                     ));
                 }
                 ("Range", 1) => {
@@ -235,35 +247,9 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                 }
             },
 
-            Ty::Function { params, ret } => {
-                let param_exprs = params
-                    .iter()
-                    .enumerate()
-                    .map(|(index, param)| {
-                        require_converted(param, format!("function parameter {index}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let ret_expr = require_converted(ret, "function return type")?;
-                TypeExpr::Function {
-                    params: param_exprs,
-                    return_type: Box::new(ret_expr),
-                }
-            }
+            Ty::Function { params, ret } => convert_callable_type(params, ret, "function")?,
 
-            Ty::Closure { params, ret, .. } => {
-                let param_exprs = params
-                    .iter()
-                    .enumerate()
-                    .map(|(index, param)| {
-                        require_converted(param, format!("closure parameter {index}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let ret_expr = require_converted(ret, "closure return type")?;
-                TypeExpr::Function {
-                    params: param_exprs,
-                    return_type: Box::new(ret_expr),
-                }
-            }
+            Ty::Closure { params, ret, .. } => convert_callable_type(params, ret, "closure")?,
 
             Ty::Tuple(elements) => {
                 let elem_exprs = elements
@@ -459,17 +445,17 @@ fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry:
     if let TypeExpr::Named { name, type_args } = te {
         match name.as_str() {
             "Result" if type_args.as_ref().is_some_and(|a| a.len() == 2) => {
-                let mut args = type_args.take().unwrap();
-                let err = args.pop().unwrap();
-                let ok = args.pop().unwrap();
+                let mut args = type_args.take().expect("arity verified by guard");
+                let err = args.pop().expect("arity verified by guard");
+                let ok = args.pop().expect("arity verified by guard");
                 *te = TypeExpr::Result {
                     ok: Box::new(ok),
                     err: Box::new(err),
                 };
             }
             "Option" if type_args.as_ref().is_some_and(|a| a.len() == 1) => {
-                let mut args = type_args.take().unwrap();
-                let inner = args.pop().unwrap();
+                let mut args = type_args.take().expect("arity verified by guard");
+                let inner = args.pop().expect("arity verified by guard");
                 *te = TypeExpr::Option(Box::new(inner));
             }
             _ => {
@@ -725,6 +711,24 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
     }
 }
 
+/// Rewrite `len(x)` calls to `x.len()` method calls.
+fn try_rewrite_len_call(function: &Expr, args: &mut Vec<CallArg>) -> Option<Expr> {
+    if let Expr::Identifier(name) = function {
+        if name == "len" && args.len() == 1 {
+            let receiver = match std::mem::take(args).remove(0) {
+                CallArg::Positional(e) => e,
+                CallArg::Named { value, .. } => value,
+            };
+            return Some(Expr::MethodCall {
+                receiver: Box::new(receiver),
+                method: "len".to_string(),
+                args: Vec::new(),
+            });
+        }
+    }
+    None
+}
+
 #[expect(clippy::too_many_lines, reason = "enrichment covers all AST variants")]
 fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
@@ -733,19 +737,8 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(arg.expr_mut());
             }
             rewrite_builtin_calls_in_expr(function);
-            // len(x) → x.len()
-            if let Expr::Identifier(name) = &function.0 {
-                if name == "len" && args.len() == 1 {
-                    let receiver = match std::mem::take(args).remove(0) {
-                        CallArg::Positional(e) => e,
-                        CallArg::Named { value, .. } => value,
-                    };
-                    expr.0 = Expr::MethodCall {
-                        receiver: Box::new(receiver),
-                        method: "len".to_string(),
-                        args: Vec::new(),
-                    };
-                }
+            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
+                expr.0 = rewritten;
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
@@ -1432,6 +1425,25 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
+/// Infer a missing type annotation for a let/var binding from the type checker.
+fn infer_binding_type(
+    ty: &mut Option<Spanned<TypeExpr>>,
+    value: Option<&Spanned<Expr>>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+    context: impl Into<String>,
+) {
+    if ty.is_none() {
+        if let Some(val) = value {
+            match lookup_inferred_type(tco, &val.1, context) {
+                Ok(Some(inferred)) => *ty = Some(inferred),
+                Ok(None) => {}
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "match over Stmt variants is inherently long"
@@ -1444,37 +1456,25 @@ fn enrich_stmt_with_diagnostics(
 ) -> Result<(), TypeExprConversionError> {
     match stmt {
         Stmt::Let { ty, value, .. } => {
-            if ty.is_none() {
-                if let Some(ref val) = *value {
-                    match lookup_inferred_type(
-                        tco,
-                        &val.1,
-                        "let binding type inferred from initializer",
-                    ) {
-                        Ok(Some(inferred)) => *ty = Some(inferred),
-                        Ok(None) => {}
-                        Err(diagnostic) => diagnostics.push(diagnostic),
-                    }
-                }
-            }
+            infer_binding_type(
+                ty,
+                value.as_ref(),
+                tco,
+                diagnostics,
+                "let binding type inferred from initializer",
+            );
             if let Some(ref mut val) = value {
                 enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Stmt::Var { name, ty, value } => {
-            if ty.is_none() {
-                if let Some(ref val) = *value {
-                    match lookup_inferred_type(
-                        tco,
-                        &val.1,
-                        format!("var `{name}` type inferred from initializer"),
-                    ) {
-                        Ok(Some(inferred)) => *ty = Some(inferred),
-                        Ok(None) => {}
-                        Err(diagnostic) => diagnostics.push(diagnostic),
-                    }
-                }
-            }
+            infer_binding_type(
+                ty,
+                value.as_ref(),
+                tco,
+                diagnostics,
+                format!("var `{name}` type inferred from initializer"),
+            );
             if let Some(ref mut val) = value {
                 enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
@@ -1487,7 +1487,12 @@ fn enrich_stmt_with_diagnostics(
             enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
             enrich_block_with_diagnostics(then_block, tco, diagnostics, registry)?;
             if let Some(ref mut else_b) = else_block {
-                enrich_else_block_with_diagnostics(else_b, tco, diagnostics, registry)?;
+                if let Some(ref mut block) = else_b.block {
+                    enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
+                }
+                if let Some(ref mut if_stmt) = else_b.if_stmt {
+                    enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics, registry)?;
+                }
             }
         }
         Stmt::IfLet {
@@ -1548,21 +1553,6 @@ fn enrich_stmt_with_diagnostics(
     Ok(())
 }
 
-fn enrich_else_block_with_diagnostics(
-    else_block: &mut ElseBlock,
-    tco: &TypeCheckOutput,
-    diagnostics: &mut Vec<TypeExprConversionError>,
-    registry: &hew_types::module_registry::ModuleRegistry,
-) -> Result<(), TypeExprConversionError> {
-    if let Some(ref mut block) = else_block.block {
-        enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-    }
-    if let Some(ref mut if_stmt) = else_block.if_stmt {
-        enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics, registry)?;
-    }
-    Ok(())
-}
-
 /// Rewrite `MethodCall` nodes to the forms the C++ codegen expects.
 ///
 /// Handles three categories of method call rewriting:
@@ -1593,7 +1583,7 @@ fn enrich_method_call(
             if c_symbol != *method {
                 let old_args = std::mem::take(args);
                 expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_symbol.clone()), receiver.1.clone())),
+                    function: Box::new((Expr::Identifier(c_symbol), receiver.1.clone())),
                     type_args: None,
                     args: old_args,
                     is_tail_call: false,
@@ -1626,14 +1616,12 @@ fn enrich_method_call(
     };
     let c_fn: Option<String> = match tco.expr_types.get(&key) {
         Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
-            let elem = args.first().map(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
-                .map(String::from)
+            let elem = args.first().and_then(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Stream", method, elem).map(String::from)
         }
         Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
-            let elem = args.first().map(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
-                .map(String::from)
+            let elem = args.first().and_then(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Sink", method, elem).map(String::from)
         }
         Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
             hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
@@ -1771,20 +1759,8 @@ fn enrich_expr_with_diagnostics_inner(
                 }
             }
 
-            // Rewrite len(x) → x.len() method call so the C++ codegen
-            // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
-            if let Expr::Identifier(name) = &function.0 {
-                if name == "len" && args.len() == 1 {
-                    let receiver = match std::mem::take(args).remove(0) {
-                        CallArg::Positional(e) => e,
-                        CallArg::Named { value, .. } => value,
-                    };
-                    expr.0 = Expr::MethodCall {
-                        receiver: Box::new(receiver),
-                        method: "len".to_string(),
-                        args: Vec::new(),
-                    };
-                }
+            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
+                expr.0 = rewritten;
             }
         }
         Expr::Binary { left, right, .. } => {
@@ -1916,7 +1892,7 @@ fn synthesize_stdlib_externs(
 mod tests {
     use super::*;
     use hew_parser::ast::{
-        ConstDecl, ImplDecl, ImportDecl, MachineDecl, MachineEvent, MachineState,
+        ConstDecl, ElseBlock, ImplDecl, ImportDecl, MachineDecl, MachineEvent, MachineState,
         MachineTransition, ReceiveFnDecl, SupervisorDecl, TraitDecl, TypeDecl, Visibility,
     };
 
@@ -2569,7 +2545,7 @@ mod tests {
         let err = unwrap_err(ty_to_type_expr(&ty));
         assert!(
             err.to_string()
-                .contains("async generator type is not representable in serialized TypeExpr"),
+                .contains("generator type is not representable in serialized TypeExpr"),
             "unexpected error: {err}"
         );
     }

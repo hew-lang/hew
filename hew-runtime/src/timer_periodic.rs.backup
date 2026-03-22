@@ -251,7 +251,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
-
+    
     // Mock timer callback that increments a counter
     unsafe extern "C" fn test_timer_cb(_data: *mut c_void) {
         TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -261,38 +261,35 @@ mod tests {
     fn test_ticker_shutdown_positive() {
         // Reset counter
         TEST_COUNTER.store(0, Ordering::SeqCst);
-
+        
         // Get the global timer wheel which will start the ticker
         let tw = global_wheel();
         assert!(!tw.is_null());
-
+        
         // Schedule a timer to verify the ticker is working
-        // SAFETY: tw is a valid timer wheel pointer from global_wheel().
         unsafe {
             hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
         }
-
+        
         // Wait for at least one tick to verify the ticker is working
         std::thread::sleep(Duration::from_millis(20));
         let count_after_ticks = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_ticks > 0,
-            "Timer should have fired at least once"
-        );
-
+        assert!(count_after_ticks > 0, "Timer should have fired at least once");
+        
         // Now shutdown the ticker and measure how long it takes
         let start_time = Instant::now();
         shutdown_ticker();
         let shutdown_duration = start_time.elapsed();
-
+        
         // Should join within 500ms as required
         assert!(
             shutdown_duration < Duration::from_millis(500),
-            "Ticker thread should join within 500ms, took {shutdown_duration:?}"
+            "Ticker thread should join within 500ms, took {:?}",
+            shutdown_duration
         );
     }
 
-    #[test]
+    #[test] 
     fn test_ticker_shutdown_negative() {
         // Test calling shutdown when no ticker was started
         // This should not panic or hang
@@ -304,40 +301,37 @@ mod tests {
     fn test_ticker_shutdown_sabotage() {
         // Reset counter
         TEST_COUNTER.store(0, Ordering::SeqCst);
-
+        
         // Get the global timer wheel
         let tw = global_wheel();
-
+        
         // Schedule a timer
-        // SAFETY: tw is a valid timer wheel pointer from global_wheel().
         unsafe {
             hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
         }
-
+        
         // Wait for at least one tick to verify the ticker is working
         std::thread::sleep(Duration::from_millis(20));
         let count_after_ticks = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_ticks > 0,
-            "Timer should have fired at least once"
-        );
-
+        assert!(count_after_ticks > 0, "Timer should have fired at least once");
+        
         // Now temporarily disable the stop check to test that our test detects the UAF scenario
         // This is commented out because it would break the fix, but this test structure
         // demonstrates that the fix is necessary.
-
+        
         // TO TEST: Comment out the TICKER_STOP.load checks in the ticker loop,
         // then run this test. It should timeout/fail on the join, proving the test
         // detects the actual UAF scenario.
-
+        
         let start_time = Instant::now();
         shutdown_ticker();
         let shutdown_duration = start_time.elapsed();
-
+        
         // With the fix, this should complete quickly
         assert!(
             shutdown_duration < Duration::from_millis(500),
-            "With the fix, ticker should join within 500ms, took {shutdown_duration:?}"
+            "With the fix, ticker should join within 500ms, took {:?}",
+            shutdown_duration
         );
     }
 
@@ -345,33 +339,28 @@ mod tests {
     fn test_ticker_restart_after_shutdown() {
         // Test that we can restart the ticker after shutdown
         TEST_COUNTER.store(0, Ordering::SeqCst);
-
+        
         // Start ticker, then shutdown
         let tw1 = global_wheel();
-        // SAFETY: tw1 is a valid timer wheel pointer from global_wheel().
         unsafe {
             hew_timer_wheel_schedule(tw1, 10, test_timer_cb, ptr::null_mut());
         }
         std::thread::sleep(Duration::from_millis(25));
         shutdown_ticker();
-
+        
         let count_after_first = TEST_COUNTER.load(Ordering::SeqCst);
         assert!(count_after_first > 0);
-
+        
         // Reset and start again - this should work due to flag reset
         TEST_COUNTER.store(0, Ordering::SeqCst);
         let tw2 = global_wheel();
-        // SAFETY: tw2 is a valid timer wheel pointer from global_wheel().
         unsafe {
             hew_timer_wheel_schedule(tw2, 10, test_timer_cb, ptr::null_mut());
         }
         std::thread::sleep(Duration::from_millis(25));
         let count_after_second = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_second > 0,
-            "Ticker should restart after shutdown"
-        );
-
+        assert!(count_after_second > 0, "Ticker should restart after shutdown");
+        
         // Cleanup
         shutdown_ticker();
     }

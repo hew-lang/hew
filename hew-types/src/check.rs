@@ -2268,7 +2268,7 @@ impl Checker {
         self.register_channel_recv_builtins();
     }
 
-    /// Registers synthetic `fn_sigs` entries for channel recv/try_recv
+    /// Registers synthetic `fn_sigs` entries for channel `recv`/`try_recv`
     /// functions whose calling convention is handled entirely by codegen.
     ///
     /// These functions use an out-parameter ABI for `Option<T>` and must

@@ -875,6 +875,24 @@ fn reader_loop(
             };
             if let Some(noise) = guard.as_mut() {
                 let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
+                    // Decrypt failure — apply same cleanup as connection drop
+                    set_last_error("connection decrypt failure".to_string());
+                    let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
+                    if unexpected_drop {
+                        // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
+                        let reconnect_plan = unsafe {
+                            if mgr.is_null() {
+                                None
+                            } else {
+                                hew_connmgr_reconnect_plan(&*mgr, conn_id)
+                            }
+                        };
+                        // SAFETY: manager and conn_id come from active reader state.
+                        let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
+                        if let Some(plan) = reconnect_plan {
+                            hew_connmgr_spawn_reconnect_worker(mgr, conn_id, plan);
+                        }
+                    }
                     break;
                 };
                 payload_len = n;

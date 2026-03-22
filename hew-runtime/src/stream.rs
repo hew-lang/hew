@@ -262,6 +262,11 @@ impl SinkBacking for FileWriteSink {
 
 // ── Lines adapter backing ─────────────────────────────────────────────────────
 
+/// Maximum bytes the lines adapter will buffer before yielding a truncated
+/// line.  Prevents unbounded memory growth when the upstream never sends a
+/// newline (e.g. binary data or a malicious sender).
+const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024; // 1 MiB
+
 /// Wraps a `Stream<bytes>` and yields newline-terminated strings (as utf-8 bytes).
 #[derive(Debug)]
 struct LinesStream {
@@ -270,11 +275,33 @@ struct LinesStream {
     /// Upstream bytes stream.
     upstream: Box<dyn StreamBacking>,
     done: bool,
+    /// After a forced flush at the buffer limit, skip a leading line
+    /// delimiter (`\n` or `\r\n`) that belongs to the oversized line.
+    skip_next_delimiter: bool,
 }
 
 impl StreamBacking for LinesStream {
     fn next(&mut self) -> Option<Item> {
         loop {
+            // After a forced flush, consume the delimiter that terminated
+            // the oversized line (it may have arrived in a later chunk).
+            if self.skip_next_delimiter {
+                if self.buf.starts_with(b"\r\n") {
+                    self.buf.drain(..2);
+                    self.skip_next_delimiter = false;
+                } else if self.buf.first() == Some(&b'\n') {
+                    self.buf.remove(0);
+                    self.skip_next_delimiter = false;
+                } else if self.buf.first() == Some(&b'\r') && !self.done {
+                    // Lone \r — could be the start of \r\n split across
+                    // chunks.  Need more data before deciding.
+                } else if !self.buf.is_empty() || self.done {
+                    // Non-delimiter data or EOF — no delimiter to skip.
+                    self.skip_next_delimiter = false;
+                }
+                // else: buf empty, stream open — fall through to pull more.
+            }
+
             // Check if there's a complete line already buffered.
             if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
                 let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
@@ -285,6 +312,13 @@ impl StreamBacking for LinesStream {
                 if line.last() == Some(&b'\r') {
                     line.pop();
                 }
+                return Some(line);
+            }
+            // Buffer full without a newline — drain exactly the limit to
+            // bound memory.  Leftover bytes stay in buf for the next call.
+            if self.buf.len() >= MAX_LINE_BUFFER_SIZE {
+                let line: Vec<u8> = self.buf.drain(..MAX_LINE_BUFFER_SIZE).collect();
+                self.skip_next_delimiter = true;
                 return Some(line);
             }
             if self.done {
@@ -905,6 +939,74 @@ pub unsafe extern "C" fn hew_stream_next_sized(
     }
 }
 
+/// Read the next item into a caller-provided buffer, avoiding per-item malloc.
+///
+/// On success the item bytes are copied into `*buf` and the byte count is
+/// returned (>= 0).  If the item is larger than `*buf_cap`, the buffer is
+/// grown via `libc::realloc`, and both `*buf` and `*buf_cap` are updated so
+/// the caller can reuse the (possibly larger) buffer on subsequent calls.
+///
+/// Returns -1 on EOF (stream exhausted) or if `stream`, `buf`, or `buf_cap`
+/// is null.
+///
+/// # Ownership
+///
+/// `*buf` must be null or a pointer previously obtained from `malloc` /
+/// `realloc`.  The caller must eventually `free(*buf)`.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream pointer.  `buf` and `buf_cap` must point
+/// to valid, writable memory.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_view(
+    stream: *mut HewStream,
+    buf: *mut *mut u8,
+    buf_cap: *mut usize,
+) -> i64 {
+    if stream.is_null() || buf.is_null() || buf_cap.is_null() {
+        return -1;
+    }
+    // SAFETY: stream is valid per caller contract.
+    let s = unsafe { &mut *stream };
+    let Some(item) = s.inner.next() else {
+        return -1;
+    };
+    let len = item.len();
+
+    // SAFETY: buf_cap is valid per caller contract.
+    let cap = unsafe { *buf_cap };
+
+    // Grow the buffer when the current capacity is insufficient or the
+    // buffer pointer is null (callers may pass null with a stale capacity).
+    // SAFETY: buf is valid per caller contract; dereferencing to check the inner pointer.
+    let needs_alloc = len > cap || (len > 0 && unsafe { (*buf).is_null() });
+    if needs_alloc {
+        // SAFETY: *buf is null or was obtained from malloc/realloc.
+        let new_ptr = unsafe { libc::realloc((*buf).cast::<c_void>(), len) };
+        if new_ptr.is_null() {
+            return -1;
+        }
+        // SAFETY: buf and buf_cap are valid per caller contract.
+        unsafe {
+            *buf = new_ptr.cast::<u8>();
+            *buf_cap = len;
+        }
+    }
+
+    if len > 0 {
+        // SAFETY: *buf has at least `len` bytes; item.as_ptr() is valid for `len` bytes.
+        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), *buf, len) };
+    }
+
+    // Stream items are bounded by available memory; on 64-bit systems the
+    // length fits in i64.  On 32-bit systems usize is 32-bit, also lossless.
+    #[allow(clippy::cast_possible_wrap, reason = "stream item length ≤ isize::MAX")]
+    {
+        len as i64
+    }
+}
+
 /// Close (discard) a stream.
 ///
 /// # Safety
@@ -1013,6 +1115,7 @@ pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStr
         buf: Vec::new(),
         upstream,
         done: false,
+        skip_next_delimiter: false,
     })
 }
 
@@ -1712,6 +1815,222 @@ mod tests {
         }
     }
 
+    // ── hew_stream_next_view ─────────────────────────────────────────────
+
+    #[test]
+    fn stream_next_view_null_stream_returns_eof() {
+        let mut buf: *mut u8 = ptr::null_mut();
+        let mut cap: usize = 0;
+        // SAFETY: null stream is explicitly handled.
+        let ret = unsafe { hew_stream_next_view(ptr::null_mut(), &raw mut buf, &raw mut cap) };
+        assert_eq!(ret, -1);
+    }
+
+    #[test]
+    fn stream_next_view_null_buf_returns_eof() {
+        let data = b"hello";
+        // SAFETY: stream is valid; null buf pointer is handled.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut cap: usize = 0;
+            let ret = hew_stream_next_view(stream, ptr::null_mut(), &raw mut cap);
+            assert_eq!(ret, -1);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_null_cap_returns_eof() {
+        let data = b"hello";
+        // SAFETY: stream is valid; null buf_cap pointer is handled.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = ptr::null_mut();
+            let ret = hew_stream_next_view(stream, &raw mut buf, ptr::null_mut());
+            assert_eq!(ret, -1);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_copies_into_provided_buffer() {
+        let data = b"hello";
+        // SAFETY: stream + buffer are valid; buffer is large enough.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>();
+            let mut cap: usize = 64;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, 5);
+            assert_eq!(cap, 64, "capacity unchanged when buffer is large enough");
+            let n = usize::try_from(ret).unwrap();
+            let slice = std::slice::from_raw_parts(buf, n);
+            assert_eq!(slice, b"hello");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_grows_undersized_buffer() {
+        let data = b"a]longer]payload";
+        // Start with a tiny 2-byte buffer — the function must realloc it.
+        // SAFETY: stream + buffer are valid; buffer will be grown.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = libc::malloc(2).cast::<u8>();
+            let mut cap: usize = 2;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, i64::try_from(data.len()).unwrap());
+            assert!(cap >= data.len(), "capacity must grow to fit the item");
+            let n = usize::try_from(ret).unwrap();
+            let slice = std::slice::from_raw_parts(buf, n);
+            assert_eq!(slice, data);
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_grows_null_initial_buffer() {
+        // Callers may pass a null *buf with zero capacity; realloc(NULL, n)
+        // behaves like malloc(n), so this should work transparently.
+        let data = b"from_null";
+        // SAFETY: stream is valid; null initial buf is handled by realloc semantics.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = ptr::null_mut();
+            let mut cap: usize = 0;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, i64::try_from(data.len()).unwrap());
+            assert!(!buf.is_null(), "buffer must be allocated");
+            let n = usize::try_from(ret).unwrap();
+            let slice = std::slice::from_raw_parts(buf, n);
+            assert_eq!(slice, b"from_null");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_null_buf_with_nonzero_cap_allocates() {
+        // Regression: a null *buf with a stale positive capacity must trigger
+        // allocation rather than copying into null.
+        let data = b"safe";
+        // SAFETY: stream is valid; null buf with stale cap is handled.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = ptr::null_mut();
+            let mut cap: usize = 128; // stale capacity, buffer is actually null
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, 4);
+            assert!(!buf.is_null(), "must allocate when *buf is null");
+            let slice = std::slice::from_raw_parts(buf, usize::try_from(ret).unwrap());
+            assert_eq!(slice, b"safe");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_eof_returns_negative_one() {
+        // SAFETY: empty stream hits EOF immediately.
+        unsafe {
+            let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
+            let mut buf: *mut u8 = libc::malloc(16).cast::<u8>();
+            let mut cap: usize = 16;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, -1, "EOF must return -1");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_exact_fit() {
+        let data = b"ABCD";
+        // Buffer exactly matches item size — no realloc needed.
+        // SAFETY: stream + buffer are valid; buffer is exactly the right size.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = libc::malloc(4).cast::<u8>();
+            let mut cap: usize = 4;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, 4);
+            assert_eq!(cap, 4, "capacity unchanged on exact fit");
+            let slice = std::slice::from_raw_parts(buf, 4);
+            assert_eq!(slice, b"ABCD");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_reuses_buffer_across_calls() {
+        // Two items written through a channel; one buffer reused for both reads.
+        // SAFETY: channel stream + buffer are valid.
+        unsafe {
+            let pair = hew_stream_channel(2);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            let a = b"first";
+            let b_data = b"second";
+            hew_sink_write(sink, a.as_ptr().cast(), a.len());
+            hew_sink_write(sink, b_data.as_ptr().cast(), b_data.len());
+            hew_sink_close(sink);
+
+            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>();
+            let mut cap: usize = 64;
+            let original_buf = buf;
+
+            let r1 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(r1, 5);
+            assert_eq!(
+                std::slice::from_raw_parts(buf, usize::try_from(r1).unwrap()),
+                b"first"
+            );
+            // Buffer pointer should be unchanged (no realloc needed).
+            assert_eq!(
+                buf, original_buf,
+                "buffer must not be reallocated when large enough"
+            );
+
+            let r2 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(r2, 6);
+            assert_eq!(
+                std::slice::from_raw_parts(buf, usize::try_from(r2).unwrap()),
+                b"second"
+            );
+
+            let r3 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(r3, -1, "EOF after all items consumed");
+
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_view_single_byte_item() {
+        // Boundary: smallest non-empty item (1 byte).
+        let data = b"X";
+        // SAFETY: stream + buffer are valid.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut buf: *mut u8 = libc::malloc(1).cast::<u8>();
+            let mut cap: usize = 1;
+            let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(ret, 1);
+            assert_eq!(*buf, b'X');
+            let eof = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
+            assert_eq!(eof, -1, "EOF after the single item");
+            libc::free(buf.cast());
+            hew_stream_close(stream);
+        }
+    }
+
     // ── Close / free ────────────────────────────────────────────────────
 
     #[test]
@@ -2018,6 +2337,136 @@ mod tests {
             let lines = hew_stream_lines(raw);
             let items = drain_stream(lines);
             assert!(items.is_empty());
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_data_at_buffer_limit_not_truncated() {
+        // Data exactly at the limit (with trailing newline) should yield one
+        // complete line — no premature truncation.
+        let mut data = vec![b'x'; MAX_LINE_BUFFER_SIZE - 1];
+        data.push(b'\n');
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE - 1);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_exceeding_buffer_limit_yields_truncated_line() {
+        // Chunked delivery: two half-chunks fill the buffer to the limit,
+        // then the remaining byte arrives in a third chunk.  The adapter
+        // must drain exactly MAX_LINE_BUFFER_SIZE, not the whole buffer.
+        let chunk_size = MAX_LINE_BUFFER_SIZE / 2;
+        let total = MAX_LINE_BUFFER_SIZE + 1;
+        let data = vec![b'B'; total];
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1].len(), 1);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_single_oversized_chunk_capped_at_limit() {
+        // One chunk larger than the limit arrives all at once (item_size=0).
+        // The adapter must still cap the returned line at MAX_LINE_BUFFER_SIZE.
+        let total = MAX_LINE_BUFFER_SIZE + 123;
+        let data = vec![b'Z'; total];
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1].len(), 123);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_newline_immediately_after_limit_no_spurious_empty() {
+        // Buffer fills to exactly the limit, and the next byte is \n.
+        // The \n is the delimiter for the oversized line and must be consumed
+        // — not yielded as a spurious empty line.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'D'; MAX_LINE_BUFFER_SIZE];
+        data.push(b'\n');
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_crlf_immediately_after_limit_no_spurious_empty() {
+        // Same as above but with \r\n delimiter.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'E'; MAX_LINE_BUFFER_SIZE];
+        data.extend_from_slice(b"\r\n");
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_newline_after_limit_splits_correctly() {
+        // Buffer fills past the limit, then the next chunk has a real line.
+        // The oversized prefix flushes first; subsequent data splits normally.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'C'; MAX_LINE_BUFFER_SIZE];
+        data.extend_from_slice(b"tail\n");
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1], b"tail");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_crlf_split_across_flush_boundary_no_spurious_empty() {
+        // \r and \n arrive in separate chunks after a forced flush.
+        // The adapter must wait for the \n before clearing skip_next_delimiter.
+        let limit = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'F'; limit];
+        data.push(b'\r');
+        data.push(b'\n');
+        // item_size = limit+1 puts the payload + \r in chunk 1, \n in chunk 2.
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), limit + 1);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), limit);
             hew_stream_close(lines);
         }
     }

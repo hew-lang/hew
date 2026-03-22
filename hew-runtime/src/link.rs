@@ -12,6 +12,7 @@ use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
 use crate::mailbox;
 use crate::supervisor::SYS_MSG_EXIT;
+use crate::util::RwLockExt;
 
 /// Number of shards for link table to reduce contention.
 const LINK_SHARDS: usize = 16;
@@ -97,7 +98,7 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
 /// Add a unidirectional link: `from_id` -> `to_actor`.
 fn add_link(from_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write().unwrap();
+    let mut shard = LINK_TABLE[shard_index].write_or_recover();
 
     shard
         .links
@@ -109,7 +110,7 @@ fn add_link(from_id: u64, to_actor: *mut HewActor) {
 /// Remove a unidirectional link: `from_id` -/-> `to_actor`.
 fn remove_link(from_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write().unwrap();
+    let mut shard = LINK_TABLE[shard_index].write_or_recover();
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
         let target_addr = to_actor as usize;
@@ -131,7 +132,7 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 
     // Take all linked actors for this actor ID to prevent re-entrancy.
     let linked_actors = {
-        let mut shard = LINK_TABLE[shard_index].write().unwrap();
+        let mut shard = LINK_TABLE[shard_index].write_or_recover();
         shard.links.remove(&actor_id).unwrap_or_default()
     };
 
@@ -200,7 +201,7 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 /// This is used to clean up reverse links when an actor exits.
 fn remove_link_by_target(from_id: u64, target_id: u64) {
     let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write().unwrap();
+    let mut shard = LINK_TABLE[shard_index].write_or_recover();
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
         linked_actors.retain(|&actor_addr| {
@@ -347,5 +348,31 @@ mod tests {
         let shard = get_shard_index(300);
         let table = LINK_TABLE[shard].read().unwrap();
         assert!(!table.links.contains_key(&300));
+    }
+
+    /// Link operations survive a poisoned `RwLock` shard.
+    #[test]
+    fn link_survives_poisoned_shard() {
+        // Poison a standalone RwLock to prove the pattern works.
+        let lock = std::sync::RwLock::new(42);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.write().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(lock.is_poisoned());
+
+        // The global LINK_TABLE uses write_or_recover, so link/unlink
+        // must not panic even if another thread poisoned a shard.
+        let mut actor_a = create_test_actor(900);
+        let mut actor_b = create_test_actor(901);
+
+        let a_ptr = &raw mut actor_a;
+        let b_ptr = &raw mut actor_b;
+
+        // SAFETY: a_ptr and b_ptr are valid pointers to stack-allocated test actors.
+        unsafe {
+            hew_actor_link(a_ptr, b_ptr);
+            hew_actor_unlink(a_ptr, b_ptr);
+        }
     }
 }

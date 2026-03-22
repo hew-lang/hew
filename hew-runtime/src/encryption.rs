@@ -210,7 +210,9 @@ unsafe fn do_initiator_handshake(
         .build_initiator()
         .ok()?;
 
-    let mut buf = vec![0u8; MAX_MSG_SIZE];
+    // Wrap handshake buffers in Zeroizing so ephemeral key material is
+    // zeroised on all exit paths (normal return, early `?`, and unwind).
+    let mut buf = Zeroizing::new(vec![0u8; MAX_MSG_SIZE]);
 
     // -> e
     let len = handshake.write_message(&[], &mut buf).ok()?;
@@ -236,7 +238,7 @@ unsafe fn do_initiator_handshake(
     }
     #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
     let n = n as usize;
-    let mut payload = vec![0u8; MAX_MSG_SIZE];
+    let mut payload = Zeroizing::new(vec![0u8; MAX_MSG_SIZE]);
     handshake.read_message(&buf[..n], &mut payload).ok()?;
 
     // -> s, se
@@ -274,8 +276,10 @@ unsafe fn do_responder_handshake(
         .build_responder()
         .ok()?;
 
-    let mut buf = vec![0u8; MAX_MSG_SIZE];
-    let mut payload = vec![0u8; MAX_MSG_SIZE];
+    // Wrap handshake buffers in Zeroizing so ephemeral key material is
+    // zeroised on all exit paths (normal return, early `?`, and unwind).
+    let mut buf = Zeroizing::new(vec![0u8; MAX_MSG_SIZE]);
+    let mut payload = Zeroizing::new(vec![0u8; MAX_MSG_SIZE]);
 
     // <- e
     let recv_fn = ops.recv?;

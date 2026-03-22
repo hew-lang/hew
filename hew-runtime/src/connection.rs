@@ -78,6 +78,8 @@ const NOISE_STATIC_PUBKEY_LEN: usize = 32;
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 #[cfg(feature = "encryption")]
 const NOISE_MAX_MSG_SIZE: usize = 65_535;
+#[cfg(feature = "encryption")]
+use zeroize::Zeroizing;
 
 const RECONNECT_DEFAULT_MAX_RETRIES: u32 = 5;
 const RECONNECT_INITIAL_BACKOFF_MS: u64 = 1_000;
@@ -745,8 +747,10 @@ unsafe fn hew_conn_upgrade_noise(
             .ok()?
     };
 
-    let mut msg = vec![0u8; NOISE_MAX_MSG_SIZE];
-    let mut payload = vec![0u8; NOISE_MAX_MSG_SIZE];
+    // Wrap handshake buffers in Zeroizing so ephemeral key material is
+    // zeroised on all exit paths (normal return, early `?`, and unwind).
+    let mut msg = Zeroizing::new(vec![0u8; NOISE_MAX_MSG_SIZE]);
+    let mut payload = Zeroizing::new(vec![0u8; NOISE_MAX_MSG_SIZE]);
 
     if initiator {
         let n = handshake.write_message(&[], &mut msg).ok()?;
@@ -1170,7 +1174,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             return -1;
         };
         local_noise_pubkey.copy_from_slice(&keypair.public);
-        keypair.private
+        Zeroizing::new(keypair.private)
     };
 
     let local_hs = hew_conn_local_handshake(local_noise_pubkey);

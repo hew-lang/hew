@@ -262,6 +262,11 @@ impl SinkBacking for FileWriteSink {
 
 // ── Lines adapter backing ─────────────────────────────────────────────────────
 
+/// Maximum bytes the lines adapter will buffer before yielding a truncated
+/// line.  Prevents unbounded memory growth when the upstream never sends a
+/// newline (e.g. binary data or a malicious sender).
+const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024; // 1 MiB
+
 /// Wraps a `Stream<bytes>` and yields newline-terminated strings (as utf-8 bytes).
 #[derive(Debug)]
 struct LinesStream {
@@ -270,11 +275,33 @@ struct LinesStream {
     /// Upstream bytes stream.
     upstream: Box<dyn StreamBacking>,
     done: bool,
+    /// After a forced flush at the buffer limit, skip a leading line
+    /// delimiter (`\n` or `\r\n`) that belongs to the oversized line.
+    skip_next_delimiter: bool,
 }
 
 impl StreamBacking for LinesStream {
     fn next(&mut self) -> Option<Item> {
         loop {
+            // After a forced flush, consume the delimiter that terminated
+            // the oversized line (it may have arrived in a later chunk).
+            if self.skip_next_delimiter {
+                if self.buf.starts_with(b"\r\n") {
+                    self.buf.drain(..2);
+                    self.skip_next_delimiter = false;
+                } else if self.buf.first() == Some(&b'\n') {
+                    self.buf.remove(0);
+                    self.skip_next_delimiter = false;
+                } else if self.buf.first() == Some(&b'\r') && !self.done {
+                    // Lone \r — could be the start of \r\n split across
+                    // chunks.  Need more data before deciding.
+                } else if !self.buf.is_empty() || self.done {
+                    // Non-delimiter data or EOF — no delimiter to skip.
+                    self.skip_next_delimiter = false;
+                }
+                // else: buf empty, stream open — fall through to pull more.
+            }
+
             // Check if there's a complete line already buffered.
             if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
                 let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
@@ -285,6 +312,13 @@ impl StreamBacking for LinesStream {
                 if line.last() == Some(&b'\r') {
                     line.pop();
                 }
+                return Some(line);
+            }
+            // Buffer full without a newline — drain exactly the limit to
+            // bound memory.  Leftover bytes stay in buf for the next call.
+            if self.buf.len() >= MAX_LINE_BUFFER_SIZE {
+                let line: Vec<u8> = self.buf.drain(..MAX_LINE_BUFFER_SIZE).collect();
+                self.skip_next_delimiter = true;
                 return Some(line);
             }
             if self.done {
@@ -1013,6 +1047,7 @@ pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStr
         buf: Vec::new(),
         upstream,
         done: false,
+        skip_next_delimiter: false,
     })
 }
 
@@ -2018,6 +2053,136 @@ mod tests {
             let lines = hew_stream_lines(raw);
             let items = drain_stream(lines);
             assert!(items.is_empty());
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_data_at_buffer_limit_not_truncated() {
+        // Data exactly at the limit (with trailing newline) should yield one
+        // complete line — no premature truncation.
+        let mut data = vec![b'x'; MAX_LINE_BUFFER_SIZE - 1];
+        data.push(b'\n');
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE - 1);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_exceeding_buffer_limit_yields_truncated_line() {
+        // Chunked delivery: two half-chunks fill the buffer to the limit,
+        // then the remaining byte arrives in a third chunk.  The adapter
+        // must drain exactly MAX_LINE_BUFFER_SIZE, not the whole buffer.
+        let chunk_size = MAX_LINE_BUFFER_SIZE / 2;
+        let total = MAX_LINE_BUFFER_SIZE + 1;
+        let data = vec![b'B'; total];
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1].len(), 1);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_single_oversized_chunk_capped_at_limit() {
+        // One chunk larger than the limit arrives all at once (item_size=0).
+        // The adapter must still cap the returned line at MAX_LINE_BUFFER_SIZE.
+        let total = MAX_LINE_BUFFER_SIZE + 123;
+        let data = vec![b'Z'; total];
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1].len(), 123);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_newline_immediately_after_limit_no_spurious_empty() {
+        // Buffer fills to exactly the limit, and the next byte is \n.
+        // The \n is the delimiter for the oversized line and must be consumed
+        // — not yielded as a spurious empty line.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'D'; MAX_LINE_BUFFER_SIZE];
+        data.push(b'\n');
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_crlf_immediately_after_limit_no_spurious_empty() {
+        // Same as above but with \r\n delimiter.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'E'; MAX_LINE_BUFFER_SIZE];
+        data.extend_from_slice(b"\r\n");
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_newline_after_limit_splits_correctly() {
+        // Buffer fills past the limit, then the next chunk has a real line.
+        // The oversized prefix flushes first; subsequent data splits normally.
+        let chunk_size = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'C'; MAX_LINE_BUFFER_SIZE];
+        data.extend_from_slice(b"tail\n");
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
+            assert_eq!(items[1], b"tail");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_crlf_split_across_flush_boundary_no_spurious_empty() {
+        // \r and \n arrive in separate chunks after a forced flush.
+        // The adapter must wait for the \n before clearing skip_next_delimiter.
+        let limit = MAX_LINE_BUFFER_SIZE;
+        let mut data = vec![b'F'; limit];
+        data.push(b'\r');
+        data.push(b'\n');
+        // item_size = limit+1 puts the payload + \r in chunk 1, \n in chunk 2.
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), limit + 1);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), limit);
             hew_stream_close(lines);
         }
     }

@@ -7,6 +7,17 @@
 use crate::cabi::malloc_cstring;
 use std::ffi::{c_char, CStr};
 
+/// Global lock for environment variable access synchronization.
+///
+/// This protects against thread-safety issues with `std::env::set_var` and
+/// `std::env::remove_var`, which are unsafe in multi-threaded contexts because
+/// they modify the process-global `environ` array without synchronization.
+///
+/// Note: External C code calling `setenv`/`getenv`/`unsetenv` bypasses this lock
+/// (POSIX limitation). Hew programs should use the `hew_env_*` functions exclusively.
+static ENV_LOCK: std::sync::LazyLock<std::sync::RwLock<()>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(()));
+
 /// Convert a Rust `String` to a malloc-allocated C string. Returns null on failure.
 fn string_to_malloc(s: &str) -> *mut c_char {
     // SAFETY: s.as_ptr() is valid for s.len() bytes.
@@ -34,6 +45,8 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
         return std::ptr::null_mut();
     };
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+    let _guard = ENV_LOCK.read().unwrap();
     match std::env::var(key_str) {
         Ok(val) => string_to_malloc(&val),
         Err(_) => std::ptr::null_mut(),
@@ -45,7 +58,6 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
 /// # Safety
 ///
 /// Both `key` and `val` must be valid NUL-terminated C strings.
-/// Note: `std::env::set_var` is unsafe in multi-threaded contexts per Rust docs.
 #[no_mangle]
 pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
     if key.is_null() || val.is_null() {
@@ -59,8 +71,9 @@ pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
     let Ok(val_str) = (unsafe { CStr::from_ptr(val) }).to_str() else {
         return;
     };
-    // SAFETY: This is called from single-threaded Hew runtime initialization or
-    // from compiled Hew programs where env access is serialized by the runtime.
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+    let _guard = ENV_LOCK.write().unwrap();
+    // SAFETY: set_var is safe when protected by exclusive write access.
     unsafe { std::env::set_var(key_str, val_str) };
 }
 
@@ -69,7 +82,6 @@ pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
 /// # Safety
 ///
 /// `key` must be a valid NUL-terminated C string.
-/// Note: `std::env::remove_var` is unsafe in multi-threaded contexts per Rust docs.
 #[no_mangle]
 pub unsafe extern "C" fn hew_env_remove(key: *const c_char) {
     if key.is_null() {
@@ -79,8 +91,9 @@ pub unsafe extern "C" fn hew_env_remove(key: *const c_char) {
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
         return;
     };
-    // SAFETY: This is called from single-threaded Hew runtime initialization or
-    // from compiled Hew programs where env access is serialized by the runtime.
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+    let _guard = ENV_LOCK.write().unwrap();
+    // SAFETY: remove_var is safe when protected by exclusive write access.
     unsafe { std::env::remove_var(key_str) };
 }
 
@@ -98,6 +111,8 @@ pub unsafe extern "C" fn hew_env_has(key: *const c_char) -> i32 {
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
         return 0;
     };
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+    let _guard = ENV_LOCK.read().unwrap();
     i32::from(std::env::var(key_str).is_ok())
 }
 
@@ -269,6 +284,8 @@ pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
 /// No preconditions. The returned pointer must be freed with `libc::free`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+    let _guard = ENV_LOCK.read().unwrap();
     match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         Ok(home) => string_to_malloc(&home),
         Err(_) => std::ptr::null_mut(),
@@ -303,6 +320,8 @@ pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
     #[cfg(windows)]
     {
         // Use COMPUTERNAME environment variable (always set on Windows).
+        // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+        let _guard = ENV_LOCK.read().unwrap();
         match std::env::var("COMPUTERNAME") {
             Ok(name) => string_to_malloc(&name),
             Err(_) => std::ptr::null_mut(),
@@ -429,5 +448,86 @@ mod tests {
         assert!(!text.is_empty());
         // Should not end with a separator.
         assert!(!text.ends_with('/') && !text.ends_with('\\'));
+    }
+
+    #[test]
+    fn test_env_concurrent_access_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const NUM_WRITER_THREADS: usize = 4;
+        const NUM_READER_THREADS: usize = 4;
+        const ITERATIONS_PER_THREAD: usize = 100;
+
+        // Unique test key to avoid conflicts with other tests.
+        let test_key_base = format!("HEW_STRESS_TEST_{}", std::process::id());
+        let key_cstring = Arc::new(CString::new(test_key_base).unwrap());
+
+        // Barrier to synchronize all threads starting at the same time.
+        let barrier = Arc::new(Barrier::new(NUM_WRITER_THREADS + NUM_READER_THREADS));
+
+        let mut handles = Vec::new();
+
+        // Spawn writer threads.
+        for i in 0..NUM_WRITER_THREADS {
+            let key = Arc::clone(&key_cstring);
+            let barrier = Arc::clone(&barrier);
+            let handle = thread::spawn(move || {
+                barrier.wait();
+                for j in 0..ITERATIONS_PER_THREAD {
+                    let value = format!("writer{i}_{j}");
+                    let value_cstring = CString::new(value).unwrap();
+                    // SAFETY: Both pointers are valid NUL-terminated C strings.
+                    unsafe {
+                        hew_env_set(key.as_ptr(), value_cstring.as_ptr());
+                    }
+                    // Occasionally remove the variable to test write/write contention.
+                    if j % 10 == 0 {
+                        // SAFETY: key is a valid NUL-terminated C string.
+                        unsafe {
+                            hew_env_remove(key.as_ptr());
+                        }
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Spawn reader threads.
+        for _i in 0..NUM_READER_THREADS {
+            let key = Arc::clone(&key_cstring);
+            let barrier = Arc::clone(&barrier);
+            let handle = thread::spawn(move || {
+                barrier.wait();
+                for _j in 0..ITERATIONS_PER_THREAD {
+                    // SAFETY: key is a valid NUL-terminated C string.
+                    let has_var = unsafe { hew_env_has(key.as_ptr()) };
+                    if has_var == 1 {
+                        // SAFETY: key is a valid NUL-terminated C string.
+                        let ptr = unsafe { hew_env_get(key.as_ptr()) };
+                        if !ptr.is_null() {
+                            // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
+                            unsafe {
+                                libc::free(ptr.cast());
+                            }
+                        }
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete.
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        // Clean up: remove the test variable if it exists.
+        // SAFETY: key is a valid NUL-terminated C string.
+        unsafe {
+            hew_env_remove(key_cstring.as_ptr());
+        }
+
+        // If we reach here without panicking, the stress test passed.
     }
 }

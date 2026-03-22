@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::internal::types::{HewTaskError, HewTaskState};
@@ -46,8 +46,12 @@ pub unsafe extern "C" fn hew_task_scope_set_current(scope: *mut HewTaskScope) ->
 /// Opaque, Box-allocated. Linked into its parent scope's task list via
 /// the `next` pointer. Thread-safe completion notification via `done_signal`.
 pub struct HewTask {
-    /// Current lifecycle state.
-    pub state: HewTaskState,
+    /// Current lifecycle state (atomic for cross-thread visibility).
+    ///
+    /// Worker threads store `Done` with `Release` ordering after writing the
+    /// result; readers use `Acquire` to observe both the state transition and
+    /// any preceding result writes.
+    pub state: AtomicI32,
     /// Error code (`None` = success).
     pub error: HewTaskError,
     /// Task result value (set on completion, malloc'd copy).
@@ -104,7 +108,7 @@ impl TaskDoneSignal {
 impl std::fmt::Debug for HewTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewTask")
-            .field("state", &self.state)
+            .field("state", &self.load_state())
             .field("error", &self.error)
             .field("result_size", &self.result_size)
             .finish()
@@ -114,6 +118,25 @@ impl std::fmt::Debug for HewTask {
 // SAFETY: Tasks are only accessed from the single actor thread that owns
 // the enclosing task scope. No cross-thread sharing occurs.
 unsafe impl Send for HewTask {}
+
+impl HewTask {
+    /// Atomically load the current state with `Acquire` ordering.
+    ///
+    /// Pairs with the `Release` store in [`hew_task_complete_threaded`] to
+    /// ensure result data written by the worker thread is visible.
+    fn load_state(&self) -> HewTaskState {
+        let raw = self.state.load(Ordering::Acquire);
+        HewTaskState::from_i32(raw).expect("HewTask.state contained an invalid discriminant")
+    }
+
+    /// Atomically store a new state.
+    ///
+    /// Use `Release` ordering when the store must publish preceding writes
+    /// (e.g. result data) to other threads.
+    fn store_state(&self, new_state: HewTaskState, ordering: Ordering) {
+        self.state.store(new_state as i32, ordering);
+    }
+}
 
 // ── Task lifecycle ─────────────────────────────────────────────────────
 
@@ -125,7 +148,7 @@ unsafe impl Send for HewTask {}
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
     let task = Box::new(HewTask {
-        state: HewTaskState::Ready,
+        state: AtomicI32::new(HewTaskState::Ready as i32),
         error: HewTaskError::None,
         result: ptr::null_mut(),
         result_size: 0,
@@ -195,7 +218,7 @@ pub unsafe extern "C" fn hew_task_get_result(task: *mut HewTask) -> *mut c_void 
     cabi_guard!(task.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &*task };
-    if t.state != HewTaskState::Done {
+    if t.load_state() != HewTaskState::Done {
         return ptr::null_mut();
     }
     t.result
@@ -284,7 +307,7 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
     // SAFETY: Caller guarantees `task` is valid. We write before spawning the thread.
     let t = unsafe { &mut *task };
     t.done_signal = Some(Arc::clone(&signal));
-    t.state = HewTaskState::Running;
+    t.store_state(HewTaskState::Running, Ordering::Relaxed);
 
     // We must pass raw pointers across the thread boundary.
     let task_raw = task as usize;
@@ -325,8 +348,9 @@ pub unsafe extern "C" fn hew_task_await_blocking(task: *mut HewTask) -> *mut c_v
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &*task };
 
-    // If already done, return immediately.
-    if t.state == HewTaskState::Done {
+    // If already done, return immediately (Acquire pairs with the worker's
+    // Release store, ensuring the result data is visible).
+    if t.load_state() == HewTaskState::Done {
         return t.result;
     }
 
@@ -354,7 +378,9 @@ pub unsafe extern "C" fn hew_task_complete_threaded(task: *mut HewTask) {
     cabi_guard!(task.is_null());
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &mut *task };
-    t.state = HewTaskState::Done;
+    // Release store: ensures all preceding writes (result data, result_size)
+    // are visible to any thread that subsequently Acquire-loads `Done`.
+    t.store_state(HewTaskState::Done, Ordering::Release);
 }
 
 /// Wait for all tasks in a scope to complete (join all threads).
@@ -386,7 +412,7 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         }
 
         // Update scope count.
-        if t.state == HewTaskState::Done && s.completed_count < s.task_count {
+        if t.load_state() == HewTaskState::Done && s.completed_count < s.task_count {
             s.completed_count += 1;
         }
 
@@ -465,7 +491,7 @@ pub unsafe extern "C" fn hew_task_scope_spawn(scope: *mut HewTaskScope, task: *m
     // SAFETY: caller guarantees task is valid.
     let t = unsafe { &mut *task };
     t.scope = scope;
-    t.state = HewTaskState::Ready;
+    t.store_state(HewTaskState::Ready, Ordering::Relaxed);
     // Prepend to task list.
     t.next = s.tasks;
     s.tasks = task;
@@ -487,7 +513,7 @@ pub unsafe extern "C" fn hew_task_scope_poll(scope: *mut HewTaskScope) -> *mut H
     let mut cur = s.tasks;
     while !cur.is_null() {
         // SAFETY: All task pointers in the list are valid.
-        if unsafe { (*cur).state } == HewTaskState::Ready {
+        if unsafe { (*cur).load_state() } == HewTaskState::Ready {
             return cur;
         }
         // SAFETY: cur is valid.
@@ -530,8 +556,9 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
     while !cur.is_null() {
         // SAFETY: All task pointers in the list are valid.
         let t = unsafe { &mut *cur };
-        if t.state == HewTaskState::Ready || t.state == HewTaskState::Suspended {
-            t.state = HewTaskState::Done;
+        let cur_state = t.load_state();
+        if cur_state == HewTaskState::Ready || cur_state == HewTaskState::Suspended {
+            t.store_state(HewTaskState::Done, Ordering::Release);
             t.error = HewTaskError::Cancelled;
             s.completed_count += 1;
         }
@@ -556,11 +583,11 @@ pub unsafe extern "C" fn hew_task_scope_complete_task(
     // SAFETY: caller guarantees task is valid.
     let t = unsafe { &mut *task };
 
-    if t.state == HewTaskState::Done {
+    if t.load_state() == HewTaskState::Done {
         return; // Already terminal.
     }
 
-    t.state = HewTaskState::Done;
+    t.store_state(HewTaskState::Done, Ordering::Release);
     s.completed_count += 1;
 }
 
@@ -615,7 +642,7 @@ pub unsafe extern "C" fn hew_task_scope_wait_first(scope: *mut HewTaskScope) -> 
     let mut cur = s.tasks;
     while !cur.is_null() {
         // SAFETY: All task pointers in the list are valid.
-        if unsafe { (*cur).state } == HewTaskState::Done {
+        if unsafe { (*cur).load_state() } == HewTaskState::Done {
             return cur;
         }
         // SAFETY: cur is valid.
@@ -639,7 +666,7 @@ pub unsafe extern "C" fn hew_task_scope_has_active_tasks(scope: *mut HewTaskScop
     let mut cur = s.tasks;
     while !cur.is_null() {
         // SAFETY: All task pointers in the list are valid.
-        let state = unsafe { (*cur).state };
+        let state = unsafe { (*cur).load_state() };
         if state == HewTaskState::Ready
             || state == HewTaskState::Running
             || state == HewTaskState::Suspended
@@ -689,12 +716,12 @@ mod tests {
         unsafe {
             let t = hew_task_new();
             assert!(!t.is_null());
-            assert_eq!((*t).state, HewTaskState::Ready);
+            assert_eq!((*t).load_state(), HewTaskState::Ready);
             assert_eq!((*t).error, HewTaskError::None);
 
             let val: i32 = 42;
             hew_task_set_result(t, (&raw const val).cast_mut().cast(), size_of::<i32>());
-            (*t).state = HewTaskState::Done;
+            (*t).store_state(HewTaskState::Done, Ordering::Release);
             let result = hew_task_get_result(t);
             assert!(!result.is_null());
             assert_eq!(*(result.cast::<i32>()), 42);
@@ -734,7 +761,7 @@ mod tests {
             hew_task_scope_spawn(scope, t);
 
             hew_task_scope_cancel(scope);
-            assert_eq!((*t).state, HewTaskState::Done);
+            assert_eq!((*t).load_state(), HewTaskState::Done);
             assert_eq!((*t).error, HewTaskError::Cancelled);
             assert_eq!(hew_task_is_cancelled(t), 1);
             assert_eq!(hew_task_scope_is_done(scope), 1);
@@ -805,7 +832,7 @@ mod tests {
             let result = hew_task_await_blocking(task);
             assert!(!result.is_null());
             assert_eq!(*(result.cast::<i32>()), 42);
-            assert_eq!((*task).state, HewTaskState::Done);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
 
             hew_task_scope_join_all(scope);
             hew_task_scope_destroy(scope);
@@ -860,6 +887,206 @@ mod tests {
             hew_task_scope_cancel(scope);
             assert_eq!(hew_task_scope_is_cancelled(scope), 1);
             hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn task_state_transitions_through_lifecycle() {
+        // Verify the expected Ready → Running → Done progression and that
+        // each transition is observable via the atomic load.
+        // SAFETY: test owns the task pointer exclusively; it is valid.
+        unsafe {
+            let t = hew_task_new();
+            assert_eq!((*t).load_state(), HewTaskState::Ready);
+
+            (*t).store_state(HewTaskState::Running, Ordering::Release);
+            assert_eq!((*t).load_state(), HewTaskState::Running);
+
+            (*t).store_state(HewTaskState::Suspended, Ordering::Release);
+            assert_eq!((*t).load_state(), HewTaskState::Suspended);
+
+            (*t).store_state(HewTaskState::Done, Ordering::Release);
+            assert_eq!((*t).load_state(), HewTaskState::Done);
+
+            hew_task_free(t);
+        }
+    }
+
+    #[test]
+    fn complete_threaded_publishes_result_to_awaiter() {
+        // The worker thread sets a result and calls hew_task_complete_threaded
+        // (Release store). The main thread's hew_task_await_blocking must see
+        // both the Done state and the result data (Acquire load).
+        unsafe extern "C" fn produce_result(task: *mut HewTask) {
+            let val: i32 = 99;
+            // SAFETY: task is valid, val is on our stack but set_result deep-copies.
+            unsafe {
+                hew_task_set_result(task, (&raw const val).cast_mut().cast(), size_of::<i32>());
+                hew_task_complete_threaded(task);
+            }
+        }
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, produce_result);
+
+            let result = hew_task_await_blocking(task);
+            assert!(!result.is_null());
+            assert_eq!(*(result.cast::<i32>()), 99);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    /// Stress test: spawn many tasks concurrently and verify every one
+    /// reaches `Done` with the correct result visible to the joining thread.
+    #[test]
+    fn concurrent_tasks_all_reach_done() {
+        use std::sync::atomic::AtomicUsize;
+
+        const TASK_COUNT: usize = 200;
+
+        /// Global counter: each worker claims a unique index via `fetch_add`.
+        static NEXT_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn identity_task(task: *mut HewTask) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "TASK_COUNT is well under i32::MAX"
+            )]
+            let idx = NEXT_INDEX.fetch_add(1, Ordering::Relaxed) as i32;
+            let boxed = Box::new(idx);
+            let ptr = Box::into_raw(boxed);
+            // SAFETY: task is valid; ptr points to a valid i32 allocation.
+            unsafe {
+                hew_task_set_result(task, ptr.cast(), size_of::<i32>());
+                // Free the temporary box — set_result deep-copies.
+                drop(Box::from_raw(ptr));
+                hew_task_complete_threaded(task);
+            }
+        }
+
+        NEXT_INDEX.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let mut tasks: Vec<*mut HewTask> = Vec::with_capacity(TASK_COUNT);
+
+            for _ in 0..TASK_COUNT {
+                let t = hew_task_new();
+                hew_task_scope_spawn(scope, t);
+                hew_task_spawn_thread(t, identity_task);
+                tasks.push(t);
+            }
+
+            // Await every task and collect results.
+            let mut results = Vec::with_capacity(TASK_COUNT);
+            for (i, &t) in tasks.iter().enumerate() {
+                let result = hew_task_await_blocking(t);
+                assert!(!result.is_null(), "task {i} returned null result");
+                results.push(*(result.cast::<i32>()));
+            }
+
+            // Every index 0..TASK_COUNT should appear exactly once.
+            results.sort_unstable();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "TASK_COUNT is well under i32::MAX"
+            )]
+            let expected: Vec<i32> = (0..TASK_COUNT as i32).collect();
+            assert_eq!(results, expected, "not all task indices were produced");
+
+            // All tasks should be Done.
+            hew_task_scope_join_all(scope);
+            for (i, &t) in tasks.iter().enumerate() {
+                assert_eq!(
+                    (*t).load_state(),
+                    HewTaskState::Done,
+                    "task {i} not in Done state after join"
+                );
+            }
+            assert_eq!(hew_task_scope_is_done(scope), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn from_i32_round_trips_all_variants() {
+        for (expected, val) in [
+            (HewTaskState::Ready, 0),
+            (HewTaskState::Running, 1),
+            (HewTaskState::Suspended, 2),
+            (HewTaskState::Done, 3),
+        ] {
+            assert_eq!(HewTaskState::from_i32(val), Some(expected));
+        }
+        assert_eq!(HewTaskState::from_i32(-1), None);
+        assert_eq!(HewTaskState::from_i32(4), None);
+    }
+
+    /// Exercises the lock-free reader path that was racy before the
+    /// `AtomicI32` fix: one thread completes a task while the main thread
+    /// spin-polls `hew_task_get_result` (which reads `state` directly,
+    /// bypassing the `TaskDoneSignal` condvar).
+    #[test]
+    fn spin_poll_observes_done_without_condvar() {
+        use std::sync::Barrier;
+
+        unsafe extern "C" fn delayed_complete(task: *mut HewTask) {
+            let val: i32 = 777;
+            // SAFETY: task is valid; val is stack-local but set_result deep-copies.
+            unsafe {
+                hew_task_set_result(task, (&raw const val).cast_mut().cast(), size_of::<i32>());
+                hew_task_complete_threaded(task);
+            }
+        }
+
+        // Run multiple iterations to increase the chance of hitting the
+        // interleaving that exposed the original data race.
+        for _ in 0..50 {
+            // SAFETY: test owns all scope/task pointers exclusively; all valid.
+            unsafe {
+                let scope = hew_task_scope_new();
+                let task = hew_task_new();
+                hew_task_scope_spawn(scope, task);
+
+                // Use a barrier so the worker and the poller start at roughly
+                // the same time, maximising the race window.
+                let barrier = Arc::new(Barrier::new(2));
+                let b2 = Arc::clone(&barrier);
+
+                let task_addr = task as usize;
+                let worker = std::thread::spawn(move || {
+                    b2.wait();
+                    let t = task_addr as *mut HewTask;
+                    // SAFETY: t is valid for the lifetime of the scope.
+                    delayed_complete(t);
+                });
+
+                barrier.wait();
+
+                // Spin-poll hew_task_get_result — this reads state WITHOUT
+                // going through the condvar, exercising the Acquire load path.
+                loop {
+                    let r = hew_task_get_result(task);
+                    if !r.is_null() {
+                        assert_eq!(*(r.cast::<i32>()), 777);
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+
+                worker.join().expect("worker panicked");
+                hew_task_scope_destroy(scope);
+            }
         }
     }
 }

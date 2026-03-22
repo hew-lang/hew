@@ -56,6 +56,22 @@ pub enum HewTaskState {
     Done = 3,
 }
 
+impl HewTaskState {
+    /// Convert from the raw `i32` representation.
+    ///
+    /// Returns `None` for values outside the valid range.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Ready),
+            1 => Some(Self::Running),
+            2 => Some(Self::Suspended),
+            3 => Some(Self::Done),
+            _ => None,
+        }
+    }
+}
+
 /// Task error codes.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

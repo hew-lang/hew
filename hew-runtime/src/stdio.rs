@@ -1,8 +1,12 @@
 //! Hew runtime: `stdio` module.
 //!
 //! Standard I/O operations (stdout, stderr, stdin) with C ABI.
+//!
+//! All functions that return `*mut c_char` allocate via `libc::malloc`. The
+//! caller owns the returned pointer and must free it with `libc::free`.
 
-use std::ffi::{c_char, CStr, CString};
+use crate::cabi::str_to_malloc;
+use std::ffi::{c_char, CStr};
 use std::io::{self, Read, Write};
 
 /// Write a string to stdout without a trailing newline.
@@ -49,7 +53,11 @@ pub unsafe extern "C" fn hew_io_write_err(s: *const c_char) {
 ///
 /// # Safety
 ///
-/// The caller is responsible for calling `free()` on the returned pointer.
+/// No preconditions.
+///
+/// # Ownership
+///
+/// The caller owns the returned pointer and must free it with `libc::free`.
 #[no_mangle]
 pub extern "C" fn hew_io_read_line() -> *mut c_char {
     let mut buf = String::new();
@@ -63,29 +71,36 @@ pub extern "C" fn hew_io_read_line() -> *mut c_char {
                     buf.pop();
                 }
             }
-            match CString::new(buf) {
-                Ok(cs) => cs.into_raw(),
-                Err(_) => std::ptr::null_mut(),
+            if buf.contains('\0') {
+                return std::ptr::null_mut();
             }
+            str_to_malloc(&buf)
         }
     }
 }
 
-/// Read all available data from stdin and return as a heap-allocated C string.
+/// Read all available data from stdin and return as a `malloc`-allocated,
+/// NUL-terminated C string.
 ///
-/// Returns a null pointer on error.
+/// Returns a null pointer on error or if the input contains interior NUL bytes.
 ///
 /// # Safety
 ///
-/// The caller is responsible for calling `free()` on the returned pointer.
+/// No preconditions.
+///
+/// # Ownership
+///
+/// The caller owns the returned pointer and must free it with `libc::free`.
 #[no_mangle]
 pub extern "C" fn hew_io_read_all() -> *mut c_char {
     let mut buf = String::new();
     match io::stdin().read_to_string(&mut buf) {
-        Ok(_) => match CString::new(buf) {
-            Ok(cs) => cs.into_raw(),
-            Err(_) => std::ptr::null_mut(),
-        },
+        Ok(_) => {
+            if buf.contains('\0') {
+                return std::ptr::null_mut();
+            }
+            str_to_malloc(&buf)
+        }
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -97,6 +112,7 @@ pub extern "C" fn hew_io_read_all() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     #[test]
     fn write_null_is_noop() {

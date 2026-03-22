@@ -1,17 +1,25 @@
 //! Hew runtime: `file_io` module.
 //!
 //! Synchronous file I/O operations with C ABI.
+//!
+//! All functions that return `*mut c_char` allocate via `libc::malloc`. The
+//! caller owns the returned pointer and must free it with `libc::free`.
 
+use crate::cabi::str_to_malloc;
 use std::ffi::{c_char, CStr, CString};
 
-/// Read an entire file and return a heap-allocated C string.
+/// Read an entire file and return a `malloc`-allocated, NUL-terminated C string.
 ///
-/// Returns a null pointer on error (invalid path, I/O failure, etc.).
+/// Returns a null pointer on error (invalid path, I/O failure, interior NUL
+/// byte, etc.).
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string. The caller is responsible
-/// for calling `free()` on the returned pointer.
+/// `path` must be a valid, NUL-terminated C string.
+///
+/// # Ownership
+///
+/// The caller owns the returned pointer and must free it with `libc::free`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     if path.is_null() {
@@ -25,11 +33,11 @@ pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     let Ok(contents) = std::fs::read_to_string(rust_path) else {
         return std::ptr::null_mut();
     };
-    let Ok(c_contents) = CString::new(contents) else {
+    // Reject files with interior NUL bytes (can't represent as C string).
+    if contents.contains('\0') {
         return std::ptr::null_mut();
-    };
-    // SAFETY: `libc::strdup` copies a NUL-terminated string to the C heap; caller must free.
-    unsafe { libc::strdup(c_contents.as_ptr()) }
+    }
+    str_to_malloc(&contents)
 }
 
 /// Write a string to a file, overwriting any existing content.
@@ -160,14 +168,18 @@ pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
     }
 }
 
-/// Read one line from stdin and return a heap-allocated C string.
+/// Read one line from stdin and return a `malloc`-allocated, NUL-terminated
+/// C string with the trailing newline stripped.
 ///
 /// Returns a null pointer on EOF or error.
 ///
 /// # Safety
 ///
-/// The caller is responsible for calling `free()` (via `CString::from_raw`)
-/// on the returned pointer.
+/// No preconditions.
+///
+/// # Ownership
+///
+/// The caller owns the returned pointer and must free it with `libc::free`.
 #[no_mangle]
 pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     let mut buf = String::new();
@@ -188,16 +200,11 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
                     buf.pop();
                 }
             }
-            match CString::new(buf) {
-                Ok(cs) => cs.into_raw(),
-                Err(e) => {
-                    crate::set_last_error(format!(
-                        "hew_stdin_read_line: input contains interior NUL at byte {}",
-                        e.nul_position()
-                    ));
-                    std::ptr::null_mut()
-                }
+            if buf.contains('\0') {
+                crate::set_last_error("hew_stdin_read_line: input contains interior NUL byte");
+                return std::ptr::null_mut();
             }
+            str_to_malloc(&buf)
         }
     }
 }

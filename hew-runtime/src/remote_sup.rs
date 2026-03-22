@@ -592,4 +592,399 @@ mod tests {
             hew_remote_sup_free(sup);
         }
     }
+
+    // ── Helper for internal-method tests ────────────────────────────────
+    //
+    // process_membership_event / poll_quarantine only touch monitored,
+    // callback, quarantine_state, strategy, and dead_quarantine_ms — they
+    // never dereference `node`, so a null pointer is safe here.
+
+    unsafe extern "C" fn noop_death_cb(_pid: u64, _node: u16, _reason: c_int) {}
+
+    fn bare_supervisor(
+        remote_node_id: u16,
+        strategy: SupervisorStrategy,
+        dead_quarantine_ms: u64,
+    ) -> HewRemoteSupervisor {
+        HewRemoteSupervisor {
+            node: ptr::null_mut(),
+            remote_node_id,
+            monitored: Mutex::new(Vec::new()),
+            strategy,
+            heartbeat_interval_ms: DEFAULT_HEARTBEAT_INTERVAL_MS,
+            dead_quarantine_ms,
+            callback: Mutex::new(None),
+            quarantine_state: Mutex::new(QuarantineState::default()),
+            running: AtomicBool::new(false),
+            heartbeat_thread: None,
+        }
+    }
+
+    // ── SupervisorStrategy ─────────────────────────────────────────────
+
+    #[test]
+    fn strategy_from_valid_values_returns_variant() {
+        assert_eq!(
+            SupervisorStrategy::from_c_int(0),
+            Some(SupervisorStrategy::OneForOne)
+        );
+        assert_eq!(
+            SupervisorStrategy::from_c_int(1),
+            Some(SupervisorStrategy::OneForAll)
+        );
+    }
+
+    #[test]
+    fn strategy_from_invalid_values_returns_none() {
+        assert_eq!(SupervisorStrategy::from_c_int(-1), None);
+        assert_eq!(SupervisorStrategy::from_c_int(2), None);
+        assert_eq!(SupervisorStrategy::from_c_int(i32::MAX), None);
+    }
+
+    // ── hew_remote_sup_new null/invalid guards ─────────────────────────
+
+    #[test]
+    fn new_null_node_returns_null() {
+        // SAFETY: testing null guard — no real node needed.
+        unsafe {
+            let sup = hew_remote_sup_new(ptr::null_mut(), 1, 0);
+            assert!(sup.is_null());
+        }
+    }
+
+    #[test]
+    fn new_zero_remote_node_id_returns_null() {
+        // SAFETY: null node, but node_id == 0 guard fires first.
+        unsafe {
+            let sup = hew_remote_sup_new(ptr::null_mut(), 0, 0);
+            assert!(sup.is_null());
+        }
+    }
+
+    #[test]
+    fn new_invalid_strategy_returns_null() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3020) };
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), 1, 99);
+            assert!(sup.is_null());
+        }
+    }
+
+    #[test]
+    fn new_one_for_all_strategy_accepted() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3021) };
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), 1, 1);
+            assert!(!sup.is_null());
+            assert_eq!((*sup).strategy, SupervisorStrategy::OneForAll);
+            hew_remote_sup_free(sup);
+        }
+    }
+
+    // ── hew_remote_sup_monitor guards ──────────────────────────────────
+
+    #[test]
+    fn monitor_null_sup_returns_error() {
+        // SAFETY: testing null guard.
+        unsafe {
+            assert_eq!(hew_remote_sup_monitor(ptr::null_mut(), 1), -1);
+        }
+    }
+
+    #[test]
+    fn monitor_zero_pid_returns_error() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3030) };
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), 1, 0);
+            assert_eq!(hew_remote_sup_monitor(sup, 0), -1);
+            hew_remote_sup_free(sup);
+        }
+    }
+
+    #[test]
+    fn monitor_wrong_node_in_pid_returns_error() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3031) };
+        let remote_node: u16 = 10;
+        let wrong_node: u16 = 99;
+        let pid_with_wrong_node = (u64::from(wrong_node) << 48) | 0x01;
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), remote_node, 0);
+            assert_eq!(hew_remote_sup_monitor(sup, pid_with_wrong_node), -1);
+            hew_remote_sup_free(sup);
+        }
+    }
+
+    #[test]
+    fn monitor_pid_with_zero_node_accepted() {
+        // A PID with node bits == 0 is accepted regardless of remote_node_id.
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3032) };
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), 50, 0);
+            // PID 0x0001 has zero in the node bits.
+            assert_eq!(hew_remote_sup_monitor(sup, 0x0001), 0);
+            hew_remote_sup_free(sup);
+        }
+    }
+
+    // ── hew_remote_sup_unmonitor guard ─────────────────────────────────
+
+    #[test]
+    fn unmonitor_null_sup_returns_error() {
+        // SAFETY: testing null guard.
+        unsafe {
+            assert_eq!(hew_remote_sup_unmonitor(ptr::null_mut(), 1), -1);
+        }
+    }
+
+    // ── hew_remote_sup_set_callback ────────────────────────────────────
+
+    #[test]
+    fn set_callback_null_sup_does_not_crash() {
+        // SAFETY: testing null guard.
+        unsafe {
+            hew_remote_sup_set_callback(ptr::null_mut(), None);
+        }
+    }
+
+    // ── hew_remote_sup_free ────────────────────────────────────────────
+
+    #[test]
+    fn free_null_does_not_crash() {
+        // SAFETY: null is explicitly documented as safe.
+        unsafe {
+            hew_remote_sup_free(ptr::null_mut());
+        }
+    }
+
+    // ── hew_remote_sup_stop ────────────────────────────────────────────
+
+    #[test]
+    fn stop_null_returns_error() {
+        // SAFETY: testing null guard.
+        unsafe {
+            assert_eq!(hew_remote_sup_stop(ptr::null_mut()), -1);
+        }
+    }
+
+    #[test]
+    fn stop_when_not_running_returns_zero() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3040) };
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), 1, 0);
+            assert_eq!(hew_remote_sup_stop(sup), 0);
+            hew_remote_sup_free(sup);
+        }
+    }
+
+    // ── hew_remote_sup_start ───────────────────────────────────────────
+
+    #[test]
+    fn start_null_returns_error() {
+        // SAFETY: testing null guard.
+        unsafe {
+            assert_eq!(hew_remote_sup_start(ptr::null_mut()), -1);
+        }
+    }
+
+    // ── process_membership_event (internal state-machine tests) ────────
+
+    #[test]
+    fn joined_event_resets_quarantine_state() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 5_000);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.suspect_since = Some(Instant::now());
+            state.pending_dead = true;
+        }
+
+        let dispatch = sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_JOINED);
+        assert!(dispatch.is_none());
+
+        let state = sup.quarantine_state.lock_or_recover();
+        assert!(state.suspect_since.is_none());
+        assert!(!state.pending_dead);
+        assert!(!state.notified_dead);
+    }
+
+    #[test]
+    fn suspect_event_begins_quarantine_window() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 5_000);
+        let dispatch = sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT);
+        assert!(dispatch.is_none());
+
+        let state = sup.quarantine_state.lock_or_recover();
+        assert!(state.suspect_since.is_some());
+        assert!(state.pending_dead);
+    }
+
+    #[test]
+    fn suspect_event_does_not_overwrite_existing_timestamp() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 5_000);
+        let early = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.suspect_since = Some(early);
+        }
+
+        sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT);
+
+        let state = sup.quarantine_state.lock_or_recover();
+        let ts = state.suspect_since.unwrap();
+        assert!(ts.duration_since(early) < Duration::from_millis(1));
+    }
+
+    #[test]
+    fn dead_event_within_quarantine_defers_dispatch() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 60_000);
+        sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT);
+        let dispatch = sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_DEAD);
+        assert!(dispatch.is_none());
+
+        let state = sup.quarantine_state.lock_or_recover();
+        assert!(state.pending_dead);
+        assert!(!state.notified_dead);
+    }
+
+    #[test]
+    fn dead_event_after_quarantine_dispatches() {
+        use std::sync::atomic::AtomicI32;
+        static DEATH_COUNT: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C" fn count_deaths(_pid: u64, _node: u16, _reason: c_int) {
+            DEATH_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        DEATH_COUNT.store(0, Ordering::Relaxed);
+
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        *sup.callback.lock_or_recover() = Some(count_deaths);
+        sup.monitored.lock_or_recover().push(42);
+
+        let dispatch = sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_DEAD);
+        assert!(dispatch.is_some());
+        dispatch.unwrap().execute();
+        assert_eq!(DEATH_COUNT.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn dead_event_already_notified_does_not_dispatch() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        sup.monitored.lock_or_recover().push(1);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.notified_dead = true;
+        }
+        let dispatch = sup.process_membership_event(HEW_MEMBERSHIP_EVENT_NODE_DEAD);
+        assert!(dispatch.is_none());
+    }
+
+    #[test]
+    fn unknown_event_does_not_dispatch() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        let dispatch = sup.process_membership_event(255);
+        assert!(dispatch.is_none());
+    }
+
+    // ── poll_quarantine ────────────────────────────────────────────────
+
+    #[test]
+    fn poll_quarantine_not_pending_returns_none() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        assert!(sup.poll_quarantine().is_none());
+    }
+
+    #[test]
+    fn poll_quarantine_already_notified_returns_none() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.pending_dead = true;
+            state.notified_dead = true;
+        }
+        assert!(sup.poll_quarantine().is_none());
+    }
+
+    #[test]
+    fn poll_quarantine_within_window_returns_none() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 60_000);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.pending_dead = true;
+            state.suspect_since = Some(Instant::now());
+        }
+        assert!(sup.poll_quarantine().is_none());
+    }
+
+    #[test]
+    fn poll_quarantine_no_suspect_since_sets_timestamp_and_defers() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 0);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.pending_dead = true;
+        }
+        // First poll with no suspect_since sets timestamp, returns None.
+        assert!(sup.poll_quarantine().is_none());
+        let state = sup.quarantine_state.lock_or_recover();
+        assert!(state.suspect_since.is_some());
+    }
+
+    #[test]
+    fn poll_quarantine_expired_dispatches() {
+        let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 10);
+        *sup.callback.lock_or_recover() = Some(noop_death_cb);
+        sup.monitored.lock_or_recover().push(1);
+        {
+            let mut state = sup.quarantine_state.lock_or_recover();
+            state.pending_dead = true;
+            state.suspect_since = Some(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(100))
+                    .unwrap(),
+            );
+        }
+        let dispatch = sup.poll_quarantine();
+        assert!(dispatch.is_some());
+
+        let state = sup.quarantine_state.lock_or_recover();
+        assert!(!state.pending_dead);
+        assert!(state.notified_dead);
+    }
+
+    // ── RemoteDeathDispatch::execute ───────────────────────────────────
+
+    #[test]
+    fn dispatch_execute_calls_callback_for_each_monitored_pid() {
+        use std::sync::atomic::AtomicI32;
+        static COUNT: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C" fn counting_cb(_pid: u64, _node: u16, _reason: c_int) {
+            COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        COUNT.store(0, Ordering::Relaxed);
+
+        let dispatch = RemoteDeathDispatch {
+            callback: counting_cb,
+            remote_node_id: 42,
+            monitored: vec![1, 2, 3],
+            strategy: SupervisorStrategy::OneForAll,
+        };
+        dispatch.execute();
+        assert_eq!(COUNT.load(Ordering::Relaxed), 3);
+    }
+
+    // ── remote_sup_membership_callback ─────────────────────────────────
+
+    #[test]
+    fn membership_callback_null_userdata_does_not_crash() {
+        remote_sup_membership_callback(1, HEW_MEMBERSHIP_EVENT_NODE_DEAD, ptr::null_mut());
+    }
 }

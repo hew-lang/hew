@@ -480,4 +480,190 @@ mod tests {
             hew_gen_free(ctx);
         }
     }
+
+    // ── Null guard tests ───────────────────────────────────────────────
+
+    #[test]
+    fn gen_yield_null_ctx_returns_false() {
+        // SAFETY: testing cabi_guard path — null ctx is expected.
+        unsafe {
+            assert!(!hew_gen_yield(ptr::null_mut(), ptr::null_mut(), 0));
+        }
+    }
+
+    #[test]
+    fn gen_next_null_ctx_returns_null() {
+        // SAFETY: testing cabi_guard path — null ctx is expected.
+        unsafe {
+            let mut sz: usize = 42;
+            let val = hew_gen_next(ptr::null_mut(), &raw mut sz);
+            assert!(val.is_null());
+        }
+    }
+
+    #[test]
+    fn gen_free_null_is_noop() {
+        // SAFETY: null is a documented no-op.
+        unsafe {
+            hew_gen_free(ptr::null_mut());
+        }
+    }
+
+    // ── Iteration behaviour ────────────────────────────────────────────
+
+    #[test]
+    fn full_iteration_yields_all_values_in_order() {
+        // SAFETY: all pointers are from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let mut count: u32 = 4;
+            let ctx = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            for i in 0..4i32 {
+                let mut sz: usize = 0;
+                let val = hew_gen_next(ctx, &raw mut sz);
+                assert!(!val.is_null(), "value {i} should not be null");
+                assert_eq!(sz, std::mem::size_of::<i32>());
+                assert_eq!(*val.cast::<i32>(), i);
+                libc::free(val);
+            }
+
+            // One more next should return done sentinel.
+            let mut sz: usize = 99;
+            let val = hew_gen_next(ctx, &raw mut sz);
+            assert!(val.is_null());
+            assert_eq!(sz, 0);
+
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn next_after_done_returns_null_immediately() {
+        // SAFETY: all pointers are from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+
+            // First call exhausts the generator.
+            let mut sz: usize = 0;
+            let val = hew_gen_next(ctx, &raw mut sz);
+            assert!(val.is_null());
+
+            // Second call hits the done flag — no channel interaction.
+            let mut sz2: usize = 99;
+            let val2 = hew_gen_next(ctx, &raw mut sz2);
+            assert!(val2.is_null());
+            assert_eq!(sz2, 0);
+
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn next_with_null_out_size_does_not_crash() {
+        // SAFETY: all pointers are from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+            let val = hew_gen_next(ctx, ptr::null_mut());
+            assert!(val.is_null());
+            hew_gen_free(ctx);
+        }
+    }
+
+    // ── Edge cases ─────────────────────────────────────────────────────
+
+    #[test]
+    fn create_with_null_arg_and_zero_size_succeeds() {
+        // SAFETY: null body_arg with size 0 is documented as valid.
+        unsafe {
+            let ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+            assert!(!ctx.is_null());
+            hew_gen_free(ctx);
+        }
+    }
+
+    /// Generator body that yields a zero-size value (null data, size 0).
+    extern "C" fn zero_size_yield_body(_arg: *mut c_void, ctx: *mut HewGenCtx) {
+        // SAFETY: ctx is valid; yield with null/0 tests the sentinel path.
+        unsafe {
+            hew_gen_yield(ctx, ptr::null_mut(), 0);
+        }
+    }
+
+    #[test]
+    fn zero_size_yield_returns_non_null_sentinel() {
+        // SAFETY: all pointers are from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let ctx = hew_gen_ctx_create(zero_size_yield_body, ptr::null_mut(), 0);
+
+            let mut sz: usize = 99;
+            let val = hew_gen_next(ctx, &raw mut sz);
+            // The consumer allocates a 1-byte sentinel for null yields.
+            assert!(!val.is_null());
+            assert_eq!(sz, 0);
+            libc::free(val);
+
+            // Done sentinel after the single yield.
+            let val2 = hew_gen_next(ctx, ptr::null_mut());
+            assert!(val2.is_null());
+
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn multiple_generators_concurrent() {
+        // SAFETY: all pointers are from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let mut count1: u32 = 3;
+            let mut count2: u32 = 2;
+
+            let ctx1 = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count1).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+            let ctx2 = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count2).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            // Interleave consumption — both generators run independently.
+            let mut sz: usize = 0;
+            let v = hew_gen_next(ctx1, &raw mut sz);
+            assert_eq!(*v.cast::<i32>(), 0);
+            libc::free(v);
+
+            let v = hew_gen_next(ctx2, &raw mut sz);
+            assert_eq!(*v.cast::<i32>(), 0);
+            libc::free(v);
+
+            let v = hew_gen_next(ctx1, &raw mut sz);
+            assert_eq!(*v.cast::<i32>(), 1);
+            libc::free(v);
+
+            let v = hew_gen_next(ctx2, &raw mut sz);
+            assert_eq!(*v.cast::<i32>(), 1);
+            libc::free(v);
+
+            // ctx2 is done (yielded 2 values).
+            let v = hew_gen_next(ctx2, &raw mut sz);
+            assert!(v.is_null());
+
+            // ctx1 has one more.
+            let v = hew_gen_next(ctx1, &raw mut sz);
+            assert_eq!(*v.cast::<i32>(), 2);
+            libc::free(v);
+
+            let v = hew_gen_next(ctx1, &raw mut sz);
+            assert!(v.is_null());
+
+            hew_gen_free(ctx1);
+            hew_gen_free(ctx2);
+        }
+    }
 }

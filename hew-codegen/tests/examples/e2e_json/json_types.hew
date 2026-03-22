@@ -1,0 +1,77 @@
+// Test: all JSON types — string, number (int/float), boolean, null, array, object.
+// type_of returns: 0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object
+import std::encoding::json;
+
+fn main() {
+    // ── Factory functions ──────────────────────────────────────
+    let n = json.null();
+    println(n.type_of());
+    n.free();
+
+    let b = json.from_bool(true);
+    println(b.type_of());
+    println(b.get_bool());
+    b.free();
+
+    let i = json.from_int(42);
+    println(i.type_of());
+    println(i.get_int());
+    i.free();
+
+    let f = json.from_float(2.718);
+    println(f.type_of());
+    println(f.get_float());
+    f.free();
+
+    let s = json.from_string("hello");
+    println(s.type_of());
+    println(s.get_string());
+    s.free();
+
+    let a = json.array();
+    println(a.type_of());
+    a.free();
+
+    let o = json.object();
+    println(o.type_of());
+    o.free();
+
+    // ── Parse a value containing all types ─────────────────────
+    let val = json.parse("{\"n\":null,\"b\":false,\"i\":99,\"f\":1.5,\"s\":\"world\",\"a\":[1],\"o\":{}}");
+
+    let fn_ = val.get_field("n");
+    println(fn_.type_of());
+    fn_.free();
+
+    let fb = val.get_field("b");
+    println(fb.type_of());
+    println(fb.get_bool());
+    fb.free();
+
+    let fi = val.get_field("i");
+    println(fi.type_of());
+    println(fi.get_int());
+    fi.free();
+
+    let ff = val.get_field("f");
+    println(ff.type_of());
+    println(ff.get_float());
+    ff.free();
+
+    let fs = val.get_field("s");
+    println(fs.type_of());
+    println(fs.get_string());
+    fs.free();
+
+    let fa = val.get_field("a");
+    println(fa.type_of());
+    println(fa.array_len());
+    fa.free();
+
+    let fo = val.get_field("o");
+    println(fo.type_of());
+    fo.free();
+
+    val.free();
+    println("=== Done ===");
+}

@@ -415,7 +415,7 @@ macro_rules! define_map_stream {
         impl Drop for $name {
             fn drop(&mut self) {
                 // SAFETY: env_ptr is an RC'd block; decrement its reference count.
-                unsafe { hew_rc_drop_env(self.env_ptr) };
+                unsafe { rc_drop_env(self.env_ptr) };
             }
         }
     };
@@ -440,7 +440,7 @@ macro_rules! define_filter_stream {
         impl Drop for $name {
             fn drop(&mut self) {
                 // SAFETY: env_ptr is an RC'd block; decrement its reference count.
-                unsafe { hew_rc_drop_env(self.env_ptr) };
+                unsafe { rc_drop_env(self.env_ptr) };
             }
         }
     };
@@ -634,7 +634,7 @@ impl StreamBacking for TakeStream {
 /// # Safety
 ///
 /// `env_ptr` must be null or a valid Hew RC block pointer.
-unsafe fn hew_rc_drop_env(env_ptr: *const c_void) {
+unsafe fn rc_drop_env(env_ptr: *const c_void) {
     extern "C" {
         fn hew_rc_drop(ptr: *mut u8);
     }

@@ -591,35 +591,57 @@ pub unsafe extern "C" fn hew_mailbox_set_coalesce_config(
 
 // ── Send (producer side) ────────────────────────────────────────────────
 
-/// Send a message to the mailbox (user queue), deep-copying `data`.
+/// Outcome of an overflow-policy-aware send into the user queue.
 ///
-/// Returns `0` ([`HewError::Ok`]) on success, `-1`
-/// ([`HewError::ErrMailboxFull`]) if bounded and at capacity,
-/// `-2` ([`HewError::ErrActorStopped`]) if the mailbox is closed,
-/// or `-5` ([`HewError::ErrOom`]) if allocation fails.
+/// FFI entry points map these variants to their own return conventions.
+enum SendOutcome {
+    /// Message was successfully enqueued.
+    Enqueued,
+    /// Mailbox is closed — message was not sent.
+    Closed,
+    /// Message intentionally dropped (`DropNew` policy).
+    Dropped,
+    /// Overflow policy is `Fail` — operation rejected.
+    Failed,
+    /// Oldest message was evicted to make room (`DropOld` policy).
+    DroppedOld,
+    /// Message payload was merged with an existing queued message
+    /// (`Coalesce` policy).
+    Coalesced,
+    /// Memory allocation failed.
+    Oom,
+}
+
+/// Core overflow-policy-aware enqueue into the user message queue.
+///
+/// Handles bounded-capacity checks, all five overflow policies (`Block`,
+/// `DropNew`, `Fail`, `DropOld`, `Coalesce` with fallback), and the
+/// unbounded fast path. Returns a [`SendOutcome`] that the caller maps
+/// to its FFI return convention.
+///
+/// `drop_old_alloc_under_lock` controls whether the top-level `DropOld`
+/// path allocates the new node *after* acquiring the queue lock (`true`,
+/// matching [`hew_mailbox_send`]) or *before* (`false`, matching
+/// [`hew_mailbox_try_push`]).
 ///
 /// # Safety
 ///
-/// - `mb` must be a valid pointer returned by [`hew_mailbox_new`] or
-///   [`hew_mailbox_new_bounded`].
-/// - `data` must point to at least `size` readable bytes, or be null
-///   when `size` is 0.
-#[no_mangle]
+/// - `mb` must reference a valid, live [`HewMailbox`].
+/// - `data` must point to at least `data_size` readable bytes, or be null
+///   when `data_size` is 0.
 #[expect(
     clippy::too_many_lines,
-    reason = "mailbox send with overflow policies is inherently complex"
+    reason = "overflow-policy dispatch is inherently complex — splitting further would scatter the state machine"
 )]
-pub unsafe extern "C" fn hew_mailbox_send(
-    mb: *mut HewMailbox,
+unsafe fn send_with_overflow(
+    mb: &HewMailbox,
     msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> i32 {
-    // SAFETY: Caller guarantees `mb` is valid.
-    let mb = unsafe { &*mb };
-
+    data: *const c_void,
+    data_size: usize,
+    drop_old_alloc_under_lock: bool,
+) -> SendOutcome {
     if mb.closed.load(Ordering::Acquire) {
-        return HewError::ErrActorStopped as i32;
+        return SendOutcome::Closed;
     }
 
     // Bounded capacity check.
@@ -627,15 +649,14 @@ pub unsafe extern "C" fn hew_mailbox_send(
         let cur = mb.count.load(Ordering::Acquire);
         if cur >= mb.capacity {
             match mb.overflow {
-                HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => {
-                    return HewError::ErrMailboxFull as i32;
-                }
+                HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
+                HewOverflowPolicy::Fail => return SendOutcome::Failed,
                 HewOverflowPolicy::Block => {
                     // Wait on condvar until space is available.
                     let mut q = mb.slow_path.lock_or_recover();
                     loop {
                         if mb.closed.load(Ordering::Acquire) {
-                            return HewError::ErrActorStopped as i32;
+                            return SendOutcome::Closed;
                         }
                         let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
                         if len < mb.capacity {
@@ -644,23 +665,29 @@ pub unsafe extern "C" fn hew_mailbox_send(
                         q = mb.not_full.wait_or_recover(q);
                     }
                     // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
                     if node.is_null() {
-                        return HewError::ErrOom as i32;
+                        return SendOutcome::Oom;
                     }
                     q.user_queue.push_back(node);
                     drop(q);
                     mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return HewError::Ok as i32;
+                    return SendOutcome::Enqueued;
                 }
                 HewOverflowPolicy::Coalesce => {
                     let mut q = mb.slow_path.lock_or_recover();
                     // Scan for an existing message with the same coalesce key.
                     // SAFETY: `data` validity guaranteed by caller.
-                    let incoming_key =
-                        unsafe { coalesce_message_key(mb.coalesce_key_fn, msg_type, data, size) };
+                    let incoming_key = unsafe {
+                        coalesce_message_key(
+                            mb.coalesce_key_fn,
+                            msg_type,
+                            data.cast_mut(),
+                            data_size,
+                        )
+                    };
                     let found = q
                         .user_queue
                         .iter()
@@ -678,23 +705,21 @@ pub unsafe extern "C" fn hew_mailbox_send(
                         .copied();
                     if let Some(existing) = found {
                         // SAFETY: `existing` is valid; replace its payload.
-                        let ok = unsafe {
-                            replace_node_payload(existing, msg_type, data.cast_const(), size)
-                        };
+                        let ok =
+                            unsafe { replace_node_payload(existing, msg_type, data, data_size) };
                         if !ok {
-                            return HewError::ErrOom as i32;
+                            return SendOutcome::Oom;
                         }
-                        return HewError::Ok as i32;
+                        return SendOutcome::Coalesced;
                     }
                     // No matching key — use configured fallback policy.
                     match normalize_coalesce_fallback(mb.coalesce_fallback) {
-                        HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => {
-                            return HewError::ErrMailboxFull as i32;
-                        }
+                        HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
+                        HewOverflowPolicy::Fail => return SendOutcome::Failed,
                         HewOverflowPolicy::Block => {
                             loop {
                                 if mb.closed.load(Ordering::Acquire) {
-                                    return HewError::ErrActorStopped as i32;
+                                    return SendOutcome::Closed;
                                 }
                                 let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
                                 if len < mb.capacity {
@@ -703,55 +728,72 @@ pub unsafe extern "C" fn hew_mailbox_send(
                                 q = mb.not_full.wait_or_recover(q);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
                             if node.is_null() {
-                                return HewError::ErrOom as i32;
+                                return SendOutcome::Oom;
                             }
                             q.user_queue.push_back(node);
                             drop(q);
                             mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return HewError::Ok as i32;
+                            return SendOutcome::Enqueued;
                         }
                         HewOverflowPolicy::DropOld => {
+                            // Lock already held from Coalesce scan.
                             if let Some(old) = q.user_queue.pop_front() {
                                 // SAFETY: node was allocated by msg_node_alloc.
                                 unsafe { hew_msg_node_free(old) };
                                 mb.count.fetch_sub(1, Ordering::Release);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
                             if node.is_null() {
-                                return HewError::ErrOom as i32;
+                                return SendOutcome::Oom;
                             }
                             q.user_queue.push_back(node);
                             mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return HewError::Ok as i32;
+                            return SendOutcome::DroppedOld;
                         }
                         HewOverflowPolicy::Coalesce => unreachable!(),
                     }
                 }
-                // DROP_OLD: dequeue the oldest message, then push the new one.
                 HewOverflowPolicy::DropOld => {
-                    let mut q = mb.slow_path.lock_or_recover();
-                    if let Some(old) = q.user_queue.pop_front() {
-                        // SAFETY: node was allocated by msg_node_alloc.
-                        unsafe { hew_msg_node_free(old) };
-                        mb.count.fetch_sub(1, Ordering::Release);
+                    if drop_old_alloc_under_lock {
+                        // hew_mailbox_send path: lock first, then allocate.
+                        let mut q = mb.slow_path.lock_or_recover();
+                        if let Some(old) = q.user_queue.pop_front() {
+                            // SAFETY: node was allocated by msg_node_alloc.
+                            unsafe { hew_msg_node_free(old) };
+                            mb.count.fetch_sub(1, Ordering::Release);
+                        }
+                        // SAFETY: `data` validity guaranteed by caller.
+                        let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                        if node.is_null() {
+                            return SendOutcome::Oom;
+                        }
+                        q.user_queue.push_back(node);
+                    } else {
+                        // hew_mailbox_try_push path: allocate first, then lock.
+                        // SAFETY: `data` validity guaranteed by caller.
+                        let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                        if node.is_null() {
+                            return SendOutcome::Oom;
+                        }
+                        let mut q = mb.slow_path.lock_or_recover();
+                        if let Some(old) = q.user_queue.pop_front() {
+                            // SAFETY: node was allocated by msg_node_alloc.
+                            unsafe { hew_msg_node_free(old) };
+                            mb.count.fetch_sub(1, Ordering::Release);
+                        }
+                        q.user_queue.push_back(node);
                     }
-                    // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, size) };
-                    if node.is_null() {
-                        return HewError::ErrOom as i32;
-                    }
-                    q.user_queue.push_back(node);
                     mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return HewError::Ok as i32;
+                    return SendOutcome::DroppedOld;
                 }
             }
         }
@@ -759,9 +801,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
 
     // Fast path: no capacity issue (or unbounded).
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
     if node.is_null() {
-        return HewError::ErrOom as i32;
+        return SendOutcome::Oom;
     }
 
     if mb.use_slow_path {
@@ -776,7 +818,40 @@ pub unsafe extern "C" fn hew_mailbox_send(
     update_high_water_mark(mb);
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 
-    HewError::Ok as i32
+    SendOutcome::Enqueued
+}
+
+/// Send a message to the mailbox (user queue), deep-copying `data`.
+///
+/// Returns `0` ([`HewError::Ok`]) on success, `-1`
+/// ([`HewError::ErrMailboxFull`]) if bounded and at capacity,
+/// `-2` ([`HewError::ErrActorStopped`]) if the mailbox is closed,
+/// or `-5` ([`HewError::ErrOom`]) if allocation fails.
+///
+/// # Safety
+///
+/// - `mb` must be a valid pointer returned by [`hew_mailbox_new`] or
+///   [`hew_mailbox_new_bounded`].
+/// - `data` must point to at least `size` readable bytes, or be null
+///   when `size` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_send(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &*mb };
+    // SAFETY: Caller guarantees `data` points to `size` readable bytes.
+    match unsafe { send_with_overflow(mb, msg_type, data, size, true) } {
+        SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
+            HewError::Ok as i32
+        }
+        SendOutcome::Closed => HewError::ErrActorStopped as i32,
+        SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
+        SendOutcome::Oom => HewError::ErrOom as i32,
+    }
 }
 
 /// Non-blocking send that always fails immediately when at capacity.
@@ -874,10 +949,6 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
 /// - `data` must point to at least `data_size` readable bytes, or be null
 ///   when `data_size` is 0.
 #[no_mangle]
-#[expect(
-    clippy::too_many_lines,
-    reason = "mailbox try_push with overflow policies is inherently complex"
-)]
 pub unsafe extern "C" fn hew_mailbox_try_push(
     mb: *mut HewMailbox,
     msg_type: i32,
@@ -886,165 +957,14 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
 ) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mbr = unsafe { &*mb };
-
-    if mbr.closed.load(Ordering::Acquire) {
-        return -1;
+    // SAFETY: Caller guarantees `data` points to `data_size` readable bytes.
+    match unsafe { send_with_overflow(mbr, msg_type, data, data_size, false) } {
+        SendOutcome::Enqueued => 0,
+        SendOutcome::Dropped => 1,
+        SendOutcome::DroppedOld => 2,
+        SendOutcome::Coalesced => 3,
+        SendOutcome::Closed | SendOutcome::Failed | SendOutcome::Oom => -1,
     }
-
-    if mbr.capacity > 0 {
-        let cur = mbr.count.load(Ordering::Acquire);
-        if cur >= mbr.capacity {
-            match mbr.overflow {
-                HewOverflowPolicy::DropNew => return 1,
-                HewOverflowPolicy::DropOld => {
-                    // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
-                    if node.is_null() {
-                        return -1;
-                    }
-                    let mut q = mbr.slow_path.lock_or_recover();
-                    if let Some(old) = q.user_queue.pop_front() {
-                        // SAFETY: node was allocated by msg_node_alloc.
-                        unsafe { hew_msg_node_free(old) };
-                        mbr.count.fetch_sub(1, Ordering::Release);
-                    }
-                    q.user_queue.push_back(node);
-                    mbr.count.fetch_add(1, Ordering::Release);
-                    update_high_water_mark(mbr);
-                    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return 2;
-                }
-                HewOverflowPolicy::Coalesce => {
-                    let mut q = mbr.slow_path.lock_or_recover();
-                    // Scan for an existing message with the same coalesce key.
-                    // SAFETY: `data` validity guaranteed by caller.
-                    let incoming_key = unsafe {
-                        coalesce_message_key(
-                            mbr.coalesce_key_fn,
-                            msg_type,
-                            data.cast_mut(),
-                            data_size,
-                        )
-                    };
-                    let found = q
-                        .user_queue
-                        .iter()
-                        .find(|&&n| {
-                            // SAFETY: all nodes in the queue were allocated by msg_node_alloc
-                            // and are valid while the lock is held.
-                            unsafe {
-                                coalesce_message_key(
-                                    mbr.coalesce_key_fn,
-                                    (*n).msg_type,
-                                    (*n).data,
-                                    (*n).data_size,
-                                ) == incoming_key
-                            }
-                        })
-                        .copied();
-                    if let Some(existing) = found {
-                        // SAFETY: `existing` is a valid node in the queue.
-                        // Replace its data with the new payload.
-                        if !unsafe { replace_node_payload(existing, msg_type, data, data_size) } {
-                            return -1;
-                        }
-                        return 3; // coalesced
-                    }
-                    // No matching key — use configured fallback policy.
-                    match normalize_coalesce_fallback(mbr.coalesce_fallback) {
-                        HewOverflowPolicy::DropNew => return 1,
-                        HewOverflowPolicy::Fail => return -1,
-                        HewOverflowPolicy::DropOld => {
-                            if let Some(old) = q.user_queue.pop_front() {
-                                // SAFETY: node was allocated by msg_node_alloc.
-                                unsafe { hew_msg_node_free(old) };
-                                mbr.count.fetch_sub(1, Ordering::Release);
-                            }
-                            // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
-                            if node.is_null() {
-                                return -1;
-                            }
-                            q.user_queue.push_back(node);
-                            mbr.count.fetch_add(1, Ordering::Release);
-                            update_high_water_mark(mbr);
-                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return 2;
-                        }
-                        HewOverflowPolicy::Block => {
-                            loop {
-                                if mbr.closed.load(Ordering::Acquire) {
-                                    return -1;
-                                }
-                                let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
-                                if len < mbr.capacity {
-                                    break;
-                                }
-                                q = mbr.not_full.wait_or_recover(q);
-                            }
-                            // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
-                            if node.is_null() {
-                                return -1;
-                            }
-                            q.user_queue.push_back(node);
-                            drop(q);
-                            mbr.count.fetch_add(1, Ordering::Release);
-                            update_high_water_mark(mbr);
-                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return 0;
-                        }
-                        HewOverflowPolicy::Coalesce => unreachable!(),
-                    }
-                }
-                HewOverflowPolicy::Fail => return -1,
-                HewOverflowPolicy::Block => {
-                    // Wait on condvar until space is available.
-                    let mut q = mbr.slow_path.lock_or_recover();
-                    loop {
-                        if mbr.closed.load(Ordering::Acquire) {
-                            return -1;
-                        }
-                        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
-                        if len < mbr.capacity {
-                            break;
-                        }
-                        q = mbr.not_full.wait_or_recover(q);
-                    }
-                    // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
-                    if node.is_null() {
-                        return -1;
-                    }
-                    q.user_queue.push_back(node);
-                    drop(q);
-                    mbr.count.fetch_add(1, Ordering::Release);
-                    update_high_water_mark(mbr);
-                    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return 0;
-                }
-            }
-        }
-    }
-
-    // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
-    if node.is_null() {
-        return -1;
-    }
-
-    if mbr.use_slow_path {
-        let mut q = mbr.slow_path.lock_or_recover();
-        q.user_queue.push_back(node);
-    } else {
-        // SAFETY: `node` was just allocated with next == null.
-        unsafe { mbr.user_fast.enqueue(node) };
-    }
-
-    mbr.count.fetch_add(1, Ordering::Release);
-    update_high_water_mark(mbr);
-    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-    0
 }
 
 // ── Close ───────────────────────────────────────────────────────────────

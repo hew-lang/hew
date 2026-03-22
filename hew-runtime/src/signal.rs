@@ -151,7 +151,9 @@ mod shared {
         // Cache actor data before supervisor notification to avoid race.
         // After hew_actor_trap, another thread could process the supervisor
         // notification and call hew_actor_free before we dereference actor.
-        let (actor_id, actor_pid, report) = if !actor.is_null() {
+        let (actor_id, cached_pid, report) = if actor.is_null() {
+            (0, 0, None)
+        } else {
             // SAFETY: actor pointer was stored in prepare_dispatch_recovery
             // and the actor is still alive (it's Running — only the current
             // worker thread can transition it, and we haven't freed it).
@@ -165,8 +167,6 @@ mod shared {
                 );
                 (id, pid, Some(report))
             }
-        } else {
-            (0, 0, None)
         };
 
         // NOW notify supervisor (may trigger actor free on another thread).
@@ -184,7 +184,7 @@ mod shared {
         let name = signal_name(signal);
         if actor_id != 0 {
             eprintln!(
-                "hew: actor {actor_id} (pid={actor_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+                "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
             );
         }
 

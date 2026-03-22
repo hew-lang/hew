@@ -18,30 +18,30 @@
 //! }
 //! ```
 
-/// Compute the SHA-256 hash of `data`, returning a 32-byte `bytes` value.
+/// Compute the SHA-256 hash of `data`, returning a 32-byte digest.
 pub fn sha256(data: bytes) -> bytes {
     unsafe { hew_sha256_hew(data) }
 }
 
-/// Compute the SHA-384 hash of `data`, returning a 48-byte `bytes` value.
+/// Compute the SHA-384 hash of `data`, returning a 48-byte digest.
 pub fn sha384(data: bytes) -> bytes {
     unsafe { hew_sha384_hew(data) }
 }
 
-/// Compute the SHA-512 hash of `data`, returning a 64-byte `bytes` value.
+/// Compute the SHA-512 hash of `data`, returning a 64-byte digest.
 pub fn sha512(data: bytes) -> bytes {
     unsafe { hew_sha512_hew(data) }
 }
 
 /// Compute HMAC-SHA-256 with the given `key` and `data`.
 ///
-/// Returns a 32-byte `bytes` value.
+/// Returns a 32-byte tag.
 pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
     unsafe { hew_hmac_sha256_hew(key, data) }
 }
 
 /// Generate `len` cryptographically random bytes.
-pub fn random_bytes(len: i64) -> bytes {
+pub fn random_bytes(len: int) -> bytes {
     unsafe { hew_random_bytes_hew(len) }
 }
 
@@ -60,6 +60,6 @@ extern "C" {
     fn hew_sha384_hew(data: bytes) -> bytes;
     fn hew_sha512_hew(data: bytes) -> bytes;
     fn hew_hmac_sha256_hew(key: bytes, data: bytes) -> bytes;
-    fn hew_random_bytes_hew(len: i64) -> bytes;
+    fn hew_random_bytes_hew(len: int) -> bytes;
     fn hew_constant_time_eq_hew(a: bytes, b: bytes) -> i32;
 }

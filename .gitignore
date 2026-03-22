@@ -47,3 +47,4 @@ docs/archive/
 coverage-out/
 *.profdata
 *.backup
+rust_out

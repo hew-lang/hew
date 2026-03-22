@@ -60,6 +60,12 @@ pub fn run(bind_addr: &str, ctx: &ProfilerContext) {
     eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
 
     for request in server.incoming_requests() {
+        // Check if shutdown was requested. Note: this only checks between requests,
+        // not while blocked on incoming_requests(). The server will fully exit
+        // when the node shuts down and the socket is closed.
+        if super::PROFILER_SHUTDOWN.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
         handle_request(request, ctx);
     }
 }

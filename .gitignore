@@ -49,3 +49,4 @@ coverage-out/
 *.backup
 rust_out
 actor_fib
+examples/actor_fib

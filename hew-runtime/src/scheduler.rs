@@ -122,9 +122,12 @@ impl Xorshift64 {
 /// Initialize and start the M:N scheduler.
 ///
 /// Spawns one worker thread per available CPU core (falls back to 4).
-/// Calling this more than once is a no-op.
+/// Calling this more than once is a harmless no-op (returns 0).
+///
+/// Returns 0 on success, -1 on failure. On failure the scheduler is
+/// torn down and [`set_last_error`] describes the cause.
 #[no_mangle]
-pub extern "C" fn hew_sched_init() {
+pub extern "C" fn hew_sched_init() -> c_int {
     let default_count = thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(4);
@@ -175,6 +178,11 @@ pub extern "C" fn hew_sched_init() {
     });
 
     // Store via CAS; second calls are harmless no-ops.
+    // NOTE: The scheduler is visible to concurrent callers from this point,
+    // but workers are not yet spawned. A concurrent `hew_sched_init` will
+    // return 0 (no-op) even if this thread later fails to spawn workers and
+    // tears down. This is acceptable because init is expected to run once
+    // from the main thread before any actor work begins.
     let ptr = Box::into_raw(scheduler);
     if SCHEDULER
         .compare_exchange(
@@ -188,7 +196,7 @@ pub extern "C" fn hew_sched_init() {
         // Another thread beat us — drop ours.
         // SAFETY: We just allocated this Box.
         drop(unsafe { Box::from_raw(ptr) });
-        return;
+        return 0;
     }
 
     // Install crash signal handlers for the entire process.
@@ -199,26 +207,46 @@ pub extern "C" fn hew_sched_init() {
     unsafe { crate::shutdown::install_shutdown_signal_handlers() };
 
     // Phase 2: Spawn worker threads.
-    let mut handles = Vec::with_capacity(worker_count);
+    // If ANY worker fails to spawn, treat it as an initialisation failure:
+    // clean up already-spawned workers and tear down the scheduler.
+    let mut handles: Vec<Option<JoinHandle<()>>> = Vec::with_capacity(worker_count);
+    let mut spawn_err: Option<std::io::Error> = None;
+
     for (id, deque) in deques.into_iter().enumerate() {
-        let Ok(handle) = thread::Builder::new()
+        match thread::Builder::new()
             .name(format!("hew-worker-{id}"))
             .spawn(move || worker_loop(id, &deque))
-        else {
-            continue;
-        };
-        handles.push(Some(handle));
+        {
+            Ok(handle) => handles.push(Some(handle)),
+            Err(e) => {
+                spawn_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    if let Some(e) = spawn_err {
+        // Worker spawn failed — tear down everything.
+        let spawned = handles.len();
+        set_last_error(format!(
+            "hew_sched_init: failed to spawn worker {spawned}: {e}"
+        ));
+        eprintln!(
+            "hew: scheduler init failed — could not spawn worker {spawned}/{worker_count}: {e}"
+        );
+        teardown_after_spawn_failure(handles);
+        return -1;
     }
 
     // We know `SCHEDULER` was just set by us.
     let Some(sched) = get_scheduler() else {
-        return;
+        return -1;
     };
     let Ok(mut lock) = sched.worker_handles.lock() else {
         // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
         // scheduler integrity is lost; report error and bail.
         set_last_error("hew_sched_init: mutex poisoned (a thread panicked)");
-        return;
+        return -1;
     };
     *lock = handles;
 
@@ -226,6 +254,37 @@ pub extern "C" fn hew_sched_init() {
     crate::profiler::maybe_start();
     // Start the OTel exporter if HEW_OTEL_ENDPOINT is set.
     crate::otel::maybe_start();
+
+    0
+}
+
+/// Clean up after a worker spawn failure during initialisation.
+///
+/// Signals shutdown, joins all successfully-spawned workers, then removes
+/// and drops the scheduler from the global pointer.
+fn teardown_after_spawn_failure(mut handles: Vec<Option<JoinHandle<()>>>) {
+    // The scheduler is already installed globally — signal shutdown so
+    // any already-running workers observe the flag and exit.
+    if let Some(sched) = get_scheduler() {
+        sched.shutdown.store(true, Ordering::Release);
+        for parker in &sched.parkers {
+            parker.cond.notify_one();
+        }
+    }
+
+    // Join all successfully-spawned workers.
+    for handle in &mut handles {
+        if let Some(h) = handle.take() {
+            let _ = h.join();
+        }
+    }
+
+    // Remove the scheduler from the global pointer and drop it.
+    let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if !ptr.is_null() {
+        // SAFETY: We installed this pointer and all workers are joined.
+        drop(unsafe { Box::from_raw(ptr) });
+    }
 }
 
 /// Gracefully shut down the scheduler.
@@ -1092,5 +1151,12 @@ mod tests {
         // SAFETY: mailbox was created in this test and is not used afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
         crate::tracing::hew_trace_reset();
+    }
+
+    #[test]
+    fn hew_sched_init_returns_zero_on_success() {
+        // hew_sched_init is idempotent — second call is a no-op returning 0.
+        let result = hew_sched_init();
+        assert_eq!(result, 0);
     }
 }

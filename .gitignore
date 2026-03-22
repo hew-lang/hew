@@ -47,3 +47,6 @@ docs/archive/
 coverage-out/
 *.profdata
 *.backup
+rust_out
+actor_fib
+examples/actor_fib

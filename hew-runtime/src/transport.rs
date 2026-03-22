@@ -361,6 +361,15 @@ impl TcpTransport {
             let idx = id as usize;
             if idx < MAX_CONNS {
                 if let Ok(mut conns) = self.conns.write() {
+                    // Shutdown the socket before dropping it so that any
+                    // cloned file descriptors (held by reader threads) are
+                    // woken from blocking recv calls. Without this, dropping
+                    // only decrements the refcount and the clone keeps the
+                    // socket alive, causing join() on the reader thread to
+                    // deadlock.
+                    if let Some(ref sock) = conns[idx] {
+                        let _ = sock.shutdown(Shutdown::Both);
+                    }
                     conns[idx] = None;
                 }
             }
@@ -1060,6 +1069,7 @@ mod unix_transport {
         Domain, HewTransport, HewTransportOps, RwLock, SockAddr, Socket, Type, HEW_CONN_INVALID,
         MAX_CONNS,
     };
+    use std::net::Shutdown;
 
     /// Internal state for the Unix domain socket transport.
     struct UnixTransport {
@@ -1114,6 +1124,10 @@ mod unix_transport {
                 let idx = id as usize;
                 if idx < MAX_CONNS {
                     if let Ok(mut conns) = self.conns.write() {
+                        // Shutdown before dropping — see TcpTransport::remove_conn.
+                        if let Some(ref sock) = conns[idx] {
+                            let _ = sock.shutdown(Shutdown::Both);
+                        }
                         conns[idx] = None;
                     }
                 }

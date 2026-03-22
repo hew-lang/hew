@@ -102,10 +102,11 @@ pub fn maybe_start_with_context(
     let sampler_ring = Arc::clone(&ring);
     let Ok(sampler_handle) = thread::Builder::new()
         .name("hew-pprof-sampler".into())
-        .spawn(move || sampler_loop(&sampler_ring)) else {
-            eprintln!("[hew-pprof] failed to spawn sampler thread");
-            return;
-        };
+        .spawn(move || sampler_loop(&sampler_ring))
+    else {
+        eprintln!("[hew-pprof] failed to spawn sampler thread");
+        return;
+    };
 
     let ctx = ProfilerContext {
         ring,
@@ -117,13 +118,14 @@ pub fn maybe_start_with_context(
     // HTTP server thread.
     let Ok(server_handle) = thread::Builder::new()
         .name("hew-pprof-server".into())
-        .spawn(move || server::run(&bind_addr, &ctx)) else {
-            eprintln!("[hew-pprof] failed to spawn server thread");
-            // Signal sampler to stop and join it before returning.
-            PROFILER_SHUTDOWN.store(true, Ordering::Release);
-            let _ = sampler_handle.join();
-            return;
-        };
+        .spawn(move || server::run(&bind_addr, &ctx))
+    else {
+        eprintln!("[hew-pprof] failed to spawn server thread");
+        // Signal sampler to stop and join it before returning.
+        PROFILER_SHUTDOWN.store(true, Ordering::Release);
+        let _ = sampler_handle.join();
+        return;
+    };
 
     // Store thread handles for shutdown.
     let threads = ProfilerThreads {
@@ -224,4 +226,3 @@ pub(crate) fn shutdown() {
         let _ = threads.sampler_handle.join();
     }
 }
-

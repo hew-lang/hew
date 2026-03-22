@@ -805,6 +805,27 @@ unsafe fn hew_conn_upgrade_noise(
 
 /// Reader thread: loops calling transport recv, decodes envelopes,
 /// and routes to local actors via the inbound router callback.
+/// Cleanup after reader loop exit: remove from manager and attempt reconnection
+/// if the drop was unexpected (not triggered by explicit stop).
+fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
+    let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
+    if unexpected_drop {
+        // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
+        let reconnect_plan = unsafe {
+            if mgr.is_null() {
+                None
+            } else {
+                hew_connmgr_reconnect_plan(&*mgr, conn_id)
+            }
+        };
+        // SAFETY: manager and conn_id come from active reader state.
+        let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
+        if let Some(plan) = reconnect_plan {
+            hew_connmgr_spawn_reconnect_worker(mgr, conn_id, plan);
+        }
+    }
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
@@ -839,24 +860,7 @@ fn reader_loop(
         };
 
         if bytes_read <= 0 {
-            // Expected shutdown paths set `stop_flag` before closing transport.
-            let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
-            if unexpected_drop {
-                // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
-                let reconnect_plan = unsafe {
-                    if mgr.is_null() {
-                        None
-                    } else {
-                        hew_connmgr_reconnect_plan(&*mgr, conn_id)
-                    }
-                };
-                // SAFETY: manager and conn_id come from active reader state.
-                let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
-                if let Some(plan) = reconnect_plan {
-                    hew_connmgr_spawn_reconnect_worker(mgr, conn_id, plan);
-                }
-            }
-            // Connection closed or error — stop reading.
+            reader_cleanup(mgr, conn_id, &stop_flag);
             break;
         }
 
@@ -875,6 +879,8 @@ fn reader_loop(
             };
             if let Some(noise) = guard.as_mut() {
                 let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
+                    set_last_error("connection decrypt failure".to_string());
+                    reader_cleanup(mgr, conn_id, &stop_flag);
                     break;
                 };
                 payload_len = n;

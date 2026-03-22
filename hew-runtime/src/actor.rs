@@ -7,7 +7,7 @@
 use crate::util::MutexExt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
@@ -252,33 +252,49 @@ static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 // ── Live actor tracking ────────────────────────────────────────────────
 
-/// Wrapper so `*mut HewActor` can be stored in a `HashSet`.
-#[derive(Debug, PartialEq, Eq, Hash)]
+/// Wrapper so `*mut HewActor` can be stored in a collection.
+#[derive(Debug)]
 struct ActorPtr(*mut HewActor);
 
 // SAFETY: Actor pointers are managed by the runtime and only freed
 // under controlled conditions (shutdown or explicit free).
 unsafe impl Send for ActorPtr {}
 
-/// Set of all live (not-yet-freed) actor pointers.
-static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
+/// Map from actor ID → pointer for O(1) lookups by ID.
+static LIVE_ACTORS: Mutex<Option<HashMap<u64, ActorPtr>>> = Mutex::new(None);
 
-/// Register an actor in the live tracking set.
+/// Register an actor in the live tracking map.
+///
+/// # Safety
+///
+/// `actor` must be a valid, fully initialised `HewActor` pointer whose
+/// `id` field is already set.
 fn track_actor(actor: *mut HewActor) {
+    // SAFETY: caller guarantees `actor` is valid and initialised.
+    let id = unsafe { (*actor).id };
     let mut guard = LIVE_ACTORS.lock_or_recover();
     guard
-        .get_or_insert_with(HashSet::new)
-        .insert(ActorPtr(actor));
+        .get_or_insert_with(HashMap::new)
+        .insert(id, ActorPtr(actor));
 }
 
-/// Remove an actor from the live tracking set.
+/// Remove an actor from the live tracking map.
 ///
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
+/// Only removes the entry if the stored pointer matches `actor`, guarding
+/// against the (unlikely) case of an ID collision after serial overflow.
 fn untrack_actor(actor: *mut HewActor) -> bool {
+    // SAFETY: caller guarantees `actor` is valid and not yet freed.
+    let id = unsafe { (*actor).id };
     let mut guard = LIVE_ACTORS.lock_or_recover();
-    if let Some(set) = guard.as_mut() {
-        return set.remove(&ActorPtr(actor));
+    if let Some(map) = guard.as_mut() {
+        if let std::collections::hash_map::Entry::Occupied(entry) = map.entry(id) {
+            if entry.get().0 == actor {
+                entry.remove();
+                return true;
+            }
+        }
     }
     false
 }
@@ -294,12 +310,12 @@ pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
         let mut guard = LIVE_ACTORS.lock_or_recover();
         match guard.as_mut() {
-            Some(set) => std::mem::take(set),
-            None => HashSet::new(),
+            Some(map) => std::mem::take(map),
+            None => HashMap::new(),
         }
     };
 
-    for ActorPtr(actor) in actors {
+    for ActorPtr(actor) in actors.into_values() {
         if actor.is_null() {
             continue;
         }
@@ -886,25 +902,20 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
 ) -> c_int {
     let sent_local = {
         let guard = LIVE_ACTORS.lock_or_recover();
-        guard.as_ref().is_some_and(|set| {
-            set.iter().any(|ptr| {
-                let actor = ptr.0;
+        guard.as_ref().is_some_and(|map| {
+            if let Some(entry) = map.get(&actor_id) {
+                let actor = entry.0;
                 if actor.is_null() {
                     return false;
                 }
-                // SAFETY: `actor` pointers in LIVE_ACTORS originate from spawn
-                // functions and are removed on free.
-                let matches = unsafe { (&*actor).id == actor_id };
-                if matches {
-                    // SAFETY: actor pointer was discovered while LIVE_ACTORS is
-                    // locked, so it cannot be concurrently untracked/freed
-                    // during this send.
-                    unsafe { actor_send_internal(actor, msg_type, data, size) };
-                    true
-                } else {
-                    false
-                }
-            })
+                // SAFETY: actor pointer was discovered while LIVE_ACTORS is
+                // locked, so it cannot be concurrently untracked/freed
+                // during this send.
+                unsafe { actor_send_internal(actor, msg_type, data, size) };
+                true
+            } else {
+                false
+            }
         })
     };
 
@@ -1637,22 +1648,19 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     // Look up actor and send packed message.
     let sent = {
         let guard = LIVE_ACTORS.lock_or_recover();
-        guard.as_ref().is_some_and(|set| {
-            set.iter().any(|actor_ptr| {
-                let actor = actor_ptr.0;
+        guard.as_ref().is_some_and(|map| {
+            if let Some(entry) = map.get(&actor_id) {
+                let actor = entry.0;
                 if actor.is_null() {
                     return false;
                 }
-                // SAFETY: LIVE_ACTORS pointers are valid while locked.
-                let matches = unsafe { (*actor).id == actor_id };
-                if matches {
-                    // SAFETY: actor and packed data are valid.
-                    let rc = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
-                    rc == HewError::Ok as i32
-                } else {
-                    false
-                }
-            })
+                // SAFETY: actor and packed data are valid while LIVE_ACTORS
+                // is locked.
+                let rc = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
+                rc == HewError::Ok as i32
+            } else {
+                false
+            }
         })
     };
 

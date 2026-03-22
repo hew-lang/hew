@@ -240,6 +240,10 @@ pub extern "C" fn hew_result_error_code(res: *const HewResult) -> i32 {
     reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_result_error_msg(res: *const HewResult) -> *const c_char {
+    if res.is_null() {
+        crate::set_last_error("hew_result_error_msg: null result pointer");
+        return ptr::null();
+    }
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
     if is_variant_0(r.tag) {

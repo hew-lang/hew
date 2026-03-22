@@ -5,6 +5,7 @@
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
 
 use crate::cabi::malloc_cstring;
+use crate::util::RwLockExt;
 use std::ffi::{c_char, CStr};
 
 /// Global lock for environment variable access synchronization.
@@ -46,7 +47,7 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
         return std::ptr::null_mut();
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read().unwrap();
+    let _guard = ENV_LOCK.read_or_recover();
     match std::env::var(key_str) {
         Ok(val) => string_to_malloc(&val),
         Err(_) => std::ptr::null_mut(),
@@ -72,7 +73,7 @@ pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
         return;
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.write().unwrap();
+    let _guard = ENV_LOCK.write_or_recover();
     // SAFETY: set_var is safe when protected by exclusive write access.
     unsafe { std::env::set_var(key_str, val_str) };
 }
@@ -92,7 +93,7 @@ pub unsafe extern "C" fn hew_env_remove(key: *const c_char) {
         return;
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.write().unwrap();
+    let _guard = ENV_LOCK.write_or_recover();
     // SAFETY: remove_var is safe when protected by exclusive write access.
     unsafe { std::env::remove_var(key_str) };
 }
@@ -112,7 +113,7 @@ pub unsafe extern "C" fn hew_env_has(key: *const c_char) -> i32 {
         return 0;
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read().unwrap();
+    let _guard = ENV_LOCK.read_or_recover();
     i32::from(std::env::var(key_str).is_ok())
 }
 
@@ -285,7 +286,7 @@ pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read().unwrap();
+    let _guard = ENV_LOCK.read_or_recover();
     match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         Ok(home) => string_to_malloc(&home),
         Err(_) => std::ptr::null_mut(),
@@ -321,7 +322,7 @@ pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
     {
         // Use COMPUTERNAME environment variable (always set on Windows).
         // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-        let _guard = ENV_LOCK.read().unwrap();
+        let _guard = ENV_LOCK.read_or_recover();
         match std::env::var("COMPUTERNAME") {
             Ok(name) => string_to_malloc(&name),
             Err(_) => std::ptr::null_mut(),

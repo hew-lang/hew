@@ -13,6 +13,8 @@ mod native {
     use std::ffi::{c_char, c_void, CStr};
     use std::sync::{LazyLock, RwLock};
 
+    use crate::util::RwLockExt;
+
     const N_SHARDS: usize = 256;
 
     /// Wrapper around the raw-pointer map so we can mark it `Send + Sync`.
@@ -69,10 +71,6 @@ mod native {
     ///
     /// Returns 0 on success, -1 if the name is already taken.
     ///
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
-    ///
     /// # Safety
     ///
     /// - If `name` is non-null, it must be a valid, NUL-terminated C string.
@@ -88,7 +86,7 @@ mod native {
             .to_string_lossy()
             .into_owned();
         let shard = REGISTRY.shard_for(&key);
-        let mut reg = shard.write().unwrap();
+        let mut reg = shard.write_or_recover();
         if reg.0.contains_key(&key) {
             return -1;
         }
@@ -99,10 +97,6 @@ mod native {
     /// Look up an actor by name.
     ///
     /// Returns the actor pointer, or null if not found.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
     ///
     /// # Safety
     ///
@@ -116,7 +110,7 @@ mod native {
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
         let shard = REGISTRY.shard_for(key.as_ref());
-        let reg = shard.read().unwrap();
+        let reg = shard.read_or_recover();
         reg.0
             .get(key.as_ref())
             .copied()
@@ -126,10 +120,6 @@ mod native {
     /// Remove an actor registration by name.
     ///
     /// Returns 0 on success, -1 if the name was not found.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
     ///
     /// # Safety
     ///
@@ -143,7 +133,7 @@ mod native {
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
         let shard = REGISTRY.shard_for(key.as_ref());
-        let mut reg = shard.write().unwrap();
+        let mut reg = shard.write_or_recover();
         if reg.0.remove(key.as_ref()).is_some() {
             0
         } else {
@@ -152,15 +142,11 @@ mod native {
     }
 
     /// Return the number of registered actors.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
     #[no_mangle]
     pub extern "C" fn hew_registry_count() -> i32 {
         let mut total_count = 0usize;
         for shard in &REGISTRY.shards {
-            let reg = shard.read().unwrap();
+            let reg = shard.read_or_recover();
             total_count += reg.0.len();
         }
         #[expect(
@@ -176,14 +162,10 @@ mod native {
     }
 
     /// Remove all entries from the registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry `RwLock` is poisoned.
     #[no_mangle]
     pub extern "C" fn hew_registry_clear() {
         for shard in &REGISTRY.shards {
-            let mut reg = shard.write().unwrap();
+            let mut reg = shard.write_or_recover();
             reg.0.clear();
         }
     }
@@ -191,6 +173,45 @@ mod native {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::ffi::CString;
+    use std::sync::RwLock;
+
+    use super::*;
+
+    /// A poisoned `RwLock` shard must not crash subsequent registry operations.
+    #[test]
+    fn registry_survives_poisoned_shard() {
+        // Poison a shard by panicking inside a write guard.
+        let lock = RwLock::new(42);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.write().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(lock.is_poisoned());
+
+        // After poisoning, the global registry should still work because
+        // it uses write_or_recover / read_or_recover.
+        let name = CString::new("poison_test_actor").unwrap();
+
+        // SAFETY: name is a valid C string; 0x1 is a dummy non-null pointer.
+        unsafe {
+            // Register, lookup, count, unregister — none should panic.
+            let result = hew_registry_register(name.as_ptr(), std::ptr::dangling_mut());
+            assert_eq!(result, 0);
+
+            let ptr = hew_registry_lookup(name.as_ptr());
+            assert_eq!(ptr, std::ptr::dangling_mut());
+
+            assert!(hew_registry_count() >= 1);
+
+            let result = hew_registry_unregister(name.as_ptr());
+            assert_eq!(result, 0);
+        }
+    }
+}
 
 // ── WASM (single-threaded) implementation ───────────────────────────────────
 

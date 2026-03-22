@@ -1107,4 +1107,469 @@ mod tests {
             hew_json_free(arr);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // FFI boundary: null-pointer safety
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn null_pointer_safety_all_getters() {
+        // Every getter must handle a null pointer without crashing.
+        // SAFETY: testing null-pointer behaviour on all getter functions.
+        unsafe {
+            assert_eq!(hew_json_type(std::ptr::null()), -1);
+            assert_eq!(hew_json_get_bool(std::ptr::null()), 0);
+            assert_eq!(hew_json_get_int(std::ptr::null()), 0);
+            assert!((hew_json_get_float(std::ptr::null())).abs() < f64::EPSILON);
+            assert!(hew_json_get_string(std::ptr::null()).is_null());
+            assert!(hew_json_get_field(std::ptr::null(), std::ptr::null()).is_null());
+            assert_eq!(hew_json_array_len(std::ptr::null()), -1);
+            assert!(hew_json_array_get(std::ptr::null(), 0).is_null());
+            assert!(hew_json_object_keys(std::ptr::null()).is_null());
+            assert!(hew_json_stringify(std::ptr::null()).is_null());
+        }
+    }
+
+    #[test]
+    fn null_pointer_safety_all_setters() {
+        // Every setter/push must be a no-op with null pointers.
+        // SAFETY: testing null-pointer behaviour on all builder functions.
+        unsafe {
+            hew_json_object_set_bool(std::ptr::null_mut(), std::ptr::null(), 1);
+            hew_json_object_set_int(std::ptr::null_mut(), std::ptr::null(), 1);
+            hew_json_object_set_float(std::ptr::null_mut(), std::ptr::null(), 1.0);
+            hew_json_object_set_string(std::ptr::null_mut(), std::ptr::null(), std::ptr::null());
+            hew_json_object_set_null(std::ptr::null_mut(), std::ptr::null());
+            hew_json_object_set(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut());
+            hew_json_array_push_bool(std::ptr::null_mut(), 1);
+            hew_json_array_push_int(std::ptr::null_mut(), 1);
+            hew_json_array_push_float(std::ptr::null_mut(), 1.0);
+            hew_json_array_push_string(std::ptr::null_mut(), std::ptr::null());
+            hew_json_array_push_null(std::ptr::null_mut());
+            hew_json_array_push(std::ptr::null_mut(), std::ptr::null_mut());
+
+            // Free on null must also be a no-op.
+            hew_json_free(std::ptr::null_mut());
+            hew_json_string_free(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn get_field_null_key_returns_null() {
+        let val = parse(r#"{"a":1}"#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid; passing null key.
+        unsafe {
+            assert!(hew_json_get_field(val, std::ptr::null()).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Type mismatch: getters return safe defaults on wrong type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn type_mismatch_get_int_on_string_returns_zero() {
+        let val = parse(r#""not a number""#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert_eq!(hew_json_get_int(val), 0);
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn type_mismatch_get_string_on_int_returns_null() {
+        let val = parse("42");
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert!(hew_json_get_string(val).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn type_mismatch_get_bool_on_string_returns_zero() {
+        let val = parse(r#""true""#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert_eq!(hew_json_get_bool(val), 0);
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn type_mismatch_get_float_on_string_returns_zero() {
+        let val = parse(r#""3.14""#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert!((hew_json_get_float(val)).abs() < f64::EPSILON);
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn array_len_on_non_array_returns_negative_one() {
+        let val = parse(r#"{"key":"value"}"#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert_eq!(hew_json_array_len(val), -1);
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn object_keys_on_non_object_returns_null() {
+        let val = parse("[1, 2, 3]");
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert!(hew_json_object_keys(val).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn get_field_on_non_object_returns_null() {
+        let val = parse("[1, 2]");
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            let k = CString::new("key").unwrap();
+            assert!(hew_json_get_field(val, k.as_ptr()).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn get_field_missing_key_returns_null() {
+        let val = parse(r#"{"a":1}"#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            let k = CString::new("nonexistent").unwrap();
+            assert!(hew_json_get_field(val, k.as_ptr()).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Array index boundary conditions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn array_get_negative_index_returns_null() {
+        let val = parse("[1, 2, 3]");
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert!(hew_json_array_get(val, -1).is_null());
+            assert!(hew_json_array_get(val, i32::MIN).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn array_get_on_non_array_returns_null() {
+        let val = parse(r#"{"key":"val"}"#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            assert!(hew_json_array_get(val, 0).is_null());
+            hew_json_free(val);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Builder operations on wrong type are silent no-ops
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn builder_set_on_array_is_noop() {
+        // SAFETY: arr is a valid array from hew_json_array_new.
+        unsafe {
+            let arr = hew_json_array_new();
+            let k = CString::new("key").unwrap();
+            let v = CString::new("val").unwrap();
+
+            hew_json_object_set_bool(arr, k.as_ptr(), 1);
+            hew_json_object_set_int(arr, k.as_ptr(), 42);
+            hew_json_object_set_float(arr, k.as_ptr(), 1.5);
+            hew_json_object_set_string(arr, k.as_ptr(), v.as_ptr());
+            hew_json_object_set_null(arr, k.as_ptr());
+
+            // Array is still empty — setters were no-ops.
+            assert_eq!(hew_json_array_len(arr), 0);
+            hew_json_free(arr);
+        }
+    }
+
+    #[test]
+    fn builder_push_on_object_is_noop() {
+        // SAFETY: obj is a valid object from hew_json_object_new.
+        unsafe {
+            let obj = hew_json_object_new();
+            let s = CString::new("test").unwrap();
+
+            hew_json_array_push_bool(obj, 1);
+            hew_json_array_push_int(obj, 42);
+            hew_json_array_push_float(obj, 1.5);
+            hew_json_array_push_string(obj, s.as_ptr());
+            hew_json_array_push_null(obj);
+
+            // Object is still empty — pushes were no-ops.
+            let keys = hew_json_object_keys(obj);
+            assert_eq!(hew_json_array_len(keys), 0);
+            hew_json_free(keys);
+            hew_json_free(obj);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Float edge cases at the FFI boundary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn object_set_float_nan_silently_discarded() {
+        // NaN is not representable in JSON; the setter must not insert it.
+        // SAFETY: obj is a valid object.
+        unsafe {
+            let obj = hew_json_object_new();
+            let k = CString::new("bad").unwrap();
+            hew_json_object_set_float(obj, k.as_ptr(), f64::NAN);
+
+            // Field should not exist.
+            assert!(hew_json_get_field(obj, k.as_ptr()).is_null());
+            hew_json_free(obj);
+        }
+    }
+
+    #[test]
+    fn object_set_float_infinity_silently_discarded() {
+        // SAFETY: obj is a valid object.
+        unsafe {
+            let obj = hew_json_object_new();
+            let k = CString::new("inf").unwrap();
+            hew_json_object_set_float(obj, k.as_ptr(), f64::INFINITY);
+            assert!(hew_json_get_field(obj, k.as_ptr()).is_null());
+
+            let k2 = CString::new("neginf").unwrap();
+            hew_json_object_set_float(obj, k2.as_ptr(), f64::NEG_INFINITY);
+            assert!(hew_json_get_field(obj, k2.as_ptr()).is_null());
+
+            hew_json_free(obj);
+        }
+    }
+
+    #[test]
+    fn array_push_float_nan_silently_discarded() {
+        // SAFETY: arr is a valid array.
+        unsafe {
+            let arr = hew_json_array_new();
+            hew_json_array_push_float(arr, f64::NAN);
+            hew_json_array_push_float(arr, f64::INFINITY);
+
+            // Neither value should have been pushed.
+            assert_eq!(hew_json_array_len(arr), 0);
+            hew_json_free(arr);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Integer boundary values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn integer_boundary_values() {
+        // SAFETY: all pointers from parse/from_int.
+        unsafe {
+            let max_val = hew_json_from_int(i64::MAX);
+            assert_eq!(hew_json_get_int(max_val), i64::MAX);
+            hew_json_free(max_val);
+
+            let min_val = hew_json_from_int(i64::MIN);
+            assert_eq!(hew_json_get_int(min_val), i64::MIN);
+            hew_json_free(min_val);
+
+            let zero_val = hew_json_from_int(0);
+            assert_eq!(hew_json_get_int(zero_val), 0);
+            hew_json_free(zero_val);
+
+            // Roundtrip i64::MAX through parse→stringify→parse.
+            let max_str = format!("{}", i64::MAX);
+            let parsed = parse(&max_str);
+            assert!(!parsed.is_null());
+            assert_eq!(hew_json_get_int(parsed), i64::MAX);
+            hew_json_free(parsed);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Unicode through the CString FFI boundary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unicode_emoji_roundtrip() {
+        let val = parse(r#""Hello 🌍🎉 world""#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            let s = read_and_free_cstr(hew_json_get_string(val));
+            assert_eq!(s, "Hello 🌍🎉 world");
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn unicode_escape_sequences_decoded() {
+        // JSON \uXXXX escapes should be decoded by the parser.
+        let val = parse(r#""\u0048\u0065\u0077""#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            let s = read_and_free_cstr(hew_json_get_string(val));
+            assert_eq!(s, "Hew");
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn unicode_multibyte_in_object_key() {
+        let val = parse(r#"{"clé":42}"#);
+        assert!(!val.is_null());
+        // SAFETY: val is valid.
+        unsafe {
+            let k = CString::new("clé").unwrap();
+            let field = hew_json_get_field(val, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_json_get_int(field), 42);
+            hew_json_free(field);
+            hew_json_free(val);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Malformed input error handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn malformed_json_missing_closing_brace() {
+        assert!(parse(r#"{"key": 1"#).is_null());
+    }
+
+    #[test]
+    fn malformed_json_trailing_comma_in_array() {
+        // Trailing commas are invalid in strict JSON.
+        assert!(parse("[1, 2, 3,]").is_null());
+    }
+
+    #[test]
+    fn malformed_json_single_quotes() {
+        assert!(parse("{'key': 'val'}").is_null());
+    }
+
+    #[test]
+    fn malformed_json_unterminated_string() {
+        assert!(parse(r#"{"key": "unterminated"#).is_null());
+    }
+
+    #[test]
+    fn empty_string_parses_as_error() {
+        // An empty string is not valid JSON.
+        assert!(parse("").is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // Deeply nested structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deeply_nested_object_parse_and_access() {
+        // Build 50 levels: {"a":{"a":{"a":...42...}}}
+        let mut json = "42".to_string();
+        for _ in 0..50 {
+            json = format!(r#"{{"a":{json}}}"#);
+        }
+        let val = parse(&json);
+        assert!(!val.is_null());
+
+        // Walk 50 levels deep and verify the leaf.
+        // SAFETY: val is valid from parse.
+        unsafe {
+            let key = CString::new("a").unwrap();
+            let mut current = val;
+            for _ in 0..50 {
+                let next = hew_json_get_field(current, key.as_ptr());
+                assert!(!next.is_null());
+                if current != val {
+                    hew_json_free(current);
+                }
+                current = next;
+            }
+            assert_eq!(hew_json_get_int(current), 42);
+            hew_json_free(current);
+            hew_json_free(val);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Roundtrip: build → stringify → parse → verify
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_complex_builder_structure() {
+        // Build: {"items":[{"id":1,"label":"α"},{"id":2,"label":"β"}],"count":2}
+        // SAFETY: all pointers from builder functions.
+        unsafe {
+            let root = hew_json_object_new();
+            let items = hew_json_array_new();
+
+            for (id, label) in [(1_i64, "α"), (2, "β")] {
+                let item = hew_json_object_new();
+                let k_id = CString::new("id").unwrap();
+                hew_json_object_set_int(item, k_id.as_ptr(), id);
+                let k_label = CString::new("label").unwrap();
+                let v_label = CString::new(label).unwrap();
+                hew_json_object_set_string(item, k_label.as_ptr(), v_label.as_ptr());
+                hew_json_array_push(items, item);
+            }
+
+            let k_items = CString::new("items").unwrap();
+            hew_json_object_set(root, k_items.as_ptr(), items);
+            let k_count = CString::new("count").unwrap();
+            hew_json_object_set_int(root, k_count.as_ptr(), 2);
+
+            // Stringify and re-parse.
+            let json_str = hew_json_stringify(root);
+            let json_text = read_and_free_cstr(json_str);
+            hew_json_free(root);
+
+            let reparsed = parse(&json_text);
+            assert!(!reparsed.is_null());
+
+            // Verify count survived.
+            let count_field = hew_json_get_field(reparsed, k_count.as_ptr());
+            assert_eq!(hew_json_get_int(count_field), 2);
+            hew_json_free(count_field);
+
+            // Verify items[1].label == "β".
+            let items_field = hew_json_get_field(reparsed, k_items.as_ptr());
+            assert_eq!(hew_json_array_len(items_field), 2);
+            let item1 = hew_json_array_get(items_field, 1);
+            let k_label = CString::new("label").unwrap();
+            let label_field = hew_json_get_field(item1, k_label.as_ptr());
+            let label_str = read_and_free_cstr(hew_json_get_string(label_field));
+            assert_eq!(label_str, "β");
+            hew_json_free(label_field);
+            hew_json_free(item1);
+            hew_json_free(items_field);
+            hew_json_free(reparsed);
+        }
+    }
 }

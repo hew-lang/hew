@@ -247,6 +247,7 @@ impl MpscQueue {
             (*dummy).data = (*first).data;
             (*dummy).data_size = (*first).data_size;
             (*dummy).reply_channel = (*first).reply_channel;
+            (*dummy).trace_context = (*first).trace_context;
             (*dummy).next.store(ptr::null_mut(), Ordering::Relaxed);
 
             // Clear `first`'s payload so it's a clean sentinel.
@@ -254,6 +255,7 @@ impl MpscQueue {
             (*first).data = ptr::null_mut();
             (*first).data_size = 0;
             (*first).reply_channel = ptr::null_mut();
+            (*first).trace_context = HewTraceContext::default();
         }
         // Return `dummy` with the message payload. Caller frees it.
         dummy
@@ -1520,6 +1522,50 @@ mod tests {
             // Suppress unused-value warning.
             let _ = val;
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn trace_context_preserved_in_dequeue() {
+        // Test that trace_context is properly copied during dequeue
+        // SAFETY: test owns the mailbox exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 42;
+
+            // Create a custom trace context
+            let custom_trace = HewTraceContext {
+                trace_id_hi: 0xDEAD_BEEF_1234_5678,
+                trace_id_lo: 0x9ABC_DEF0_1234_5678,
+                span_id: 0x1122_3344_5566_7788,
+                parent_span_id: 0xAABB_CCDD_EEFF_0011,
+                flags: 0x01, // sampled
+            };
+
+            // Temporarily set the current context to our custom one
+            let original_context = crate::tracing::current_context();
+            crate::tracing::set_context(custom_trace);
+
+            // Send a message (which should capture the current trace context)
+            let rc = hew_mailbox_send(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(rc, 0);
+
+            // Restore original context so the receive doesn't interfere
+            crate::tracing::set_context(original_context);
+
+            // Receive the message
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+
+            // Verify the trace context was preserved
+            assert_eq!((*node).trace_context.trace_id_hi, 0xDEAD_BEEF_1234_5678);
+            assert_eq!((*node).trace_context.trace_id_lo, 0x9ABC_DEF0_1234_5678);
+            assert_eq!((*node).trace_context.span_id, 0x1122_3344_5566_7788);
+            assert_eq!((*node).trace_context.parent_span_id, 0xAABB_CCDD_EEFF_0011);
+            assert_eq!((*node).trace_context.flags, 0x01);
+
+            hew_msg_node_free(node);
             hew_mailbox_free(mb);
         }
     }

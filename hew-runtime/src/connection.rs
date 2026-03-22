@@ -58,8 +58,9 @@ use crate::wire::{
 pub const CONN_STATE_CONNECTING: i32 = 0;
 /// Connection is active and ready for I/O.
 pub const CONN_STATE_ACTIVE: i32 = 1;
-/// Connection is draining (no new sends, waiting for in-flight).
-/// TODO: reserve for future graceful shutdown semantics once conn draining is implemented.
+/// Connection is draining (no new sends, waiting for in-flight messages).
+/// Currently recognised by the state machine but not automatically entered
+/// during shutdown — callers must set this state explicitly.
 pub const CONN_STATE_DRAINING: i32 = 2;
 /// Connection is closed.
 pub const CONN_STATE_CLOSED: i32 = 3;

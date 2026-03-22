@@ -46,3 +46,4 @@ docs/archive/
 *.profraw
 coverage-out/
 *.profdata
+*.backup

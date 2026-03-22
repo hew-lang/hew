@@ -37,7 +37,7 @@ if ((${#rs_files[@]} > 0)); then
     # Stdout (JSON diagnostics) goes to a tmpfile; stderr (progress) passes
     # through so the developer sees compilation output.
     clippy_json=$(mktemp)
-    if ! cargo clippy --workspace --tests --message-format=json -- -D warnings \
+    if ! CARGO_INCREMENTAL=0 cargo clippy --workspace --tests --message-format=json -- -D warnings \
         >"$clippy_json"; then
         echo ""
         echo "clippy found issues — fix before committing."

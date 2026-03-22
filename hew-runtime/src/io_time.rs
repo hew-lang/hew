@@ -715,3 +715,409 @@ mod platform {
 
 // Re-export the platform poller type so consumers can reference it.
 pub use platform::HewIoPoller;
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    // -- Duration -----------------------------------------------------------
+
+    #[test]
+    fn seconds_positive_converts_to_milliseconds() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(5) };
+        assert_eq!(d.ms, 5000);
+    }
+
+    #[test]
+    fn seconds_zero_returns_zero() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(0) };
+        assert_eq!(d.ms, 0);
+    }
+
+    #[test]
+    fn seconds_negative_wraps_via_unsigned_cast() {
+        // -1i32.cast_unsigned() == u32::MAX; wrapping_mul(1000) wraps.
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(-1) };
+        let expected = u64::from(u32::MAX).wrapping_mul(1000);
+        assert_eq!(d.ms, expected);
+    }
+
+    #[test]
+    fn seconds_large_value_wraps_correctly() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(c_int::MAX) };
+        let expected = u64::from(c_int::MAX.cast_unsigned()).wrapping_mul(1000);
+        assert_eq!(d.ms, expected);
+    }
+
+    #[test]
+    fn milliseconds_positive_passes_through() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_milliseconds(42) };
+        assert_eq!(d.ms, 42);
+    }
+
+    #[test]
+    fn milliseconds_zero_returns_zero() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_milliseconds(0) };
+        assert_eq!(d.ms, 0);
+    }
+
+    #[test]
+    fn milliseconds_negative_wraps_via_unsigned_cast() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_milliseconds(-1) };
+        assert_eq!(d.ms, u64::from(u32::MAX));
+    }
+
+    // -- Clock --------------------------------------------------------------
+
+    #[test]
+    fn monotonic_ms_is_non_decreasing() {
+        let t1 = monotonic_ms();
+        let t2 = monotonic_ms();
+        assert!(t2 >= t1);
+    }
+
+    #[test]
+    fn now_ms_without_simtime_returns_monotonic_value() {
+        // With simtime disabled (default), hew_now_ms delegates to
+        // monotonic_ms. Verify it returns a sane value.
+        // SAFETY: no preconditions.
+        let t = unsafe { hew_now_ms() };
+        // Epoch set on first call; subsequent calls return elapsed ms.
+        // Verify within reasonable range (< 1 day).
+        assert!(t < 86_400_000);
+    }
+
+    // -- Sleep --------------------------------------------------------------
+
+    #[test]
+    fn sleep_zero_is_noop() {
+        // SAFETY: no preconditions; ms <= 0 is a no-op.
+        unsafe { hew_sleep_ms(0) };
+    }
+
+    #[test]
+    fn sleep_negative_is_noop() {
+        // SAFETY: no preconditions; ms <= 0 is a no-op.
+        unsafe { hew_sleep_ms(-1) };
+    }
+
+    #[test]
+    fn sleep_small_positive_completes() {
+        // Verify it doesn't panic or hang. No timing assertion.
+        // SAFETY: no preconditions.
+        unsafe { hew_sleep_ms(1) };
+    }
+
+    // -- File I/O -----------------------------------------------------------
+
+    /// Helper: read a malloc'd C string, assert non-null, free it.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a non-null, NUL-terminated, malloc-allocated C string.
+    unsafe fn read_and_free(ptr: *mut c_char) -> String {
+        assert!(!ptr.is_null(), "expected non-null C string pointer");
+        // SAFETY: caller guarantees ptr is a valid NUL-terminated C string.
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        // SAFETY: ptr was allocated with libc::malloc.
+        unsafe { libc::free(ptr.cast()) };
+        s
+    }
+
+    #[test]
+    fn read_file_null_path_returns_null() {
+        // SAFETY: null is explicitly handled by cabi_guard.
+        let result = unsafe { hew_read_file(std::ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn read_file_nonexistent_path_returns_null() {
+        let path = CString::new("/tmp/hew_test_nonexistent_file_XXXXXX").unwrap();
+        // SAFETY: path is a valid NUL-terminated C string.
+        let result = unsafe { hew_read_file(path.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn read_file_valid_content_roundtrip() {
+        let tmp = std::env::temp_dir().join(std::format!("hew_iotime_read_{}", std::process::id()));
+        std::fs::write(&tmp, "hello from hew").unwrap();
+
+        let path = CString::new(tmp.to_str().unwrap()).unwrap();
+        // SAFETY: path is valid NUL-terminated; returned pointer is
+        // malloc'd and non-null on success.
+        let text = unsafe { read_and_free(hew_read_file(path.as_ptr())) };
+        assert_eq!(text, "hello from hew");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_file_empty_returns_empty_string() {
+        let tmp =
+            std::env::temp_dir().join(std::format!("hew_iotime_empty_{}", std::process::id()));
+        std::fs::write(&tmp, "").unwrap();
+
+        let path = CString::new(tmp.to_str().unwrap()).unwrap();
+        // SAFETY: path is a valid NUL-terminated C string.
+        let text = unsafe { read_and_free(hew_read_file(path.as_ptr())) };
+        assert_eq!(text, "");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_file_invalid_utf8_path_returns_null() {
+        // Bytes that are valid Latin-1 but invalid UTF-8.
+        // CStr::to_str() fails inside hew_read_file -> returns null.
+        let bad_bytes: &[u8] = b"/tmp/\xff\xfe\x00";
+        let c_path = CStr::from_bytes_with_nul(bad_bytes).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated C string.
+        let result = unsafe { hew_read_file(c_path.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn read_file_embedded_nul_truncates_at_first_nul() {
+        // CONTRACT: hew_read_file returns a malloc'd C string (NUL-terminated).
+        // Files with interior NUL bytes are read successfully, but the
+        // returned C string is truncated at the first interior NUL — this
+        // is inherent to C string semantics, not a bug. The full 7-byte
+        // buffer ("abc\0def") is allocated, but CStr::from_ptr and any
+        // C caller will only see "abc".
+        let tmp = std::env::temp_dir().join(std::format!("hew_iotime_nul_{}", std::process::id()));
+        std::fs::write(&tmp, "abc\0def").unwrap();
+
+        let path = CString::new(tmp.to_str().unwrap()).unwrap();
+        // SAFETY: path is valid NUL-terminated.
+        let ptr = unsafe { hew_read_file(path.as_ptr()) };
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is malloc'd and NUL-terminated.
+        let seen = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        // C string truncates at first interior NUL.
+        assert_eq!(seen, "abc");
+        assert_eq!(seen.len(), 3, "C string length should stop at interior NUL");
+        // SAFETY: ptr was allocated with libc::malloc.
+        unsafe { libc::free(ptr.cast()) };
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // -- Event flag constants -----------------------------------------------
+
+    #[test]
+    fn io_event_flags_are_distinct_bits() {
+        let all = [HEW_IO_READ, HEW_IO_WRITE, HEW_IO_ERROR, HEW_IO_HUP];
+        for (i, &a) in all.iter().enumerate() {
+            assert_eq!(a.count_ones(), 1, "flag is not a single bit");
+            for &b in &all[i + 1..] {
+                assert_eq!(a & b, 0, "flags overlap");
+            }
+        }
+    }
+
+    // -- I/O Poller lifecycle -----------------------------------------------
+    //
+    // Exercises create/register/unregister/poll/stop using OS pipes.
+    // Actual event *dispatch* (sending to an HewActor) requires an
+    // initialised scheduler and is covered by E2E tests.
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    mod poller {
+        use super::*;
+        use crate::io_time::platform::*;
+
+        /// Non-null dummy actor pointer for register calls that will
+        /// never trigger dispatch (no data written to pipe).
+        fn dummy_actor() -> *mut HewActor {
+            std::ptr::NonNull::<HewActor>::dangling().as_ptr()
+        }
+
+        /// Create an OS pipe pair, returning `(read_fd, write_fd)`.
+        fn make_pipe() -> (c_int, c_int) {
+            let mut fds: [c_int; 2] = [0; 2];
+            // SAFETY: fds is a valid 2-element array.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            (fds[0], fds[1])
+        }
+
+        #[test]
+        fn new_returns_non_null() {
+            // SAFETY: no preconditions.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            // SAFETY: p is valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn stop_null_is_safe() {
+            // SAFETY: null is explicitly guarded.
+            unsafe { hew_io_poller_stop(std::ptr::null_mut()) };
+        }
+
+        #[test]
+        fn register_null_poller_returns_error() {
+            // SAFETY: null poller is guarded by cabi_guard.
+            let rc = unsafe {
+                hew_io_poller_register(
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    HEW_IO_READ,
+                )
+            };
+            assert_eq!(rc, -1);
+        }
+
+        #[test]
+        fn unregister_null_poller_returns_error() {
+            // SAFETY: null poller is guarded by cabi_guard.
+            let rc = unsafe { hew_io_poller_unregister(std::ptr::null_mut(), 0) };
+            assert_eq!(rc, -1);
+        }
+
+        #[test]
+        fn poll_null_poller_returns_error() {
+            // SAFETY: null poller is guarded by cabi_guard.
+            let rc = unsafe { hew_io_poller_poll(std::ptr::null_mut(), 0) };
+            assert_eq!(rc, -1);
+        }
+
+        #[test]
+        fn register_bad_fd_returns_error() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+
+            // SAFETY: p is valid; -1 is an invalid fd that will make
+            // epoll_ctl / kevent return an error.
+            let rc = unsafe { hew_io_poller_register(p, -1, dummy_actor(), 1, HEW_IO_READ) };
+            assert_eq!(rc, -1);
+
+            // SAFETY: p is valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn register_and_unregister_valid_pipe() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (rfd, wfd) = make_pipe();
+
+            // SAFETY: p is valid; rfd is a valid fd from pipe();
+            // dummy_actor is non-null but never dispatched.
+            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
+            assert_eq!(reg, 0);
+
+            // SAFETY: p is valid; rfd was previously registered.
+            let unreg = unsafe { hew_io_poller_unregister(p, rfd) };
+            assert_eq!(unreg, 0);
+
+            // SAFETY: closing our own fds; p surrendering ownership.
+            unsafe {
+                libc::close(rfd);
+                libc::close(wfd);
+                hew_io_poller_stop(p);
+            }
+        }
+
+        // Platform-specific: epoll_ctl(DEL) fails for unregistered fds
+        // on Linux (returns -1), but the kqueue backend on macOS/FreeBSD
+        // ignores EV_DELETE errors and always returns 0.
+        #[test]
+        fn unregister_unknown_fd_platform_behaviour() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+
+            // SAFETY: p is valid; fd 9999 was never registered.
+            let rc = unsafe { hew_io_poller_unregister(p, 9999) };
+
+            #[cfg(target_os = "linux")]
+            assert_eq!(rc, -1, "epoll returns -1 for unregistered fd");
+
+            #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+            assert_eq!(rc, 0, "kqueue silently ignores EV_DELETE for unknown fd");
+
+            // SAFETY: p is valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn poll_empty_zero_timeout_returns_zero() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+
+            // SAFETY: p is valid; 0ms timeout returns immediately.
+            let n = unsafe { hew_io_poller_poll(p, 0) };
+            assert_eq!(n, 0);
+
+            // SAFETY: p is valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn poll_registered_no_data_zero_timeout_returns_zero() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (rfd, wfd) = make_pipe();
+
+            // SAFETY: p is valid; rfd from pipe(); dummy_actor non-null.
+            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
+            assert_eq!(reg, 0);
+
+            // Nothing written to the pipe -> 0ms timeout -> 0 events.
+            // SAFETY: p is valid.
+            let n = unsafe { hew_io_poller_poll(p, 0) };
+            assert_eq!(n, 0);
+
+            // SAFETY: p is valid; closing our own fds.
+            unsafe {
+                hew_io_poller_unregister(p, rfd);
+                libc::close(rfd);
+                libc::close(wfd);
+                hew_io_poller_stop(p);
+            }
+        }
+
+        #[test]
+        fn register_both_read_and_write_succeeds() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (rfd, wfd) = make_pipe();
+
+            // SAFETY: p valid; rfd from pipe(); dummy_actor non-null.
+            let rc = unsafe {
+                hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ | HEW_IO_WRITE)
+            };
+            assert_eq!(rc, 0);
+
+            // SAFETY: p valid; closing our own fds.
+            unsafe {
+                hew_io_poller_unregister(p, rfd);
+                libc::close(rfd);
+                libc::close(wfd);
+                hew_io_poller_stop(p);
+            }
+        }
+    }
+}

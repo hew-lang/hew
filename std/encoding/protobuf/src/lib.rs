@@ -815,4 +815,459 @@ mod tests {
             hew_proto_msg_free(msg);
         }
     }
+
+    // ----- Null-pointer safety for every setter/getter -----
+
+    #[test]
+    fn set_varint_null_msg_is_noop() {
+        // SAFETY: testing null-safety — no valid pointer needed.
+        unsafe { hew_proto_msg_set_varint(std::ptr::null_mut(), 1, 42) };
+    }
+
+    #[test]
+    fn set_fixed64_null_msg_is_noop() {
+        // SAFETY: testing null-safety.
+        unsafe { hew_proto_msg_set_fixed64(std::ptr::null_mut(), 1, 42) };
+    }
+
+    #[test]
+    fn set_fixed32_null_msg_is_noop() {
+        // SAFETY: testing null-safety.
+        unsafe { hew_proto_msg_set_fixed32(std::ptr::null_mut(), 1, 42) };
+    }
+
+    #[test]
+    fn set_bytes_null_msg_is_noop() {
+        let data = [0xABu8];
+        // SAFETY: testing null-safety.
+        unsafe { hew_proto_msg_set_bytes(std::ptr::null_mut(), 1, data.as_ptr(), data.len()) };
+    }
+
+    #[test]
+    fn set_string_null_msg_is_noop() {
+        let s = CString::new("test").unwrap();
+        // SAFETY: testing null-safety.
+        unsafe { hew_proto_msg_set_string(std::ptr::null_mut(), 1, s.as_ptr()) };
+    }
+
+    #[test]
+    fn set_string_null_str_is_noop() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid; null string should be a no-op.
+        unsafe {
+            hew_proto_msg_set_string(msg, 1, std::ptr::null());
+            assert_eq!(hew_proto_msg_has_field(msg, 1), 0);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn encode_null_msg_returns_null() {
+        let mut len: usize = 0;
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert!(hew_proto_msg_encode(std::ptr::null(), &raw mut len).is_null());
+        }
+    }
+
+    #[test]
+    fn encode_null_out_len_returns_null() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid; null out_len should return null.
+        unsafe {
+            assert!(hew_proto_msg_encode(msg, std::ptr::null_mut()).is_null());
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_varint_null_msg_returns_default() {
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert_eq!(hew_proto_msg_get_varint(std::ptr::null(), 1, 999), 999);
+        }
+    }
+
+    #[test]
+    fn get_fixed64_null_msg_returns_default() {
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert_eq!(hew_proto_msg_get_fixed64(std::ptr::null(), 1, 777), 777);
+        }
+    }
+
+    #[test]
+    fn get_fixed32_null_msg_returns_default() {
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert_eq!(hew_proto_msg_get_fixed32(std::ptr::null(), 1, 333), 333);
+        }
+    }
+
+    #[test]
+    fn get_bytes_null_msg_returns_null() {
+        let mut len: usize = 99;
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert!(hew_proto_msg_get_bytes(std::ptr::null(), 1, &raw mut len).is_null());
+        }
+    }
+
+    #[test]
+    fn get_bytes_null_out_len_returns_null() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid; null out_len should return null.
+        unsafe {
+            assert!(hew_proto_msg_get_bytes(msg, 1, std::ptr::null_mut()).is_null());
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_string_null_msg_returns_null() {
+        // SAFETY: testing null-safety.
+        unsafe {
+            assert!(hew_proto_msg_get_string(std::ptr::null(), 1).is_null());
+        }
+    }
+
+    #[test]
+    fn free_null_is_noop() {
+        // SAFETY: freeing null must be a safe no-op.
+        unsafe { hew_proto_msg_free(std::ptr::null_mut()) };
+    }
+
+    // ----- Wire-type mismatch on getters -----
+
+    #[test]
+    fn get_varint_on_bytes_field_returns_default() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            let data = [1u8, 2, 3];
+            hew_proto_msg_set_bytes(msg, 1, data.as_ptr(), data.len());
+            assert_eq!(hew_proto_msg_get_varint(msg, 1, 55), 55);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_fixed64_on_varint_field_returns_default() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_varint(msg, 1, 42);
+            assert_eq!(hew_proto_msg_get_fixed64(msg, 1, 88), 88);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_fixed32_on_fixed64_field_returns_default() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_fixed64(msg, 1, 42);
+            assert_eq!(hew_proto_msg_get_fixed32(msg, 1, 77), 77);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_string_on_varint_field_returns_null() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_varint(msg, 1, 42);
+            assert!(hew_proto_msg_get_string(msg, 1).is_null());
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn get_bytes_on_varint_field_returns_null() {
+        let msg = hew_proto_msg_new();
+        let mut len: usize = 99;
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_varint(msg, 1, 42);
+            assert!(hew_proto_msg_get_bytes(msg, 1, &raw mut len).is_null());
+            assert_eq!(len, 0);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    // ----- Malformed wire data -----
+
+    #[test]
+    fn decode_truncated_fixed64_returns_null() {
+        // Tag for field 1, wire type FIXED64: (1 << 3) | 1 = 0x09
+        // Then only 4 bytes instead of 8.
+        let data: &[u8] = &[0x09, 0x01, 0x02, 0x03, 0x04];
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+    }
+
+    #[test]
+    fn decode_truncated_fixed32_returns_null() {
+        // Tag for field 1, wire type FIXED32: (1 << 3) | 5 = 0x0D
+        // Then only 2 bytes instead of 4.
+        let data: &[u8] = &[0x0D, 0x01, 0x02];
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+    }
+
+    #[test]
+    fn decode_truncated_length_delimited_returns_null() {
+        // Tag for field 1, wire type LEN: (1 << 3) | 2 = 0x0A
+        // Length varint says 10 bytes, but only 3 follow.
+        let data: &[u8] = &[0x0A, 0x0A, 0x01, 0x02, 0x03];
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+    }
+
+    #[test]
+    fn decode_unknown_wire_type_returns_null() {
+        // Wire types 3, 4, 6, 7 are unknown/deprecated.
+        // Tag for field 1, wire type 3: (1 << 3) | 3 = 0x0B
+        let data: &[u8] = &[0x0B, 0x00];
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+    }
+
+    #[test]
+    fn decode_varint_overflow_returns_null() {
+        // A varint that overflows u64: 10 continuation bytes + a trailing byte with
+        // upper bits set. The 10th byte (index 9) has 0x7E bits set, triggering overflow.
+        let data: &[u8] = &[
+            0x08, // tag: field 1, varint
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E,
+        ];
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+    }
+
+    // ----- Empty / boundary conditions -----
+
+    #[test]
+    fn empty_message_encode_decode() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            // Empty message encodes to zero bytes, but encode allocates at least 1.
+            assert!(!encoded.is_null());
+            assert_eq!(out_len, 0);
+
+            // Decoding zero-length data returns null (no fields to parse).
+            assert!(hew_proto_msg_decode(encoded, 0).is_null());
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn set_bytes_null_data_stores_empty() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_bytes(msg, 1, std::ptr::null(), 0);
+            assert_eq!(hew_proto_msg_has_field(msg, 1), 1);
+
+            let mut len: usize = 99;
+            let ptr = hew_proto_msg_get_bytes(msg, 1, &raw mut len);
+            // Empty bytes field: pointer is non-null (Vec::as_ptr) but length is 0.
+            assert_eq!(len, 0);
+            // Vec::as_ptr() on an empty vec is non-null but dangling — just check len.
+            let _ = ptr;
+
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn set_bytes_zero_len_stores_empty() {
+        let msg = hew_proto_msg_new();
+        let data = [0xFFu8; 4];
+        // SAFETY: msg is valid; len=0 means the data pointer shouldn't be read.
+        unsafe {
+            hew_proto_msg_set_bytes(msg, 1, data.as_ptr(), 0);
+            assert_eq!(hew_proto_msg_has_field(msg, 1), 1);
+
+            let mut len: usize = 99;
+            let _ptr = hew_proto_msg_get_bytes(msg, 1, &raw mut len);
+            assert_eq!(len, 0);
+
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn large_field_number_roundtrip() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            // Protobuf allows field numbers up to 2^29 - 1.
+            let big_field: u32 = (1 << 29) - 1;
+            hew_proto_msg_set_varint(msg, big_field, 12345);
+
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            assert!(!encoded.is_null());
+
+            let decoded = hew_proto_msg_decode(encoded, out_len);
+            assert!(!decoded.is_null());
+            assert_eq!(hew_proto_msg_get_varint(decoded, big_field, 0), 12345);
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(decoded);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn fixed64_roundtrip() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_fixed64(msg, 1, 0);
+            hew_proto_msg_set_fixed64(msg, 2, u64::MAX);
+
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            assert!(!encoded.is_null());
+
+            let decoded = hew_proto_msg_decode(encoded, out_len);
+            assert!(!decoded.is_null());
+            assert_eq!(hew_proto_msg_get_fixed64(decoded, 1, 99), 0);
+            assert_eq!(hew_proto_msg_get_fixed64(decoded, 2, 0), u64::MAX);
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(decoded);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn fixed32_roundtrip() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_fixed32(msg, 1, 0);
+            hew_proto_msg_set_fixed32(msg, 2, u32::MAX);
+
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            assert!(!encoded.is_null());
+
+            let decoded = hew_proto_msg_decode(encoded, out_len);
+            assert!(!decoded.is_null());
+            assert_eq!(hew_proto_msg_get_fixed32(decoded, 1, 99), 0);
+            assert_eq!(hew_proto_msg_get_fixed32(decoded, 2, 0), u32::MAX);
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(decoded);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn multiple_fields_same_type_distinguishable() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_varint(msg, 1, 100);
+            hew_proto_msg_set_varint(msg, 2, 200);
+            hew_proto_msg_set_varint(msg, 3, 300);
+
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            let decoded = hew_proto_msg_decode(encoded, out_len);
+            assert!(!decoded.is_null());
+
+            assert_eq!(hew_proto_msg_get_varint(decoded, 1, 0), 100);
+            assert_eq!(hew_proto_msg_get_varint(decoded, 2, 0), 200);
+            assert_eq!(hew_proto_msg_get_varint(decoded, 3, 0), 300);
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(decoded);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    #[test]
+    fn mixed_wire_types_roundtrip() {
+        let msg = hew_proto_msg_new();
+        // SAFETY: msg is valid.
+        unsafe {
+            hew_proto_msg_set_varint(msg, 1, 42);
+            hew_proto_msg_set_fixed32(msg, 2, 0xBEEF);
+            hew_proto_msg_set_fixed64(msg, 3, 0xCAFE_BABE);
+            let s = CString::new("mixed").unwrap();
+            hew_proto_msg_set_string(msg, 4, s.as_ptr());
+            let blob = [0xAA, 0xBB, 0xCC];
+            hew_proto_msg_set_bytes(msg, 5, blob.as_ptr(), blob.len());
+
+            let mut out_len: usize = 0;
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
+            let decoded = hew_proto_msg_decode(encoded, out_len);
+            assert!(!decoded.is_null());
+
+            assert_eq!(hew_proto_msg_get_varint(decoded, 1, 0), 42);
+            assert_eq!(hew_proto_msg_get_fixed32(decoded, 2, 0), 0xBEEF);
+            assert_eq!(hew_proto_msg_get_fixed64(decoded, 3, 0), 0xCAFE_BABE);
+
+            let got_s = hew_proto_msg_get_string(decoded, 4);
+            assert_eq!(std::ffi::CStr::from_ptr(got_s).to_str().unwrap(), "mixed");
+            libc::free(got_s.cast());
+
+            let mut blob_len: usize = 0;
+            let blob_ptr = hew_proto_msg_get_bytes(decoded, 5, &raw mut blob_len);
+            assert_eq!(
+                std::slice::from_raw_parts(blob_ptr, blob_len),
+                &[0xAA, 0xBB, 0xCC]
+            );
+
+            libc::free(encoded.cast());
+            hew_proto_msg_free(decoded);
+            hew_proto_msg_free(msg);
+        }
+    }
+
+    // ----- Internal varint helpers -----
+
+    #[test]
+    fn varint_encode_decode_boundary_values() {
+        for &val in &[0u64, 1, 127, 128, 16383, 16384, u64::MAX] {
+            let mut buf = Vec::new();
+            encode_varint(val, &mut buf);
+            let (decoded, end) = decode_varint(&buf, 0).unwrap();
+            assert_eq!(decoded, val, "roundtrip failed for {val}");
+            assert_eq!(end, buf.len(), "consumed wrong number of bytes for {val}");
+        }
+    }
+
+    #[test]
+    fn decode_varint_empty_returns_none() {
+        assert!(decode_varint(&[], 0).is_none());
+    }
+
+    #[test]
+    fn decode_varint_truncated_returns_none() {
+        // High bit set but no continuation byte.
+        assert!(decode_varint(&[0x80], 0).is_none());
+        assert!(decode_varint(&[0x80, 0x80], 0).is_none());
+    }
 }

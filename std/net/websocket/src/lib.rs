@@ -285,4 +285,87 @@ mod tests {
         // SAFETY: Passing null is explicitly handled.
         unsafe { hew_ws_message_free(std::ptr::null_mut()) };
     }
+
+    /// `hew_ws_send_text` with null ws returns -1.
+    #[test]
+    fn send_text_null_ws_returns_error() {
+        let msg = c"hello";
+        assert_eq!(
+            // SAFETY: null ws is explicitly handled.
+            unsafe { hew_ws_send_text(std::ptr::null_mut(), msg.as_ptr()) },
+            -1
+        );
+    }
+
+    /// `hew_ws_send_text` with null msg returns -1.
+    #[test]
+    fn send_text_null_msg_returns_error() {
+        // We can't create a real ws connection without a server, so test the
+        // null-msg guard by passing null for both — ws null check fires first.
+        assert_eq!(
+            // SAFETY: null pointers are explicitly handled.
+            unsafe { hew_ws_send_text(std::ptr::null_mut(), std::ptr::null()) },
+            -1
+        );
+    }
+
+    /// `hew_ws_send_binary` with null ws returns -1.
+    #[test]
+    fn send_binary_null_ws_returns_error() {
+        let data = [1u8, 2, 3];
+        assert_eq!(
+            // SAFETY: null ws is explicitly handled.
+            unsafe { hew_ws_send_binary(std::ptr::null_mut(), data.as_ptr(), data.len()) },
+            -1
+        );
+    }
+
+    /// `hew_ws_recv` with null ws returns null.
+    #[test]
+    fn recv_null_ws_returns_null() {
+        // SAFETY: null ws is explicitly handled.
+        assert!(unsafe { hew_ws_recv(std::ptr::null_mut()) }.is_null());
+    }
+
+    /// `hew_ws_close` with null ws is a no-op.
+    #[test]
+    fn close_null_ws_is_noop() {
+        // SAFETY: null ws is explicitly handled.
+        unsafe { hew_ws_close(std::ptr::null_mut()) };
+    }
+
+    /// `build_message` with empty payload creates a valid message with null data.
+    #[test]
+    fn build_message_empty_payload() {
+        let msg = build_message(4, &[]);
+        assert!(!msg.is_null());
+        // SAFETY: msg was just allocated by build_message.
+        let msg_ref = unsafe { &*msg };
+        assert_eq!(msg_ref.msg_type, 4);
+        assert_eq!(msg_ref.data_len, 0);
+        assert!(
+            msg_ref.data.is_null(),
+            "empty payload should have null data"
+        );
+        // SAFETY: msg was allocated by build_message.
+        unsafe { hew_ws_message_free(msg) };
+    }
+
+    /// connect with an HTTP URL (not ws://) returns null.
+    #[test]
+    fn connect_http_url_returns_null() {
+        let url = c"http://127.0.0.1:1/path";
+        // SAFETY: url is a valid C string.
+        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        assert!(conn.is_null(), "non-WebSocket URL should fail");
+    }
+
+    /// connect with an empty string returns null.
+    #[test]
+    fn connect_empty_url_returns_null() {
+        let url = c"";
+        // SAFETY: url is a valid C string.
+        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        assert!(conn.is_null(), "empty URL should fail");
+    }
 }

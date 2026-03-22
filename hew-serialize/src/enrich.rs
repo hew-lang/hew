@@ -6,8 +6,8 @@
 //! can consume without its own type inference.
 
 use hew_parser::ast::{
-    ActorDecl, Block, CallArg, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param,
-    Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
+    Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;
@@ -123,17 +123,35 @@ fn require_converted(
     ty_to_type_expr(ty).map_err(|diagnostic| diagnostic.with_context(context))
 }
 
+/// Convert a callable type (function or closure) to a `TypeExpr::Function`.
+fn convert_callable_type(
+    params: &[Ty],
+    ret: &Ty,
+    label: &str,
+) -> Result<TypeExpr, TypeExprConversionError> {
+    let param_exprs = params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| require_converted(param, format!("{label} parameter {index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ret_expr = require_converted(ret, format!("{label} return type"))?;
+    Ok(TypeExpr::Function {
+        params: param_exprs,
+        return_type: Box::new(ret_expr),
+    })
+}
+
 /// Extract a short element-type name from a `Ty` for stream method dispatch.
 ///
 /// Returns `"bytes"` for `Ty::Bytes`, `"String"` for `Ty::String`, or the
 /// `name` for `Ty::Named`.  Used by the enricher to select the correct
 /// runtime C symbol (e.g. `hew_stream_next` vs `hew_stream_next_bytes`).
-fn ty_element_name(ty: &Ty) -> String {
+fn ty_element_name(ty: &Ty) -> Option<&str> {
     match ty {
-        Ty::Bytes => "bytes".to_string(),
-        Ty::String => "String".to_string(),
-        Ty::Named { name, .. } => name.clone(),
-        _ => String::new(),
+        Ty::Bytes => Some("bytes"),
+        Ty::String => Some("String"),
+        Ty::Named { name, .. } => Some(name),
+        _ => None,
     }
 }
 
@@ -189,16 +207,10 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                         err: Box::new(err_expr),
                     }
                 }
-                ("Generator", _) => {
+                ("Generator" | "AsyncGenerator", _) => {
                     return Err(TypeExprConversionError::unsupported(
                         ty,
                         "generator type is not representable in serialized TypeExpr",
-                    ));
-                }
-                ("AsyncGenerator", _) => {
-                    return Err(TypeExprConversionError::unsupported(
-                        ty,
-                        "async generator type is not representable in serialized TypeExpr",
                     ));
                 }
                 ("Range", 1) => {
@@ -235,35 +247,9 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                 }
             },
 
-            Ty::Function { params, ret } => {
-                let param_exprs = params
-                    .iter()
-                    .enumerate()
-                    .map(|(index, param)| {
-                        require_converted(param, format!("function parameter {index}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let ret_expr = require_converted(ret, "function return type")?;
-                TypeExpr::Function {
-                    params: param_exprs,
-                    return_type: Box::new(ret_expr),
-                }
-            }
+            Ty::Function { params, ret } => convert_callable_type(params, ret, "function")?,
 
-            Ty::Closure { params, ret, .. } => {
-                let param_exprs = params
-                    .iter()
-                    .enumerate()
-                    .map(|(index, param)| {
-                        require_converted(param, format!("closure parameter {index}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let ret_expr = require_converted(ret, "closure return type")?;
-                TypeExpr::Function {
-                    params: param_exprs,
-                    return_type: Box::new(ret_expr),
-                }
-            }
+            Ty::Closure { params, ret, .. } => convert_callable_type(params, ret, "closure")?,
 
             Ty::Tuple(elements) => {
                 let elem_exprs = elements
@@ -459,17 +445,17 @@ fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry:
     if let TypeExpr::Named { name, type_args } = te {
         match name.as_str() {
             "Result" if type_args.as_ref().is_some_and(|a| a.len() == 2) => {
-                let mut args = type_args.take().unwrap();
-                let err = args.pop().unwrap();
-                let ok = args.pop().unwrap();
+                let mut args = type_args.take().expect("arity verified by guard");
+                let err = args.pop().expect("arity verified by guard");
+                let ok = args.pop().expect("arity verified by guard");
                 *te = TypeExpr::Result {
                     ok: Box::new(ok),
                     err: Box::new(err),
                 };
             }
             "Option" if type_args.as_ref().is_some_and(|a| a.len() == 1) => {
-                let mut args = type_args.take().unwrap();
-                let inner = args.pop().unwrap();
+                let mut args = type_args.take().expect("arity verified by guard");
+                let inner = args.pop().expect("arity verified by guard");
                 *te = TypeExpr::Option(Box::new(inner));
             }
             _ => {
@@ -584,6 +570,259 @@ pub fn rewrite_builtin_calls(items: &mut [Spanned<Item>]) {
     }
 }
 
+// ── Shared AST child-traversal helpers ──────────────────────────────────────
+//
+// The three tree-walk families (rewrite_builtin_calls, normalize_types, and
+// enrich_with_diagnostics) share identical child traversal for ~25 of ~30 Expr
+// variants.  These helpers factor out the common dispatch so each family only
+// needs to match the handful of variants where it has custom logic.
+
+/// Visitor interface for the shared AST child-traversal helpers.
+///
+/// Using a trait instead of separate closures avoids borrow-checker conflicts
+/// when the visitor needs shared mutable state (e.g. the diagnostics vec in
+/// the enrich family).
+trait AstVisitor {
+    fn visit_expr(&mut self, e: &mut Spanned<Expr>);
+    fn visit_block(&mut self, b: &mut Block);
+    fn visit_stmt(&mut self, s: &mut Stmt);
+}
+
+/// Visit all child expressions and blocks of an `Expr` node.
+///
+/// Handles the purely-recursive variants.  `Call`, `MethodCall`, `Lambda`, and
+/// `Cast` are intentionally skipped — callers must match those explicitly
+/// because each family has custom logic for them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per Expr variant is inherently long"
+)]
+fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
+    match &mut expr.0 {
+        Expr::Binary { left, right, .. } => {
+            v.visit_expr(left);
+            v.visit_expr(right);
+        }
+        Expr::Unary { operand, .. } => v.visit_expr(operand),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            v.visit_expr(condition);
+            v.visit_expr(then_block);
+            if let Some(e) = else_block {
+                v.visit_expr(e);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            v.visit_expr(expr);
+            v.visit_block(body);
+            if let Some(b) = else_body {
+                v.visit_block(b);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            v.visit_expr(scrutinee);
+            for arm in arms {
+                if let Some(g) = &mut arm.guard {
+                    v.visit_expr(g);
+                }
+                v.visit_expr(&mut arm.body);
+            }
+        }
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block)
+        | Expr::Scope { body: block, .. } => {
+            v.visit_block(block);
+        }
+        Expr::Array(elems) | Expr::Tuple(elems) => {
+            for e in elems {
+                v.visit_expr(e);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, val) in entries {
+                v.visit_expr(k);
+                v.visit_expr(val);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            v.visit_expr(value);
+            v.visit_expr(count);
+        }
+        Expr::Index { object, index } => {
+            v.visit_expr(object);
+            v.visit_expr(index);
+        }
+        Expr::FieldAccess { object, .. } => v.visit_expr(object),
+        Expr::StructInit { fields, .. } => {
+            for (_, val) in fields {
+                v.visit_expr(val);
+            }
+        }
+        Expr::Spawn { target, args } => {
+            v.visit_expr(target);
+            for (_, val) in args {
+                v.visit_expr(val);
+            }
+        }
+        Expr::SpawnLambdaActor { body, .. } => v.visit_expr(body),
+        Expr::Send { target, message } => {
+            v.visit_expr(target);
+            v.visit_expr(message);
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                v.visit_expr(&mut arm.source);
+                v.visit_expr(&mut arm.body);
+            }
+            if let Some(t) = timeout {
+                v.visit_expr(&mut t.duration);
+                v.visit_expr(&mut t.body);
+            }
+        }
+        Expr::Join(exprs) => {
+            for e in exprs {
+                v.visit_expr(e);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            v.visit_expr(expr);
+            v.visit_expr(duration);
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    v.visit_expr(e);
+                }
+            }
+        }
+        Expr::PostfixTry(inner) | Expr::Await(inner) | Expr::Yield(Some(inner)) => {
+            v.visit_expr(inner);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                v.visit_expr(s);
+            }
+            if let Some(e) = end {
+                v.visit_expr(e);
+            }
+        }
+        // Leaf nodes and family-specific variants (caller handles Call/MethodCall/Lambda/Cast)
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::Cooperate
+        | Expr::ScopeCancel
+        | Expr::This
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
+        | Expr::Yield(None)
+        | Expr::Call { .. }
+        | Expr::MethodCall { .. }
+        | Expr::Lambda { .. }
+        | Expr::Cast { .. } => {}
+    }
+}
+
+/// Visit all child expressions and blocks of a `Stmt` node.
+///
+/// `Let` and `Var` are intentionally skipped because the enrich family has
+/// custom type-inference logic for them.
+fn walk_stmt_children(stmt: &mut Stmt, v: &mut impl AstVisitor) {
+    match stmt {
+        Stmt::Expression(ref mut expr)
+        | Stmt::Return(Some(ref mut expr))
+        | Stmt::Break {
+            value: Some(ref mut expr),
+            ..
+        } => {
+            v.visit_expr(expr);
+        }
+        Stmt::Defer(ref mut expr) => v.visit_expr(expr),
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            v.visit_expr(condition);
+            v.visit_block(then_block);
+            if let Some(ref mut eb) = else_block {
+                if let Some(ref mut block) = eb.block {
+                    v.visit_block(block);
+                }
+                if let Some(ref mut if_stmt) = eb.if_stmt {
+                    v.visit_stmt(&mut if_stmt.0);
+                }
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            v.visit_expr(expr);
+            v.visit_block(body);
+            if let Some(block) = else_body {
+                v.visit_block(block);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            v.visit_expr(scrutinee);
+            for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    v.visit_expr(guard);
+                }
+                v.visit_expr(&mut arm.body);
+            }
+        }
+        Stmt::For { body, iterable, .. } => {
+            v.visit_expr(iterable);
+            v.visit_block(body);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            v.visit_expr(condition);
+            v.visit_block(body);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            v.visit_expr(expr);
+            v.visit_block(body);
+        }
+        Stmt::Loop { body, .. } => v.visit_block(body),
+        Stmt::Assign { target, value, .. } => {
+            v.visit_expr(target);
+            v.visit_expr(value);
+        }
+        Stmt::Let { .. }
+        | Stmt::Var { .. }
+        | Stmt::Return(None)
+        | Stmt::Break { value: None, .. }
+        | Stmt::Continue { .. } => {}
+    }
+}
+
+/// Visit all child statements and trailing expression of a `Block`.
+fn walk_block_children(block: &mut Block, v: &mut impl AstVisitor) {
+    for (stmt, _) in &mut block.stmts {
+        v.visit_stmt(stmt);
+    }
+    if let Some(ref mut trailing) = block.trailing_expr {
+        v.visit_expr(trailing);
+    }
+}
+
 fn rewrite_builtin_calls_in_item(item: &mut Item) {
     match item {
         Item::Function(f) => rewrite_builtin_calls_in_block(&mut f.body),
@@ -639,12 +878,7 @@ fn rewrite_builtin_calls_in_item(item: &mut Item) {
 }
 
 fn rewrite_builtin_calls_in_block(block: &mut Block) {
-    for stmt in &mut block.stmts {
-        rewrite_builtin_calls_in_stmt(&mut stmt.0);
-    }
-    if let Some(ref mut trailing) = block.trailing_expr {
-        rewrite_builtin_calls_in_expr(trailing);
-    }
+    walk_block_children(block, &mut RewriteVisitor);
 }
 
 fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
@@ -654,78 +888,42 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
                 rewrite_builtin_calls_in_expr(expr);
             }
         }
-        Stmt::Expression(ref mut expr)
-        | Stmt::Return(Some(ref mut expr))
-        | Stmt::Break {
-            value: Some(ref mut expr),
-            ..
-        } => {
-            rewrite_builtin_calls_in_expr(expr);
-        }
-        Stmt::Defer(expr) => {
-            rewrite_builtin_calls_in_expr(expr);
-        }
-        Stmt::For { body, iterable, .. } => {
-            rewrite_builtin_calls_in_expr(iterable);
-            rewrite_builtin_calls_in_block(body);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            rewrite_builtin_calls_in_expr(condition);
-            rewrite_builtin_calls_in_block(body);
-        }
-        Stmt::WhileLet { expr, body, .. } => {
-            rewrite_builtin_calls_in_expr(expr);
-            rewrite_builtin_calls_in_block(body);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            rewrite_builtin_calls_in_expr(condition);
-            rewrite_builtin_calls_in_block(then_block);
-            if let Some(else_b) = else_block {
-                if let Some(ref mut if_stmt) = else_b.if_stmt {
-                    rewrite_builtin_calls_in_stmt(&mut if_stmt.0);
-                }
-                if let Some(ref mut block) = else_b.block {
-                    rewrite_builtin_calls_in_block(block);
-                }
-            }
-        }
-        Stmt::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            rewrite_builtin_calls_in_expr(expr);
-            rewrite_builtin_calls_in_block(body);
-            if let Some(block) = else_body {
-                rewrite_builtin_calls_in_block(block);
-            }
-        }
-        Stmt::Assign { target, value, .. } => {
-            rewrite_builtin_calls_in_expr(target);
-            rewrite_builtin_calls_in_expr(value);
-        }
-        Stmt::Match { scrutinee, arms } => {
-            rewrite_builtin_calls_in_expr(scrutinee);
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    rewrite_builtin_calls_in_expr(guard);
-                }
-                rewrite_builtin_calls_in_expr(&mut arm.body);
-            }
-        }
-        Stmt::Loop { body, .. } => rewrite_builtin_calls_in_block(body),
-        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
+        _ => walk_stmt_children(stmt, &mut RewriteVisitor),
     }
 }
 
-#[expect(clippy::too_many_lines, reason = "enrichment covers all AST variants")]
+struct RewriteVisitor;
+
+impl AstVisitor for RewriteVisitor {
+    fn visit_expr(&mut self, e: &mut Spanned<Expr>) {
+        rewrite_builtin_calls_in_expr(e);
+    }
+    fn visit_block(&mut self, b: &mut Block) {
+        rewrite_builtin_calls_in_block(b);
+    }
+    fn visit_stmt(&mut self, s: &mut Stmt) {
+        rewrite_builtin_calls_in_stmt(s);
+    }
+}
+
+/// Rewrite `len(x)` calls to `x.len()` method calls.
+fn try_rewrite_len_call(function: &Expr, args: &mut Vec<CallArg>) -> Option<Expr> {
+    if let Expr::Identifier(name) = function {
+        if name == "len" && args.len() == 1 {
+            let receiver = match std::mem::take(args).remove(0) {
+                CallArg::Positional(e) => e,
+                CallArg::Named { value, .. } => value,
+            };
+            return Some(Expr::MethodCall {
+                receiver: Box::new(receiver),
+                method: "len".to_string(),
+                args: Vec::new(),
+            });
+        }
+    }
+    None
+}
+
 fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
         Expr::Call { function, args, .. } => {
@@ -733,19 +931,8 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(arg.expr_mut());
             }
             rewrite_builtin_calls_in_expr(function);
-            // len(x) → x.len()
-            if let Expr::Identifier(name) = &function.0 {
-                if name == "len" && args.len() == 1 {
-                    let receiver = match std::mem::take(args).remove(0) {
-                        CallArg::Positional(e) => e,
-                        CallArg::Named { value, .. } => value,
-                    };
-                    expr.0 = Expr::MethodCall {
-                        receiver: Box::new(receiver),
-                        method: "len".to_string(),
-                        args: Vec::new(),
-                    };
-                }
+            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
+                expr.0 = rewritten;
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
@@ -754,133 +941,9 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(arg.expr_mut());
             }
         }
-        Expr::Binary { left, right, .. } => {
-            rewrite_builtin_calls_in_expr(left);
-            rewrite_builtin_calls_in_expr(right);
-        }
-        Expr::Unary { operand, .. } => rewrite_builtin_calls_in_expr(operand),
-        Expr::Cast { expr, .. } => rewrite_builtin_calls_in_expr(expr),
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            rewrite_builtin_calls_in_expr(condition);
-            rewrite_builtin_calls_in_expr(then_block);
-            if let Some(e) = else_block {
-                rewrite_builtin_calls_in_expr(e);
-            }
-        }
-        Expr::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            rewrite_builtin_calls_in_expr(expr);
-            rewrite_builtin_calls_in_block(body);
-            if let Some(block) = else_body {
-                rewrite_builtin_calls_in_block(block);
-            }
-        }
-        Expr::Block(block) | Expr::Unsafe(block) => rewrite_builtin_calls_in_block(block),
-        Expr::Index { object, index } => {
-            rewrite_builtin_calls_in_expr(object);
-            rewrite_builtin_calls_in_expr(index);
-        }
-        Expr::FieldAccess { object, .. } => rewrite_builtin_calls_in_expr(object),
-        Expr::ArrayRepeat { value, count } => {
-            rewrite_builtin_calls_in_expr(value);
-            rewrite_builtin_calls_in_expr(count);
-        }
-        Expr::Array(elems) | Expr::Tuple(elems) => {
-            for e in elems {
-                rewrite_builtin_calls_in_expr(e);
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                rewrite_builtin_calls_in_expr(k);
-                rewrite_builtin_calls_in_expr(v);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            rewrite_builtin_calls_in_expr(scrutinee);
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    rewrite_builtin_calls_in_expr(guard);
-                }
-                rewrite_builtin_calls_in_expr(&mut arm.body);
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            rewrite_builtin_calls_in_expr(body);
-        }
-        Expr::Spawn { target, args } => {
-            rewrite_builtin_calls_in_expr(target);
-            for (_, arg_expr) in args {
-                rewrite_builtin_calls_in_expr(arg_expr);
-            }
-        }
-        Expr::StructInit { fields, .. } => {
-            for (_, field_expr) in fields {
-                rewrite_builtin_calls_in_expr(field_expr);
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                rewrite_builtin_calls_in_expr(&mut arm.source);
-                rewrite_builtin_calls_in_expr(&mut arm.body);
-            }
-            if let Some(timeout_clause) = timeout {
-                rewrite_builtin_calls_in_expr(&mut timeout_clause.duration);
-                rewrite_builtin_calls_in_expr(&mut timeout_clause.body);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
-                    rewrite_builtin_calls_in_expr(e);
-                }
-            }
-        }
-        Expr::PostfixTry(inner) | Expr::Await(inner) | Expr::Yield(Some(inner)) => {
-            rewrite_builtin_calls_in_expr(inner);
-        }
-        Expr::Send { target, message } => {
-            rewrite_builtin_calls_in_expr(target);
-            rewrite_builtin_calls_in_expr(message);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                rewrite_builtin_calls_in_expr(s);
-            }
-            if let Some(e) = end {
-                rewrite_builtin_calls_in_expr(e);
-            }
-        }
-        Expr::Join(exprs) => {
-            for e in exprs {
-                rewrite_builtin_calls_in_expr(e);
-            }
-        }
-        Expr::Timeout { expr, duration, .. } => {
-            rewrite_builtin_calls_in_expr(expr);
-            rewrite_builtin_calls_in_expr(duration);
-        }
-        Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) | Expr::Scope { body: block, .. } => {
-            rewrite_builtin_calls_in_block(block);
-        }
-        Expr::SpawnLambdaActor { body, .. } => rewrite_builtin_calls_in_expr(body),
-        Expr::Literal(_)
-        | Expr::Identifier(_)
-        | Expr::Cooperate
-        | Expr::ScopeCancel
-        | Expr::This
-        | Expr::RegexLiteral(_)
-        | Expr::ByteStringLiteral(_)
-        | Expr::ByteArrayLiteral(_)
-        | Expr::Yield(None) => {}
+        Expr::Lambda { body, .. } => rewrite_builtin_calls_in_expr(body),
+        Expr::Cast { expr: inner, .. } => rewrite_builtin_calls_in_expr(inner),
+        _ => walk_expr_children(expr, &mut RewriteVisitor),
     }
 }
 
@@ -1023,12 +1086,7 @@ fn normalize_fn_decl_types(
 }
 
 fn normalize_block_types(block: &mut Block, registry: &hew_types::module_registry::ModuleRegistry) {
-    for (stmt, _span) in &mut block.stmts {
-        normalize_stmt_types(stmt, registry);
-    }
-    if let Some(ref mut expr) = block.trailing_expr {
-        normalize_expr_types(expr, registry);
-    }
+    walk_block_children(block, &mut NormalizeVisitor { registry });
 }
 
 fn normalize_stmt_types(stmt: &mut Stmt, registry: &hew_types::module_registry::ModuleRegistry) {
@@ -1041,76 +1099,23 @@ fn normalize_stmt_types(stmt: &mut Stmt, registry: &hew_types::module_registry::
                 normalize_expr_types(val, registry);
             }
         }
-        Stmt::Expression(ref mut expr)
-        | Stmt::Return(Some(ref mut expr))
-        | Stmt::Break {
-            value: Some(ref mut expr),
-            ..
-        } => {
-            normalize_expr_types(expr, registry);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            normalize_expr_types(condition, registry);
-            normalize_block_types(then_block, registry);
-            if let Some(ref mut eb) = else_block {
-                if let Some(ref mut block) = eb.block {
-                    normalize_block_types(block, registry);
-                }
-                if let Some(ref mut if_stmt) = eb.if_stmt {
-                    normalize_stmt_types(&mut if_stmt.0, registry);
-                }
-            }
-        }
-        Stmt::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            normalize_expr_types(expr, registry);
-            normalize_block_types(body, registry);
-            if let Some(block) = else_body {
-                normalize_block_types(block, registry);
-            }
-        }
-        Stmt::For { body, iterable, .. } => {
-            normalize_expr_types(iterable, registry);
-            normalize_block_types(body, registry);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            normalize_expr_types(condition, registry);
-            normalize_block_types(body, registry);
-        }
-        Stmt::WhileLet { expr, body, .. } => {
-            normalize_expr_types(expr, registry);
-            normalize_block_types(body, registry);
-        }
-        Stmt::Loop { body, .. } => {
-            normalize_block_types(body, registry);
-        }
-        Stmt::Match { scrutinee, arms } => {
-            normalize_expr_types(scrutinee, registry);
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    normalize_expr_types(guard, registry);
-                }
-                normalize_expr_types(&mut arm.body, registry);
-            }
-        }
-        Stmt::Assign { target, value, .. } => {
-            normalize_expr_types(target, registry);
-            normalize_expr_types(value, registry);
-        }
-        Stmt::Defer(ref mut expr) => {
-            normalize_expr_types(expr, registry);
-        }
-        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
+        _ => walk_stmt_children(stmt, &mut NormalizeVisitor { registry }),
+    }
+}
+
+struct NormalizeVisitor<'a> {
+    registry: &'a hew_types::module_registry::ModuleRegistry,
+}
+
+impl AstVisitor for NormalizeVisitor<'_> {
+    fn visit_expr(&mut self, e: &mut Spanned<Expr>) {
+        normalize_expr_types(e, self.registry);
+    }
+    fn visit_block(&mut self, b: &mut Block) {
+        normalize_block_types(b, self.registry);
+    }
+    fn visit_stmt(&mut self, s: &mut Stmt) {
+        normalize_stmt_types(s, self.registry);
     }
 }
 
@@ -1123,70 +1128,11 @@ fn normalize_expr_types(
     });
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "builtin rewriting covers all expression types"
-)]
 fn normalize_expr_types_inner(
     expr: &mut Spanned<Expr>,
     registry: &hew_types::module_registry::ModuleRegistry,
 ) {
     match &mut expr.0 {
-        Expr::Block(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            normalize_block_types(block, registry);
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-            ..
-        } => {
-            normalize_expr_types(condition, registry);
-            normalize_expr_types(then_block, registry);
-            if let Some(ref mut e) = else_block {
-                normalize_expr_types(e, registry);
-            }
-        }
-        Expr::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            normalize_expr_types(expr, registry);
-            normalize_block_types(body, registry);
-            if let Some(block) = else_body {
-                normalize_block_types(block, registry);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            normalize_expr_types(scrutinee, registry);
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    normalize_expr_types(guard, registry);
-                }
-                normalize_expr_types(&mut arm.body, registry);
-            }
-        }
-        Expr::ArrayRepeat { value, count } => {
-            normalize_expr_types(value, registry);
-            normalize_expr_types(count, registry);
-        }
-        Expr::Array(elements) | Expr::Tuple(elements) => {
-            for e in elements.iter_mut() {
-                normalize_expr_types(e, registry);
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                normalize_expr_types(k, registry);
-                normalize_expr_types(v, registry);
-            }
-        }
         Expr::Lambda {
             return_type,
             body,
@@ -1225,91 +1171,11 @@ fn normalize_expr_types_inner(
                 normalize_expr_types(arg.expr_mut(), registry);
             }
         }
-        Expr::Binary { left, right, .. } => {
-            normalize_expr_types(left, registry);
-            normalize_expr_types(right, registry);
-        }
-        Expr::Unary { operand, .. } => {
-            normalize_expr_types(operand, registry);
-        }
-        Expr::Cast { expr, ty } => {
-            normalize_expr_types(expr, registry);
+        Expr::Cast { expr: inner, ty } => {
+            normalize_expr_types(inner, registry);
             normalize_type_expr(&mut ty.0, registry);
         }
-        Expr::FieldAccess { object, .. } => {
-            normalize_expr_types(object, registry);
-        }
-        Expr::Index { object, index } => {
-            normalize_expr_types(object, registry);
-            normalize_expr_types(index, registry);
-        }
-        Expr::StructInit { fields, .. } => {
-            for (_name, val) in fields.iter_mut() {
-                normalize_expr_types(val, registry);
-            }
-        }
-        Expr::Spawn { target, args } => {
-            normalize_expr_types(target, registry);
-            for (_name, val) in args.iter_mut() {
-                normalize_expr_types(val, registry);
-            }
-        }
-        Expr::SpawnLambdaActor { body, .. } => {
-            normalize_expr_types(body, registry);
-        }
-        Expr::Send { target, message } => {
-            normalize_expr_types(target, registry);
-            normalize_expr_types(message, registry);
-        }
-        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
-            normalize_expr_types(inner, registry);
-        }
-        Expr::Timeout {
-            expr: inner,
-            duration,
-        } => {
-            normalize_expr_types(inner, registry);
-            normalize_expr_types(duration, registry);
-        }
-        Expr::Join(exprs) => {
-            for e in exprs.iter_mut() {
-                normalize_expr_types(e, registry);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts.iter_mut() {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
-                    normalize_expr_types(e, registry);
-                }
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms.iter_mut() {
-                normalize_expr_types(&mut arm.source, registry);
-                normalize_expr_types(&mut arm.body, registry);
-            }
-            if let Some(ref mut t) = timeout {
-                normalize_expr_types(&mut t.duration, registry);
-                normalize_expr_types(&mut t.body, registry);
-            }
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                normalize_expr_types(s, registry);
-            }
-            if let Some(e) = end {
-                normalize_expr_types(e, registry);
-            }
-        }
-        Expr::Literal(_)
-        | Expr::Identifier(_)
-        | Expr::Cooperate
-        | Expr::ScopeCancel
-        | Expr::This
-        | Expr::RegexLiteral(_)
-        | Expr::ByteStringLiteral(_)
-        | Expr::ByteArrayLiteral(_)
-        | Expr::Yield(None) => {}
+        _ => walk_expr_children(expr, &mut NormalizeVisitor { registry }),
     }
 }
 
@@ -1432,10 +1298,25 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "match over Stmt variants is inherently long"
-)]
+/// Infer a missing type annotation for a let/var binding from the type checker.
+fn infer_binding_type(
+    ty: &mut Option<Spanned<TypeExpr>>,
+    value: Option<&Spanned<Expr>>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+    context: impl Into<String>,
+) {
+    if ty.is_none() {
+        if let Some(val) = value {
+            match lookup_inferred_type(tco, &val.1, context) {
+                Ok(Some(inferred)) => *ty = Some(inferred),
+                Ok(None) => {}
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+    }
+}
+
 fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,
@@ -1444,121 +1325,39 @@ fn enrich_stmt_with_diagnostics(
 ) -> Result<(), TypeExprConversionError> {
     match stmt {
         Stmt::Let { ty, value, .. } => {
-            if ty.is_none() {
-                if let Some(ref val) = *value {
-                    match lookup_inferred_type(
-                        tco,
-                        &val.1,
-                        "let binding type inferred from initializer",
-                    ) {
-                        Ok(Some(inferred)) => *ty = Some(inferred),
-                        Ok(None) => {}
-                        Err(diagnostic) => diagnostics.push(diagnostic),
-                    }
-                }
-            }
+            infer_binding_type(
+                ty,
+                value.as_ref(),
+                tco,
+                diagnostics,
+                "let binding type inferred from initializer",
+            );
             if let Some(ref mut val) = value {
                 enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Stmt::Var { name, ty, value } => {
-            if ty.is_none() {
-                if let Some(ref val) = *value {
-                    match lookup_inferred_type(
-                        tco,
-                        &val.1,
-                        format!("var `{name}` type inferred from initializer"),
-                    ) {
-                        Ok(Some(inferred)) => *ty = Some(inferred),
-                        Ok(None) => {}
-                        Err(diagnostic) => diagnostics.push(diagnostic),
-                    }
-                }
-            }
+            infer_binding_type(
+                ty,
+                value.as_ref(),
+                tco,
+                diagnostics,
+                format!("var `{name}` type inferred from initializer"),
+            );
             if let Some(ref mut val) = value {
                 enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(then_block, tco, diagnostics, registry)?;
-            if let Some(ref mut else_b) = else_block {
-                enrich_else_block_with_diagnostics(else_b, tco, diagnostics, registry)?;
-            }
+        _ => {
+            walk_stmt_children(
+                stmt,
+                &mut EnrichVisitor {
+                    tco,
+                    diagnostics,
+                    registry,
+                },
+            );
         }
-        Stmt::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-            if let Some(block) = else_body {
-                enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-            }
-        }
-        Stmt::Match { scrutinee, arms } => {
-            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics, registry)?;
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    enrich_expr_with_diagnostics(guard, tco, diagnostics, registry)?;
-                }
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
-            }
-        }
-        Stmt::For { body, iterable, .. } => {
-            enrich_expr_with_diagnostics(iterable, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-        }
-        Stmt::WhileLet { expr, body, .. } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-        }
-        Stmt::Loop { body, .. } => {
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-        }
-        Stmt::Expression(ref mut expr)
-        | Stmt::Return(Some(ref mut expr))
-        | Stmt::Break {
-            value: Some(ref mut expr),
-            ..
-        } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
-        }
-        Stmt::Defer(ref mut expr) => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
-        }
-        Stmt::Assign { target, value, .. } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(value, tco, diagnostics, registry)?;
-        }
-        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
-    }
-    Ok(())
-}
-
-fn enrich_else_block_with_diagnostics(
-    else_block: &mut ElseBlock,
-    tco: &TypeCheckOutput,
-    diagnostics: &mut Vec<TypeExprConversionError>,
-    registry: &hew_types::module_registry::ModuleRegistry,
-) -> Result<(), TypeExprConversionError> {
-    if let Some(ref mut block) = else_block.block {
-        enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-    }
-    if let Some(ref mut if_stmt) = else_block.if_stmt {
-        enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics, registry)?;
     }
     Ok(())
 }
@@ -1593,7 +1392,7 @@ fn enrich_method_call(
             if c_symbol != *method {
                 let old_args = std::mem::take(args);
                 expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_symbol.clone()), receiver.1.clone())),
+                    function: Box::new((Expr::Identifier(c_symbol), receiver.1.clone())),
                     type_args: None,
                     args: old_args,
                     is_tail_call: false,
@@ -1626,14 +1425,12 @@ fn enrich_method_call(
     };
     let c_fn: Option<String> = match tco.expr_types.get(&key) {
         Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
-            let elem = args.first().map(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
-                .map(String::from)
+            let elem = args.first().and_then(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Stream", method, elem).map(String::from)
         }
         Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
-            let elem = args.first().map(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
-                .map(String::from)
+            let elem = args.first().and_then(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Sink", method, elem).map(String::from)
         }
         Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
             hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
@@ -1682,10 +1479,34 @@ fn enrich_expr_with_diagnostics(
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pattern enrichment covers all expression variants"
-)]
+struct EnrichVisitor<'a> {
+    tco: &'a TypeCheckOutput,
+    diagnostics: &'a mut Vec<TypeExprConversionError>,
+    registry: &'a hew_types::module_registry::ModuleRegistry,
+}
+
+impl AstVisitor for EnrichVisitor<'_> {
+    fn visit_expr(&mut self, e: &mut Spanned<Expr>) {
+        if let Err(err) = enrich_expr_with_diagnostics(e, self.tco, self.diagnostics, self.registry)
+        {
+            self.diagnostics.push(err);
+        }
+    }
+    fn visit_block(&mut self, b: &mut Block) {
+        if let Err(err) =
+            enrich_block_with_diagnostics(b, self.tco, self.diagnostics, self.registry)
+        {
+            self.diagnostics.push(err);
+        }
+    }
+    fn visit_stmt(&mut self, s: &mut Stmt) {
+        if let Err(err) = enrich_stmt_with_diagnostics(s, self.tco, self.diagnostics, self.registry)
+        {
+            self.diagnostics.push(err);
+        }
+    }
+}
+
 fn enrich_expr_with_diagnostics_inner(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
@@ -1693,53 +1514,6 @@ fn enrich_expr_with_diagnostics_inner(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     match &mut expr.0 {
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-            ..
-        } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(then_block, tco, diagnostics, registry)?;
-            if let Some(ref mut e) = else_block {
-                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
-            if let Some(block) = else_body {
-                enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics, registry)?;
-            for arm in arms {
-                if let Some(ref mut guard) = arm.guard {
-                    enrich_expr_with_diagnostics(guard, tco, diagnostics, registry)?;
-                }
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Array(elements) | Expr::Tuple(elements) => {
-            for e in elements.iter_mut() {
-                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                enrich_expr_with_diagnostics(k, tco, diagnostics, registry)?;
-                enrich_expr_with_diagnostics(v, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
-        }
         Expr::MethodCall { receiver, args, .. } => {
             enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
@@ -1771,112 +1545,26 @@ fn enrich_expr_with_diagnostics_inner(
                 }
             }
 
-            // Rewrite len(x) → x.len() method call so the C++ codegen
-            // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
-            if let Expr::Identifier(name) = &function.0 {
-                if name == "len" && args.len() == 1 {
-                    let receiver = match std::mem::take(args).remove(0) {
-                        CallArg::Positional(e) => e,
-                        CallArg::Named { value, .. } => value,
-                    };
-                    expr.0 = Expr::MethodCall {
-                        receiver: Box::new(receiver),
-                        method: "len".to_string(),
-                        args: Vec::new(),
-                    };
-                }
+            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
+                expr.0 = rewritten;
             }
         }
-        Expr::Binary { left, right, .. } => {
-            enrich_expr_with_diagnostics(left, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(right, tco, diagnostics, registry)?;
+        Expr::Lambda { body, .. } => {
+            enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
-        Expr::Unary { operand: inner, .. }
-        | Expr::Cast { expr: inner, .. }
-        | Expr::Await(inner)
-        | Expr::PostfixTry(inner)
-        | Expr::Yield(Some(inner)) => {
+        Expr::Cast { expr: inner, .. } => {
             enrich_expr_with_diagnostics(inner, tco, diagnostics, registry)?;
         }
-        Expr::FieldAccess { object, .. } => {
-            enrich_expr_with_diagnostics(object, tco, diagnostics, registry)?;
+        _ => {
+            walk_expr_children(
+                expr,
+                &mut EnrichVisitor {
+                    tco,
+                    diagnostics,
+                    registry,
+                },
+            );
         }
-        Expr::Index { object, index } => {
-            enrich_expr_with_diagnostics(object, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(index, tco, diagnostics, registry)?;
-        }
-        Expr::StructInit { fields, .. } => {
-            for (_name, val) in fields.iter_mut() {
-                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Spawn { target, args } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
-            for (_name, val) in args.iter_mut() {
-                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Send { target, message } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(message, tco, diagnostics, registry)?;
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                enrich_expr_with_diagnostics(s, tco, diagnostics, registry)?;
-            }
-            if let Some(e) = end {
-                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::Block(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-        }
-        Expr::Timeout {
-            expr: inner,
-            duration,
-        } => {
-            enrich_expr_with_diagnostics(inner, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(duration, tco, diagnostics, registry)?;
-        }
-        Expr::Join(exprs) => {
-            for e in exprs.iter_mut() {
-                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts.iter_mut() {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
-                    enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
-                }
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms.iter_mut() {
-                enrich_expr_with_diagnostics(&mut arm.source, tco, diagnostics, registry)?;
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
-            }
-            if let Some(ref mut t) = timeout {
-                enrich_expr_with_diagnostics(&mut t.duration, tco, diagnostics, registry)?;
-                enrich_expr_with_diagnostics(&mut t.body, tco, diagnostics, registry)?;
-            }
-        }
-        Expr::ArrayRepeat { value, count } => {
-            enrich_expr_with_diagnostics(value, tco, diagnostics, registry)?;
-            enrich_expr_with_diagnostics(count, tco, diagnostics, registry)?;
-        }
-        Expr::Literal(_)
-        | Expr::Identifier(_)
-        | Expr::Cooperate
-        | Expr::ScopeCancel
-        | Expr::This
-        | Expr::RegexLiteral(_)
-        | Expr::ByteStringLiteral(_)
-        | Expr::ByteArrayLiteral(_)
-        | Expr::Yield(None) => {}
     }
     Ok(())
 }
@@ -1916,7 +1604,7 @@ fn synthesize_stdlib_externs(
 mod tests {
     use super::*;
     use hew_parser::ast::{
-        ConstDecl, ImplDecl, ImportDecl, MachineDecl, MachineEvent, MachineState,
+        ConstDecl, ElseBlock, ImplDecl, ImportDecl, MachineDecl, MachineEvent, MachineState,
         MachineTransition, ReceiveFnDecl, SupervisorDecl, TraitDecl, TypeDecl, Visibility,
     };
 
@@ -2569,7 +2257,7 @@ mod tests {
         let err = unwrap_err(ty_to_type_expr(&ty));
         assert!(
             err.to_string()
-                .contains("async generator type is not representable in serialized TypeExpr"),
+                .contains("generator type is not representable in serialized TypeExpr"),
             "unexpected error: {err}"
         );
     }

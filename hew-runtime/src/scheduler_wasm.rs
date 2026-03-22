@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
 use crate::internal::types::HewActorState;
 
@@ -56,17 +56,20 @@ pub struct HewActor {
     pub dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
     pub mailbox: *mut c_void,
     pub actor_state: AtomicI32,
-    pub budget: i32,
+    pub budget: AtomicI32,
     pub init_state: *mut c_void,
     pub init_state_size: usize,
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub terminate_called: AtomicBool,
+    pub terminate_finished: AtomicBool,
     pub error_code: AtomicI32,
     pub supervisor: *mut c_void,
     pub supervisor_child_index: i32,
     pub priority: AtomicI32,
     pub reductions: AtomicI32,
     pub idle_count: AtomicI32,
-    pub hibernation_threshold: i32,
+    pub hibernation_threshold: AtomicI32,
     pub hibernating: AtomicI32,
     pub prof_messages_processed: AtomicU64,
     pub prof_processing_time_ns: AtomicU64,
@@ -79,6 +82,52 @@ unsafe impl Send for HewActor {}
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
 // accessed from one thread at a time.
 unsafe impl Sync for HewActor {}
+
+// Compile-time check: the WASM scheduler's local HewActor must have
+// identical size, alignment, and field offsets to the canonical native
+// definition so that the C ABI layout never diverges.
+const _: () = {
+    use std::mem::offset_of;
+    type W = HewActor;
+    type N = crate::actor::HewActor;
+
+    assert!(
+        size_of::<W>() == size_of::<N>(),
+        "WASM HewActor size diverged from native"
+    );
+    assert!(
+        align_of::<W>() == align_of::<N>(),
+        "WASM HewActor alignment diverged from native"
+    );
+
+    // Every field must sit at the same offset in both structs.
+    assert!(offset_of!(W, sched_link_next) == offset_of!(N, sched_link_next));
+    assert!(offset_of!(W, id) == offset_of!(N, id));
+    assert!(offset_of!(W, pid) == offset_of!(N, pid));
+    assert!(offset_of!(W, state) == offset_of!(N, state));
+    assert!(offset_of!(W, state_size) == offset_of!(N, state_size));
+    assert!(offset_of!(W, dispatch) == offset_of!(N, dispatch));
+    assert!(offset_of!(W, mailbox) == offset_of!(N, mailbox));
+    assert!(offset_of!(W, actor_state) == offset_of!(N, actor_state));
+    assert!(offset_of!(W, budget) == offset_of!(N, budget));
+    assert!(offset_of!(W, init_state) == offset_of!(N, init_state));
+    assert!(offset_of!(W, init_state_size) == offset_of!(N, init_state_size));
+    assert!(offset_of!(W, coalesce_key_fn) == offset_of!(N, coalesce_key_fn));
+    assert!(offset_of!(W, terminate_fn) == offset_of!(N, terminate_fn));
+    assert!(offset_of!(W, terminate_called) == offset_of!(N, terminate_called));
+    assert!(offset_of!(W, terminate_finished) == offset_of!(N, terminate_finished));
+    assert!(offset_of!(W, error_code) == offset_of!(N, error_code));
+    assert!(offset_of!(W, supervisor) == offset_of!(N, supervisor));
+    assert!(offset_of!(W, supervisor_child_index) == offset_of!(N, supervisor_child_index));
+    assert!(offset_of!(W, priority) == offset_of!(N, priority));
+    assert!(offset_of!(W, reductions) == offset_of!(N, reductions));
+    assert!(offset_of!(W, idle_count) == offset_of!(N, idle_count));
+    assert!(offset_of!(W, hibernation_threshold) == offset_of!(N, hibernation_threshold));
+    assert!(offset_of!(W, hibernating) == offset_of!(N, hibernating));
+    assert!(offset_of!(W, prof_messages_processed) == offset_of!(N, prof_messages_processed));
+    assert!(offset_of!(W, prof_processing_time_ns) == offset_of!(N, prof_processing_time_ns));
+    assert!(offset_of!(W, arena) == offset_of!(N, arena));
+};
 
 // ── HewMsgNode layout (matches native mailbox.rs) ───────────────────────
 
@@ -316,8 +365,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         .store(HewActorState::Running as i32, Ordering::Relaxed);
 
     // Compute budget with priority scaling.
-    let base_budget = if a.budget > 0 {
-        a.budget
+    let raw_budget = a.budget.load(Ordering::Relaxed);
+    let base_budget = if raw_budget > 0 {
+        raw_budget
     } else {
         HEW_MSG_BUDGET
     };
@@ -397,8 +447,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
         // NOTE: WASM terminate is handled by the WASM hew_actor_close path
-        // or by cleanup_all_actors at process exit. The WASM scheduler's
-        // HewActor struct is a simplified copy without terminate_fn.
+        // or by cleanup_all_actors at process exit. The terminate_fn field
+        // is present for ABI compatibility but is not invoked by the WASM
+        // scheduler.
         return;
     }
 
@@ -408,9 +459,10 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     }
 
     // Hibernation tracking.
-    if msgs_processed == 0 && a.hibernation_threshold > 0 {
+    let hib_thresh = a.hibernation_threshold.load(Ordering::Relaxed);
+    if msgs_processed == 0 && hib_thresh > 0 {
         let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
-        if prev_idle + 1 >= a.hibernation_threshold {
+        if prev_idle + 1 >= hib_thresh {
             a.hibernating.store(1, Ordering::Relaxed);
         }
     } else if msgs_processed > 0 {
@@ -560,17 +612,20 @@ mod tests {
             dispatch: None,
             mailbox: ptr::null_mut(),
             actor_state: AtomicI32::new(HewActorState::Runnable as i32),
-            budget: HEW_MSG_BUDGET,
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
             init_state: ptr::null_mut(),
             init_state_size: 0,
             coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
             reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
-            hibernation_threshold: 0,
+            hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),

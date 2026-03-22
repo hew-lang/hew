@@ -341,11 +341,14 @@ pub(crate) unsafe fn cleanup_all_actors() {
         }
 
         // Clean up periodic timers, links, and monitors before freeing.
-        crate::timer_periodic::cancel_all_timers_for_actor(actor);
-        // SAFETY: actor is valid (from LIVE_ACTORS set, not yet freed).
-        let actor_id = unsafe { (*actor).id };
-        crate::link::remove_all_links_for_actor(actor_id, actor);
-        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::timer_periodic::cancel_all_timers_for_actor(actor);
+            // SAFETY: actor is valid (from LIVE_ACTORS set, not yet freed).
+            let actor_id = unsafe { (*actor).id };
+            crate::link::remove_all_links_for_actor(actor_id, actor);
+            crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+        }
 
         // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
@@ -1122,10 +1125,13 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // Cancel periodic timers, links, and monitors BEFORE untracking so
     // that any in-flight timer callback or propagation that checks
     // LIVE_ACTORS still sees this actor as live and can safely bail out.
-    crate::timer_periodic::cancel_all_timers_for_actor(actor);
-    let actor_id = a.id;
-    crate::link::remove_all_links_for_actor(actor_id, actor);
-    crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::timer_periodic::cancel_all_timers_for_actor(actor);
+        let actor_id = a.id;
+        crate::link::remove_all_links_for_actor(actor_id, actor);
+        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+    }
 
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid

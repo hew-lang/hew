@@ -2896,9 +2896,10 @@ struct SchedInitOpLowering : public mlir::OpConversionPattern<hew::SchedInitOp> 
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<mlir::ModuleOp>();
-    auto funcType = rewriter.getFunctionType({}, {});
+    auto i32Type = rewriter.getI32Type();
+    auto funcType = rewriter.getFunctionType({}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_sched_init", funcType);
-    mlir::func::CallOp::create(rewriter, loc, "hew_sched_init", mlir::TypeRange{},
+    mlir::func::CallOp::create(rewriter, loc, "hew_sched_init", mlir::TypeRange{i32Type},
                                mlir::ValueRange{});
     rewriter.eraseOp(op);
     return mlir::success();

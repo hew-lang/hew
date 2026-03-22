@@ -7,6 +7,8 @@ use std::ffi::c_void;
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use crate::util::{CondvarExt, MutexExt};
+
 /// Number of worker threads in the blocking pool.
 pub const HEW_BLOCKING_POOL_SIZE: usize = 4;
 
@@ -80,10 +82,6 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
 /// `func` must be a valid function pointer. `arg` must remain valid until
 /// `func` completes.
 #[no_mangle]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "panics indicate unrecoverable thread pool failure"
-)]
 pub unsafe extern "C" fn hew_blocking_pool_submit(
     pool: *mut HewBlockingPool,
     func: HewBlockingFn,
@@ -94,7 +92,7 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     }
     // SAFETY: caller guarantees `pool` is valid.
     let p = unsafe { &*pool };
-    let mut guard = p.inner.queue.lock().unwrap();
+    let mut guard = p.inner.queue.lock_or_recover();
     let (ref mut queue, running) = *guard;
     if !running {
         return -1;
@@ -119,7 +117,8 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
     let mut p = unsafe { *Box::from_raw(pool) };
 
     // Signal workers to stop.
-    if let Ok(mut guard) = p.inner.queue.lock() {
+    {
+        let mut guard = p.inner.queue.lock_or_recover();
         guard.1 = false; // running = false
     }
     p.inner.condvar.notify_all();
@@ -134,7 +133,7 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 fn worker_loop(inner: &PoolInner) {
     loop {
         let task = {
-            let mut guard = inner.queue.lock().unwrap();
+            let mut guard = inner.queue.lock_or_recover();
             loop {
                 let (ref mut queue, running) = *guard;
                 if let Some(t) = queue.pop() {
@@ -143,7 +142,7 @@ fn worker_loop(inner: &PoolInner) {
                 if !running {
                     break None;
                 }
-                guard = inner.condvar.wait(guard).unwrap();
+                guard = inner.condvar.wait_or_recover(guard);
             }
         };
         match task {
@@ -155,5 +154,90 @@ fn worker_loop(inner: &PoolInner) {
             }
             None => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    unsafe extern "C" fn increment(arg: *mut c_void) {
+        // SAFETY: caller passes an Arc::into_raw'd AtomicU32 pointer.
+        let c = unsafe { Arc::from_raw(arg as *const AtomicU32) };
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn noop(_: *mut c_void) {}
+
+    /// Normal pool round-trip: submit, execute, stop.
+    #[test]
+    fn normal_submit_and_stop() {
+        // SAFETY: test-only — we control the pool lifetime and task pointer.
+        unsafe {
+            let pool = hew_blocking_pool_new();
+
+            let counter = Arc::new(AtomicU32::new(0));
+            let c = Arc::clone(&counter);
+            let c_ptr = Arc::into_raw(c) as *mut c_void;
+
+            assert_eq!(hew_blocking_pool_submit(pool, increment, c_ptr), 0);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+
+            hew_blocking_pool_stop(pool);
+        }
+    }
+
+    /// Submit to a null pool returns -1.
+    #[test]
+    fn submit_null_pool_returns_error() {
+        // SAFETY: null pointer is the condition under test.
+        unsafe {
+            assert_eq!(
+                hew_blocking_pool_submit(std::ptr::null_mut(), noop, std::ptr::null_mut()),
+                -1
+            );
+        }
+    }
+
+    /// Stop on a null pointer is a no-op (no crash).
+    #[test]
+    fn stop_null_pool_is_noop() {
+        // SAFETY: null pointer is the condition under test.
+        unsafe {
+            hew_blocking_pool_stop(std::ptr::null_mut());
+        }
+    }
+
+    /// A poisoned pool mutex does not cascade via `lock_or_recover`.
+    ///
+    /// We build a `PoolInner` directly so we can poison its mutex from a
+    /// regular Rust thread (extern "C" fns abort on panic, so we can't
+    /// poison through the task callback).
+    #[test]
+    fn poisoned_mutex_does_not_cascade() {
+        let inner = Arc::new(PoolInner {
+            queue: Mutex::new((Vec::new(), true)),
+            condvar: Condvar::new(),
+        });
+
+        // Poison the mutex: acquire it in a thread that panics.
+        let shared = Arc::clone(&inner);
+        let handle = std::thread::spawn(move || {
+            let _guard = shared.queue.lock().unwrap();
+            panic!("intentional poison");
+        });
+        let _ = handle.join(); // join collects the panic
+
+        // The mutex is now poisoned. Verify lock_or_recover succeeds.
+        let guard = inner.queue.lock_or_recover();
+        assert!(guard.1, "running flag should still be true");
+        drop(guard);
+
+        // Condvar wait_or_recover also tolerates the poisoned state.
+        // (We can't easily test wait without a second thread, but
+        // lock_or_recover proves the PoisonError path works.)
     }
 }

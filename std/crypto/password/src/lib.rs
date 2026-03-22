@@ -201,4 +201,108 @@ mod tests {
         // SAFETY: pw is a valid C string; cost=-1 is invalid.
         assert!(unsafe { hew_password_hash_custom(pw.as_ptr(), -1) }.is_null());
     }
+
+    /// Empty password is valid — should hash and verify.
+    #[test]
+    fn empty_password_hashes_and_verifies() {
+        let pw = CString::new("").unwrap();
+        // SAFETY: pw is a valid C string (empty).
+        let hash_ptr = unsafe { hew_password_hash(pw.as_ptr()) };
+        assert!(!hash_ptr.is_null());
+        // SAFETY: both are valid C strings.
+        let result = unsafe { hew_password_verify(pw.as_ptr(), hash_ptr) };
+        assert_eq!(result, 1, "empty password should verify against its hash");
+        // SAFETY: hash_ptr was returned by hew_password_hash.
+        unsafe { hew_password_free(hash_ptr) };
+    }
+
+    /// Verify with a malformed (non-PHC) hash string returns -1.
+    #[test]
+    fn verify_malformed_hash_returns_error() {
+        let pw = CString::new("password").unwrap();
+        let bad_hash = CString::new("not-a-phc-hash").unwrap();
+        // SAFETY: both are valid C strings.
+        let result = unsafe { hew_password_verify(pw.as_ptr(), bad_hash.as_ptr()) };
+        assert_eq!(result, -1, "malformed hash must return -1");
+    }
+
+    /// Verify with null password returns -1.
+    #[test]
+    fn verify_null_password_returns_error() {
+        let pw = CString::new("test").unwrap();
+        // SAFETY: pw is a valid C string.
+        let hash_ptr = unsafe { hew_password_hash(pw.as_ptr()) };
+        assert!(!hash_ptr.is_null());
+        // SAFETY: null password is explicitly handled.
+        let result = unsafe { hew_password_verify(std::ptr::null(), hash_ptr) };
+        assert_eq!(result, -1);
+        // SAFETY: hash_ptr was returned by hew_password_hash.
+        unsafe { hew_password_free(hash_ptr) };
+    }
+
+    /// Verify with null hash returns -1.
+    #[test]
+    fn verify_null_hash_returns_error() {
+        let pw = CString::new("test").unwrap();
+        // SAFETY: null hash is explicitly handled.
+        let result = unsafe { hew_password_verify(pw.as_ptr(), std::ptr::null()) };
+        assert_eq!(result, -1);
+    }
+
+    /// Two hashes of the same password differ (random salt).
+    #[test]
+    fn same_password_produces_different_hashes() {
+        let pw = CString::new("same-password").unwrap();
+        // SAFETY: pw is a valid C string.
+        let hash1_ptr = unsafe { hew_password_hash(pw.as_ptr()) };
+        // SAFETY: pw is a valid C string.
+        let hash2_ptr = unsafe { hew_password_hash(pw.as_ptr()) };
+        assert!(!hash1_ptr.is_null());
+        assert!(!hash2_ptr.is_null());
+        // SAFETY: hash1_ptr is a valid malloc'd C string.
+        let hash1 = unsafe { CStr::from_ptr(hash1_ptr) };
+        // SAFETY: hash2_ptr is a valid malloc'd C string.
+        let hash2 = unsafe { CStr::from_ptr(hash2_ptr) };
+        assert_ne!(hash1, hash2, "random salt should produce different hashes");
+        // Both should still verify.
+        // SAFETY: both are valid C strings.
+        assert_eq!(unsafe { hew_password_verify(pw.as_ptr(), hash1_ptr) }, 1);
+        // SAFETY: both are valid C strings.
+        assert_eq!(unsafe { hew_password_verify(pw.as_ptr(), hash2_ptr) }, 1);
+        // SAFETY: both were returned by hew_password_hash.
+        unsafe {
+            hew_password_free(hash1_ptr);
+            hew_password_free(hash2_ptr);
+        }
+    }
+
+    /// Free null is a no-op (doesn't crash).
+    #[test]
+    fn free_null_is_noop() {
+        // SAFETY: null is explicitly handled.
+        unsafe { hew_password_free(std::ptr::null_mut()) };
+    }
+
+    /// Custom-cost hash is verifiable by the default verifier.
+    #[test]
+    fn custom_cost_hash_verified_by_default_verifier() {
+        let pw = CString::new("cross-verify").unwrap();
+        // SAFETY: pw is a valid C string; cost=2 is valid.
+        let hash_ptr = unsafe { hew_password_hash_custom(pw.as_ptr(), 2) };
+        assert!(!hash_ptr.is_null());
+        // Default verifier should accept it.
+        // SAFETY: both are valid C strings.
+        let result = unsafe { hew_password_verify(pw.as_ptr(), hash_ptr) };
+        assert_eq!(result, 1);
+        // SAFETY: hash_ptr was returned by hew_password_hash_custom.
+        unsafe { hew_password_free(hash_ptr) };
+    }
+
+    /// Negative cost values are rejected (i32 → u32 conversion fails).
+    #[test]
+    fn extreme_negative_cost_returns_null() {
+        let pw = CString::new("test").unwrap();
+        // SAFETY: pw is a valid C string.
+        assert!(unsafe { hew_password_hash_custom(pw.as_ptr(), i32::MIN) }.is_null());
+    }
 }

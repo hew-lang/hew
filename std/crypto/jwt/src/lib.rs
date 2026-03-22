@@ -371,4 +371,163 @@ mod tests {
             assert!(hew_jwt_decode(token_c.as_ptr(), wrong.as_ptr(), 0).is_null());
         }
     }
+
+    #[test]
+    fn malformed_json_payload_returns_null() {
+        let payload = CString::new("not valid json").unwrap();
+        let secret = CString::new("secret").unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let result = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(result.is_null(), "non-JSON payload must return null");
+        }
+    }
+
+    #[test]
+    fn empty_json_object_encodes_and_decodes() {
+        let payload = CString::new("{}").unwrap();
+        let secret = CString::new("secret").unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+
+            let token_c = CString::new(token).unwrap();
+            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
+            let decoded = read_and_free(decoded_ptr);
+
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert!(claims.as_object().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn free_null_is_noop() {
+        // SAFETY: null is explicitly handled.
+        unsafe { hew_jwt_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn insecure_decode_malformed_returns_null() {
+        let bad = CString::new("definitely-not-a-jwt").unwrap();
+        // SAFETY: CString is valid.
+        unsafe {
+            assert!(hew_jwt_decode_insecure(bad.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn validate_null_token_valid_secret_returns_error() {
+        let secret = CString::new("secret").unwrap();
+        // SAFETY: null token is explicitly handled.
+        unsafe {
+            assert_eq!(hew_jwt_validate(std::ptr::null(), secret.as_ptr(), 0), -2);
+        }
+    }
+
+    #[test]
+    fn validate_valid_token_null_secret_returns_error() {
+        let payload = CString::new(r#"{"sub":"x"}"#).unwrap();
+        let secret = CString::new("secret").unwrap();
+        // SAFETY: CStrings are valid.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+            let token_c = CString::new(token).unwrap();
+            assert_eq!(hew_jwt_validate(token_c.as_ptr(), std::ptr::null(), 0), -2);
+        }
+    }
+
+    /// HS384 encode/decode roundtrip preserves claims.
+    #[test]
+    fn hs384_roundtrip() {
+        let payload = CString::new(r#"{"sub":"user1","scope":"read"}"#).unwrap();
+        let secret = CString::new("hs384-secret").unwrap();
+
+        // SAFETY: CStrings are valid.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 1);
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+
+            let token_c = CString::new(token).unwrap();
+            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 1);
+            let decoded = read_and_free(decoded_ptr);
+
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert_eq!(claims["sub"], "user1");
+            assert_eq!(claims["scope"], "read");
+        }
+    }
+
+    /// HS512 encode/decode roundtrip preserves claims.
+    #[test]
+    fn hs512_roundtrip() {
+        let payload = CString::new(r#"{"iss":"hew","tier":"premium"}"#).unwrap();
+        let secret = CString::new("hs512-secret-key").unwrap();
+
+        // SAFETY: CStrings are valid.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 2);
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+
+            let token_c = CString::new(token).unwrap();
+            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 2);
+            let decoded = read_and_free(decoded_ptr);
+
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert_eq!(claims["iss"], "hew");
+            assert_eq!(claims["tier"], "premium");
+        }
+    }
+
+    /// Decoding with the wrong algorithm returns null.
+    #[test]
+    fn wrong_algorithm_decode_returns_null() {
+        let payload = CString::new(r#"{"sub":"user1"}"#).unwrap();
+        let secret = CString::new("secret").unwrap();
+
+        // SAFETY: CStrings are valid.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0); // HS256
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+            let token_c = CString::new(token).unwrap();
+
+            // Decode with HS384 — must return null, not silently succeed.
+            assert!(
+                hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 1).is_null(),
+                "decoding HS256 token with HS384 must fail"
+            );
+        }
+    }
+
+    /// A token with nested JSON claims roundtrips correctly.
+    #[test]
+    fn complex_claims_roundtrip() {
+        let payload =
+            CString::new(r#"{"sub":"user1","roles":["admin","editor"],"meta":{"org":"hew"}}"#)
+                .unwrap();
+        let secret = CString::new("complex-secret").unwrap();
+
+        // SAFETY: CStrings are valid.
+        unsafe {
+            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(!token_ptr.is_null());
+            let token = read_and_free(token_ptr);
+
+            let token_c = CString::new(token).unwrap();
+            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
+            let decoded = read_and_free(decoded_ptr);
+
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert_eq!(claims["roles"][0], "admin");
+            assert_eq!(claims["meta"]["org"], "hew");
+        }
+    }
 }

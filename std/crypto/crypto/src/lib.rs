@@ -377,14 +377,240 @@ mod tests {
 
     #[test]
     fn test_sha512_empty() {
-        // Known SHA-512("") first 8 bytes
+        // Known SHA-512("") full vector
+        let expected = [
+            0xcf, 0x83, 0xe1, 0x35, 0x7e, 0xef, 0xb8, 0xbd, 0xf1, 0x54, 0x28, 0x50, 0xd6, 0x6d,
+            0x80, 0x07, 0xd6, 0x20, 0xe4, 0x05, 0x0b, 0x57, 0x15, 0xdc, 0x83, 0xf4, 0xa9, 0x21,
+            0xd3, 0x6c, 0xe9, 0xce, 0x47, 0xd0, 0xd1, 0x3c, 0x5d, 0x85, 0xf2, 0xb0, 0xff, 0x83,
+            0x18, 0xd2, 0x87, 0x7e, 0xec, 0x2f, 0x63, 0xb9, 0x31, 0xbd, 0x47, 0x41, 0x7a, 0x81,
+            0xa5, 0x38, 0x32, 0x7a, 0xf9, 0x27, 0xda, 0x3e,
+        ];
         let mut out = [0u8; 64];
         // SAFETY: empty input and out is a valid 64-byte buffer.
         unsafe { hew_sha512(std::ptr::null(), 0, out.as_mut_ptr()) };
-        // SHA-512("") starts with cf83e1357eefb8bd...
-        assert_eq!(out[0], 0xcf);
-        assert_eq!(out[1], 0x83);
-        assert_eq!(out[2], 0xe1);
-        assert_eq!(out[3], 0x35);
+        assert_eq!(out, expected);
+    }
+
+    /// SHA-512("abc") — NIST test vector
+    #[test]
+    fn sha512_known_data() {
+        let expected = [
+            0xdd, 0xaf, 0x35, 0xa1, 0x93, 0x61, 0x7a, 0xba, 0xcc, 0x41, 0x73, 0x49, 0xae, 0x20,
+            0x41, 0x31, 0x12, 0xe6, 0xfa, 0x4e, 0x89, 0xa9, 0x7e, 0xa2, 0x0a, 0x9e, 0xee, 0xe6,
+            0x4b, 0x55, 0xd3, 0x9a, 0x21, 0x92, 0x99, 0x2a, 0x27, 0x4f, 0xc1, 0xa8, 0x36, 0xba,
+            0x3c, 0x23, 0xa3, 0xfe, 0xeb, 0xbd, 0x45, 0x4d, 0x44, 0x23, 0x64, 0x3c, 0xe8, 0x0e,
+            0x2a, 0x9a, 0xc9, 0x4f, 0xa5, 0x4c, 0xa4, 0x9f,
+        ];
+        let data = b"abc";
+        let mut out = [0u8; 64];
+        // SAFETY: data and out are valid buffers.
+        unsafe { hew_sha512(data.as_ptr(), data.len(), out.as_mut_ptr()) };
+        assert_eq!(out, expected);
+    }
+
+    /// SHA-384("") — NIST test vector
+    #[test]
+    fn sha384_empty() {
+        let expected = [
+            0x38, 0xb0, 0x60, 0xa7, 0x51, 0xac, 0x96, 0x38, 0x4c, 0xd9, 0x32, 0x7e, 0xb1, 0xb1,
+            0xe3, 0x6a, 0x21, 0xfd, 0xb7, 0x11, 0x14, 0xbe, 0x07, 0x43, 0x4c, 0x0c, 0xc7, 0xbf,
+            0x63, 0xf6, 0xe1, 0xda, 0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb, 0xd5, 0x1a,
+            0xd2, 0xf1, 0x48, 0x98, 0xb9, 0x5b,
+        ];
+        let mut out = [0u8; 48];
+        // SAFETY: empty input and out is a valid 48-byte buffer.
+        unsafe { hew_sha384(std::ptr::null(), 0, out.as_mut_ptr()) };
+        assert_eq!(out, expected);
+    }
+
+    /// SHA-384("abc") — NIST test vector
+    #[test]
+    fn sha384_known_data() {
+        let expected = [
+            0xcb, 0x00, 0x75, 0x3f, 0x45, 0xa3, 0x5e, 0x8b, 0xb5, 0xa0, 0x3d, 0x69, 0x9a, 0xc6,
+            0x50, 0x07, 0x27, 0x2c, 0x32, 0xab, 0x0e, 0xde, 0xd1, 0x63, 0x1a, 0x8b, 0x60, 0x5a,
+            0x43, 0xff, 0x5b, 0xed, 0x80, 0x86, 0x07, 0x2b, 0xa1, 0xe7, 0xcc, 0x23, 0x58, 0xba,
+            0xec, 0xa1, 0x34, 0xc8, 0x25, 0xa7,
+        ];
+        let data = b"abc";
+        let mut out = [0u8; 48];
+        // SAFETY: data and out are valid buffers.
+        unsafe { hew_sha384(data.as_ptr(), data.len(), out.as_mut_ptr()) };
+        assert_eq!(out, expected);
+    }
+
+    /// Same input always produces the same SHA-256 digest.
+    #[test]
+    fn sha256_deterministic() {
+        let data = b"deterministic test input";
+        let mut out1 = [0u8; 32];
+        let mut out2 = [0u8; 32];
+        // SAFETY: data and out buffers are valid.
+        unsafe {
+            hew_sha256(data.as_ptr(), data.len(), out1.as_mut_ptr());
+            hew_sha256(data.as_ptr(), data.len(), out2.as_mut_ptr());
+        }
+        assert_eq!(out1, out2);
+    }
+
+    /// Null out pointer is a no-op (doesn't crash).
+    #[test]
+    fn sha256_null_out_is_noop() {
+        let data = b"test";
+        // SAFETY: null out is explicitly handled by returning early.
+        unsafe { hew_sha256(data.as_ptr(), data.len(), std::ptr::null_mut()) };
+    }
+
+    /// Null out pointer is a no-op for SHA-384.
+    #[test]
+    fn sha384_null_out_is_noop() {
+        let data = b"test";
+        // SAFETY: null out is explicitly handled by returning early.
+        unsafe { hew_sha384(data.as_ptr(), data.len(), std::ptr::null_mut()) };
+    }
+
+    /// Null out pointer is a no-op for SHA-512.
+    #[test]
+    fn sha512_null_out_is_noop() {
+        let data = b"test";
+        // SAFETY: null out is explicitly handled by returning early.
+        unsafe { hew_sha512(data.as_ptr(), data.len(), std::ptr::null_mut()) };
+    }
+
+    /// HMAC-SHA256 with null key returns early without writing.
+    #[test]
+    fn hmac_null_key_is_noop() {
+        let data = b"test";
+        let mut out = [0xffu8; 32];
+        // SAFETY: null key is explicitly handled.
+        unsafe {
+            hew_hmac_sha256(
+                std::ptr::null(),
+                0,
+                data.as_ptr(),
+                data.len(),
+                out.as_mut_ptr(),
+            );
+        }
+        // Buffer should be untouched.
+        assert_eq!(out, [0xffu8; 32]);
+    }
+
+    /// HMAC-SHA256 with null out returns early.
+    #[test]
+    fn hmac_null_out_is_noop() {
+        let key = b"key";
+        let data = b"data";
+        // SAFETY: null out is explicitly handled.
+        unsafe {
+            hew_hmac_sha256(
+                key.as_ptr(),
+                key.len(),
+                data.as_ptr(),
+                data.len(),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    /// HMAC-SHA256 with null data pointer (`data_len=0`) treats data as empty.
+    #[test]
+    fn hmac_null_data_uses_empty_slice() {
+        let key = b"key";
+        let mut out_null = [0u8; 32];
+        let mut out_empty = [0u8; 32];
+        // SAFETY: null data with len=0 is explicitly handled; empty slice equivalent.
+        unsafe {
+            hew_hmac_sha256(
+                key.as_ptr(),
+                key.len(),
+                std::ptr::null(),
+                0,
+                out_null.as_mut_ptr(),
+            );
+            hew_hmac_sha256(
+                key.as_ptr(),
+                key.len(),
+                b"".as_ptr(),
+                0,
+                out_empty.as_mut_ptr(),
+            );
+        }
+        assert_eq!(out_null, out_empty);
+    }
+
+    /// Random bytes: null buffer is a no-op.
+    #[test]
+    fn random_bytes_null_buf_is_noop() {
+        // SAFETY: null buf is explicitly handled.
+        unsafe { hew_random_bytes(std::ptr::null_mut(), 32) };
+    }
+
+    /// Random bytes: zero length is a no-op.
+    #[test]
+    fn random_bytes_zero_len_is_noop() {
+        let mut buf = [0xffu8; 4];
+        // SAFETY: buf is valid; len=0 means no bytes written.
+        unsafe { hew_random_bytes(buf.as_mut_ptr(), 0) };
+        assert_eq!(buf, [0xffu8; 4], "buffer should be untouched");
+    }
+
+    /// Two random byte calls should produce different output.
+    #[test]
+    fn random_bytes_non_deterministic() {
+        let mut buf1 = [0u8; 32];
+        let mut buf2 = [0u8; 32];
+        // SAFETY: both buffers are valid.
+        unsafe {
+            hew_random_bytes(buf1.as_mut_ptr(), 32);
+            hew_random_bytes(buf2.as_mut_ptr(), 32);
+        }
+        assert_ne!(buf1, buf2, "two random fills should differ");
+    }
+
+    /// Constant-time eq: null a returns 0.
+    #[test]
+    fn constant_time_eq_null_a_returns_zero() {
+        let b = [1u8; 4];
+        assert_eq!(
+            // SAFETY: null a is explicitly handled.
+            unsafe { hew_constant_time_eq(std::ptr::null(), b.as_ptr(), 4) },
+            0
+        );
+    }
+
+    /// Constant-time eq: null b returns 0.
+    #[test]
+    fn constant_time_eq_null_b_returns_zero() {
+        let a = [1u8; 4];
+        assert_eq!(
+            // SAFETY: null b is explicitly handled.
+            unsafe { hew_constant_time_eq(a.as_ptr(), std::ptr::null(), 4) },
+            0
+        );
+    }
+
+    /// Constant-time eq: zero-length buffers are equal.
+    #[test]
+    fn constant_time_eq_zero_length_is_equal() {
+        let a = [1u8; 1];
+        let b = [2u8; 1];
+        assert_eq!(
+            // SAFETY: len=0 means no bytes read; pointers are valid.
+            unsafe { hew_constant_time_eq(a.as_ptr(), b.as_ptr(), 0) },
+            1
+        );
+    }
+
+    /// Single-byte difference is detected.
+    #[test]
+    fn constant_time_eq_single_byte_diff() {
+        let a = [0u8];
+        let b = [1u8];
+        assert_eq!(
+            // SAFETY: both are valid for 1 byte.
+            unsafe { hew_constant_time_eq(a.as_ptr(), b.as_ptr(), 1) },
+            0
+        );
     }
 }

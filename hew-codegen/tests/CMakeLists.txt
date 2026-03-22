@@ -62,6 +62,14 @@ target_include_directories(test_codegen_capi PRIVATE
   ${PROJECT_BINARY_DIR}/include
 )
 
+# Explicitly enable exceptions — HandleLLVMOptions may disable them globally
+# when LLVM_ENABLE_EH is OFF, but our tests (and the CAPI they exercise) use
+# try/catch for error handling.
+target_compile_options(test_codegen_capi PRIVATE
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fexceptions>
+  $<$<CXX_COMPILER_ID:MSVC>:/EHsc>
+)
+
 target_link_libraries(test_codegen_capi PRIVATE
   HewCodegenCAPI
   $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
@@ -78,6 +86,11 @@ add_executable(test_msgpack_reader test_msgpack_reader.cpp)
 target_include_directories(test_msgpack_reader PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_BINARY_DIR}/include
+)
+
+target_compile_options(test_msgpack_reader PRIVATE
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fexceptions>
+  $<$<CXX_COMPILER_ID:MSVC>:/EHsc>
 )
 
 target_link_libraries(test_msgpack_reader PRIVATE

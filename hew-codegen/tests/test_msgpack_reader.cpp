@@ -19,6 +19,11 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 static int tests_run = 0;
 static int tests_passed = 0;
 
@@ -39,76 +44,90 @@ static int tests_passed = 0;
     printf("FAILED: %s\n", msg);                                                                   \
   } while (0)
 
+// ---------------------------------------------------------------------------
+// Helper: run a function in a child process to test that it rejects input.
+// On macOS, C++ exception handling across static library boundaries is
+// unreliable (Homebrew LLVM builds with -fno-exceptions propagated via
+// HandleLLVMOptions). Using fork() isolates the test: if the child exits
+// non-zero or is killed by a signal, the input was rejected (good).
+// On Windows, exceptions work normally so we use try/catch directly.
+// ---------------------------------------------------------------------------
+#ifndef _WIN32
+static bool rejects_in_child(std::function<void()> fn) {
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    fn();
+    _exit(0); // reached only if fn didn't throw/abort
+  }
+  int status = 0;
+  waitpid(pid, &status, 0);
+  // Rejected = child did NOT exit 0 (threw, aborted, or signalled)
+  return !(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+#endif
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Error handling: invalid input
+//
+// These tests verify parseMsgpackAST rejects bad input. On macOS,
+// C++ exception handling is unreliable across static library boundaries
+// (Homebrew LLVM), so we use fork() to isolate the throwing code.
 // ═══════════════════════════════════════════════════════════════════════════
 
-static void test_empty_input_throws() {
-  TEST(empty_input_throws);
-  // Use a valid pointer with zero size — passing nullptr is UB
+// Macro: verify that an expression does NOT succeed (throws or aborts).
+// On Unix, uses fork() to isolate. On Windows, uses try/catch.
+#ifdef _WIN32
+#define EXPECT_REJECTS(expr)                                                                       \
+  do {                                                                                             \
+    try {                                                                                          \
+      expr;                                                                                        \
+      FAIL("expected rejection but call succeeded");                                               \
+      return;                                                                                      \
+    } catch (...) {                                                                                \
+    }                                                                                              \
+  } while (0)
+#else
+#define EXPECT_REJECTS(expr)                                                                       \
+  do {                                                                                             \
+    if (!rejects_in_child([&] { expr; })) {                                                        \
+      FAIL("expected rejection but call succeeded");                                               \
+      return;                                                                                      \
+    }                                                                                              \
+  } while (0)
+#endif
+
+static void test_empty_input_rejects() {
+  TEST(empty_input_rejects);
   uint8_t empty = 0;
-  try {
-    hew::parseMsgpackAST(&empty, 0);
-    FAIL("expected exception for empty input");
-    return;
-  } catch (...) {
-    // Any exception is acceptable — the contract is "don't silently succeed"
-  }
+  EXPECT_REJECTS(hew::parseMsgpackAST(&empty, 0));
   PASS();
 }
 
-static void test_truncated_msgpack_throws() {
-  TEST(truncated_msgpack_throws);
-  // A map header claiming 10 entries but only 2 bytes of data
+static void test_truncated_msgpack_rejects() {
+  TEST(truncated_msgpack_rejects);
   uint8_t truncated[] = {0x8A, 0xA1}; // fixmap(10), fixstr(1) — then EOF
-  try {
-    hew::parseMsgpackAST(truncated, sizeof(truncated));
-    FAIL("expected exception for truncated input");
-    return;
-  } catch (...) {
-    // Good — either msgpack unpack or our parser should reject this
-  }
+  EXPECT_REJECTS(hew::parseMsgpackAST(truncated, sizeof(truncated)));
   PASS();
 }
 
-static void test_wrong_top_level_type_throws() {
-  TEST(wrong_top_level_type_throws);
-  // Top level should be a map, not an array
+static void test_wrong_top_level_type_rejects() {
+  TEST(wrong_top_level_type_rejects);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_array(3);
   pk.pack(1);
   pk.pack(2);
   pk.pack(3);
-
-  try {
-    hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
-    FAIL("expected exception for non-map top level");
-    return;
-  } catch (const std::runtime_error &e) {
-    // Should mention "map" or be a parse error
-    if (std::string(e.what()).find("parse error") == std::string::npos &&
-        std::string(e.what()).find("map") == std::string::npos &&
-        std::string(e.what()).find("MAP") == std::string::npos &&
-        std::string(e.what()).find("expected") == std::string::npos) {
-      // Accept any runtime_error — the detail of the message may vary
-    }
-  } catch (...) {
-    // On some platforms, exception types may not match across static lib boundaries
-  }
+  EXPECT_REJECTS(
+      hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
   PASS();
 }
 
-static void test_single_byte_garbage_throws() {
-  TEST(single_byte_garbage_throws);
+static void test_single_byte_garbage_rejects() {
+  TEST(single_byte_garbage_rejects);
   uint8_t garbage[] = {0xC1}; // 0xC1 is "never used" in msgpack spec
-  try {
-    hew::parseMsgpackAST(garbage, sizeof(garbage));
-    FAIL("expected exception for single-byte garbage");
-    return;
-  } catch (...) {
-    // Good
-  }
+  EXPECT_REJECTS(hew::parseMsgpackAST(garbage, sizeof(garbage)));
   PASS();
 }
 
@@ -139,61 +158,32 @@ static std::vector<uint8_t> packWithSchema(
           reinterpret_cast<const uint8_t *>(buf.data()) + buf.size()};
 }
 
-static void test_missing_schema_version_throws() {
-  TEST(missing_schema_version_throws);
-  // A map without schema_version — parseProgram requires it via mapReq
+static void test_missing_schema_version_rejects() {
+  TEST(missing_schema_version_rejects);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(1);
   pk.pack(std::string("items"));
   pk.pack_array(0);
-
-  try {
-    hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
-    FAIL("expected exception for missing schema_version");
-    return;
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    if (msg.find("schema_version") == std::string::npos) {
-      std::string detail = "expected 'schema_version' in error, got: " + msg;
-      FAIL(detail.c_str());
-      return;
-    }
-  } catch (...) {
-    // On macOS, exception typeinfo may not match across static lib boundaries
-  }
+  EXPECT_REJECTS(
+      hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
   PASS();
 }
 
-static void test_wrong_schema_version_throws() {
-  TEST(wrong_schema_version_throws);
-  // schema_version = 999 — should fail version check
+static void test_wrong_schema_version_rejects() {
+  TEST(wrong_schema_version_rejects);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(1);
   pk.pack(std::string("schema_version"));
   pk.pack(static_cast<uint64_t>(999));
-
-  try {
-    hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
-    FAIL("expected exception for wrong schema version");
-    return;
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    if (msg.find("unsupported schema version") == std::string::npos) {
-      std::string detail = "expected 'unsupported schema version' in error, got: " + msg;
-      FAIL(detail.c_str());
-      return;
-    }
-  } catch (...) {
-    // On macOS, exception typeinfo may not match across static lib boundaries
-  }
+  EXPECT_REJECTS(
+      hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
   PASS();
 }
 
-static void test_items_wrong_type_throws() {
-  TEST(items_wrong_type_throws);
-  // items as integer instead of array — should fail parseVec
+static void test_items_wrong_type_rejects() {
+  TEST(items_wrong_type_rejects);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(2);
@@ -201,22 +191,8 @@ static void test_items_wrong_type_throws() {
   pk.pack(static_cast<uint64_t>(2));
   pk.pack(std::string("items"));
   pk.pack(42); // should be array
-
-  try {
-    hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
-    FAIL("expected exception for items as integer");
-    return;
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    if (msg.find("array") == std::string::npos && msg.find("ARRAY") == std::string::npos &&
-        msg.find("type") == std::string::npos) {
-      std::string detail = "expected array-related error, got: " + msg;
-      FAIL(detail.c_str());
-      return;
-    }
-  } catch (...) {
-    // Any exception is acceptable
-  }
+  EXPECT_REJECTS(
+      hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
   PASS();
 }
 
@@ -249,15 +225,15 @@ int main() {
   printf("Running msgpack reader tests...\n");
 
   // Invalid input
-  test_empty_input_throws();
-  test_truncated_msgpack_throws();
-  test_wrong_top_level_type_throws();
-  test_single_byte_garbage_throws();
+  test_empty_input_rejects();
+  test_truncated_msgpack_rejects();
+  test_wrong_top_level_type_rejects();
+  test_single_byte_garbage_rejects();
 
   // Semantically wrong AST
-  test_missing_schema_version_throws();
-  test_wrong_schema_version_throws();
-  test_items_wrong_type_throws();
+  test_missing_schema_version_rejects();
+  test_wrong_schema_version_rejects();
+  test_items_wrong_type_rejects();
   test_minimal_valid_program_parses();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);

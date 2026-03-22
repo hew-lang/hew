@@ -332,9 +332,12 @@ impl HewCluster {
 
     /// Get pending gossip events (up to `max_count`), incrementing
     /// dissemination counters and pruning expired events.
-    #[expect(
-        dead_code,
-        reason = "used when wiring gossip into SWIM message piggybacking"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used when wiring gossip into SWIM message piggybacking"
+        )
     )]
     fn take_gossip(&self, max_count: usize) -> Vec<MemberEvent> {
         let mut events = self.events.lock_or_recover();
@@ -1384,6 +1387,325 @@ mod tests {
             assert_eq!(hew_cluster_registry_gossip_count(cluster), 1);
 
             hew_cluster_free(cluster);
+        }
+    }
+
+    // ── take_gossip tests ──────────────────────────────────────────────
+
+    #[test]
+    fn take_gossip_respects_max_count() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+        cluster.upsert_member(3, MEMBER_ALIVE, 1, b"10.0.0.2:9000");
+        cluster.upsert_member(4, MEMBER_ALIVE, 1, b"10.0.0.3:9000");
+
+        let batch = cluster.take_gossip(2);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].node_id, 2);
+        assert_eq!(batch[1].node_id, 3);
+    }
+
+    #[test]
+    fn take_gossip_prunes_after_eight_disseminations() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+
+        // After 7 disseminations, the event should still be present.
+        for _ in 0..7 {
+            let batch = cluster.take_gossip(10);
+            assert_eq!(
+                batch.len(),
+                1,
+                "event should survive before reaching threshold"
+            );
+        }
+        // The 8th take_gossip increments count to 8 and then prunes.
+        let batch = cluster.take_gossip(10);
+        assert_eq!(batch.len(), 1, "returned on the call that prunes");
+        // Now the event is gone.
+        let batch = cluster.take_gossip(10);
+        assert_eq!(batch.len(), 0, "pruned after 8 disseminations");
+    }
+
+    // ── next_ping_target tests ─────────────────────────────────────────
+
+    #[test]
+    fn next_ping_target_empty_returns_none() {
+        let mut cluster = HewCluster::new(make_config(1));
+        assert_eq!(cluster.next_ping_target(), None);
+    }
+
+    #[test]
+    fn next_ping_target_round_robins_through_members() {
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(10, MEMBER_ALIVE, 1, b"a:1");
+        cluster.upsert_member(20, MEMBER_ALIVE, 1, b"b:1");
+
+        let first = cluster.next_ping_target().unwrap();
+        let second = cluster.next_ping_target().unwrap();
+        let third = cluster.next_ping_target().unwrap();
+        assert_eq!(first, 10);
+        assert_eq!(second, 20);
+        // Wraps around.
+        assert_eq!(third, 10);
+    }
+
+    #[test]
+    fn next_ping_target_skips_dead_and_left() {
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"a:1");
+        cluster.upsert_member(3, MEMBER_DEAD, 5, b"b:1");
+        cluster.upsert_member(4, MEMBER_LEFT, 1, b"c:1");
+        cluster.upsert_member(5, MEMBER_SUSPECT, 1, b"d:1");
+
+        // Only nodes 2 (alive) and 5 (suspect) should be selected.
+        let mut targets = Vec::new();
+        for _ in 0..4 {
+            targets.push(cluster.next_ping_target().unwrap());
+        }
+        assert!(!targets.contains(&3), "dead member must not be pinged");
+        assert!(!targets.contains(&4), "left member must not be pinged");
+        assert!(targets.contains(&2));
+        assert!(targets.contains(&5));
+    }
+
+    // ── emit_event tests ───────────────────────────────────────────────
+
+    #[test]
+    fn emit_event_deduplicates_by_node_id() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.emit_event(2, MEMBER_ALIVE, 1);
+        cluster.emit_event(3, MEMBER_ALIVE, 1);
+        cluster.emit_event(2, MEMBER_SUSPECT, 2);
+
+        let events = cluster.events.lock().unwrap();
+        // Node 2's first event should be replaced.
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].node_id, 3);
+        assert_eq!(events[1].node_id, 2);
+        assert_eq!(events[1].new_state, MEMBER_SUSPECT);
+    }
+
+    #[test]
+    fn emit_event_evicts_oldest_at_capacity() {
+        let cluster = HewCluster::new(make_config(1));
+        // Fill to MAX_GOSSIP_EVENTS with distinct node IDs.
+        for i in 0..MAX_GOSSIP_EVENTS {
+            #[expect(clippy::cast_possible_truncation, reason = "test values fit in u16")]
+            let node_id = (i + 100) as u16;
+            cluster.emit_event(node_id, MEMBER_ALIVE, 1);
+        }
+        {
+            let events = cluster.events.lock().unwrap();
+            assert_eq!(events.len(), MAX_GOSSIP_EVENTS);
+        }
+
+        // One more should evict the oldest (node 100).
+        cluster.emit_event(999, MEMBER_ALIVE, 1);
+        let events = cluster.events.lock().unwrap();
+        assert_eq!(events.len(), MAX_GOSSIP_EVENTS);
+        assert!(
+            !events.iter().any(|e| e.node_id == 100),
+            "oldest event (node 100) should have been evicted"
+        );
+        assert!(events.iter().any(|e| e.node_id == 999));
+    }
+
+    // ── process_message tests ──────────────────────────────────────────
+
+    #[test]
+    fn process_message_ping_recovers_suspect_to_alive() {
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"10.0.0.1:9000");
+
+        // A PING from node 2 should update last_seen and recover to alive.
+        cluster.process_message(SWIM_MSG_PING, 2, 1, 2);
+        let members = cluster.members.lock().unwrap();
+        assert_eq!(members[0].state, MEMBER_ALIVE);
+    }
+
+    #[test]
+    fn process_message_unknown_type_is_noop() {
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+
+        // Unknown message type should not change anything.
+        cluster.process_message(999, 2, 1, 2);
+        let members = cluster.members.lock().unwrap();
+        assert_eq!(members[0].state, MEMBER_ALIVE);
+    }
+
+    // ── upsert_member address tests ────────────────────────────────────
+
+    #[test]
+    fn upsert_member_truncates_long_address() {
+        let cluster = HewCluster::new(make_config(1));
+        let long_addr = [b'A'; 200];
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, &long_addr);
+
+        let members = cluster.members.lock().unwrap();
+        // Address should be truncated to 127 bytes + null terminator.
+        assert_eq!(&members[0].addr[..127], &[b'A'; 127]);
+        assert_eq!(members[0].addr[127], 0);
+    }
+
+    // ── tick edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn tick_skips_left_members() {
+        let mut cluster = HewCluster::new(ClusterConfig {
+            local_node_id: 1,
+            ping_timeout_ms: 100,
+            suspect_timeout_ms: 300,
+            ..ClusterConfig::default()
+        });
+        cluster.upsert_member(2, MEMBER_LEFT, 1, b"10.0.0.1:9000");
+        {
+            let mut members = cluster.members.lock().unwrap();
+            members[0].last_seen_ms = 0;
+        }
+
+        // Even after a long time, LEFT should remain LEFT (not transition to suspect/dead).
+        cluster.tick(10_000);
+        let members = cluster.members.lock().unwrap();
+        assert_eq!(members[0].state, MEMBER_LEFT);
+    }
+
+    // ── connection_established on dead member ──────────────────────────
+
+    #[test]
+    fn connection_established_dead_member_stays_dead() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
+
+        // Re-establishing a connection should not revive a dead member.
+        cluster.notify_connection_established(2);
+        let members = cluster.members.lock().unwrap();
+        assert_eq!(
+            members[0].state, MEMBER_DEAD,
+            "dead member must not be revived via connection"
+        );
+    }
+
+    // ── apply_registry_event edge cases ────────────────────────────────
+
+    #[test]
+    fn apply_registry_event_without_callback_is_noop() {
+        let cluster = HewCluster::new(make_config(1));
+        // No callback registered — should not panic.
+        cluster.apply_registry_event("counter", 42, true);
+    }
+
+    #[test]
+    fn apply_registry_event_name_with_interior_nul_is_noop() {
+        extern "C" fn should_not_be_called(_: *const c_char, _: u64, _: bool, _: *mut c_void) {
+            panic!("callback should not be invoked for invalid name");
+        }
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.registry_callback = Some(should_not_be_called);
+        cluster.registry_callback_user_data = std::ptr::null_mut();
+
+        // Name with interior null byte — CString::new fails, early return.
+        cluster.apply_registry_event("bad\0name", 42, true);
+    }
+
+    // ── membership callback edge cases ─────────────────────────────────
+
+    #[test]
+    fn alive_to_alive_upsert_skips_joined_callback() {
+        let mut events: Vec<(u16, u8)> = Vec::new();
+        let mut cluster = HewCluster::new(make_config(1));
+        cluster.membership_callback = Some(collect_membership_events);
+        cluster.membership_callback_user_data = (&raw mut events).cast();
+
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+        // Same state, same incarnation — should NOT fire again.
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, &[]);
+
+        // Only one JOINED event for the initial insert.
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED));
+    }
+
+    // ── registry gossip overflow ───────────────────────────────────────
+
+    #[test]
+    fn registry_gossip_overflow_evicts_oldest() {
+        let cluster = HewCluster::new(make_config(1));
+        for i in 0..MAX_GOSSIP_EVENTS {
+            cluster.emit_registry_add(&format!("actor_{i}"), i as u64);
+        }
+        assert_eq!(cluster.registry_gossip_count(), MAX_GOSSIP_EVENTS);
+
+        // One more should evict the oldest.
+        cluster.emit_registry_add("overflow", 999);
+        assert_eq!(cluster.registry_gossip_count(), MAX_GOSSIP_EVENTS);
+
+        let events = cluster.take_registry_gossip(MAX_GOSSIP_EVENTS + 1);
+        assert!(
+            !events.iter().any(|e| e.name == "actor_0"),
+            "oldest should be evicted"
+        );
+        assert!(events.iter().any(|e| e.name == "overflow"));
+    }
+
+    // ── extended CABI null safety ──────────────────────────────────────
+
+    #[test]
+    fn null_safety_extended() {
+        extern "C" fn noop_registry_cb(_: *const c_char, _: u64, _: bool, _: *mut c_void) {}
+
+        // SAFETY: testing null safety of remaining CABI functions.
+        unsafe {
+            let null: *mut HewCluster = std::ptr::null_mut();
+
+            // Functions that return -1 on null.
+            assert_eq!(hew_cluster_join(null, 1, c"addr".as_ptr()), -1);
+            assert_eq!(
+                hew_cluster_process_message(null, SWIM_MSG_PING, 1, 1, 1),
+                -1
+            );
+            assert_eq!(hew_cluster_notify_connection_lost(null, 1), -1);
+            assert_eq!(hew_cluster_notify_connection_established(null, 1), -1);
+
+            // Functions that return 0 on null.
+            assert_eq!(hew_cluster_gossip_count(null), 0);
+            assert_eq!(hew_cluster_registry_gossip_count(null), 0);
+
+            // Functions that return gracefully on null.
+            hew_cluster_leave(null);
+            hew_cluster_set_callback(null, None);
+            hew_cluster_set_membership_callback(
+                null,
+                collect_membership_events,
+                std::ptr::null_mut(),
+            );
+            hew_cluster_set_registry_callback(null, noop_registry_cb, std::ptr::null_mut());
+
+            // Null name pointers.
+            hew_cluster_registry_add(null, std::ptr::null(), 0);
+            hew_cluster_registry_remove(null, std::ptr::null());
+        }
+    }
+
+    #[test]
+    fn join_with_null_addr_returns_error() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert_eq!(hew_cluster_join(cluster, 2, std::ptr::null()), -1);
+            assert_eq!(hew_cluster_member_count(cluster), 0);
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    fn hew_cluster_new_null_config_returns_null() {
+        // SAFETY: testing null safety.
+        unsafe {
+            let cluster = hew_cluster_new(std::ptr::null());
+            assert!(cluster.is_null());
         }
     }
 }

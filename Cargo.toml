@@ -11,6 +11,7 @@ members = [
   "std/encoding/toml",
   "std/encoding/xml",
   "std/encoding/yaml",
+  "std/encoding/hex",
   "std/crypto/crypto",
   "std/crypto/jwt",
   "std/crypto/password",

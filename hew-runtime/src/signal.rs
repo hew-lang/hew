@@ -148,34 +148,43 @@ mod shared {
         let msg_type = state.msg_type.load(Ordering::Acquire);
         let worker_id = state.worker_id;
 
-        // Notify supervisor by marking actor as Crashed.
-        if !actor.is_null() {
+        // Cache actor data before supervisor notification to avoid race.
+        // After hew_actor_trap, another thread could process the supervisor
+        // notification and call hew_actor_free before we dereference actor.
+        let (actor_id, actor_pid, report) = if !actor.is_null() {
             // SAFETY: actor pointer was stored in prepare_dispatch_recovery
             // and the actor is still alive (it's Running — only the current
             // worker thread can transition it, and we haven't freed it).
+            unsafe {
+                let id = (*actor).id;
+                let pid = (*actor).pid;
+                let report = crate::crash::build_crash_report(
+                    actor, signal,
+                    0, // signal_code - not available from siginfo_t in current handler
+                    fault_addr, msg_type, worker_id,
+                );
+                (id, pid, Some(report))
+            }
+        } else {
+            (0, 0, None)
+        };
+
+        // NOW notify supervisor (may trigger actor free on another thread).
+        if !actor.is_null() {
+            // SAFETY: actor pointer is valid (checked above).
             unsafe { crate::actor::hew_actor_trap(actor, signal) };
         }
 
-        // Build detailed crash report for forensics.
-        // SAFETY: actor pointer is valid (checked above).
-        let report = unsafe {
-            crate::crash::build_crash_report(
-                actor, signal,
-                0, // signal_code - not available from siginfo_t in current handler
-                fault_addr, msg_type, worker_id,
-            )
-        };
+        // Push crash report to global log using cached data.
+        if let Some(report) = report {
+            crate::crash::push_crash_report(report);
+        }
 
-        // Push to global crash log.
-        crate::crash::push_crash_report(report);
-
-        // Enhanced crash logging with more details.
+        // Enhanced crash logging with cached actor data.
         let name = signal_name(signal);
-        if !actor.is_null() {
-            // SAFETY: actor pointer is valid (checked above).
-            let (id, pid) = unsafe { ((*actor).id, (*actor).pid) };
+        if actor_id != 0 {
             eprintln!(
-                "hew: actor {id} (pid={pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+                "hew: actor {actor_id} (pid={actor_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
             );
         }
 

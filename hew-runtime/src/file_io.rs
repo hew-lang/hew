@@ -172,7 +172,14 @@ pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
 pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     let mut buf = String::new();
     match std::io::stdin().read_line(&mut buf) {
-        Ok(0) | Err(_) => std::ptr::null_mut(),
+        Ok(0) => {
+            crate::hew_clear_error();
+            std::ptr::null_mut()
+        }
+        Err(e) => {
+            crate::set_last_error(format!("hew_stdin_read_line: {e}"));
+            std::ptr::null_mut()
+        }
         Ok(_) => {
             // Trim the trailing newline, if present.
             if buf.ends_with('\n') {
@@ -183,7 +190,13 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
             }
             match CString::new(buf) {
                 Ok(cs) => cs.into_raw(),
-                Err(_) => std::ptr::null_mut(),
+                Err(e) => {
+                    crate::set_last_error(format!(
+                        "hew_stdin_read_line: input contains interior NUL at byte {}",
+                        e.nul_position()
+                    ));
+                    std::ptr::null_mut()
+                }
             }
         }
     }

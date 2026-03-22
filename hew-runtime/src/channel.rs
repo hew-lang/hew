@@ -51,12 +51,25 @@ impl std::fmt::Debug for HewChannelPair {
 /// extracted with [`hew_channel_pair_sender`] / [`hew_channel_pair_receiver`],
 /// then freed with [`hew_channel_pair_free`].
 ///
+/// Returns null on invalid capacity (sets last error).
+///
 /// # Safety
 ///
 /// The returned pointer must be freed with [`hew_channel_pair_free`].
 #[no_mangle]
 pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewChannelPair {
-    let cap = usize::try_from(capacity.max(1)).unwrap_or(1);
+    if capacity < 0 {
+        crate::set_last_error(format!(
+            "hew_channel_new: invalid capacity {capacity} (must be >= 0)"
+        ));
+        return ptr::null_mut();
+    }
+    let Some(cap) = usize::try_from(capacity.max(1)).ok() else {
+        crate::set_last_error(format!(
+            "hew_channel_new: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(cap);
 
     let sender = Box::into_raw(Box::new(HewChannelSender { tx }));

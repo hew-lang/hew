@@ -1368,3 +1368,1037 @@ pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut Hew
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    /// Wrapper to send raw sink pointers across thread boundaries.
+    ///
+    /// # Safety
+    ///
+    /// The inner pointer must refer to a channel-backed sink (mpsc is thread-safe).
+    struct SendSink(*mut HewSink);
+    // SAFETY: channel sinks are backed by mpsc::SyncSender which is Send + Sync.
+    unsafe impl Send for SendSink {}
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    /// Read all items from a stream via the sized FFI, freeing each malloc'd buffer.
+    ///
+    /// # Safety
+    ///
+    /// `stream` must be a valid, non-null `HewStream` pointer.
+    unsafe fn drain_stream(stream: *mut HewStream) -> Vec<Vec<u8>> {
+        let mut items = Vec::new();
+        loop {
+            let mut size: usize = 0;
+            // SAFETY: stream is valid per caller contract; size is a local.
+            let ptr = unsafe { hew_stream_next_sized(stream, &raw mut size) };
+            if ptr.is_null() {
+                break;
+            }
+            // SAFETY: ptr is valid for `size` bytes per hew_stream_next_sized contract.
+            let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
+            // SAFETY: ptr was malloc'd by hew_stream_next_sized.
+            unsafe { libc::free(ptr) };
+            items.push(bytes);
+        }
+        items
+    }
+
+    /// Generate a per-test temp file path that won't collide with parallel runs.
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "hew_stream_test_{name}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    // ── Validity checks ─────────────────────────────────────────────────
+
+    #[test]
+    fn null_stream_reports_invalid() {
+        assert_eq!(hew_stream_is_valid(ptr::null()), 0);
+    }
+
+    #[test]
+    fn null_sink_reports_invalid() {
+        assert_eq!(hew_sink_is_valid(ptr::null()), 0);
+    }
+
+    #[test]
+    fn non_null_stream_reports_valid() {
+        let data = b"hello";
+        // SAFETY: data is valid for its length.
+        let stream = unsafe { hew_stream_from_bytes(data.as_ptr(), data.len(), 0) };
+        assert_eq!(hew_stream_is_valid(stream), 1);
+        // SAFETY: stream was created above.
+        unsafe { hew_stream_close(stream) };
+    }
+
+    #[test]
+    fn non_null_sink_reports_valid() {
+        // SAFETY: hew_stream_channel returns a valid pair.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            assert_eq!(hew_sink_is_valid(sink), 1);
+            hew_sink_close(sink);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // ── Channel creation and pair extraction ────────────────────────────
+
+    #[test]
+    fn channel_creates_non_null_pair() {
+        // SAFETY: FFI call with valid capacity.
+        let pair = unsafe { hew_stream_channel(4) };
+        assert!(!pair.is_null());
+        // SAFETY: pair was just created.
+        unsafe { hew_stream_pair_free(pair) };
+    }
+
+    #[test]
+    fn pair_extraction_returns_non_null_handles() {
+        // SAFETY: FFI calls with valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+            assert!(!sink.is_null());
+            assert!(!stream.is_null());
+            hew_sink_close(sink);
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn pair_sink_null_pair_returns_null() {
+        // SAFETY: null is explicitly handled by cabi_guard.
+        let result = unsafe { hew_stream_pair_sink(ptr::null_mut()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn pair_stream_null_pair_returns_null() {
+        // SAFETY: null is explicitly handled by cabi_guard.
+        let result = unsafe { hew_stream_pair_stream(ptr::null_mut()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn pair_bytes_aliases_delegate_correctly() {
+        // SAFETY: FFI calls with valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink_bytes(pair);
+            let stream = hew_stream_pair_stream_bytes(pair);
+            assert!(!sink.is_null());
+            assert!(!stream.is_null());
+            hew_sink_close(sink);
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn pair_free_null_is_safe() {
+        // Must not crash.
+        // SAFETY: null is explicitly handled by hew_stream_pair_free.
+        unsafe { hew_stream_pair_free(ptr::null_mut()) };
+    }
+
+    // ── Channel write-read round-trip ───────────────────────────────────
+
+    #[test]
+    fn channel_write_read_roundtrip() {
+        // SAFETY: all FFI calls use valid pointers from prior creation calls.
+        unsafe {
+            let pair = hew_stream_channel(8);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let msg = b"hello, channel";
+            hew_sink_write(sink, msg.as_ptr().cast(), msg.len());
+            hew_sink_close(sink); // signal EOF
+
+            let items = drain_stream(stream);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], msg);
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn channel_multiple_items_preserve_order() {
+        // SAFETY: all FFI calls use valid pointers from prior creation calls.
+        unsafe {
+            let pair = hew_stream_channel(8);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            for i in 0..5u8 {
+                let data = [i; 3]; // e.g. [0,0,0], [1,1,1], ...
+                hew_sink_write(sink, data.as_ptr().cast(), data.len());
+            }
+            hew_sink_close(sink);
+
+            let items = drain_stream(stream);
+            assert_eq!(items.len(), 5);
+            for (i, item) in items.iter().enumerate() {
+                #[expect(clippy::cast_possible_truncation, reason = "test values fit in u8")]
+                let expected = vec![i as u8; 3];
+                assert_eq!(*item, expected, "item {i} mismatch");
+            }
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // ── Bytes stream (VecStream via hew_stream_from_bytes) ──────────────
+
+    #[test]
+    fn bytes_stream_single_item_when_item_size_zero() {
+        let data = b"all at once";
+        // SAFETY: data is valid for its length.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let items = drain_stream(stream);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], data);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn bytes_stream_chunks_by_item_size() {
+        let data = b"abcdefghij"; // 10 bytes
+                                  // SAFETY: data is valid for its length.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 3);
+            let items = drain_stream(stream);
+            // 10 / 3 = 3 full chunks + 1 remainder
+            assert_eq!(items.len(), 4);
+            assert_eq!(items[0], b"abc");
+            assert_eq!(items[1], b"def");
+            assert_eq!(items[2], b"ghi");
+            assert_eq!(items[3], b"j");
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn bytes_stream_null_data_yields_empty_stream() {
+        // SAFETY: null data is explicitly handled.
+        unsafe {
+            let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
+            assert!(!stream.is_null(), "should return a valid empty stream");
+            let items = drain_stream(stream);
+            assert!(items.is_empty());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn bytes_stream_zero_length_yields_empty_stream() {
+        let data = b"ignored";
+        // SAFETY: len=0 triggers the empty-stream path regardless of data pointer.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), 0, 0);
+            let items = drain_stream(stream);
+            assert!(items.is_empty());
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn bytes_stream_binary_data_roundtrip() {
+        // Full byte range including embedded NULs.
+        let data: Vec<u8> = (0..=255).collect();
+        // SAFETY: data is valid for its length.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let items = drain_stream(stream);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], data);
+            hew_stream_close(stream);
+        }
+    }
+
+    // ── hew_stream_next ─────────────────────────────────────────────────
+
+    #[test]
+    fn stream_next_null_returns_null() {
+        // SAFETY: null is explicitly handled by cabi_guard.
+        let result = unsafe { hew_stream_next(ptr::null_mut()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn stream_next_returns_nul_terminated_buffer() {
+        let data = b"test";
+        // SAFETY: data is valid; stream is created from it.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let buf = hew_stream_next(stream);
+            assert!(!buf.is_null());
+            // The buffer should be NUL-terminated for C string compatibility.
+            let cstr = CStr::from_ptr(buf.cast::<c_char>());
+            assert_eq!(cstr.to_bytes(), b"test");
+            libc::free(buf);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_eof_returns_null() {
+        let data = b"one";
+        // SAFETY: data is valid; stream is created from it.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let first = hew_stream_next(stream);
+            assert!(!first.is_null());
+            libc::free(first);
+            // Stream is now exhausted.
+            let second = hew_stream_next(stream);
+            assert!(second.is_null(), "should return null on EOF");
+            hew_stream_close(stream);
+        }
+    }
+
+    // ── hew_stream_next_sized ───────────────────────────────────────────
+
+    #[test]
+    fn stream_next_sized_null_returns_null() {
+        let mut size: usize = 999;
+        // SAFETY: null stream is handled; size is a valid local.
+        let result = unsafe { hew_stream_next_sized(ptr::null_mut(), &raw mut size) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn stream_next_sized_reports_correct_length() {
+        let data = b"seven!!"; // 7 bytes
+                               // SAFETY: data is valid; stream is created from it.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let mut size: usize = 0;
+            let buf = hew_stream_next_sized(stream, &raw mut size);
+            assert!(!buf.is_null());
+            assert_eq!(size, 7);
+            libc::free(buf);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn stream_next_sized_eof_sets_size_zero() {
+        // SAFETY: empty data creates an empty stream.
+        unsafe {
+            let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
+            let mut size: usize = 42;
+            let buf = hew_stream_next_sized(stream, &raw mut size);
+            assert!(buf.is_null());
+            assert_eq!(size, 0, "size should be zeroed on EOF");
+            hew_stream_close(stream);
+        }
+    }
+
+    // ── Close / free ────────────────────────────────────────────────────
+
+    #[test]
+    fn stream_close_null_is_safe() {
+        // Must not crash.
+        // SAFETY: null is explicitly handled by hew_stream_close.
+        unsafe { hew_stream_close(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn sink_close_null_is_safe() {
+        // Must not crash.
+        // SAFETY: null is explicitly handled by hew_sink_close.
+        unsafe { hew_sink_close(ptr::null_mut()) };
+    }
+
+    // ── Sink operations ─────────────────────────────────────────────────
+
+    #[test]
+    fn sink_write_null_sink_is_safe() {
+        let data = b"ignored";
+        // SAFETY: null sink is handled with early return.
+        unsafe { hew_sink_write(ptr::null_mut(), data.as_ptr().cast(), data.len()) };
+    }
+
+    #[test]
+    fn sink_write_null_data_is_safe() {
+        // SAFETY: FFI calls with valid pair; null data is handled.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            hew_sink_write(sink, ptr::null(), 5);
+            hew_sink_close(sink);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn sink_write_zero_size_is_noop() {
+        // SAFETY: FFI calls with valid pointers; zero-size write is handled.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let data = b"should not appear";
+            hew_sink_write(sink, data.as_ptr().cast(), 0);
+            hew_sink_close(sink);
+
+            let items = drain_stream(stream);
+            assert!(
+                items.is_empty(),
+                "zero-size write should not produce an item"
+            );
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn sink_flush_null_is_safe() {
+        // Must not crash.
+        // SAFETY: null is explicitly handled by hew_sink_flush.
+        unsafe { hew_sink_flush(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn sink_flush_channel_is_noop() {
+        // Channel sinks have no buffering; flush should succeed silently.
+        // SAFETY: FFI calls with valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            hew_sink_flush(sink);
+            hew_sink_close(sink);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // ── File-backed streams ─────────────────────────────────────────────
+
+    #[test]
+    fn file_read_null_path_returns_null() {
+        // SAFETY: null path is handled by cabi_guard.
+        let result = unsafe { hew_stream_from_file_read(ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn file_read_nonexistent_returns_null_with_error() {
+        let path = CString::new("/tmp/hew_nonexistent_file_xyz_42").unwrap();
+        // SAFETY: path is a valid C string.
+        let result = unsafe { hew_stream_from_file_read(path.as_ptr()) };
+        assert!(result.is_null());
+        // An error should have been recorded.
+        let err = hew_cabi::sink::take_last_error();
+        assert!(err.is_some(), "missing file should set an error");
+    }
+
+    #[test]
+    fn file_read_returns_file_contents() {
+        let path = temp_path("read_contents");
+        let content = b"Colour, behaviour, neighbour.";
+        std::fs::write(&path, content).unwrap();
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a valid C string pointing to an existing file.
+        unsafe {
+            let stream = hew_stream_from_file_read(c_path.as_ptr());
+            assert!(!stream.is_null());
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, content);
+            hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_read_empty_file_yields_eof() {
+        let path = temp_path("read_empty");
+        std::fs::write(&path, b"").unwrap();
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a valid C string pointing to an existing empty file.
+        unsafe {
+            let stream = hew_stream_from_file_read(c_path.as_ptr());
+            assert!(!stream.is_null());
+            let items = drain_stream(stream);
+            assert!(items.is_empty());
+            hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_write_null_path_returns_null() {
+        // SAFETY: null path is handled by cabi_guard.
+        let result = unsafe { hew_stream_from_file_write(ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn file_write_then_read_roundtrip() {
+        let path = temp_path("write_roundtrip");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Write via sink FFI.
+        // SAFETY: c_path points to a valid path; sink is created from it.
+        unsafe {
+            let sink = hew_stream_from_file_write(c_path.as_ptr());
+            assert!(!sink.is_null());
+            let msg = b"written via FFI";
+            hew_sink_write(sink, msg.as_ptr().cast(), msg.len());
+            hew_sink_flush(sink);
+            hew_sink_close(sink);
+        }
+
+        // Verify file contents directly.
+        let mut contents = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"written via FFI");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_write_then_stream_read_roundtrip() {
+        let path = temp_path("file_roundtrip");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let payload = b"roundtrip payload";
+
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            // Write phase.
+            let sink = hew_stream_from_file_write(c_path.as_ptr());
+            assert!(!sink.is_null());
+            hew_sink_write(sink, payload.as_ptr().cast(), payload.len());
+            hew_sink_close(sink);
+
+            // Read phase.
+            let stream = hew_stream_from_file_read(c_path.as_ptr());
+            assert!(!stream.is_null());
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, payload);
+            hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_write_binary_data_preserved() {
+        let path = temp_path("binary_write");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let binary: Vec<u8> = (0..=255).collect();
+
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let sink = hew_stream_from_file_write(c_path.as_ptr());
+            assert!(!sink.is_null());
+            hew_sink_write(sink, binary.as_ptr().cast(), binary.len());
+            hew_sink_close(sink);
+
+            let stream = hew_stream_from_file_read(c_path.as_ptr());
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, binary);
+            hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Pipe ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pipe_transfers_all_items() {
+        let path = temp_path("pipe_output");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let data = b"piped content";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let sink = hew_stream_from_file_write(c_path.as_ptr());
+            assert!(!stream.is_null());
+            assert!(!sink.is_null());
+            // pipe consumes both handles.
+            hew_stream_pipe(stream, sink);
+        }
+
+        let mut contents = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, data);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Lines adapter ───────────────────────────────────────────────────
+
+    #[test]
+    fn lines_splits_on_newlines() {
+        let data = b"alpha\nbeta\ngamma\n";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            assert!(!lines.is_null());
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], b"alpha");
+            assert_eq!(items[1], b"beta");
+            assert_eq!(items[2], b"gamma");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_handles_crlf() {
+        let data = b"line1\r\nline2\r\n";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], b"line1");
+            assert_eq!(items[1], b"line2");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_final_line_without_newline_is_yielded() {
+        let data = b"first\nsecond";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], b"first");
+            assert_eq!(items[1], b"second");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_null_stream_returns_null() {
+        // SAFETY: null is handled by cabi_guard.
+        let result = unsafe { hew_stream_lines(ptr::null_mut()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn lines_empty_stream_yields_nothing() {
+        // SAFETY: null data yields an empty vec stream.
+        unsafe {
+            let raw = hew_stream_from_bytes(ptr::null(), 0, 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert!(items.is_empty());
+            hew_stream_close(lines);
+        }
+    }
+
+    // ── Chunks adapter ──────────────────────────────────────────────────
+
+    #[test]
+    fn chunks_yields_fixed_size_pieces() {
+        let data = b"123456789"; // 9 bytes
+                                 // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let chunked = hew_stream_chunks(raw, 3);
+            assert!(!chunked.is_null());
+            let items = drain_stream(chunked);
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], b"123");
+            assert_eq!(items[1], b"456");
+            assert_eq!(items[2], b"789");
+            hew_stream_close(chunked);
+        }
+    }
+
+    #[test]
+    fn chunks_last_chunk_may_be_shorter() {
+        let data = b"12345"; // 5 bytes, chunk_size=3
+                             // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let chunked = hew_stream_chunks(raw, 3);
+            let items = drain_stream(chunked);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], b"123");
+            assert_eq!(items[1], b"45");
+            hew_stream_close(chunked);
+        }
+    }
+
+    #[test]
+    fn chunks_null_stream_returns_null() {
+        // SAFETY: null is handled by cabi_guard.
+        let result = unsafe { hew_stream_chunks(ptr::null_mut(), 10) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn chunks_negative_size_clamps_to_one() {
+        let data = b"abcd";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let chunked = hew_stream_chunks(raw, -5);
+            let items = drain_stream(chunked);
+            // chunk_size clamps to 1, so 4 items of 1 byte each.
+            assert_eq!(items.len(), 4);
+            assert_eq!(items[0], b"a");
+            assert_eq!(items[3], b"d");
+            hew_stream_close(chunked);
+        }
+    }
+
+    // ── Collect string ──────────────────────────────────────────────────
+
+    #[test]
+    fn collect_string_concatenates_items() {
+        let data = b"hello world";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            // Split into 5-byte chunks: "hello", " worl", "d"
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 5);
+            let cstr_ptr = hew_stream_collect_string(stream);
+            assert!(!cstr_ptr.is_null());
+            let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
+            assert_eq!(result, "hello world");
+            libc::free(cstr_ptr.cast());
+            // stream is consumed by collect_string; do not close.
+        }
+    }
+
+    #[test]
+    fn collect_string_null_returns_null() {
+        // SAFETY: null is handled by cabi_guard.
+        let result = unsafe { hew_stream_collect_string(ptr::null_mut()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn collect_string_empty_stream_returns_empty() {
+        // SAFETY: null data yields an empty vec stream.
+        unsafe {
+            let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
+            let cstr_ptr = hew_stream_collect_string(stream);
+            assert!(!cstr_ptr.is_null());
+            let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
+            assert!(result.is_empty());
+            libc::free(cstr_ptr.cast());
+        }
+    }
+
+    // ── Count ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn count_returns_item_count() {
+        let data = b"abcdef"; // 6 bytes, item_size=2 → 3 items
+                              // SAFETY: all FFI calls use valid pointers.
+        let count = unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 2);
+            hew_stream_count(stream) // consumes stream
+        };
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn count_null_returns_zero() {
+        // SAFETY: null is handled by cabi_guard.
+        assert_eq!(unsafe { hew_stream_count(ptr::null_mut()) }, 0);
+    }
+
+    #[test]
+    fn count_empty_stream_returns_zero() {
+        // SAFETY: null data yields an empty vec stream.
+        let count = unsafe {
+            let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
+            hew_stream_count(stream)
+        };
+        assert_eq!(count, 0);
+    }
+
+    // ── Write string ────────────────────────────────────────────────────
+
+    #[test]
+    fn write_string_sends_bytes_to_channel() {
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let msg = CString::new("bonjour").unwrap();
+            hew_sink_write_string(sink, msg.as_ptr());
+            hew_sink_close(sink);
+
+            let items = drain_stream(stream);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], b"bonjour");
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn write_string_null_sink_is_safe() {
+        let msg = CString::new("ignored").unwrap();
+        // SAFETY: null sink is handled by cabi_guard.
+        unsafe { hew_sink_write_string(ptr::null_mut(), msg.as_ptr()) };
+    }
+
+    #[test]
+    fn write_string_null_data_is_safe() {
+        // SAFETY: FFI calls with valid pair; null data is handled by cabi_guard.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            hew_sink_write_string(sink, ptr::null());
+            hew_sink_close(sink);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // ── Is closed ───────────────────────────────────────────────────────
+
+    #[test]
+    fn is_closed_null_returns_one() {
+        // SAFETY: null is handled by cabi_guard (returns 1).
+        assert_eq!(unsafe { hew_stream_is_closed(ptr::null_mut()) }, 1);
+    }
+
+    #[test]
+    fn is_closed_false_for_non_empty_vec_stream() {
+        let data = b"content";
+        // SAFETY: data is valid; stream is created from it.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            assert_eq!(hew_stream_is_closed(stream), 0);
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn is_closed_true_for_exhausted_vec_stream() {
+        let data = b"x";
+        // SAFETY: data is valid; stream is created from it.
+        unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            // Drain the stream.
+            let buf = hew_stream_next(stream);
+            libc::free(buf);
+            assert_eq!(hew_stream_is_closed(stream), 1);
+            hew_stream_close(stream);
+        }
+    }
+
+    // ── Take adapter ────────────────────────────────────────────────────
+
+    #[test]
+    fn take_limits_items_yielded() {
+        let data = b"abcdef"; // item_size=1 → 6 items
+                              // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
+            let taken = hew_stream_take(raw, 3);
+            let items = drain_stream(taken);
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], b"a");
+            assert_eq!(items[1], b"b");
+            assert_eq!(items[2], b"c");
+            hew_stream_close(taken);
+        }
+    }
+
+    #[test]
+    fn take_zero_yields_nothing() {
+        let data = b"nonempty";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
+            let taken = hew_stream_take(raw, 0);
+            let items = drain_stream(taken);
+            assert!(items.is_empty());
+            hew_stream_close(taken);
+        }
+    }
+
+    #[test]
+    fn take_negative_yields_nothing() {
+        let data = b"stuff";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
+            let taken = hew_stream_take(raw, -10);
+            let items = drain_stream(taken);
+            assert!(items.is_empty());
+            hew_stream_close(taken);
+        }
+    }
+
+    #[test]
+    fn take_null_stream_returns_null() {
+        // SAFETY: null is handled by cabi_guard.
+        let result = unsafe { hew_stream_take(ptr::null_mut(), 5) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn take_more_than_available_yields_all() {
+        let data = b"ab"; // 2 items of 1 byte
+                          // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
+            let taken = hew_stream_take(raw, 100);
+            let items = drain_stream(taken);
+            assert_eq!(items.len(), 2);
+            hew_stream_close(taken);
+        }
+    }
+
+    // ── Large data ──────────────────────────────────────────────────────
+
+    #[test]
+    fn large_write_read_roundtrip_via_channel() {
+        // 64 KiB of patterned data — verifies no off-by-one in length handling.
+        let large: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = SendSink(hew_stream_pair_sink(pair));
+            let stream = hew_stream_pair_stream(pair);
+
+            let large_clone = large.clone();
+            let sink_thread = std::thread::spawn(move || {
+                let s = &sink; // force capture of entire SendSink
+                hew_sink_write(s.0, large_clone.as_ptr().cast(), large_clone.len());
+                hew_sink_close(s.0);
+            });
+
+            let items = drain_stream(stream);
+            sink_thread.join().unwrap();
+
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, large);
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn large_file_roundtrip() {
+        let path = temp_path("large_file");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let large: Vec<u8> = (0..100_000u32).map(|i| (i % 199) as u8).collect();
+
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let sink = hew_stream_from_file_write(c_path.as_ptr());
+            assert!(!sink.is_null());
+            hew_sink_write(sink, large.as_ptr().cast(), large.len());
+            hew_sink_close(sink);
+
+            let stream = hew_stream_from_file_read(c_path.as_ptr());
+            assert!(!stream.is_null());
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all.len(), large.len());
+            assert_eq!(all, large);
+            hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Threaded channel ────────────────────────────────────────────────
+
+    #[test]
+    fn channel_concurrent_producer_consumer() {
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let pair = hew_stream_channel(2);
+            let sink = SendSink(hew_stream_pair_sink(pair));
+            let stream = hew_stream_pair_stream(pair);
+
+            let producer = std::thread::spawn(move || {
+                let s = &sink; // force capture of entire SendSink
+                for i in 0u8..20 {
+                    let data = [i];
+                    hew_sink_write(s.0, data.as_ptr().cast(), 1);
+                }
+                hew_sink_close(s.0);
+            });
+
+            let items = drain_stream(stream);
+            producer.join().unwrap();
+
+            assert_eq!(items.len(), 20);
+            for (i, item) in items.iter().enumerate() {
+                #[expect(clippy::cast_possible_truncation, reason = "test values fit in u8")]
+                let expected = i as u8;
+                assert_eq!(item, &[expected], "item {i} mismatch");
+            }
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // ── Composed adapters ───────────────────────────────────────────────
+
+    #[test]
+    fn lines_then_take_limits_line_count() {
+        let data = b"a\nb\nc\nd\ne\n";
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let taken = hew_stream_take(lines, 2);
+            let items = drain_stream(taken);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], b"a");
+            assert_eq!(items[1], b"b");
+            hew_stream_close(taken);
+        }
+    }
+
+    #[test]
+    fn chunks_then_count_yields_correct_total() {
+        let data = b"0123456789"; // 10 bytes, chunks of 4 → 3 chunks (4+4+2)
+                                  // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let chunked = hew_stream_chunks(raw, 4);
+            let count = hew_stream_count(chunked); // consumes chunked
+            assert_eq!(count, 3);
+        }
+    }
+}

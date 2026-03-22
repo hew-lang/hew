@@ -33,8 +33,19 @@ impl MtState {
             gauss_spare: 0.0,
             gauss_has_spare: false,
         };
-        // Default seed so calls before seed() still work.
-        s.init_genrand(19_650_218);
+        // Auto-seed from OS entropy via rand (already a dependency).
+        // WASM doesn't have reliable OS entropy, so use fixed seed there.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rand::RngExt;
+            let mut rng = rand::rng();
+            let key: [u32; 4] = std::array::from_fn(|_| rng.random());
+            s.init_by_array(&key);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            s.init_genrand(19_650_218);
+        }
         s
     }
 
@@ -385,5 +396,18 @@ mod tests {
             }
             assert_eq!(arr, expected, "shuffle mismatch: got {arr:?}");
         });
+    }
+
+    #[test]
+    fn entropy_seeded_states_diverge() {
+        let mut st1 = MtState::new();
+        let mut st2 = MtState::new();
+
+        // Generate 10 values from each — entropy-seeded states should differ
+        // in at least one position. Probability of all 10 matching by chance
+        // with different seeds is ~2^(-320).
+        let vals1: Vec<f64> = (0..10).map(|_| st1.random()).collect();
+        let vals2: Vec<f64> = (0..10).map(|_| st2.random()).collect();
+        assert_ne!(vals1, vals2, "two independently seeded MTs should diverge");
     }
 }

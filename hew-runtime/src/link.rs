@@ -143,8 +143,13 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
         }
 
         let linked_actor = linked_actor_addr as *mut HewActor;
-        // SAFETY: linked_actor was stored from a valid HewActor pointer.
-        // The actor might have been freed, but we handle null mailbox gracefully.
+
+        // Guard: skip actors that have already been freed.
+        if !crate::actor::is_actor_live(linked_actor) {
+            continue;
+        }
+
+        // SAFETY: linked_actor is live (checked above).
         let linked_actor_ref = unsafe { &*linked_actor };
         let linked_id = linked_actor_ref.id;
 
@@ -220,6 +225,33 @@ fn remove_link_by_target(from_id: u64, target_id: u64) {
     }
 }
 
+/// Remove all link entries for a given actor (by ID) and purge its address
+/// from every other actor's link list across all shards.
+///
+/// Called from `hew_actor_free` before deallocation to prevent link
+/// propagation from dereferencing freed memory.
+pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
+    let actor_usize = actor_addr as usize;
+
+    // Remove the actor's own link-list entry from its shard.
+    let own_shard = get_shard_index(actor_id);
+    {
+        let mut shard = LINK_TABLE[own_shard].write().unwrap();
+        shard.links.remove(&actor_id);
+    }
+
+    // Scan all shards and remove this actor's address from other actors'
+    // link lists. This is O(shards × entries) but actors rarely have many
+    // links, and this only runs at free time.
+    for shard_rw in LINK_TABLE.iter() {
+        let mut shard = shard_rw.write().unwrap();
+        shard.links.retain(|_id, linked_actors| {
+            linked_actors.retain(|&addr| addr != actor_usize);
+            !linked_actors.is_empty()
+        });
+    }
+}
+
 /// Message data for EXIT system messages.
 #[repr(C)]
 #[derive(Debug)]
@@ -228,6 +260,29 @@ struct ExitMessage {
     crashed_actor_id: u64,
     /// Reason code (`error_code` from `hew_actor_trap`).
     reason: i32,
+}
+
+/// Returns true if any link entries reference the given actor address.
+#[cfg(test)]
+pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
+    let actor_usize = actor_addr as usize;
+    let own_shard = get_shard_index(actor_id);
+    {
+        let shard = LINK_TABLE[own_shard].read().unwrap();
+        if shard.links.contains_key(&actor_id) {
+            return true;
+        }
+    }
+    // Check if this actor appears as a target in any other actor's link list.
+    for shard_rw in LINK_TABLE.iter() {
+        let shard = shard_rw.read().unwrap();
+        for linked in shard.links.values() {
+            if linked.contains(&actor_usize) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -374,5 +429,48 @@ mod tests {
             hew_actor_link(a_ptr, b_ptr);
             hew_actor_unlink(a_ptr, b_ptr);
         }
+    }
+
+    #[test]
+    fn remove_all_links_clears_both_directions() {
+        // Use unique IDs (30xxx) to avoid collisions with parallel tests.
+        let mut actor_a = create_test_actor(30_100);
+        let mut actor_b = create_test_actor(30_200);
+        let a_ptr = &raw mut actor_a;
+        let b_ptr = &raw mut actor_b;
+
+        // SAFETY: Both are valid stack-allocated test actors.
+        unsafe { hew_actor_link(a_ptr, b_ptr) };
+
+        // Precondition: both directions exist.
+        assert!(has_links_for_actor(30_100, a_ptr));
+        assert!(has_links_for_actor(30_200, b_ptr));
+
+        // Act: remove all links for actor A (simulating hew_actor_free).
+        remove_all_links_for_actor(30_100, a_ptr);
+
+        // Actor A's own entry and its address in B's list should both be gone.
+        assert!(
+            !has_links_for_actor(30_100, a_ptr),
+            "actor A should have no link entries after cleanup"
+        );
+
+        // Actor B's own entry that pointed to A should also be gone.
+        let shard_b = get_shard_index(30_200);
+        let table_b = LINK_TABLE[shard_b].read().unwrap();
+        let b_links = table_b.links.get(&30_200);
+        assert!(
+            b_links.is_none() || !b_links.unwrap().contains(&(a_ptr as usize)),
+            "actor B's link list should no longer reference actor A"
+        );
+    }
+
+    #[test]
+    fn remove_all_links_no_links_does_not_panic() {
+        // An actor with no links — cleanup should be a no-op.
+        let actor = create_test_actor(30_300);
+        let ptr = (&raw const actor).cast_mut();
+        remove_all_links_for_actor(30_300, ptr);
+        assert!(!has_links_for_actor(30_300, ptr));
     }
 }

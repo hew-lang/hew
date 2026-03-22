@@ -299,6 +299,15 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
     false
 }
 
+/// Check whether an actor pointer is still live (tracked and not yet freed).
+pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
+    let guard = LIVE_ACTORS.lock_or_recover();
+    if let Some(map) = guard.as_ref() {
+        return map.values().any(|ptr| ptr.0 == actor);
+    }
+    false
+}
+
 /// Free all remaining tracked actors. Called during scheduler shutdown
 /// after all worker threads have been joined.
 ///
@@ -330,6 +339,17 @@ pub(crate) unsafe fn cleanup_all_actors() {
             // SAFETY: No concurrent dispatch — scheduler is shut down.
             unsafe { call_terminate_fn(actor) };
         }
+
+        // Clean up periodic timers, links, and monitors before freeing.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::timer_periodic::cancel_all_timers_for_actor(actor);
+            // SAFETY: actor is valid (from LIVE_ACTORS set, not yet freed).
+            let actor_id = unsafe { (*actor).id };
+            crate::link::remove_all_links_for_actor(actor_id, actor);
+            crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+        }
+
         // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
@@ -358,10 +378,29 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // Wait for any in-progress terminate callback to complete. This
     // prevents freeing state while another thread is running terminate.
+    // Bounded to 5 seconds to avoid hanging forever if terminate blocks.
+    let terminate_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut terminate_timed_out = false;
     while a.terminate_called.load(Ordering::Acquire)
         && !a.terminate_finished.load(Ordering::Acquire)
     {
+        if std::time::Instant::now() >= terminate_deadline {
+            eprintln!(
+                "hew: warning: actor {} terminate callback did not finish within 5s, quarantining actor",
+                a.id
+            );
+            terminate_timed_out = true;
+            break;
+        }
         std::hint::spin_loop();
+    }
+
+    // If the terminate callback is still running, the state pointer is in
+    // use on another thread. Quarantine the actor (intentional leak) to
+    // avoid use-after-free. The memory cost is bounded because this only
+    // happens for actors whose terminate hangs.
+    if terminate_timed_out {
+        return;
     }
 
     // SAFETY: State was malloc'd by deep_copy_state.
@@ -1081,6 +1120,17 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     {
         crate::set_last_error("actor still running after timeout");
         return -2;
+    }
+
+    // Cancel periodic timers, links, and monitors BEFORE untracking so
+    // that any in-flight timer callback or propagation that checks
+    // LIVE_ACTORS still sees this actor as live and can safely bail out.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::timer_periodic::cancel_all_timers_for_actor(actor);
+        let actor_id = a.id;
+        crate::link::remove_all_links_for_actor(actor_id, actor);
+        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
     }
 
     // Remove from live tracking. If the actor was already consumed by
@@ -2337,5 +2387,64 @@ mod tests {
             reply_channel::hew_reply_channel_free(ch);
             assert_eq!(hew_actor_free(actor), 0);
         }
+    }
+
+    #[test]
+    fn free_actor_resources_completes_when_terminate_finishes_quickly() {
+        // SAFETY: null state, valid dispatch.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor pointer is valid — returned by hew_actor_spawn.
+        unsafe {
+            hew_actor_close(actor);
+        }
+
+        let start = std::time::Instant::now();
+        // SAFETY: actor is valid, closed, and in a terminal-safe state.
+        let rc = unsafe { hew_actor_free(actor) };
+        let elapsed = start.elapsed();
+
+        assert_eq!(rc, 0);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "free should complete quickly for a cooperating actor, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn free_actor_resources_times_out_on_hanging_terminate() {
+        // Simulate an actor whose terminate_called is true but
+        // terminate_finished never becomes true. The bounded spin-wait in
+        // free_actor_resources should time out after ~5s and proceed.
+        // SAFETY: null state, valid dispatch.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid.
+        let a = unsafe { &*actor };
+        // Simulate a hung terminate: called=true, finished=false.
+        a.terminate_called.store(true, Ordering::Release);
+        a.terminate_finished.store(false, Ordering::Release);
+        // Put actor in Stopped state so hew_actor_free doesn't fail the
+        // state check.
+        a.actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+
+        let start = std::time::Instant::now();
+        // SAFETY: actor is valid and in Stopped state.
+        let rc = unsafe { hew_actor_free(actor) };
+        let elapsed = start.elapsed();
+
+        assert_eq!(rc, 0);
+        // Should take roughly 5 seconds (the timeout), not hang forever.
+        assert!(
+            elapsed >= std::time::Duration::from_secs(4),
+            "should wait ~5s before timing out, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "should not hang much longer than the timeout, took {elapsed:?}"
+        );
     }
 }

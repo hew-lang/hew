@@ -1536,10 +1536,10 @@ mod tests {
 
             // Create a custom trace context
             let custom_trace = HewTraceContext {
-                trace_id_hi: 0xDEADBEEF12345678,
-                trace_id_lo: 0x9ABCDEF012345678,
-                span_id: 0x1122334455667788,
-                parent_span_id: 0xAABBCCDDEEFF0011,
+                trace_id_hi: 0xDEAD_BEEF_1234_5678,
+                trace_id_lo: 0x9ABC_DEF0_1234_5678,
+                span_id: 0x1122_3344_5566_7788,
+                parent_span_id: 0xAABB_CCDD_EEFF_0011,
                 flags: 0x01, // sampled
             };
 
@@ -1559,10 +1559,10 @@ mod tests {
             assert!(!node.is_null());
 
             // Verify the trace context was preserved
-            assert_eq!((*node).trace_context.trace_id_hi, 0xDEADBEEF12345678);
-            assert_eq!((*node).trace_context.trace_id_lo, 0x9ABCDEF012345678);
-            assert_eq!((*node).trace_context.span_id, 0x1122334455667788);
-            assert_eq!((*node).trace_context.parent_span_id, 0xAABBCCDDEEFF0011);
+            assert_eq!((*node).trace_context.trace_id_hi, 0xDEAD_BEEF_1234_5678);
+            assert_eq!((*node).trace_context.trace_id_lo, 0x9ABC_DEF0_1234_5678);
+            assert_eq!((*node).trace_context.span_id, 0x1122_3344_5566_7788);
+            assert_eq!((*node).trace_context.parent_span_id, 0xAABB_CCDD_EEFF_0011);
             assert_eq!((*node).trace_context.flags, 0x01);
 
             hew_msg_node_free(node);

@@ -1,0 +1,24 @@
+// Test: malformed JSON returns null pointer (type_of == -1).
+import std::encoding::json;
+
+fn main() {
+    // Invalid JSON — parse returns null
+    let bad = json.parse("{invalid json}}}");
+    println(bad.type_of());
+
+    // Truncated JSON
+    let trunc = json.parse("{\"key\":");
+    println(trunc.type_of());
+
+    // Empty string
+    let empty = json.parse("");
+    println(empty.type_of());
+
+    // Missing field on a valid object returns null
+    let obj = json.parse("{\"a\": 1}");
+    let missing = obj.get_field("nonexistent");
+    println(missing.type_of());
+    obj.free();
+
+    println("=== Done ===");
+}

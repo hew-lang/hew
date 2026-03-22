@@ -1,0 +1,40 @@
+// Test: serialize to string, parse back, verify fields survive round-trip.
+import std::encoding::json;
+
+fn main() {
+    // Start with a known JSON string
+    let original = "{\"language\":\"Hew\",\"year\":2025,\"compiled\":true,\"pi\":3.14}";
+    let val = json.parse(original);
+
+    // Serialize back to string
+    let s = val.stringify();
+    println(s);
+
+    // Parse the re-serialized string
+    let parsed = json.parse(s);
+
+    // Verify all fields survived
+    let lang = parsed.get_field("language");
+    println(lang.get_string());
+    lang.free();
+
+    let year = parsed.get_field("year");
+    println(year.get_int());
+    year.free();
+
+    let compiled = parsed.get_field("compiled");
+    println(compiled.get_bool());
+    compiled.free();
+
+    let pi = parsed.get_field("pi");
+    println(pi.get_float());
+    pi.free();
+
+    // Stringify the re-parsed value should match
+    let s2 = parsed.stringify();
+    println(s2);
+
+    parsed.free();
+    val.free();
+    println("=== Done ===");
+}

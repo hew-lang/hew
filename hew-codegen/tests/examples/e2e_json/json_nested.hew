@@ -1,0 +1,64 @@
+// Test: nested objects and arrays — parse and traverse.
+import std::encoding::json;
+
+fn main() {
+    // ── Parse nested structure ─────────────────────────────────
+    let root = json.parse("{\"name\":\"Hew\",\"address\":{\"city\":\"Toronto\",\"country\":\"Canada\"},\"tags\":[\"compiler\",\"language\"]}");
+
+    // Top-level field
+    let name = root.get_field("name");
+    println(name.get_string());
+    name.free();
+
+    // Nested object traversal
+    let addr = root.get_field("address");
+    println(addr.type_of());
+    let city = addr.get_field("city");
+    println(city.get_string());
+    city.free();
+    let country = addr.get_field("country");
+    println(country.get_string());
+    country.free();
+    addr.free();
+
+    // Array traversal
+    let tags = root.get_field("tags");
+    println(tags.type_of());
+    println(tags.array_len());
+    let t0 = tags.array_get(0);
+    println(t0.get_string());
+    t0.free();
+    let t1 = tags.array_get(1);
+    println(t1.get_string());
+    t1.free();
+    tags.free();
+
+    // ── Deeply nested: array of objects ────────────────────────
+    let deep = json.parse("[{\"id\":1,\"label\":\"first\"},{\"id\":2,\"label\":\"second\"}]");
+    println(deep.array_len());
+    let item0 = deep.array_get(0);
+    let id0 = item0.get_field("id");
+    println(id0.get_int());
+    id0.free();
+    let lbl0 = item0.get_field("label");
+    println(lbl0.get_string());
+    lbl0.free();
+    item0.free();
+
+    let item1 = deep.array_get(1);
+    let id1 = item1.get_field("id");
+    println(id1.get_int());
+    id1.free();
+    let lbl1 = item1.get_field("label");
+    println(lbl1.get_string());
+    lbl1.free();
+    item1.free();
+    deep.free();
+
+    // Stringify preserves nested structure
+    let s = root.stringify();
+    println(s);
+    root.free();
+
+    println("=== Done ===");
+}

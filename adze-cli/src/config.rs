@@ -4,6 +4,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Return the user's home directory, preferring `$HOME` (Unix) then
+/// `%USERPROFILE%` (Windows).  Falls back to `std::env::temp_dir()` so
+/// callers always get a usable path regardless of platform.
+#[must_use]
+pub fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_or_else(|_| std::env::temp_dir(), PathBuf::from)
+}
+
 /// Top-level configuration loaded from `~/.adze/config.toml`.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct AdzeConfig {
@@ -97,9 +107,7 @@ pub fn get_named_registry(config: &AdzeConfig, name: &str) -> Option<RemoteRegis
 /// parsed.
 #[must_use]
 pub fn load_config() -> AdzeConfig {
-    let Some(path) = config_path() else {
-        return AdzeConfig::default();
-    };
+    let path = config_path();
     match std::fs::read_to_string(&path) {
         Ok(text) => toml::from_str(&text).unwrap_or_default(),
         Err(_) => AdzeConfig::default(),
@@ -119,34 +127,28 @@ pub fn registry_path(config: &AdzeConfig) -> PathBuf {
     default_registry_path()
 }
 
-/// Return the path to `~/.adze/config.toml`, or `None` if `$HOME` is unset.
-fn config_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".adze").join("config.toml"))
+/// Return the path to `~/.adze/config.toml`.
+fn config_path() -> PathBuf {
+    home_dir().join(".adze").join("config.toml")
 }
 
 /// Return the default registry path (`$HOME/.adze/packages`).
 fn default_registry_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".adze").join("packages")
+    home_dir().join(".adze").join("packages")
 }
 
 /// Return the path to the local package index cache (`$HOME/.adze/index/`).
 #[must_use]
 pub fn local_index_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".adze").join("index")
+    home_dir().join(".adze").join("index")
 }
 
-/// Expand a leading `~` or `~/` to the value of `$HOME`.
+/// Expand a leading `~` or `~/` to the user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home).join(rest)
+        home_dir().join(rest)
     } else if path == "~" {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home)
+        home_dir()
     } else {
         PathBuf::from(path)
     }

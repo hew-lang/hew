@@ -618,4 +618,31 @@ mod tests {
 
         reset_shutdown_phase();
     }
+
+    /// When `shutdown_orchestrate` runs on a worker thread (spawn-failure
+    /// fallback), `hew_sched_shutdown` must skip joining that thread's
+    /// own handle.  This test calls `shutdown_orchestrate` from a spawned
+    /// thread to verify no deadlock occurs.
+    #[test]
+    fn shutdown_fallback_skips_self_join() {
+        reset_shutdown_phase();
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        // Capture the phase inside the thread before another test
+        // calls reset_shutdown_phase().
+        let handle = std::thread::Builder::new()
+            .name("fallback-worker".into())
+            .spawn(|| {
+                shutdown_orchestrate(Duration::from_millis(10));
+                SHUTDOWN_PHASE.load(Ordering::Acquire)
+            })
+            .expect("test thread spawn");
+
+        let phase = handle
+            .join()
+            .expect("spawn-failure fallback must not self-join deadlock");
+        assert_eq!(phase, PHASE_DONE);
+
+        reset_shutdown_phase();
+    }
 }

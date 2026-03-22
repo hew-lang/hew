@@ -30,13 +30,13 @@ unsafe impl Send for WheelSlot {}
 unsafe impl Sync for WheelSlot {}
 
 static GLOBAL_WHEEL: Mutex<WheelSlot> = Mutex::new(WheelSlot(ptr::null_mut()));
-static TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
+pub(crate) static TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
 static TICKER_STOP: AtomicBool = AtomicBool::new(false);
 static TICKER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
 
 /// Return (or create) the global timer wheel and ensure the ticker thread
 /// is running.
-fn global_wheel() -> *mut HewTimerWheel {
+pub(crate) fn global_wheel() -> *mut HewTimerWheel {
     let mut guard = GLOBAL_WHEEL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

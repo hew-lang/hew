@@ -2260,6 +2260,62 @@ impl Checker {
             self.fn_sigs.insert(f.name.clone(), sig);
             self.unsafe_functions.insert(f.name.clone());
         }
+
+        // Register codegen-intercepted channel functions that use
+        // out-parameter ABI and cannot appear in extern blocks.
+        // Without these entries standalone `hew check` on channel.hew
+        // reports "undefined function" for recv/try_recv calls.
+        self.register_channel_recv_builtins();
+    }
+
+    /// Registers synthetic `fn_sigs` entries for channel `recv`/`try_recv`
+    /// functions whose calling convention is handled entirely by codegen.
+    ///
+    /// These functions use an out-parameter ABI for `Option<T>` and must
+    /// NOT be declared in `extern "C"` blocks — the codegen intercepts
+    /// them by name and emits custom MLIR.  We register them here so the
+    /// type checker can resolve calls inside `unsafe` blocks.
+    ///
+    /// Only activates when we're actually in the channel module: the
+    /// local module must define `Receiver` AND the extern block must
+    /// have already registered `hew_channel_send`.
+    fn register_channel_recv_builtins(&mut self) {
+        if !self.local_type_defs.contains("Receiver")
+            || !self.fn_sigs.contains_key("hew_channel_send")
+        {
+            return;
+        }
+
+        let receiver_ty = Ty::Named {
+            name: "Receiver".to_string(),
+            args: vec![],
+        };
+
+        let builtins: &[(&str, Ty)] = &[
+            ("hew_channel_recv", Ty::option(Ty::String)),
+            ("hew_channel_recv_int", Ty::option(Ty::I64)),
+            ("hew_channel_try_recv", Ty::option(Ty::String)),
+            ("hew_channel_try_recv_int", Ty::option(Ty::I64)),
+        ];
+
+        for (name, ret_ty) in builtins {
+            if self.fn_sigs.contains_key(*name) {
+                continue;
+            }
+            let sig = FnSig {
+                type_params: vec![],
+                type_param_bounds: HashMap::new(),
+                param_names: vec!["rx".to_string()],
+                params: vec![receiver_ty.clone()],
+                return_type: ret_ty.clone(),
+                is_async: false,
+                is_pure: false,
+                accepts_kwargs: false,
+                doc_comment: None,
+            };
+            self.fn_sigs.insert((*name).to_string(), sig);
+            self.unsafe_functions.insert((*name).to_string());
+        }
     }
 
     /// Log function names that accept keyword arguments for structured fields.
@@ -8222,9 +8278,22 @@ impl Checker {
                         // Auto-parameterise channel handle types: bare `Sender`
                         // becomes `Sender<T>` with a fresh type variable so that
                         // function parameters accept any channel element type.
+                        // Skip when the unqualified name is locally defined as
+                        // non-generic — standalone `hew check` on channel.hew
+                        // defines `type Sender {}` with zero type params, and
+                        // injecting fresh vars causes unification failures between
+                        // extern decls and impl bodies.  Only bare (unqualified)
+                        // names can match `local_type_defs`, so qualified imports
+                        // like `channel.Sender` are still auto-parameterised.
+                        let locally_non_generic =
+                            self.local_type_defs.contains(resolved_name.as_str())
+                                && self
+                                    .type_defs
+                                    .get(resolved_name.as_str())
+                                    .is_some_and(|td| td.type_params.is_empty());
                         let args = match resolved_name.as_str() {
                             "Sender" | "channel.Sender" | "Receiver" | "channel.Receiver"
-                                if args.is_empty() =>
+                                if args.is_empty() && !locally_non_generic =>
                             {
                                 vec![Ty::Var(TypeVar::fresh())]
                             }

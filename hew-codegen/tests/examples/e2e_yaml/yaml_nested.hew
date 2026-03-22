@@ -1,0 +1,46 @@
+// Test: nested YAML structures — mappings within mappings, sequences.
+import std::encoding::yaml;
+
+fn main() {
+    let root = yaml.parse("server:\n  host: localhost\n  port: 8080\ntags:\n  - alpha\n  - beta");
+
+    // Access nested mapping
+    let srv = root.get_field("server");
+    println(srv.type_of());
+
+    let host = srv.get_field("host");
+    println(host.get_string());
+    host.free();
+
+    let port = srv.get_field("port");
+    println(port.get_int());
+    port.free();
+    srv.free();
+
+    // Access sequence
+    let tags = root.get_field("tags");
+    println(tags.type_of());
+    println(tags.array_len());
+
+    let t0 = tags.array_get(0);
+    println(t0.get_string());
+    t0.free();
+
+    let t1 = tags.array_get(1);
+    println(t1.get_string());
+    t1.free();
+    tags.free();
+
+    // Stringify and re-parse to verify round-trip
+    let text = root.stringify();
+    let doc2 = yaml.parse(text);
+    let srv2 = doc2.get_field("server");
+    let host2 = srv2.get_field("host");
+    println(host2.get_string());
+    host2.free();
+    srv2.free();
+    doc2.free();
+
+    root.free();
+    println("nested ok");
+}

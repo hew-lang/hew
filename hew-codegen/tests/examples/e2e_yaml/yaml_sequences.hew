@@ -1,0 +1,45 @@
+// Test: YAML sequences — parse, access elements, verify types.
+import std::encoding::yaml;
+
+fn main() {
+    // Parse a mixed-type sequence
+    let arr = yaml.parse("- 1\n- two\n- 3.5\n- true\n- null");
+
+    println(arr.array_len());
+
+    let e0 = arr.array_get(0);
+    println(e0.type_of());
+    println(e0.get_int());
+    e0.free();
+
+    let e1 = arr.array_get(1);
+    println(e1.type_of());
+    println(e1.get_string());
+    e1.free();
+
+    let e2 = arr.array_get(2);
+    println(e2.type_of());
+    println(e2.get_float());
+    e2.free();
+
+    let e3 = arr.array_get(3);
+    println(e3.type_of());
+    println(e3.get_bool());
+    e3.free();
+
+    let e4 = arr.array_get(4);
+    println(e4.type_of());
+    e4.free();
+
+    arr.free();
+
+    // Parse a homogeneous integer sequence
+    let nums = yaml.parse("- 10\n- 20\n- 30");
+    println(nums.array_len());
+    let mid = nums.array_get(1);
+    println(mid.get_int());
+    mid.free();
+    nums.free();
+
+    println("sequences ok");
+}

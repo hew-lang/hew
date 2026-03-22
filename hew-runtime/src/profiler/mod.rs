@@ -315,7 +315,10 @@ mod tests {
         // Verify still no threads.
         {
             let state_guard = PROFILER_STATE.lock_or_recover();
-            assert!(state_guard.is_none(), "State should remain None after shutdown");
+            assert!(
+                state_guard.is_none(),
+                "State should remain None after shutdown"
+            );
         }
 
         // Reset shutdown signal for other tests.
@@ -397,7 +400,11 @@ mod tests {
             // Verify it stopped.
             {
                 let state_guard = PROFILER_STATE.lock_or_recover();
-                assert!(state_guard.is_none(), "Cycle {} - threads should be stopped", i);
+                assert!(
+                    state_guard.is_none(),
+                    "Cycle {} - threads should be stopped",
+                    i
+                );
             }
 
             // Reset state for next cycle.

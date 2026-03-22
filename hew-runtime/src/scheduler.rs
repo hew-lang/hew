@@ -305,7 +305,9 @@ pub extern "C" fn hew_sched_shutdown() {
         parker.cond.notify_one();
     }
 
-    // Join worker threads.
+    // Join worker threads, skipping our own handle to avoid self-join
+    // deadlock when the spawn-failure fallback runs on a worker thread.
+    let current_id = std::thread::current().id();
     let Ok(mut handles) = sched.worker_handles.lock() else {
         // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
         // scheduler integrity is lost; report error and bail.
@@ -313,6 +315,13 @@ pub extern "C" fn hew_sched_shutdown() {
         return;
     };
     for handle in &mut *handles {
+        if let Some(ref h) = handle {
+            if h.thread().id() == current_id {
+                // Drop the handle without joining — we're running on this thread.
+                let _ = handle.take();
+                continue;
+            }
+        }
         if let Some(h) = handle.take() {
             if h.join().is_err() {
                 eprintln!("hew: scheduler worker thread panicked during shutdown");
@@ -336,6 +345,10 @@ pub extern "C" fn hew_sched_shutdown() {
 /// initialized.
 #[no_mangle]
 pub extern "C" fn hew_runtime_cleanup() {
+    // Stop the periodic ticker thread before any timer wheel memory is freed.
+    // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
+    unsafe { crate::timer_periodic::hew_periodic_shutdown() };
+
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
     // Workers are already joined so we cannot send stop messages; we just
@@ -1158,5 +1171,97 @@ mod tests {
         // hew_sched_init is idempotent — second call is a no-op returning 0.
         let result = hew_sched_init();
         assert_eq!(result, 0);
+    }
+
+    /// The ticker thread must be stopped during runtime cleanup so it
+    /// doesn't access freed timer-wheel memory.  We start the global
+    /// wheel (which spawns the ticker), then call `hew_runtime_cleanup`
+    /// and verify the ticker is stopped.
+    #[test]
+    fn ticker_stops_during_runtime_cleanup() {
+        use crate::timer_periodic::TICKER_RUNNING;
+
+        // Start the global wheel so the ticker is running.
+        let _tw = crate::timer_periodic::global_wheel();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // The ticker may have been stopped by a parallel test that shares
+        // the global wheel.  We can only assert the post-condition.
+        hew_runtime_cleanup();
+
+        assert!(
+            !TICKER_RUNNING.load(Ordering::Acquire),
+            "Ticker must be stopped after runtime cleanup"
+        );
+    }
+
+    /// `hew_sched_shutdown` must skip joining the calling thread's own
+    /// handle to avoid self-join deadlock.  We insert the spawned
+    /// thread's `JoinHandle` into `worker_handles` and then call
+    /// `hew_sched_shutdown` from that same thread — without the fix
+    /// this would deadlock.
+    #[test]
+    fn shutdown_skips_self_join() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let parker = Parker {
+            mutex: Mutex::new(()),
+            cond: Condvar::new(),
+        };
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![parker],
+            stealers: Vec::new(),
+            worker_handles: std::sync::Mutex::new(Vec::new()),
+            // SAFETY: no preconditions for GlobalQueue::new().
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let done = Arc::new(AtomicBool::new(false));
+        let done2 = Arc::clone(&done);
+        let barrier2 = Arc::clone(&barrier);
+
+        let handle = thread::spawn(move || {
+            // Wait until our own handle has been inserted into worker_handles.
+            barrier2.wait();
+            // Now worker_handles contains our own JoinHandle.  Without
+            // the self-join skip this would deadlock.
+            hew_sched_shutdown();
+            done2.store(true, Ordering::Release);
+        });
+
+        // Insert the thread's handle into worker_handles so
+        // hew_sched_shutdown will encounter it during the join loop.
+        {
+            // SAFETY: sched_ptr was just allocated above and is valid.
+            let sched = unsafe { &*SCHEDULER.load(Ordering::Acquire) };
+            let mut handles = sched.worker_handles.lock().unwrap();
+            handles.push(Some(handle));
+        }
+        // Release the spawned thread to call hew_sched_shutdown.
+        barrier.wait();
+
+        // Poll for completion — 2 s timeout detects deadlock.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !done.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            done.load(Ordering::Acquire),
+            "hew_sched_shutdown deadlocked on self-join"
+        );
+
+        // Clean up the scheduler pointer.
+        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            // SAFETY: ptr was allocated with Box::into_raw above and no
+            // other thread references it after the swap.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
     }
 }

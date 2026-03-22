@@ -269,6 +269,9 @@ pub unsafe extern "C" fn hew_cwd() -> *mut c_char {
 /// No preconditions. The returned pointer must be freed with `libc::free`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
+    // SAFETY: ENV_LOCK synchronises access to the process-global environ
+    // array — std::env::temp_dir() reads TMPDIR/TMP/TEMP under the hood.
+    let _guard = ENV_LOCK.read_or_recover();
     let mut tmp = std::env::temp_dir().to_string_lossy().into_owned();
     // Strip trailing separator for consistent path concatenation.
     while tmp.ends_with('/') || tmp.ends_with('\\') {
@@ -530,5 +533,79 @@ mod tests {
         }
 
         // If we reach here without panicking, the stress test passed.
+    }
+
+    /// `hew_temp_dir` must acquire `ENV_LOCK` so it doesn't race with
+    /// concurrent `hew_env_set` calls that modify TMPDIR/TMP.
+    #[test]
+    fn temp_dir_concurrent_with_env_set() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const THREADS: usize = 4;
+        const ITERS: usize = 200;
+
+        let key = CString::new("TMPDIR").unwrap();
+
+        // Snapshot original TMPDIR so we can restore it.
+        // SAFETY: key is a valid NUL-terminated C string.
+        let orig_ptr = unsafe { hew_env_get(key.as_ptr()) };
+        let orig_value: Option<CString> = if orig_ptr.is_null() {
+            None
+        } else {
+            // SAFETY: orig_ptr is a valid malloc'd NUL-terminated C string.
+            let s = unsafe { CStr::from_ptr(orig_ptr) }.to_owned();
+            // SAFETY: orig_ptr was allocated with libc::malloc.
+            unsafe { libc::free(orig_ptr.cast()) };
+            Some(s)
+        };
+
+        let barrier = Arc::new(Barrier::new(THREADS * 2));
+        let mut handles = Vec::new();
+
+        // Writer threads toggle TMPDIR between two values.
+        for i in 0..THREADS {
+            let key = key.clone();
+            let b = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                b.wait();
+                for j in 0..ITERS {
+                    let val = if j % 2 == 0 {
+                        CString::new(format!("/tmp/hew_test_{i}")).unwrap()
+                    } else {
+                        CString::new("/tmp").unwrap()
+                    };
+                    // SAFETY: both pointers are valid NUL-terminated C strings.
+                    unsafe { hew_env_set(key.as_ptr(), val.as_ptr()) };
+                }
+            }));
+        }
+
+        // Reader threads call hew_temp_dir concurrently.
+        for _ in 0..THREADS {
+            let b = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                b.wait();
+                for _ in 0..ITERS {
+                    // SAFETY: no preconditions for hew_temp_dir.
+                    let ptr = unsafe { hew_temp_dir() };
+                    assert!(!ptr.is_null());
+                    // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
+                    unsafe { libc::free(ptr.cast()) };
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked — possible data race");
+        }
+
+        // Restore original TMPDIR.
+        match orig_value {
+            // SAFETY: both key and val are valid NUL-terminated C strings.
+            Some(val) => unsafe { hew_env_set(key.as_ptr(), val.as_ptr()) },
+            // SAFETY: key is a valid NUL-terminated C string.
+            None => unsafe { hew_env_remove(key.as_ptr()) },
+        }
     }
 }

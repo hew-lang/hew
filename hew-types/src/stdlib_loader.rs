@@ -346,15 +346,26 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
 ///
 /// Looks for a simple call expression like `hew_json_parse(s)` in the
 /// function body and returns `(callee_name, arg_count)`.
+///
+/// Only matches truly trivial pass-through bodies: a single call expression
+/// with no preceding statements. Bodies like `let ext = f(x); g(ext)` are
+/// NOT trivial — the prior statements transform the data before the call.
 fn extract_call_target(body: &Block) -> Option<(String, usize)> {
-    // Check trailing expression first (most common case)
+    // Check trailing expression — but only if there are no preceding
+    // statements. A body with statements before the trailing expr is doing
+    // real work, not just forwarding to a C function.
     if let Some(trailing) = &body.trailing_expr {
-        return call_target_from_expr(&trailing.0);
+        if body.stmts.is_empty() {
+            return call_target_from_expr(&trailing.0);
+        }
+        return None;
     }
 
-    // Check last statement
-    if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
-        return call_target_from_expr(&expr.0);
+    // Check last statement — only when it's the sole statement.
+    if body.stmts.len() == 1 {
+        if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
+            return call_target_from_expr(&expr.0);
+        }
     }
 
     None
@@ -654,6 +665,28 @@ mod tests {
             !info.handle_types.contains(&"semver.Version".to_string()),
             "Version with struct fields should not be a handle type, got: {:?}",
             info.handle_types
+        );
+    }
+
+    #[test]
+    fn non_trivial_wrapper_uses_identity_mapping() {
+        // mime.from_path calls extract_extension() then from_ext() — it is
+        // NOT a trivial pass-through and must use identity mapping so the
+        // full wrapper body is compiled and called.
+        let info = load_module("std::net::mime", &test_root()).unwrap();
+
+        let mapping = info
+            .clean_names
+            .iter()
+            .find(|(clean, _)| clean == "from_path");
+        assert!(
+            mapping.is_some(),
+            "mime module should have clean_name entry for from_path"
+        );
+        let (_, c_target) = mapping.unwrap();
+        assert_eq!(
+            c_target, "from_path",
+            "from_path must be identity-mapped (not forwarded to from_ext)"
         );
     }
 }

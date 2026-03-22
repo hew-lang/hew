@@ -11,6 +11,14 @@ fn main() {
     // Unknown extension → fallback
     println(mime.from_ext("xyz"));
 
+    // from_path — calls private extract_extension() then from_ext()
+    println(mime.from_path("index.html"));
+    println(mime.from_path("style.css"));
+    println(mime.from_path("photo.jpg"));
+    println(mime.from_path("data.json"));
+    println(mime.from_path("archive.tar.gz"));
+    println(mime.from_path("noext"));
+
     // Category tests
     if mime.is_text("text/html") { println("html is text"); }
     if mime.is_image("image/png") { println("png is image"); }

@@ -4,6 +4,12 @@ image/jpeg
 application/json
 application/wasm
 application/octet-stream
+text/html
+text/css
+image/jpeg
+application/json
+application/gzip
+application/octet-stream
 html is text
 png is image
 mp3 is audio

@@ -1515,7 +1515,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "deadlocks: node handshake blocks indefinitely (needs investigation)"]
     fn two_node_connect_and_handshake() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
 

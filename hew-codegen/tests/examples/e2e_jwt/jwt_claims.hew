@@ -1,0 +1,28 @@
+// Test: JWT with custom claims — encode, decode_insecure, and verified decode
+// NOTE: decoded JSON key order depends on serde_json's deterministic
+// alphabetical serialization. If the serializer changes, update .expected.
+import std::crypto::jwt;
+
+fn main() {
+    let payload = "{\"user\":\"alice\",\"level\":5,\"active\":true}";
+    let secret = "claims_secret";
+
+    let token = jwt.encode(payload, secret, "HS256");
+
+    // decode_insecure retrieves payload without checking signature
+    let insecure = jwt.decode_insecure(token);
+    println(insecure);
+
+    // Verified decode returns the same payload
+    let verified = jwt.decode(token, secret, "HS256");
+    println(verified);
+
+    // Encode with HS384 algorithm
+    let token384 = jwt.encode(payload, secret, "HS384");
+    let valid384 = jwt.validate(token384, secret, "HS384");
+    println(valid384);
+
+    // Decode the HS384 token
+    let decoded384 = jwt.decode(token384, secret, "HS384");
+    println(decoded384);
+}

@@ -1,0 +1,17 @@
+// Test: basic JWT encode and decode round-trip
+// NOTE: decoded JSON key order depends on serde_json's deterministic
+// alphabetical serialization. If the serializer changes, update .expected.
+import std::crypto::jwt;
+
+fn main() {
+    let payload = "{\"sub\":\"user42\",\"role\":\"admin\"}";
+    let secret = "test_secret_key";
+
+    // Encode produces a non-empty token
+    let token = jwt.encode(payload, secret, "HS256");
+    println(token.len() > 0);
+
+    // Decode returns the original payload
+    let decoded = jwt.decode(token, secret, "HS256");
+    println(decoded);
+}

@@ -1,0 +1,27 @@
+// Test: parse date strings in various formats and verify round-trip
+import std::time::datetime;
+
+fn main() {
+    // Parse ISO-style date with time
+    let ts1 = datetime.parse("2024-03-20 00:00:00", "%Y-%m-%d %H:%M:%S");
+    println(datetime.year(ts1));
+    println(datetime.month(ts1));
+    println(datetime.day(ts1));
+
+    // Parse with specific time component
+    let ts2 = datetime.parse("2024-12-25 14:30:00", "%Y-%m-%d %H:%M:%S");
+    println(datetime.year(ts2));
+    println(datetime.hour(ts2));
+    println(datetime.minute(ts2));
+
+    // Parse day/month/year format with time
+    let ts3 = datetime.parse("01/07/2000 08:15:00", "%d/%m/%Y %H:%M:%S");
+    println(datetime.year(ts3));
+    println(datetime.month(ts3));
+    println(datetime.day(ts3));
+
+    // Round-trip: parse then format back
+    let ts4 = datetime.parse("2025-01-01 00:00:00", "%Y-%m-%d %H:%M:%S");
+    let formatted = datetime.format(ts4, "%Y-%m-%d");
+    println(formatted);
+}

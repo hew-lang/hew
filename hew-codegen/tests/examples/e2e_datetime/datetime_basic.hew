@@ -1,0 +1,23 @@
+// Test: basic datetime operations — parse a known date, extract components, format
+import std::time::datetime;
+
+fn main() {
+    // Parse a known date: 2025-06-15 10:30:45 UTC
+    let ts = datetime.parse("2025-06-15 10:30:45", "%Y-%m-%d %H:%M:%S");
+
+    // Extract components
+    println(datetime.year(ts));
+    println(datetime.month(ts));
+    println(datetime.day(ts));
+    println(datetime.hour(ts));
+    println(datetime.minute(ts));
+    println(datetime.second(ts));
+
+    // Format as ISO 8601
+    let iso = datetime.to_iso8601(ts);
+    println(iso);
+
+    // Custom format
+    let custom = datetime.format(ts, "%d/%m/%Y");
+    println(custom);
+}

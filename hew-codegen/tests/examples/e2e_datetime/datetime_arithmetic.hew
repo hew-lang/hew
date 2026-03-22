@@ -1,0 +1,29 @@
+// Test: datetime arithmetic — add days/hours, compute differences
+import std::time::datetime;
+
+fn main() {
+    // Start from a known date: 2025-01-10 00:00:00 UTC
+    let base = datetime.parse("2025-01-10 00:00:00", "%Y-%m-%d %H:%M:%S");
+
+    // Add 5 days → 2025-01-15
+    let plus5d = datetime.add_days(base, 5 as i32);
+    println(datetime.format(plus5d, "%Y-%m-%d"));
+
+    // Add 48 hours → 2025-01-12
+    let plus48h = datetime.add_hours(base, 48 as i32);
+    println(datetime.format(plus48h, "%Y-%m-%d"));
+
+    // Difference in seconds between two dates (1 day = 86400 seconds)
+    let day1 = datetime.parse("2025-03-01 00:00:00", "%Y-%m-%d %H:%M:%S");
+    let day2 = datetime.parse("2025-03-02 00:00:00", "%Y-%m-%d %H:%M:%S");
+    let diff = datetime.diff_secs(day2, day1);
+    println(diff);
+
+    // Add negative days (subtract 3 days from Jan 10 → Jan 7)
+    let minus3d = datetime.add_days(base, -3 as i32);
+    println(datetime.format(minus3d, "%Y-%m-%d"));
+
+    // Chain: add 30 days then 6 hours
+    let chained = datetime.add_hours(datetime.add_days(base, 30 as i32), 6 as i32);
+    println(datetime.format(chained, "%Y-%m-%d %H:%M:%S"));
+}

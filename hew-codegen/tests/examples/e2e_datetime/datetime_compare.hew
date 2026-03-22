@@ -1,0 +1,32 @@
+// Test: compare datetimes and check weekday
+import std::time::datetime;
+
+fn main() {
+    let earlier = datetime.parse("2025-01-01 00:00:00", "%Y-%m-%d %H:%M:%S");
+    let later = datetime.parse("2025-12-31 23:59:59", "%Y-%m-%d %H:%M:%S");
+
+    // Epoch-ms comparison: earlier < later
+    println(earlier < later);
+    println(later > earlier);
+    println(earlier == earlier);
+    println(earlier != later);
+
+    // Weekday: 2025-01-01 is Wednesday (0=Mon, 2=Wed)
+    let wed = datetime.weekday(earlier);
+    println(wed);
+
+    // Weekday: 2025-01-06 is Monday (0=Mon)
+    let mon_ts = datetime.parse("2025-01-06 00:00:00", "%Y-%m-%d %H:%M:%S");
+    println(datetime.weekday(mon_ts));
+
+    // Weekday: 2025-01-05 is Sunday (6=Sun)
+    let sun_ts = datetime.parse("2025-01-05 00:00:00", "%Y-%m-%d %H:%M:%S");
+    println(datetime.weekday(sun_ts));
+
+    // now_secs should be consistent with now_ms / 1000
+    let ms = datetime.now_ms();
+    let s = datetime.now_secs();
+    let diff = s - ms / 1000;
+    println(diff >= 0);
+    println(diff <= 1);
+}

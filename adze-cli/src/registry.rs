@@ -29,12 +29,11 @@ pub struct Registry {
 impl Registry {
     /// Open the registry rooted at the default location (`$HOME/.adze/packages/`).
     ///
-    /// Falls back to `/tmp/.adze/packages` when `$HOME` is not set.
+    /// Falls back to `%USERPROFILE%` (Windows) then the system temp directory.
     #[must_use]
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         Self {
-            root: PathBuf::from(home).join(".adze").join("packages"),
+            root: crate::config::home_dir().join(".adze").join("packages"),
         }
     }
 

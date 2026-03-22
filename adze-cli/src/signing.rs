@@ -158,8 +158,7 @@ pub fn verify(
 /// Return the default key directory (`~/.adze/keys/`).
 #[must_use]
 pub fn default_key_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".adze").join("keys")
+    crate::config::home_dir().join(".adze").join("keys")
 }
 
 /// Save a keypair to the key directory.

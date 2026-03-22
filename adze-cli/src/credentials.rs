@@ -56,8 +56,9 @@ impl From<std::io::Error> for CredentialError {
 /// Return the path to `~/.adze/credentials.toml`.
 #[must_use]
 pub fn credentials_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".adze").join("credentials.toml")
+    crate::config::home_dir()
+        .join(".adze")
+        .join("credentials.toml")
 }
 
 /// Load credentials from the file.

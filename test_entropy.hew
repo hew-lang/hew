@@ -1,0 +1,24 @@
+import std::misc::random;
+
+fn main() {
+    // Test that random values are generated (should not be deterministic)
+    let val1 = random.random();
+    let val2 = random.random();
+    println(f"Random value 1: {val1}");
+    println(f"Random value 2: {val2}");
+    
+    // Test that seeding works for deterministic replay
+    random.seed(42);
+    let seeded1 = random.random();
+    println(f"Seeded value 1: {seeded1}");
+    
+    random.seed(42);
+    let seeded2 = random.random();
+    println(f"Seeded value 2: {seeded2}");
+    
+    if seeded1 == seeded2 {
+        println("SUCCESS: Deterministic seeding works");
+    } else {
+        println("ERROR: Deterministic seeding failed");
+    }
+}

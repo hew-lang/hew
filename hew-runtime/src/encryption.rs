@@ -932,13 +932,14 @@ pub unsafe extern "C" fn hew_noise_key_load(
 
 /// Generate a new Noise keypair.
 ///
-/// Returns a pointer to a 32-byte public key (heap-allocated via `libc::malloc`).
-/// The private key is not returned — use [`hew_noise_set_keypair`] with the
-/// private key from a separately managed keypair, or call this for ephemeral keys.
+/// Returns a pointer to a 64-byte heap allocation (`32-byte public || 32-byte
+/// private`) via `libc::malloc`. The first [`KEY_LEN`] bytes are the public key
+/// and the next [`KEY_LEN`] bytes are the private key.
 ///
 /// # Safety
 ///
-/// The caller must `free()` the returned pointer.
+/// The caller must `free()` the returned pointer when done. The private key
+/// portion should be zeroised before freeing if it is no longer needed.
 ///
 /// Returns null if the pattern is invalid or keypair generation fails.
 #[no_mangle]
@@ -951,18 +952,20 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
         return ptr::null_mut();
     };
 
-    // Allocate and copy public key.
+    // Allocate space for both public and private keys.
     // SAFETY: malloc with a valid size.
-    let pub_key = unsafe { libc::malloc(KEY_LEN) }.cast::<u8>();
-    if pub_key.is_null() {
+    let buf = unsafe { libc::malloc(KEYPAIR_FILE_LEN) }.cast::<u8>();
+    if buf.is_null() {
+        keypair.private.zeroize();
         return ptr::null_mut();
     }
-    // SAFETY: pub_key is freshly allocated with KEY_LEN bytes.
+    // SAFETY: buf is freshly allocated with KEYPAIR_FILE_LEN bytes.
     unsafe {
-        ptr::copy_nonoverlapping(keypair.public.as_ptr(), pub_key, KEY_LEN);
+        ptr::copy_nonoverlapping(keypair.public.as_ptr(), buf, KEY_LEN);
+        ptr::copy_nonoverlapping(keypair.private.as_ptr(), buf.add(KEY_LEN), KEY_LEN);
     }
     keypair.private.zeroize();
-    pub_key
+    buf
 }
 
 /// Set the static private key for encrypted connections.
@@ -1156,41 +1159,110 @@ mod tests {
     }
 
     #[test]
-    fn keypair_generate_returns_non_null() {
+    fn keypair_generate_returns_both_keys() {
         // SAFETY: no preconditions.
-        let pub_key = unsafe { hew_noise_keypair_generate() };
-        assert!(!pub_key.is_null());
+        let buf = unsafe { hew_noise_keypair_generate() };
+        assert!(!buf.is_null());
 
-        // SAFETY: pub_key is valid for KEY_LEN bytes.
-        let key_slice = unsafe { std::slice::from_raw_parts(pub_key, KEY_LEN) };
+        // SAFETY: buf is valid for KEYPAIR_FILE_LEN bytes (public || private).
+        let public = unsafe { std::slice::from_raw_parts(buf, KEY_LEN) };
+        // SAFETY: buf + KEY_LEN is within the KEYPAIR_FILE_LEN allocation.
+        let private = unsafe { std::slice::from_raw_parts(buf.add(KEY_LEN), KEY_LEN) };
         assert!(
-            !key_slice.iter().all(|&b| b == 0),
-            "generated key must not be all zeros"
+            !public.iter().all(|&b| b == 0),
+            "public key must not be all zeros"
         );
+        assert!(
+            !private.iter().all(|&b| b == 0),
+            "private key must not be all zeros"
+        );
+        assert_ne!(public, private, "public and private keys must differ");
 
-        // SAFETY: pub_key was allocated by libc::malloc.
-        unsafe { libc::free(pub_key.cast::<c_void>()) };
+        // SAFETY: buf was allocated by libc::malloc.
+        unsafe { libc::free(buf.cast::<c_void>()) };
     }
 
     #[test]
-    fn keypair_generate_produces_unique_keys() {
+    fn keypair_generate_private_key_derives_matching_public() {
         // SAFETY: no preconditions.
-        let key1 = unsafe { hew_noise_keypair_generate() };
+        let buf = unsafe { hew_noise_keypair_generate() };
+        assert!(!buf.is_null());
+
+        // SAFETY: buf is valid for KEYPAIR_FILE_LEN bytes.
+        let returned_public = unsafe { std::slice::from_raw_parts(buf, KEY_LEN) }.to_vec();
+        // SAFETY: buf + KEY_LEN is within the KEYPAIR_FILE_LEN allocation.
+        let private = unsafe { std::slice::from_raw_parts(buf.add(KEY_LEN), KEY_LEN) };
+
+        // Perform a Noise XX handshake using the generated private key as the
+        // initiator's static key. After the exchange the responder sees the
+        // initiator's public key via get_remote_static(). If it matches the
+        // public key we got from hew_noise_keypair_generate, the pair is valid.
+        let params: snow::params::NoiseParams = NOISE_PATTERN.parse().unwrap();
+
+        let mut initiator = snow::Builder::new(params.clone())
+            .local_private_key(private)
+            .unwrap()
+            .build_initiator()
+            .unwrap();
+
+        let responder_kp = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
+        let mut responder = snow::Builder::new(params)
+            .local_private_key(&responder_kp.private)
+            .unwrap()
+            .build_responder()
+            .unwrap();
+
+        // XX three-message handshake: → e, ← e ee s es, → s se
+        let mut msg = vec![0u8; 65535];
+        let mut payload = vec![0u8; 65535];
+
+        let len = initiator.write_message(&[], &mut msg).unwrap();
+        responder.read_message(&msg[..len], &mut payload).unwrap();
+
+        let len = responder.write_message(&[], &mut msg).unwrap();
+        initiator.read_message(&msg[..len], &mut payload).unwrap();
+
+        let len = initiator.write_message(&[], &mut msg).unwrap();
+        responder.read_message(&msg[..len], &mut payload).unwrap();
+
+        assert!(responder.is_handshake_finished());
+        assert_eq!(
+            responder.get_remote_static().unwrap(),
+            &returned_public,
+            "responder must see the public key returned by hew_noise_keypair_generate"
+        );
+
+        // SAFETY: buf was allocated by libc::malloc.
+        unsafe { libc::free(buf.cast::<c_void>()) };
+    }
+
+    #[test]
+    fn keypair_generate_produces_unique_pairs() {
         // SAFETY: no preconditions.
-        let key2 = unsafe { hew_noise_keypair_generate() };
-        assert!(!key1.is_null());
-        assert!(!key2.is_null());
+        let buf1 = unsafe { hew_noise_keypair_generate() };
+        // SAFETY: no preconditions.
+        let buf2 = unsafe { hew_noise_keypair_generate() };
+        assert!(!buf1.is_null());
+        assert!(!buf2.is_null());
 
-        // SAFETY: key1 is valid for KEY_LEN bytes.
-        let s1 = unsafe { std::slice::from_raw_parts(key1, KEY_LEN) };
-        // SAFETY: key2 is valid for KEY_LEN bytes.
-        let s2 = unsafe { std::slice::from_raw_parts(key2, KEY_LEN) };
-        assert_ne!(s1, s2, "two generated keys should differ");
+        // SAFETY: buf1 is valid for KEYPAIR_FILE_LEN bytes.
+        let pub1 = unsafe { std::slice::from_raw_parts(buf1, KEY_LEN) };
+        // SAFETY: buf2 is valid for KEYPAIR_FILE_LEN bytes.
+        let pub2 = unsafe { std::slice::from_raw_parts(buf2, KEY_LEN) };
+        assert_ne!(pub1, pub2, "two generated public keys should differ");
 
-        // SAFETY: keys were allocated by libc::malloc.
+        // SAFETY: buf1 + KEY_LEN is within the KEYPAIR_FILE_LEN allocation.
+        let priv1 = unsafe { std::slice::from_raw_parts(buf1.add(KEY_LEN), KEY_LEN) };
+        // SAFETY: buf2 + KEY_LEN is within the KEYPAIR_FILE_LEN allocation.
+        let priv2 = unsafe { std::slice::from_raw_parts(buf2.add(KEY_LEN), KEY_LEN) };
+        assert_ne!(priv1, priv2, "two generated private keys should differ");
+
+        // SAFETY: buffers were allocated by libc::malloc.
         unsafe {
-            libc::free(key1.cast::<c_void>());
-            libc::free(key2.cast::<c_void>());
+            libc::free(buf1.cast::<c_void>());
+            libc::free(buf2.cast::<c_void>());
         }
     }
 

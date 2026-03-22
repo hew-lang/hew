@@ -170,6 +170,7 @@ pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr;
     use std::sync::Arc;
     use std::thread;
 
@@ -251,6 +252,216 @@ mod tests {
             hew_routing_add_route(table, 42, 4242);
             let pid = (u64::from(42u16) << PID_SERIAL_BITS) | 0x0007;
             assert_eq!(hew_routing_lookup(table, pid), 4242);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── node_id extraction ────────────────────────────────────────────
+
+    #[test]
+    fn node_id_from_pid_extracts_high_bits() {
+        // Hard-coded PID: node_id=42 at bits [63:48], serial=0xDEAD in low 48.
+        let pid: u64 = 0x002A_0000_0000_DEAD;
+        assert_eq!(HewRoutingTable::node_id_from_pid(pid), 42);
+    }
+
+    #[test]
+    fn node_id_from_pid_zero() {
+        assert_eq!(HewRoutingTable::node_id_from_pid(0), 0);
+    }
+
+    #[test]
+    fn node_id_from_pid_max_serial_ignored() {
+        // node_id=5, serial=all-ones in low 48 bits.
+        let pid: u64 = 0x0005_FFFF_FFFF_FFFF;
+        assert_eq!(HewRoutingTable::node_id_from_pid(pid), 5);
+    }
+
+    #[test]
+    fn node_id_from_pid_max_node_id() {
+        // node_id=0xFFFF at bits [63:48], serial=0.
+        let pid: u64 = 0xFFFF_0000_0000_0000;
+        assert_eq!(HewRoutingTable::node_id_from_pid(pid), u16::MAX);
+    }
+
+    // ── null pointer safety ───────────────────────────────────────────
+
+    #[test]
+    fn null_table_safety() {
+        // SAFETY: testing null-pointer guards.
+        unsafe {
+            hew_routing_table_free(ptr::null_mut());
+            hew_routing_add_route(ptr::null_mut(), 1, 42);
+            hew_routing_remove_route(ptr::null_mut(), 1);
+            assert_eq!(hew_routing_lookup(ptr::null_mut(), 0), -1);
+            assert_eq!(hew_routing_is_local(ptr::null_mut(), 0), 0);
+        }
+    }
+
+    // ── empty table ───────────────────────────────────────────────────
+
+    #[test]
+    fn empty_table_lookup_returns_minus_one() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1);
+            let remote_pid = (u64::from(99u16) << PID_SERIAL_BITS) | 1;
+            assert_eq!(hew_routing_lookup(table, remote_pid), -1);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── overwrite ─────────────────────────────────────────────────────
+
+    #[test]
+    fn overwrite_existing_route() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1);
+            let pid = (u64::from(5u16) << PID_SERIAL_BITS) | 0x7;
+            hew_routing_add_route(table, 5, 100);
+            assert_eq!(hew_routing_lookup(table, pid), 100);
+            hew_routing_add_route(table, 5, 200);
+            assert_eq!(hew_routing_lookup(table, pid), 200);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── remove edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn remove_nonexistent_route_no_panic() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1);
+            hew_routing_remove_route(table, 42); // must not panic
+            hew_routing_table_free(table);
+        }
+    }
+
+    #[test]
+    fn remove_then_lookup_returns_minus_one() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1);
+            let pid = (u64::from(3u16) << PID_SERIAL_BITS) | 0xF;
+            hew_routing_add_route(table, 3, 77);
+            assert_eq!(hew_routing_lookup(table, pid), 77);
+            hew_routing_remove_route(table, 3);
+            assert_eq!(hew_routing_lookup(table, pid), -1);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── is_local ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_local_with_different_serials() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(7);
+            let pid_a = (u64::from(7u16) << PID_SERIAL_BITS) | 1;
+            let pid_b = (u64::from(7u16) << PID_SERIAL_BITS) | 9999;
+            assert_eq!(hew_routing_is_local(table, pid_a), 1);
+            assert_eq!(hew_routing_is_local(table, pid_b), 1);
+            hew_routing_table_free(table);
+        }
+    }
+
+    #[test]
+    fn is_local_remote_pid() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(7);
+            let pid = (u64::from(8u16) << PID_SERIAL_BITS) | 1;
+            assert_eq!(hew_routing_is_local(table, pid), 0);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── multiple routes ───────────────────────────────────────────────
+
+    #[test]
+    fn multiple_distinct_routes_coexist() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(0);
+            hew_routing_add_route(table, 1, 10);
+            hew_routing_add_route(table, 2, 20);
+            hew_routing_add_route(table, 3, 30);
+            let pid1 = u64::from(1u16) << PID_SERIAL_BITS;
+            let pid2 = u64::from(2u16) << PID_SERIAL_BITS;
+            let pid3 = u64::from(3u16) << PID_SERIAL_BITS;
+            assert_eq!(hew_routing_lookup(table, pid1), 10);
+            assert_eq!(hew_routing_lookup(table, pid2), 20);
+            assert_eq!(hew_routing_lookup(table, pid3), 30);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── serial bits are transparent to routing ────────────────────────
+
+    #[test]
+    fn different_serials_same_node_resolve_same_route() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(0);
+            hew_routing_add_route(table, 5, 42);
+            let pid_a = (u64::from(5u16) << PID_SERIAL_BITS) | 1;
+            let pid_b = (u64::from(5u16) << PID_SERIAL_BITS) | 0xFFFF;
+            assert_eq!(hew_routing_lookup(table, pid_a), 42);
+            assert_eq!(hew_routing_lookup(table, pid_b), 42);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── local short-circuit ───────────────────────────────────────────
+
+    #[test]
+    fn local_pid_returns_minus_one_despite_route_existing() {
+        // The local-node check short-circuits before the route lookup,
+        // so even an explicitly added route for the local node_id is
+        // unreachable.
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(7);
+            hew_routing_add_route(table, 7, 999);
+            let local_pid = (u64::from(7u16) << PID_SERIAL_BITS) | 0x42;
+            assert_eq!(hew_routing_lookup(table, local_pid), -1);
+            assert_eq!(hew_routing_is_local(table, local_pid), 1);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── re-add after remove ───────────────────────────────────────────
+
+    #[test]
+    fn readd_route_after_removal() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(0);
+            let pid = (u64::from(10u16) << PID_SERIAL_BITS) | 1;
+            hew_routing_add_route(table, 10, 55);
+            assert_eq!(hew_routing_lookup(table, pid), 55);
+            hew_routing_remove_route(table, 10);
+            assert_eq!(hew_routing_lookup(table, pid), -1);
+            hew_routing_add_route(table, 10, 88);
+            assert_eq!(hew_routing_lookup(table, pid), 88);
+            hew_routing_table_free(table);
+        }
+    }
+
+    // ── node_id 0 ─────────────────────────────────────────────────────
+
+    #[test]
+    fn node_id_zero_routes_correctly() {
+        // SAFETY: pointer lifecycle bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1); // local is 1, not 0
+            hew_routing_add_route(table, 0, 77);
+            let pid = 0x0000_0000_0000_0001u64; // node_id = 0, serial = 1
+            assert_eq!(hew_routing_lookup(table, pid), 77);
+            assert_eq!(hew_routing_is_local(table, pid), 0);
             hew_routing_table_free(table);
         }
     }

@@ -54,6 +54,40 @@ target_link_libraries(test_translate PRIVATE
 
 add_test(NAME translate COMMAND test_translate)
 
+# ── Codegen C API test ────────────────────────────────────────────────────
+add_executable(test_codegen_capi test_codegen_capi.cpp)
+
+target_include_directories(test_codegen_capi PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_BINARY_DIR}/include
+)
+
+target_link_libraries(test_codegen_capi PRIVATE
+  HewCodegenCAPI
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
+)
+
+add_test(NAME codegen_capi COMMAND test_codegen_capi)
+if(HEW_CLI)
+  set_tests_properties(codegen_capi PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
+endif()
+
+# ── Msgpack reader test ──────────────────────────────────────────────────
+add_executable(test_msgpack_reader test_msgpack_reader.cpp)
+
+target_include_directories(test_msgpack_reader PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_BINARY_DIR}/include
+)
+
+target_link_libraries(test_msgpack_reader PRIVATE
+  HewCodegen
+  HewMLIRDialect
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
+)
+
+add_test(NAME msgpack_reader COMMAND test_msgpack_reader)
+
 # ── End-to-end example tests (compile + run .hew files) ─────────────────────
 # E2E tests use the hew CLI (Rust compiler driver) for full-pipeline compilation.
 if(NOT HEW_CLI)

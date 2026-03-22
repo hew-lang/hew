@@ -21,12 +21,32 @@ pub mod pprof;
 mod server;
 
 use crate::util::MutexExt;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use metrics::MetricsRing;
 pub use server::ProfilerContext;
+
+/// Global state for running profiler threads.
+///
+/// Stores thread handles and shutdown signal so [`shutdown()`] can cleanly
+/// terminate threads before node resources are freed.
+static PROFILER_STATE: Mutex<Option<ProfilerThreads>> = Mutex::new(None);
+
+/// Shutdown signal shared with profiler threads.
+static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug)]
+struct ProfilerThreads {
+    /// Sampler thread handle.
+    sampler_handle: JoinHandle<()>,
+    /// HTTP server thread handle.
+    server_handle: JoinHandle<()>,
+}
 
 /// Check `HEW_PPROF` and start the profiler if set.
 ///
@@ -52,9 +72,9 @@ pub fn maybe_start() {
 ///
 /// # Safety
 ///
-/// The pointers (if non-null) must remain valid for the lifetime of the
-/// program. Null pointers are safe and result in empty JSON responses
-/// for the corresponding endpoints.
+/// The pointers (if non-null) must remain valid until [`shutdown()`] is called.
+/// Null pointers are safe and result in empty JSON responses for the
+/// corresponding endpoints.
 pub fn maybe_start_with_context(
     cluster: *mut crate::cluster::HewCluster,
     connmgr: *mut crate::connection::HewConnMgr,
@@ -65,6 +85,9 @@ pub fn maybe_start_with_context(
         _ => return,
     };
     crate::tracing::hew_trace_enable(1);
+
+    // Clear any previous shutdown signal.
+    PROFILER_SHUTDOWN.store(false, Ordering::Release);
 
     // Normalize `:port` shorthand to `0.0.0.0:port`.
     let bind_addr = if bind_addr.starts_with(':') {
@@ -77,14 +100,13 @@ pub fn maybe_start_with_context(
 
     // Sampler thread: captures a MetricsSnapshot every second.
     let sampler_ring = Arc::clone(&ring);
-    if thread::Builder::new()
+    let Ok(sampler_handle) = thread::Builder::new()
         .name("hew-pprof-sampler".into())
         .spawn(move || sampler_loop(&sampler_ring))
-        .is_err()
-    {
+    else {
         eprintln!("[hew-pprof] failed to spawn sampler thread");
         return;
-    }
+    };
 
     let ctx = ProfilerContext {
         ring,
@@ -94,19 +116,41 @@ pub fn maybe_start_with_context(
     };
 
     // HTTP server thread.
-    if thread::Builder::new()
+    let Ok(server_handle) = thread::Builder::new()
         .name("hew-pprof-server".into())
         .spawn(move || server::run(&bind_addr, &ctx))
-        .is_err()
-    {
+    else {
         eprintln!("[hew-pprof] failed to spawn server thread");
-    }
+        // Signal sampler to stop and join it before returning.
+        PROFILER_SHUTDOWN.store(true, Ordering::Release);
+        let _ = sampler_handle.join();
+        return;
+    };
+
+    // Store thread handles for shutdown.
+    let threads = ProfilerThreads {
+        sampler_handle,
+        server_handle,
+    };
+    let mut state_guard = PROFILER_STATE.lock_or_recover();
+    *state_guard = Some(threads);
 }
 
 /// Sampler loop: captures a snapshot every second.
 fn sampler_loop(ring: &Arc<Mutex<MetricsRing>>) {
     loop {
+        // Check shutdown signal before sleeping.
+        if PROFILER_SHUTDOWN.load(Ordering::Acquire) {
+            break;
+        }
+
         thread::sleep(Duration::from_secs(1));
+
+        // Check again after sleeping (thread could have been signaled during sleep).
+        if PROFILER_SHUTDOWN.load(Ordering::Acquire) {
+            break;
+        }
+
         let mut ring_guard = ring.lock_or_recover();
         ring_guard.sample();
     }
@@ -157,5 +201,28 @@ pub fn maybe_write_on_exit() {
             Ok(()) => eprintln!("[hew-pprof] wrote {path} ({} bytes)", text.len()),
             Err(e) => eprintln!("[hew-pprof] failed to write {path}: {e}"),
         }
+    }
+}
+
+/// Stop all profiler threads and wait for them to exit.
+///
+/// This MUST be called before freeing any node resources (cluster, connection
+/// manager, routing table) that the profiler threads might be accessing.
+///
+/// Safe to call multiple times or when no profiler was started (no-op).
+pub(crate) fn shutdown() {
+    // Signal all threads to stop.
+    PROFILER_SHUTDOWN.store(true, Ordering::Release);
+
+    // Take the thread handles and join them.
+    let mut state_guard = PROFILER_STATE.lock_or_recover();
+    if let Some(threads) = state_guard.take() {
+        drop(state_guard); // Release lock before joining.
+
+        // Join threads in reverse order (server first, then sampler).
+        // Server might be blocked on incoming requests, but it should exit
+        // when the TCP connection is dropped or after a timeout.
+        let _ = threads.server_handle.join();
+        let _ = threads.sampler_handle.join();
     }
 }

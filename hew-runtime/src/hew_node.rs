@@ -743,6 +743,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
     }
 
+    // Shutdown profiler threads before freeing node resources they might access.
+    crate::profiler::shutdown();
+
     if !node.conn_mgr.is_null() {
         // SAFETY: valid manager pointer from hew_connmgr_new.
         unsafe { connection::hew_connmgr_free(node.conn_mgr) };

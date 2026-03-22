@@ -281,7 +281,7 @@ struct SendConnMgr(*mut HewConnMgr);
 // guaranteed by the manager lifecycle contract.
 unsafe impl Send for SendConnMgr {}
 
-fn hew_connmgr_normalize_max_retries(max_retries: c_int) -> u32 {
+fn normalize_max_retries(max_retries: c_int) -> u32 {
     if max_retries <= 0 {
         RECONNECT_DEFAULT_MAX_RETRIES
     } else {
@@ -289,14 +289,14 @@ fn hew_connmgr_normalize_max_retries(max_retries: c_int) -> u32 {
     }
 }
 
-fn hew_connmgr_jittered_backoff_ms(base_ms: u64) -> u64 {
+fn jittered_backoff_ms(base_ms: u64) -> u64 {
     let mut rng = rng();
     let jitter_pct = rng.random_range(RECONNECT_JITTER_MIN_PERCENT..=RECONNECT_JITTER_MAX_PERCENT);
     let jittered = base_ms.saturating_mul(jitter_pct) / 100;
     jittered.max(1)
 }
 
-fn hew_connmgr_sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
+fn sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
     let mut remaining = delay_ms;
     while remaining > 0 {
         if shutdown.load(Ordering::Acquire) {
@@ -309,7 +309,7 @@ fn hew_connmgr_sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
     !shutdown.load(Ordering::Acquire)
 }
 
-fn hew_connmgr_collect_finished_reconnect_workers(mgr: &HewConnMgr) {
+fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
     let Ok(mut workers) = mgr.reconnect_workers.lock() else {
         // Policy: per-connection-manager state — poisoned mutex means
         // reconnect registry is corrupted.
@@ -326,7 +326,7 @@ fn hew_connmgr_collect_finished_reconnect_workers(mgr: &HewConnMgr) {
     }
 }
 
-fn hew_connmgr_reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
+fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
     if !mgr.reconnect_enabled.load(Ordering::Acquire)
         || mgr.reconnect_shutdown.load(Ordering::Acquire)
     {
@@ -347,10 +347,7 @@ fn hew_connmgr_reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<Reconn
     })
 }
 
-unsafe fn hew_connmgr_connect_addr(
-    mgr: *mut HewConnMgr,
-    target_addr: &CStr,
-) -> Result<c_int, String> {
+unsafe fn connect_addr(mgr: *mut HewConnMgr, target_addr: &CStr) -> Result<c_int, String> {
     if mgr.is_null() {
         return Err("manager is null".to_owned());
     }
@@ -376,7 +373,7 @@ unsafe fn hew_connmgr_connect_addr(
     Ok(conn_id)
 }
 
-fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectPlan) {
+fn spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectPlan) {
     if mgr.is_null() {
         return;
     }
@@ -385,12 +382,12 @@ fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan
     if mgr_ref.reconnect_shutdown.load(Ordering::Acquire) {
         return;
     }
-    hew_connmgr_collect_finished_reconnect_workers(mgr_ref);
+    collect_finished_reconnect_workers(mgr_ref);
     let mgr_send = SendConnMgr(mgr);
     let shutdown = Arc::clone(&mgr_ref.reconnect_shutdown);
     let thread_name = format!("hew-reconnect-{conn_id}");
     let handle = thread::Builder::new().name(thread_name).spawn(move || {
-        hew_connmgr_reconnect_worker_loop(mgr_send, shutdown, conn_id, plan);
+        reconnect_worker_loop(mgr_send, shutdown, conn_id, plan);
     });
     match handle {
         Ok(worker) => {
@@ -413,7 +410,7 @@ fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan
     clippy::needless_pass_by_value,
     reason = "FFI callback signature requires owned values"
 )]
-fn hew_connmgr_reconnect_worker_loop(
+fn reconnect_worker_loop(
     mgr: SendConnMgr,
     shutdown: Arc<AtomicBool>,
     dropped_conn_id: c_int,
@@ -426,8 +423,8 @@ fn hew_connmgr_reconnect_worker_loop(
         if shutdown.load(Ordering::Acquire) {
             return;
         }
-        let delay_ms = hew_connmgr_jittered_backoff_ms(base_backoff_ms);
-        if !hew_connmgr_sleep_until_retry(&shutdown, delay_ms) {
+        let delay_ms = jittered_backoff_ms(base_backoff_ms);
+        if !sleep_until_retry(&shutdown, delay_ms) {
             return;
         }
         if shutdown.load(Ordering::Acquire) {
@@ -441,7 +438,7 @@ fn hew_connmgr_reconnect_worker_loop(
             return;
         };
         // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
-        let connect_result = unsafe { hew_connmgr_connect_addr(mgr_ptr, &target_addr) };
+        let connect_result = unsafe { connect_addr(mgr_ptr, &target_addr) };
         match connect_result {
             Ok(new_conn_id) => {
                 // SAFETY: manager pointer is valid until shutdown and join in free.
@@ -462,7 +459,7 @@ fn hew_connmgr_reconnect_worker_loop(
                 // SAFETY: connection belongs to this transport and was not installed.
                 unsafe {
                     let mgr_ref = &*mgr_ptr;
-                    hew_conn_close_transport_conn(mgr_ref.transport, new_conn_id);
+                    close_transport_conn(mgr_ref.transport, new_conn_id);
                 }
                 set_last_error(format!(
                     "hew_connmgr_reconnect: failed to install reconnected conn on attempt {attempt}/{}, addr={}",
@@ -488,7 +485,7 @@ fn hew_connmgr_reconnect_worker_loop(
     ));
 }
 
-fn hew_conn_local_feature_flags() -> u32 {
+fn local_feature_flags() -> u32 {
     let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN;
     #[cfg(feature = "encryption")]
     {
@@ -497,7 +494,7 @@ fn hew_conn_local_feature_flags() -> u32 {
     flags
 }
 
-fn hew_conn_local_schema_hash() -> u32 {
+fn local_schema_hash() -> u32 {
     fn fnv1a32_update(mut hash: u32, bytes: &[u8]) -> u32 {
         for &byte in bytes {
             hash ^= u32::from(byte);
@@ -515,29 +512,25 @@ fn hew_conn_local_schema_hash() -> u32 {
     fnv1a32_update(hash, &HEW_WIRE_FIXED32.to_le_bytes())
 }
 
-fn hew_conn_local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) -> HewHandshake {
+fn local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) -> HewHandshake {
     HewHandshake {
         protocol_version: HEW_PROTOCOL_VERSION,
         node_id: crate::pid::hew_pid_local_node(),
-        schema_hash: hew_conn_local_schema_hash(),
-        feature_flags: hew_conn_local_feature_flags(),
+        schema_hash: local_schema_hash(),
+        feature_flags: local_feature_flags(),
         static_noise_pubkey,
     }
 }
 
-fn hew_conn_version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
+fn version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.protocol_version == peer.protocol_version
 }
 
-fn hew_conn_schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
+fn schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.schema_hash == peer.schema_hash
 }
 
-unsafe fn hew_conn_send_frame(
-    transport: *mut HewTransport,
-    conn_id: c_int,
-    payload: &[u8],
-) -> bool {
+unsafe fn send_frame(transport: *mut HewTransport, conn_id: c_int, payload: &[u8]) -> bool {
     if transport.is_null() {
         return false;
     }
@@ -557,7 +550,7 @@ unsafe fn hew_conn_send_frame(
     unsafe { send_fn(t.r#impl, conn_id, payload.as_ptr().cast(), payload.len()) == expected }
 }
 
-unsafe fn hew_conn_recv_frame_exact(
+unsafe fn recv_frame_exact(
     transport: *mut HewTransport,
     conn_id: c_int,
     payload: &mut [u8],
@@ -588,22 +581,19 @@ unsafe fn hew_conn_recv_frame_exact(
     }
 }
 
-unsafe fn hew_conn_handshake_send(
+unsafe fn handshake_send(
     transport: *mut HewTransport,
     conn_id: c_int,
     handshake: HewHandshake,
 ) -> c_int {
     // SAFETY: transport and conn_id are validated by caller; serialize returns a fixed-size buffer.
-    -c_int::from(!unsafe { hew_conn_send_frame(transport, conn_id, &handshake.serialize()) })
+    -c_int::from(!unsafe { send_frame(transport, conn_id, &handshake.serialize()) })
 }
 
-unsafe fn hew_conn_handshake_recv(
-    transport: *mut HewTransport,
-    conn_id: c_int,
-) -> Option<HewHandshake> {
+unsafe fn handshake_recv(transport: *mut HewTransport, conn_id: c_int) -> Option<HewHandshake> {
     let mut buf = [0u8; HEW_HANDSHAKE_SIZE];
     // SAFETY: transport and conn_id are validated by caller; buf is stack-allocated with correct size.
-    if !unsafe { hew_conn_recv_frame_exact(transport, conn_id, &mut buf) } {
+    if !unsafe { recv_frame_exact(transport, conn_id, &mut buf) } {
         set_last_error(format!(
             "hew_connmgr_add: failed to receive handshake for conn {conn_id}"
         ));
@@ -618,28 +608,28 @@ unsafe fn hew_conn_handshake_recv(
     Some(handshake)
 }
 
-unsafe fn hew_conn_handshake_exchange(
+unsafe fn handshake_exchange(
     transport: *mut HewTransport,
     conn_id: c_int,
     local: HewHandshake,
 ) -> Option<HewHandshake> {
     // SAFETY: transport and conn_id validated by caller contract.
-    if unsafe { hew_conn_handshake_send(transport, conn_id, local) } != 0 {
+    if unsafe { handshake_send(transport, conn_id, local) } != 0 {
         set_last_error(format!(
             "hew_connmgr_add: failed to send handshake for conn {conn_id}"
         ));
         return None;
     }
     // SAFETY: same contract — transport remains valid through handshake sequence.
-    let peer = unsafe { hew_conn_handshake_recv(transport, conn_id) }?;
-    if !hew_conn_version_compatible(&local, &peer) {
+    let peer = unsafe { handshake_recv(transport, conn_id) }?;
+    if !version_compatible(&local, &peer) {
         set_last_error(format!(
             "hew_connmgr_add: handshake protocol mismatch for conn {conn_id} (local={}, peer={})",
             local.protocol_version, peer.protocol_version
         ));
         return None;
     }
-    if !hew_conn_schema_compatible(&local, &peer) {
+    if !schema_compatible(&local, &peer) {
         set_last_error(format!(
             "hew_connmgr_add: handshake schema hash mismatch for conn {conn_id} (local={:#010x}, peer={:#010x})",
             local.schema_hash, peer.schema_hash
@@ -649,7 +639,7 @@ unsafe fn hew_conn_handshake_exchange(
     Some(peer)
 }
 
-unsafe fn hew_conn_close_transport_conn(transport: *mut HewTransport, conn_id: c_int) {
+unsafe fn close_transport_conn(transport: *mut HewTransport, conn_id: c_int) {
     if transport.is_null() {
         return;
     }
@@ -664,7 +654,7 @@ unsafe fn hew_conn_close_transport_conn(transport: *mut HewTransport, conn_id: c
     }
 }
 
-unsafe fn hew_conn_encode_envelope(
+unsafe fn encode_envelope(
     target_actor_id: u64,
     msg_type: i32,
     payload: *mut u8,
@@ -698,12 +688,12 @@ unsafe fn hew_conn_encode_envelope(
 }
 
 #[cfg(feature = "encryption")]
-fn hew_conn_supports_encryption(flags: u32) -> bool {
+fn supports_encryption(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_ENCRYPTION != 0
 }
 
 #[cfg(feature = "encryption")]
-fn hew_conn_noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Option<bool> {
+fn noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Option<bool> {
     if local.node_id != peer.node_id {
         return Some(local.node_id < peer.node_id);
     }
@@ -715,14 +705,14 @@ fn hew_conn_noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Opt
 }
 
 #[cfg(feature = "encryption")]
-unsafe fn hew_conn_upgrade_noise(
+unsafe fn upgrade_noise(
     transport: *mut HewTransport,
     conn_id: c_int,
     local: &HewHandshake,
     peer: &HewHandshake,
     local_private_key: &[u8],
 ) -> Option<(snow::TransportState, [u8; NOISE_STATIC_PUBKEY_LEN])> {
-    let initiator = hew_conn_noise_is_initiator(local, peer)?;
+    let initiator = noise_is_initiator(local, peer)?;
     // SAFETY: transport pointer validity is guaranteed by caller.
     let t = unsafe { &*transport };
     // SAFETY: vtable pointer validity is guaranteed by transport construction.
@@ -815,13 +805,13 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
             if mgr.is_null() {
                 None
             } else {
-                hew_connmgr_reconnect_plan(&*mgr, conn_id)
+                reconnect_plan(&*mgr, conn_id)
             }
         };
         // SAFETY: manager and conn_id come from active reader state.
         let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
         if let Some(plan) = reconnect_plan {
-            hew_connmgr_spawn_reconnect_worker(mgr, conn_id, plan);
+            spawn_reconnect_worker(mgr, conn_id, plan);
         }
     }
 }
@@ -1046,10 +1036,8 @@ pub unsafe extern "C" fn hew_connmgr_set_reconnect_policy(
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
     mgr.reconnect_enabled.store(enabled != 0, Ordering::Release);
-    mgr.reconnect_max_retries.store(
-        hew_connmgr_normalize_max_retries(max_retries),
-        Ordering::Release,
-    );
+    mgr.reconnect_max_retries
+        .store(normalize_max_retries(max_retries), Ordering::Release);
     0
 }
 
@@ -1105,7 +1093,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         return -1;
     }
     let retries = if max_retries > 0 {
-        hew_connmgr_normalize_max_retries(max_retries)
+        normalize_max_retries(max_retries)
     } else {
         mgr.reconnect_max_retries.load(Ordering::Acquire).max(1)
     };
@@ -1158,14 +1146,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let local_noise_private = {
         let Ok(pattern) = NOISE_PATTERN.parse() else {
             // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error("hew_connmgr_add: invalid noise pattern");
             return -1;
         };
         let builder = snow::Builder::new(pattern);
         let Ok(keypair) = builder.generate_keypair() else {
             // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error("hew_connmgr_add: failed to generate noise keypair");
             return -1;
         };
@@ -1173,12 +1161,11 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         keypair.private
     };
 
-    let local_hs = hew_conn_local_handshake(local_noise_pubkey);
+    let local_hs = local_handshake(local_noise_pubkey);
     // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
-    let Some(peer_hs) = (unsafe { hew_conn_handshake_exchange(mgr.transport, conn_id, local_hs) })
-    else {
+    let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, local_hs) }) else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
         return -1;
     };
 
@@ -1198,13 +1185,13 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     #[cfg(feature = "encryption")]
     let upgraded_noise = if !skip_noise
-        && hew_conn_supports_encryption(local_hs.feature_flags)
-        && hew_conn_supports_encryption(peer_hs.feature_flags)
+        && supports_encryption(local_hs.feature_flags)
+        && supports_encryption(peer_hs.feature_flags)
     {
         // SAFETY: mgr.transport and conn_id are valid per caller contract;
         // local_hs, peer_hs, and local_noise_private are valid stack-local references.
         unsafe {
-            hew_conn_upgrade_noise(
+            upgrade_noise(
                 mgr.transport,
                 conn_id,
                 &local_hs,
@@ -1218,12 +1205,12 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     #[cfg(feature = "encryption")]
     let upgraded_noise = if !skip_noise
-        && hew_conn_supports_encryption(local_hs.feature_flags)
-        && hew_conn_supports_encryption(peer_hs.feature_flags)
+        && supports_encryption(local_hs.feature_flags)
+        && supports_encryption(peer_hs.feature_flags)
     {
         let Some((noise, peer_static_pubkey)) = upgraded_noise else {
             // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: noise upgrade failed for conn {conn_id}"
             ));
@@ -1231,7 +1218,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         };
         if !crate::encryption::hew_allowlist_check_active_peer(&peer_static_pubkey) {
             // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: peer key not allowlisted for conn {conn_id}"
             ));
@@ -1289,7 +1276,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         actor.reader_handle = Some(h);
     } else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
         ));
@@ -1304,7 +1291,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
     if conns.iter().any(|c| c.conn_id == conn_id) {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: connection {conn_id} became duplicate during install"
         ));
@@ -1360,7 +1347,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 
     // Close the transport connection first so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
-    unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+    unsafe { close_transport_conn(mgr.transport, conn_id) };
     // Now drop/join the reader thread after transport close.
     drop(conn);
 
@@ -1448,8 +1435,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
         // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
-        let Some(encoded) =
-            (unsafe { hew_conn_encode_envelope(target_actor_id, msg_type, data, size) })
+        let Some(encoded) = (unsafe { encode_envelope(target_actor_id, msg_type, data, size) })
         else {
             return -1;
         };
@@ -1474,7 +1460,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
         if let Some(ciphertext) = maybe_ciphertext {
             // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above.
-            if unsafe { hew_conn_send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
+            if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
                 return 0;
             }
             return -1;
@@ -1741,39 +1727,39 @@ mod tests {
     #[test]
     fn handshake_rejects_invalid_magic() {
         let mut bytes = [0u8; HEW_HANDSHAKE_SIZE];
-        bytes.copy_from_slice(&hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]).serialize());
+        bytes.copy_from_slice(&local_handshake([0; NOISE_STATIC_PUBKEY_LEN]).serialize());
         bytes[0] = b'X';
         assert!(HewHandshake::deserialize(&bytes).is_none());
     }
 
     #[test]
     fn protocol_version_mismatch_rejected() {
-        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.protocol_version = local.protocol_version.wrapping_add(1);
-        assert!(!hew_conn_version_compatible(&local, &peer));
+        assert!(!version_compatible(&local, &peer));
     }
 
     #[test]
     fn handshake_rejects_future_protocol_version() {
-        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
         let peer = HewHandshake {
             protocol_version: 999,
             ..local
         };
-        assert!(!hew_conn_version_compatible(&local, &peer));
+        assert!(!version_compatible(&local, &peer));
     }
 
     #[test]
     fn schema_hash_mismatch_rejected() {
-        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.schema_hash ^= 0x0100_0000;
-        assert!(!hew_conn_schema_compatible(&local, &peer));
+        assert!(!schema_compatible(&local, &peer));
     }
 
     #[test]
     fn local_schema_hash_is_not_placeholder() {
-        assert_ne!(hew_conn_local_schema_hash(), FNV1A32_OFFSET_BASIS);
+        assert_ne!(local_schema_hash(), FNV1A32_OFFSET_BASIS);
     }
 }

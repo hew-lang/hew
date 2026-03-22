@@ -6,7 +6,7 @@
 
 use crate::util::{MutexExt, RwLockExt};
 use std::collections::HashSet;
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{c_char, c_int, c_void};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -861,8 +861,8 @@ pub unsafe extern "C" fn hew_noise_key_save(
         -1
     );
 
-    // SAFETY: path is non-null and expected to be valid C string.
-    let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
+    // SAFETY: path was null-checked by cabi_guard above.
+    let Some(path_str) = (unsafe { crate::util::cstr_to_str(path, "hew_noise_key_save") }) else {
         return -1;
     };
 
@@ -908,8 +908,8 @@ pub unsafe extern "C" fn hew_noise_key_load(
         -1
     );
 
-    // SAFETY: path is non-null and expected to be valid C string.
-    let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
+    // SAFETY: path was null-checked by cabi_guard above.
+    let Some(path_str) = (unsafe { crate::util::cstr_to_str(path, "hew_noise_key_load") }) else {
         return -1;
     };
     let Ok(mut bytes) = fs::read(path_str) else {

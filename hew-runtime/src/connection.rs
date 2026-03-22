@@ -883,7 +883,7 @@ fn reader_loop(
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { crate::io_time::hew_now_ms() };
-        last_activity.store(now, Ordering::Relaxed);
+        last_activity.store(now, Ordering::Release);
 
         // Decode envelope and route.
         if let Some(router_fn) = router {
@@ -1080,13 +1080,10 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         conn.reconnect = None;
         return 0;
     }
-    if target_addr.is_null() {
-        set_last_error("hew_connmgr_configure_reconnect: target_addr is null");
-        return -1;
-    }
-    // SAFETY: caller guarantees target_addr is a valid C string.
-    let Ok(target) = unsafe { CStr::from_ptr(target_addr) }.to_str() else {
-        set_last_error("hew_connmgr_configure_reconnect: target_addr is not valid UTF-8");
+    // SAFETY: caller guarantees target_addr is a valid C string (or null).
+    let Some(target) =
+        (unsafe { crate::util::cstr_to_str(target_addr, "hew_connmgr_configure_reconnect") })
+    else {
         return -1;
     };
     if target.is_empty() {
@@ -1247,7 +1244,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     // SAFETY: hew_now_ms has no preconditions.
     let now = unsafe { crate::io_time::hew_now_ms() };
-    actor.last_activity_ms.store(now, Ordering::Relaxed);
+    actor.last_activity_ms.store(now, Ordering::Release);
 
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);
@@ -1585,7 +1582,7 @@ pub unsafe extern "C" fn hew_connmgr_last_activity(mgr: *mut HewConnMgr, conn_id
     conns
         .iter()
         .find(|c| c.conn_id == conn_id)
-        .map_or(0, |c| c.last_activity_ms.load(Ordering::Relaxed))
+        .map_or(0, |c| c.last_activity_ms.load(Ordering::Acquire))
 }
 
 /// Get the state of a connection.

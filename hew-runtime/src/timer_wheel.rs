@@ -567,4 +567,448 @@ mod tests {
             hew_timer_wheel_free(ptr::null_mut());
         }
     }
+
+    // ── Helpers for deterministic (wall-clock-free) tests ─────────────
+
+    fn make_wheel_at(current_ms: u64) -> WheelInner {
+        WheelInner {
+            l0: [ptr::null_mut(); L0_SIZE],
+            l1: [ptr::null_mut(); L1_SIZE],
+            overflow: ptr::null_mut(),
+            current_ms,
+        }
+    }
+
+    fn make_entry_at(deadline_ms: u64) -> *mut HewTimerEntry {
+        Box::into_raw(Box::new(HewTimerEntry {
+            deadline_ms,
+            cb: None,
+            data: ptr::null_mut(),
+            cancelled: 0,
+            next: ptr::null_mut(),
+        }))
+    }
+
+    fn count_list(mut head: *mut HewTimerEntry) -> usize {
+        let mut n = 0;
+        while !head.is_null() {
+            n += 1;
+            // SAFETY: head is a valid entry in a test-owned list.
+            unsafe {
+                head = (*head).next;
+            }
+        }
+        n
+    }
+
+    fn collect_deadlines(mut head: *mut HewTimerEntry) -> Vec<u64> {
+        let mut out = Vec::new();
+        while !head.is_null() {
+            // SAFETY: head is a valid entry in a test-owned list.
+            unsafe {
+                out.push((*head).deadline_ms);
+                head = (*head).next;
+            }
+        }
+        out
+    }
+
+    fn free_wheel(w: &mut WheelInner) {
+        for slot in &mut w.l0 {
+            free_entry_list(*slot);
+            *slot = ptr::null_mut();
+        }
+        for slot in &mut w.l1 {
+            free_entry_list(*slot);
+            *slot = ptr::null_mut();
+        }
+        free_entry_list(w.overflow);
+        w.overflow = ptr::null_mut();
+    }
+
+    /// Construct a `HewTimerWheel` at a fixed time, bypassing `hew_now_ms`.
+    fn make_timer_wheel(current_ms: u64) -> *mut HewTimerWheel {
+        Box::into_raw(Box::new(HewTimerWheel {
+            inner: Mutex::new(WheelInner {
+                l0: [ptr::null_mut(); L0_SIZE],
+                l1: [ptr::null_mut(); L1_SIZE],
+                overflow: ptr::null_mut(),
+                current_ms,
+            }),
+        }))
+    }
+
+    // ── insert_entry: level placement ─────────────────────────────────
+
+    #[test]
+    fn insert_zero_delta_lands_in_l0() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(0);
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.l0[0]), 1);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_small_delta_lands_in_l0() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(100);
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.l0[100]), 1);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_l0_max_boundary() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(255);
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.l0[255]), 1);
+        for slot in &w.l1 {
+            assert!((*slot).is_null());
+        }
+        assert!(w.overflow.is_null());
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_l1_min_boundary() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(256);
+        insert_entry(&mut w, e);
+        // slot = (256 / 256) % 64 = 1
+        assert_eq!(count_list(w.l1[1]), 1);
+        for slot in &w.l0 {
+            assert!((*slot).is_null());
+        }
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_l1_max_boundary() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(16383);
+        insert_entry(&mut w, e);
+        // slot = (16383 / 256) % 64 = 63
+        assert_eq!(count_list(w.l1[63]), 1);
+        assert!(w.overflow.is_null());
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_overflow_min_boundary() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(16384);
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.overflow), 1);
+        for slot in &w.l0 {
+            assert!((*slot).is_null());
+        }
+        for slot in &w.l1 {
+            assert!((*slot).is_null());
+        }
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_overflow_large_delta() {
+        let mut w = make_wheel_at(0);
+        let e = make_entry_at(100_000);
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.overflow), 1);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn multiple_entries_same_l0_slot() {
+        let mut w = make_wheel_at(0);
+        insert_entry(&mut w, make_entry_at(42));
+        insert_entry(&mut w, make_entry_at(42));
+        assert_eq!(count_list(w.l0[42]), 2);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn overflow_sorted_by_deadline() {
+        let mut w = make_wheel_at(0);
+        insert_entry(&mut w, make_entry_at(30_000));
+        insert_entry(&mut w, make_entry_at(20_000));
+        insert_entry(&mut w, make_entry_at(25_000));
+        assert_eq!(collect_deadlines(w.overflow), vec![20_000, 25_000, 30_000]);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn insert_with_nonzero_current_ms() {
+        let mut w = make_wheel_at(1000);
+        let e = make_entry_at(1050); // delta = 50 → L0, slot = 1050 & 255 = 26
+        insert_entry(&mut w, e);
+        assert_eq!(count_list(w.l0[26]), 1);
+        free_wheel(&mut w);
+    }
+
+    // ── collect_expired_entries ────────────────────────────────────────
+
+    #[test]
+    fn collect_expired_fires_due_entries() {
+        let e2 = make_entry_at(15);
+        let e1 = make_entry_at(5);
+        // SAFETY: building a test list; both entries are valid.
+        unsafe {
+            (*e1).next = e2;
+        }
+        let mut slot_head = e1;
+
+        let mut expired = Vec::new();
+        collect_expired_entries(&raw mut slot_head, 5, &mut expired);
+        assert_eq!(expired.len(), 1); // deadline 5 ≤ now(5)
+        assert_eq!(count_list(slot_head), 1); // deadline 15 stays
+
+        for e in expired {
+            // SAFETY: freeing collected entries.
+            unsafe {
+                drop(Box::from_raw(e.raw));
+            }
+        }
+        free_entry_list(slot_head);
+    }
+
+    #[test]
+    fn collect_expired_leaves_future_entries() {
+        let e = make_entry_at(100);
+        let mut slot_head = e;
+
+        let mut expired = Vec::new();
+        collect_expired_entries(&raw mut slot_head, 50, &mut expired);
+        assert!(expired.is_empty());
+        assert_eq!(count_list(slot_head), 1);
+        free_entry_list(slot_head);
+    }
+
+    #[test]
+    fn collect_expired_mixed_deadlines() {
+        // Three entries: 5 (due), 10 (due at boundary), 20 (future). now = 10.
+        let e3 = make_entry_at(20);
+        let e2 = make_entry_at(10);
+        let e1 = make_entry_at(5);
+        // SAFETY: building a test list.
+        unsafe {
+            (*e1).next = e2;
+            (*e2).next = e3;
+        }
+        let mut slot_head = e1;
+
+        let mut expired = Vec::new();
+        collect_expired_entries(&raw mut slot_head, 10, &mut expired);
+        assert_eq!(expired.len(), 2);
+        assert_eq!(count_list(slot_head), 1);
+        // SAFETY: reading the remaining entry's deadline.
+        unsafe {
+            assert_eq!((*slot_head).deadline_ms, 20);
+        }
+
+        for e in expired {
+            // SAFETY: freeing collected entries.
+            unsafe {
+                drop(Box::from_raw(e.raw));
+            }
+        }
+        free_entry_list(slot_head);
+    }
+
+    #[test]
+    fn collect_expired_cancelled_entry_still_collected() {
+        let e = make_entry_at(5);
+        // SAFETY: setting cancelled flag on a test-owned entry.
+        unsafe {
+            (*e).cancelled = 1;
+        }
+        let mut slot_head = e;
+
+        let mut expired = Vec::new();
+        collect_expired_entries(&raw mut slot_head, 10, &mut expired);
+        // Cancelled entries are still unlinked; caller decides whether to fire.
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].cancelled, 1);
+
+        for e in expired {
+            // SAFETY: freeing collected entries.
+            unsafe {
+                drop(Box::from_raw(e.raw));
+            }
+        }
+    }
+
+    // ── cascade ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cascade_l1_to_l0_redistributes() {
+        let mut w = make_wheel_at(256);
+        // Entry deadline 300 in L1 slot 1 → after cascade, delta = 44 → L0 slot 44.
+        let e = make_entry_at(300);
+        w.l1[1] = e;
+
+        cascade_l1_to_l0(&mut w);
+        assert!(w.l1[1].is_null());
+        assert_eq!(count_list(w.l0[44]), 1);
+        free_wheel(&mut w);
+    }
+
+    #[test]
+    fn cascade_overflow_moves_entries_in_range() {
+        let mut w = make_wheel_at(0);
+        let e3 = make_entry_at(40_000);
+        let e2 = make_entry_at(20_000);
+        let e1 = make_entry_at(16_384);
+        // SAFETY: building a sorted overflow list.
+        unsafe {
+            (*e1).next = e2;
+            (*e2).next = e3;
+        }
+        w.overflow = e1;
+        w.current_ms = 16_384;
+
+        cascade_overflow(&mut w);
+        // max_deadline = 32768. e1,e2 < 32768 → cascaded. e3 stays.
+        assert_eq!(count_list(w.overflow), 1);
+        // SAFETY: reading remaining overflow entry.
+        unsafe {
+            assert_eq!((*w.overflow).deadline_ms, 40_000);
+        }
+        // e1 (16384): delta=0 → L0 slot 0. e2 (20000): delta=3616 → L1 slot 14.
+        assert_eq!(count_list(w.l0[0]), 1);
+        assert_eq!(count_list(w.l1[14]), 1);
+        free_wheel(&mut w);
+    }
+
+    // ── C ABI: schedule + next_deadline (controlled time) ─────────────
+
+    #[test]
+    fn schedule_via_cabi_lands_in_l0() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            hew_timer_wheel_schedule(tw, 50, test_cb, ptr::null_mut());
+            // deadline = 1050, slot = 1050 & 255 = 26
+            let w = (*tw).inner.lock().unwrap();
+            assert_eq!(count_list(w.l0[26]), 1);
+            drop(w);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn schedule_via_cabi_lands_in_l1() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            // deadline = 1500, delta = 500 → L1 slot = (1500 / 256) % 64 = 5
+            let w = (*tw).inner.lock().unwrap();
+            assert_eq!(count_list(w.l1[5]), 1);
+            drop(w);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_returns_soonest_timer() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 50, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 200, test_cb, ptr::null_mut());
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 50);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_skips_cancelled_entries() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            let e = hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, e);
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 100);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_all_cancelled_returns_minus_one() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(0);
+            let e1 = hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
+            let e2 = hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, e1);
+            hew_timer_wheel_cancel(tw, e2);
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), -1);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_l1_when_l0_empty() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 500);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_overflow_when_l0_l1_empty() {
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(1000);
+            hew_timer_wheel_schedule(tw, 20_000, test_cb, ptr::null_mut());
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 20_000);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn free_cleans_all_levels() {
+        // Schedule entries across L0, L1, and overflow, then free.
+        // SAFETY: standard lifecycle; leak would be caught by Miri/ASAN.
+        unsafe {
+            let tw = make_timer_wheel(0);
+            hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 20_000, test_cb, ptr::null_mut());
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn cancel_idempotent() {
+        // SAFETY: double-cancel must not panic.
+        unsafe {
+            let tw = make_timer_wheel(0);
+            let e = hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, e);
+            hew_timer_wheel_cancel(tw, e);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn next_deadline_past_due_returns_zero() {
+        // Entry with deadline already in the past relative to current_ms.
+        // SAFETY: using make_timer_wheel for deterministic time.
+        unsafe {
+            let tw = make_timer_wheel(500);
+            // Schedule with 0 delay → deadline = 500. Wheel is at 500.
+            hew_timer_wheel_schedule(tw, 0, test_cb, ptr::null_mut());
+            // earliest == current_ms → remaining = 0
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 0);
+            hew_timer_wheel_free(tw);
+        }
+    }
 }

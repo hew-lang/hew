@@ -300,7 +300,7 @@ test-hew: hew codegen runtime stdlib
 # C++ unit tests only (not E2E)
 test-cpp: codegen
 	@echo "==> Running C++ unit tests"
-	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate)$$"
+	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate|codegen_capi|msgpack_reader)$$"
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 

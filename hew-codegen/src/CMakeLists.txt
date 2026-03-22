@@ -14,6 +14,13 @@ add_library(HewMLIRDialect STATIC
   msgpack_reader.cpp
 )
 
+# msgpack_reader.cpp throws std::runtime_error on parse failures.
+# Ensure exceptions are enabled even when LLVM_ENABLE_EH is OFF.
+target_compile_options(HewMLIRDialect PRIVATE
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fexceptions>
+  $<$<CXX_COMPILER_ID:MSVC>:/EHsc>
+)
+
 target_include_directories(HewMLIRDialect PUBLIC
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_BINARY_DIR}/include
@@ -248,6 +255,13 @@ target_link_libraries(HewCodegen PUBLIC
 # ── Embedded C API for Rust CLI cutover ─────────────────────────────────────
 add_library(HewCodegenCAPI STATIC
   codegen_capi.cpp
+)
+
+# codegen_capi.cpp uses try/catch for error handling across the C FFI
+# boundary. Ensure exceptions are enabled even when LLVM_ENABLE_EH is OFF.
+target_compile_options(HewCodegenCAPI PRIVATE
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fexceptions>
+  $<$<CXX_COMPILER_ID:MSVC>:/EHsc>
 )
 
 target_link_libraries(HewCodegenCAPI PUBLIC

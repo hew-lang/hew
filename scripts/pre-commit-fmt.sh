@@ -30,13 +30,40 @@ if ((${#rs_files[@]} > 0)); then
     cargo fmt --all --quiet
     git add "${rs_files[@]}"
 
-    # Block commit if clippy finds warnings — matches CI enforcement.
-    if ! cargo clippy --workspace --tests --quiet; then
+    # Block commit if clippy finds warnings — matches CI exactly.
+    # --message-format=json forces fresh analysis (no cached human-readable
+    # output) and mirrors the CI invocation. -D warnings treats all warnings
+    # as errors, same as CI.
+    # Stdout (JSON diagnostics) goes to a tmpfile; stderr (progress) passes
+    # through so the developer sees compilation output.
+    clippy_json=$(mktemp)
+    if ! cargo clippy --workspace --tests --message-format=json -- -D warnings \
+        >"$clippy_json"; then
         echo ""
-        echo "clippy found issues. Fix before committing."
-        cargo clippy --workspace --tests 2>&1 | grep "^error\[" | head -10
+        echo "clippy found issues — fix before committing."
+        echo ""
+        if command -v jq &>/dev/null; then
+            jq -r '
+                select(.message.level == "error" or .message.level == "warning")
+                | .message.rendered // empty
+            ' <"$clippy_json" | head -80
+        else
+            python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        msg = json.loads(line).get("message", {})
+        if isinstance(msg, dict) and msg.get("level") in ("error", "warning"):
+            r = msg.get("rendered", "")
+            if r: sys.stdout.write(r)
+    except Exception:
+        pass
+' "$clippy_json" | head -80
+        fi
+        rm -f "$clippy_json"
         exit 1
     fi
+    rm -f "$clippy_json"
 fi
 
 # C++ / Headers

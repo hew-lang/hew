@@ -380,6 +380,104 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
             }
         }
 
+        // Drain any unconsumed values from the yield channel so we don't
+        // leak the malloc'd data pointers inside each GenValue.
+        while let Ok(val) = (*ctx).yield_rx.try_recv() {
+            if !val.data.is_null() {
+                libc::free(val.data);
+            }
+        }
+
         drop(Box::from_raw(ctx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generator body that yields `count` values (each a heap-allocated i32)
+    /// and then returns.
+    extern "C" fn yielding_body(arg: *mut c_void, ctx: *mut HewGenCtx) {
+        // SAFETY: arg points to a u32 count value copied by hew_gen_ctx_create.
+        let count = unsafe { *arg.cast::<u32>() };
+        for i in 0..count {
+            // SAFETY: Allocate an i32 on the heap to yield.
+            unsafe {
+                let buf = libc::malloc(std::mem::size_of::<i32>());
+                assert!(!buf.is_null());
+                *buf.cast::<i32>() = i.cast_signed();
+                let keep_going = hew_gen_yield(ctx, buf, std::mem::size_of::<i32>());
+                libc::free(buf);
+                if !keep_going {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Generator body that yields nothing and returns immediately.
+    extern "C" fn empty_body(_arg: *mut c_void, _ctx: *mut HewGenCtx) {}
+
+    #[test]
+    fn free_with_unconsumed_values_does_not_leak() {
+        // Yield 5 values but only consume 1, then free.
+        // Before the fix, the remaining 4 malloc'd buffers would leak.
+        // SAFETY: All pointers come from hew_gen_ctx_create / hew_gen_next
+        // and are valid for the duration of this test.
+        unsafe {
+            let mut count: u32 = 5;
+            let ctx = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            // Consume only the first value.
+            let mut sz: usize = 0;
+            let val = hew_gen_next(ctx, &raw mut sz);
+            assert!(!val.is_null());
+            assert_eq!(sz, std::mem::size_of::<i32>());
+            assert_eq!(*val.cast::<i32>(), 0);
+            libc::free(val);
+
+            // Free with 4 values still queued — must not leak.
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn free_empty_generator() {
+        // A generator that yields nothing — free should work cleanly.
+        // SAFETY: All pointers come from hew_gen_ctx_create / hew_gen_next.
+        unsafe {
+            let ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+
+            // Drive once to get the done sentinel.
+            let mut sz: usize = 0;
+            let val = hew_gen_next(ctx, &raw mut sz);
+            assert!(val.is_null());
+            assert_eq!(sz, 0);
+
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn free_before_any_iteration() {
+        // Create a generator but free it without ever calling next.
+        // The thread is blocked on the initial resume signal; sending
+        // cancel (false) must not deadlock and must not leak.
+        // SAFETY: All pointers come from hew_gen_ctx_create.
+        unsafe {
+            let mut count: u32 = 10;
+            let ctx = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            hew_gen_free(ctx);
+        }
     }
 }

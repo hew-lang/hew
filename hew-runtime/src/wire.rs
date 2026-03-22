@@ -1304,16 +1304,199 @@ pub unsafe extern "C" fn hew_vec_from_raw_bytes(
 mod tests {
     use super::*;
 
-    #[test]
-    fn heap_buffer_varint_roundtrip() {
-        // SAFETY: all pointers used here come from runtime allocators and are valid.
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    unsafe fn encode_varint_bytes(value: u64) -> Vec<u8> {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
             let buf = hew_wire_buf_new();
             assert!(!buf.is_null());
-            assert_eq!(hew_wire_encode_varint(buf, 300), 0);
+            assert_eq!(hew_wire_encode_varint(buf, value), 0);
+            let bytes = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+            bytes
+        }
+    }
 
+    unsafe fn decode_varint_from(bytes: &[u8]) -> (c_int, u64) {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut decoded: u64 = 0;
+            let rc = hew_wire_decode_varint(&raw mut read_buf, &raw mut decoded);
+            (rc, decoded)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Varint: roundtrips and boundaries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn varint_roundtrip_zero() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(0);
+            assert_eq!(bytes, [0x00]);
+            let (rc, val) = decode_varint_from(&bytes);
+            assert_eq!(rc, 0);
+            assert_eq!(val, 0);
+        }
+    }
+
+    #[test]
+    fn varint_roundtrip_one_byte_max() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(127);
+            assert_eq!(bytes.len(), 1);
+            let (rc, val) = decode_varint_from(&bytes);
+            assert_eq!(rc, 0);
+            assert_eq!(val, 127);
+        }
+    }
+
+    #[test]
+    fn varint_roundtrip_two_byte_min() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(128);
+            assert_eq!(bytes.len(), 2);
+            let (rc, val) = decode_varint_from(&bytes);
+            assert_eq!(rc, 0);
+            assert_eq!(val, 128);
+        }
+    }
+
+    #[test]
+    fn varint_roundtrip_300() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(300);
+            assert!(!bytes.is_empty());
+            let (rc, val) = decode_varint_from(&bytes);
+            assert_eq!(rc, 0);
+            assert_eq!(val, 300);
+        }
+    }
+
+    #[test]
+    fn varint_roundtrip_u64_max() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(u64::MAX);
+            assert_eq!(bytes.len(), 10);
+            let (rc, val) = decode_varint_from(&bytes);
+            assert_eq!(rc, 0);
+            assert_eq!(val, u64::MAX);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Varint: negative / error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn varint_decode_empty_buffer_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let (rc, _) = decode_varint_from(&[]);
+            assert_ne!(rc, 0);
+        }
+    }
+
+    #[test]
+    fn varint_decode_truncated_multibyte_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let (rc, _) = decode_varint_from(&[0x80]);
+            assert_ne!(rc, 0);
+        }
+    }
+
+    #[test]
+    fn varint_decode_non_canonical_tenth_byte_fails() {
+        let bytes = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let (rc, _) = decode_varint_from(&bytes);
+            assert_ne!(rc, 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Zigzag: roundtrips and boundaries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zigzag_zero_roundtrips() {
+        let encoded = hew_wire_zigzag_encode(0);
+        assert_eq!(encoded, 0);
+        assert_eq!(hew_wire_zigzag_decode(encoded), 0);
+    }
+
+    #[test]
+    fn zigzag_positive_one_roundtrips() {
+        let encoded = hew_wire_zigzag_encode(1);
+        assert_eq!(encoded, 2);
+        assert_eq!(hew_wire_zigzag_decode(encoded), 1);
+    }
+
+    #[test]
+    fn zigzag_negative_one_roundtrips() {
+        let encoded = hew_wire_zigzag_encode(-1);
+        assert_eq!(encoded, 1);
+        assert_eq!(hew_wire_zigzag_decode(encoded), -1);
+    }
+
+    #[test]
+    fn zigzag_i64_max_roundtrips() {
+        let encoded = hew_wire_zigzag_encode(i64::MAX);
+        assert_eq!(hew_wire_zigzag_decode(encoded), i64::MAX);
+    }
+
+    #[test]
+    fn zigzag_i64_min_roundtrips() {
+        let encoded = hew_wire_zigzag_encode(i64::MIN);
+        assert_eq!(hew_wire_zigzag_decode(encoded), i64::MIN);
+    }
+
+    #[test]
+    fn zigzag_negative_maps_to_odd() {
+        for n in [-1i64, -2, -100, -1000, i64::MIN] {
+            let encoded = hew_wire_zigzag_encode(n);
+            assert_eq!(encoded & 1, 1, "zigzag({n}) should be odd");
+        }
+    }
+
+    #[test]
+    fn zigzag_non_negative_maps_to_even() {
+        for n in [0i64, 1, 2, 100, 1000, i64::MAX] {
+            let encoded = hew_wire_zigzag_encode(n);
+            assert_eq!(encoded & 1, 0, "zigzag({n}) should be even");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fixed32 / Fixed64: roundtrips and error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fixed32_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_field_fixed32(buf, 1, 0xDEAD_BEEF), 0);
             let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
-            assert!(!encoded.is_empty());
+            hew_wire_buf_destroy(buf);
 
             let mut read_buf = HewWireBuf {
                 data: std::ptr::null_mut(),
@@ -1322,20 +1505,82 @@ mod tests {
                 read_pos: 0,
             };
             hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
-            let mut decoded: u64 = 0;
-            assert_eq!(
-                hew_wire_decode_varint(&raw mut read_buf, &raw mut decoded),
-                0
-            );
-            assert_eq!(decoded, 300);
-
-            hew_wire_buf_destroy(buf);
+            let mut tag: u64 = 0;
+            assert_eq!(hew_wire_decode_varint(&raw mut read_buf, &raw mut tag), 0);
+            let mut val: u32 = 0;
+            assert_eq!(hew_wire_decode_fixed32(&raw mut read_buf, &raw mut val), 0);
+            assert_eq!(val, 0xDEAD_BEEF);
         }
     }
 
     #[test]
+    fn fixed64_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(
+                hew_wire_encode_field_fixed64(buf, 2, 0x0102_0304_0506_0708),
+                0
+            );
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut tag: u64 = 0;
+            assert_eq!(hew_wire_decode_varint(&raw mut read_buf, &raw mut tag), 0);
+            let mut val: u64 = 0;
+            assert_eq!(hew_wire_decode_fixed64(&raw mut read_buf, &raw mut val), 0);
+            assert_eq!(val, 0x0102_0304_0506_0708);
+        }
+    }
+
+    #[test]
+    fn fixed32_decode_truncated_fails() {
+        let bytes = [0x01, 0x02, 0x03];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut val: u32 = 0;
+            assert_ne!(hew_wire_decode_fixed32(&raw mut read_buf, &raw mut val), 0);
+        }
+    }
+
+    #[test]
+    fn fixed64_decode_truncated_fails() {
+        let bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut val: u64 = 0;
+            assert_ne!(hew_wire_decode_fixed64(&raw mut read_buf, &raw mut val), 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // HBF header: roundtrips and validation negatives
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn hbf_header_roundtrip() {
-        // SAFETY: header pointer is allocated by runtime and freed in this test.
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
             let header = hew_wire_encode_header(1024, HBF_FLAG_COMPRESSED);
             assert!(!header.is_null());
@@ -1343,31 +1588,447 @@ mod tests {
                 hew_wire_validate_header(header.cast_const(), HBF_HEADER_LEN),
                 1
             );
-
             let decoded = hew_wire_decode_header(header.cast_const(), HBF_HEADER_LEN);
             assert_eq!(decoded.version, HBF_VERSION);
             assert_eq!(decoded.flags, HBF_FLAG_COMPRESSED);
             assert_eq!(decoded.payload_len, 1024);
-
             libc::free(header.cast::<c_void>());
         }
     }
 
     #[test]
-    fn wire_buf_to_bytes_roundtrip() {
-        // SAFETY: FFI calls use valid wire buffer and vec pointers.
+    fn hbf_header_zero_payload_and_no_flags() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
-            // Encode some data into a wire buffer
+            let header = hew_wire_encode_header(0, 0);
+            assert!(!header.is_null());
+            let decoded = hew_wire_decode_header(header.cast_const(), HBF_HEADER_LEN);
+            assert_eq!(decoded.version, HBF_VERSION);
+            assert_eq!(decoded.flags, 0);
+            assert_eq!(decoded.payload_len, 0);
+            libc::free(header.cast::<c_void>());
+        }
+    }
+
+    #[test]
+    fn hbf_header_max_payload_len() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let header = hew_wire_encode_header(u32::MAX, 0);
+            assert!(!header.is_null());
+            let decoded = hew_wire_decode_header(header.cast_const(), HBF_HEADER_LEN);
+            assert_eq!(decoded.payload_len, u32::MAX);
+            libc::free(header.cast::<c_void>());
+        }
+    }
+
+    #[test]
+    fn hbf_validate_null_data_rejects() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            assert_eq!(hew_wire_validate_header(std::ptr::null(), 10), 0);
+        }
+    }
+
+    #[test]
+    fn hbf_validate_too_short_rejects() {
+        let bytes = [0u8; 9];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            assert_eq!(hew_wire_validate_header(bytes.as_ptr(), bytes.len()), 0);
+        }
+    }
+
+    #[test]
+    fn hbf_validate_wrong_magic_rejects() {
+        let mut bytes = [0u8; 10];
+        bytes[..4].copy_from_slice(b"BAD!");
+        bytes[4] = HBF_VERSION;
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            assert_eq!(hew_wire_validate_header(bytes.as_ptr(), bytes.len()), 0);
+        }
+    }
+
+    #[test]
+    fn hbf_validate_wrong_version_rejects() {
+        let mut bytes = [0u8; 10];
+        bytes[..4].copy_from_slice(&HBF_MAGIC);
+        bytes[4] = 0xFF;
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            assert_eq!(hew_wire_validate_header(bytes.as_ptr(), bytes.len()), 0);
+        }
+    }
+
+    #[test]
+    fn hbf_validate_unknown_flags_rejects() {
+        let mut bytes = [0u8; 10];
+        bytes[..4].copy_from_slice(&HBF_MAGIC);
+        bytes[4] = HBF_VERSION;
+        bytes[5] = 0x02;
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            assert_eq!(hew_wire_validate_header(bytes.as_ptr(), bytes.len()), 0);
+        }
+    }
+
+    #[test]
+    fn hbf_decode_invalid_header_returns_zeroed() {
+        let bytes = [0u8; 10];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let decoded = hew_wire_decode_header(bytes.as_ptr(), bytes.len());
+            assert_eq!(decoded.version, 0);
+            assert_eq!(decoded.flags, 0);
+            assert_eq!(decoded.payload_len, 0);
+        }
+    }
+
+    #[test]
+    fn hbf_encode_strips_unknown_flags() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let header = hew_wire_encode_header(0, 0xFF);
+            assert!(!header.is_null());
+            assert_eq!(
+                hew_wire_validate_header(header.cast_const(), HBF_HEADER_LEN),
+                1
+            );
+            let decoded = hew_wire_decode_header(header.cast_const(), HBF_HEADER_LEN);
+            assert_eq!(decoded.flags, HBF_FLAG_COMPRESSED);
+            libc::free(header.cast::<c_void>());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decode bytes: error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_bytes_truncated_payload_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_varint(buf, 10), 0);
+            let b = &mut *buf;
+            assert!(b.push(0xAA));
+            assert!(b.push(0xBB));
+            assert!(b.push(0xCC));
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut data_ptr: *const c_void = std::ptr::null();
+            let mut data_len: usize = 0;
+            assert_ne!(
+                hew_wire_decode_bytes(&raw mut read_buf, &raw mut data_ptr, &raw mut data_len),
+                0
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decode string: roundtrip and error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_string_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            let msg = b"hello";
+            assert_eq!(hew_wire_encode_varint(buf, msg.len() as u64), 0);
+            let b = &mut *buf;
+            assert!(b.push_bytes(msg.as_ptr(), msg.len()));
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let c_str = hew_wire_decode_string(&raw mut read_buf);
+            assert!(!c_str.is_null());
+            let decoded = std::ffi::CStr::from_ptr(c_str).to_str().unwrap();
+            assert_eq!(decoded, "hello");
+            libc::free(c_str.cast_mut().cast());
+        }
+    }
+
+    #[test]
+    fn decode_string_empty_returns_empty() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_varint(buf, 0), 0);
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let c_str = hew_wire_decode_string(&raw mut read_buf);
+            assert!(!c_str.is_null());
+            let decoded = std::ffi::CStr::from_ptr(c_str).to_str().unwrap();
+            assert_eq!(decoded, "");
+            libc::free(c_str.cast_mut().cast());
+        }
+    }
+
+    #[test]
+    fn decode_string_truncated_returns_null() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let data = encode_varint_bytes(10);
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, data.as_ptr(), data.len());
+            let c_str = hew_wire_decode_string(&raw mut read_buf);
+            assert!(c_str.is_null());
+        }
+    }
+
+    #[test]
+    fn decode_string_from_empty_buffer_returns_null() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, [].as_ptr(), 0);
+            let c_str = hew_wire_decode_string(&raw mut read_buf);
+            assert!(c_str.is_null());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decode tag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_tag_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let tag = make_tag(3, HEW_WIRE_VARINT);
+            let bytes = encode_varint_bytes(tag);
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut field_num: u32 = 0;
+            let mut wire_type: u32 = 0;
+            assert_eq!(
+                hew_wire_decode_tag(&raw mut read_buf, &raw mut field_num, &raw mut wire_type),
+                0
+            );
+            assert_eq!(field_num, 3);
+            assert_eq!(wire_type, HEW_WIRE_VARINT);
+        }
+    }
+
+    #[test]
+    fn decode_tag_empty_buffer_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, [].as_ptr(), 0);
+            let mut field_num: u32 = 0;
+            let mut wire_type: u32 = 0;
+            assert_ne!(
+                hew_wire_decode_tag(&raw mut read_buf, &raw mut field_num, &raw mut wire_type),
+                0
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Skip field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skip_field_varint_advances_past_value() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(9999);
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_wire_skip_field(&raw mut read_buf, HEW_WIRE_VARINT), 0);
+            assert_eq!(read_buf.read_pos, read_buf.len);
+        }
+    }
+
+    #[test]
+    fn skip_field_fixed32_advances_four_bytes() {
+        let bytes = [0x01, 0x02, 0x03, 0x04];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_wire_skip_field(&raw mut read_buf, HEW_WIRE_FIXED32), 0);
+            assert_eq!(read_buf.read_pos, 4);
+        }
+    }
+
+    #[test]
+    fn skip_field_fixed64_advances_eight_bytes() {
+        let bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_wire_skip_field(&raw mut read_buf, HEW_WIRE_FIXED64), 0);
+            assert_eq!(read_buf.read_pos, 8);
+        }
+    }
+
+    #[test]
+    fn skip_field_fixed32_truncated_fails() {
+        let bytes = [0x01, 0x02];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_ne!(hew_wire_skip_field(&raw mut read_buf, HEW_WIRE_FIXED32), 0);
+        }
+    }
+
+    #[test]
+    fn skip_field_fixed64_truncated_fails() {
+        let bytes = [0x01; 5];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_ne!(hew_wire_skip_field(&raw mut read_buf, HEW_WIRE_FIXED64), 0);
+        }
+    }
+
+    #[test]
+    fn skip_field_unknown_wire_type_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, [0u8; 8].as_ptr(), 8);
+            assert_ne!(hew_wire_skip_field(&raw mut read_buf, 7), 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // buf_has_remaining
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn buf_has_remaining_reports_correctly() {
+        let bytes = [0x42, 0x43];
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_wire_buf_has_remaining(&raw const read_buf), 1);
+            read_buf.read_pos = 2;
+            assert_eq!(hew_wire_buf_has_remaining(&raw const read_buf), 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // buf_reset
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn buf_reset_clears_len_and_read_pos() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_varint(buf, 42), 0);
+            assert!((*buf).len > 0);
+            (*buf).read_pos = 1;
+            hew_wire_buf_reset(buf);
+            assert_eq!((*buf).len, 0);
+            assert_eq!((*buf).read_pos, 0);
+            assert!((*buf).cap > 0);
+            hew_wire_buf_destroy(buf);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Wire buf ↔ bytes bridge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wire_buf_to_bytes_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
             let buf = hew_wire_buf_new();
             assert!(!buf.is_null());
             assert_eq!(hew_wire_encode_varint(buf, 42), 0);
             assert_eq!(hew_wire_encode_varint(buf, 300), 0);
             let orig_len = (*buf).len;
 
-            // Convert to bytes (HewVec)
             let vec = hew_wire_buf_to_bytes(buf);
-            // buf is now freed — don't use it
-
             assert!(!vec.is_null());
             #[expect(
                 clippy::cast_possible_wrap,
@@ -1376,12 +2037,10 @@ mod tests {
             let expected_len = orig_len as i64;
             assert_eq!(crate::vec::hew_vec_len(vec), expected_len);
 
-            // Convert back to wire buf for decoding
             let buf2 = hew_wire_bytes_to_buf(vec);
             assert!(!buf2.is_null());
             assert_eq!((*buf2).len, orig_len);
 
-            // Decode and verify
             let mut val: u64 = 0;
             assert_eq!(hew_wire_decode_varint(buf2, &raw mut val), 0);
             assert_eq!(val, 42);
@@ -1395,7 +2054,7 @@ mod tests {
 
     #[test]
     fn wire_buf_to_bytes_empty() {
-        // SAFETY: FFI calls use valid wire buffer and vec pointers.
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
             let buf = hew_wire_buf_new();
             let vec = hew_wire_buf_to_bytes(buf);
@@ -1405,13 +2064,17 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Envelope: roundtrips
+    // -----------------------------------------------------------------------
+
     #[test]
     #[expect(
         clippy::cast_possible_truncation,
         reason = "wire format length bounded by protocol"
     )]
     fn envelope_with_request_id_roundtrip() {
-        // SAFETY: FFI calls use valid wire buffer and envelope pointers.
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
             let payload = [1u8, 2, 3, 4];
             let env = HewWireEnvelope {
@@ -1423,11 +2086,9 @@ mod tests {
                 request_id: 12345,
                 source_node_id: 1,
             };
-
             let buf = hew_wire_buf_new();
             assert!(!buf.is_null());
             assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
-
             let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
             hew_wire_buf_destroy(buf);
 
@@ -1438,13 +2099,11 @@ mod tests {
                 read_pos: 0,
             };
             hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
-
             let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
             assert_eq!(
                 hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
                 0
             );
-
             assert_eq!(decoded_env.target_actor_id, env.target_actor_id);
             assert_eq!(decoded_env.source_actor_id, env.source_actor_id);
             assert_eq!(decoded_env.msg_type, env.msg_type);
@@ -1456,9 +2115,7 @@ mod tests {
 
     #[test]
     fn envelope_without_request_id_defaults_to_zero() {
-        // Envelopes encoded without request_id/source_node_id should decode
-        // with those fields set to zero (backward compatibility).
-        // SAFETY: FFI calls use valid wire buffer and envelope pointers.
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {
             let env = HewWireEnvelope {
                 target_actor_id: 42,
@@ -1469,11 +2126,9 @@ mod tests {
                 request_id: 0,
                 source_node_id: 0,
             };
-
             let buf = hew_wire_buf_new();
             assert!(!buf.is_null());
             assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
-
             let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
             hew_wire_buf_destroy(buf);
 
@@ -1484,15 +2139,189 @@ mod tests {
                 read_pos: 0,
             };
             hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
-
             let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
             assert_eq!(
                 hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
                 0
             );
-
             assert_eq!(decoded_env.request_id, 0);
             assert_eq!(decoded_env.source_node_id, 0);
+        }
+    }
+
+    #[test]
+    fn envelope_empty_payload_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let env = HewWireEnvelope {
+                target_actor_id: 1,
+                source_actor_id: 2,
+                msg_type: 0,
+                payload_size: 0,
+                payload: std::ptr::null_mut(),
+                request_id: 0,
+                source_node_id: 0,
+            };
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+            assert_eq!(decoded_env.msg_type, 0);
+            assert_eq!(decoded_env.payload_size, 0);
+        }
+    }
+
+    #[test]
+    fn envelope_max_msg_type_roundtrip() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let env = HewWireEnvelope {
+                target_actor_id: 1,
+                source_actor_id: 2,
+                msg_type: 65535,
+                payload_size: 0,
+                payload: std::ptr::null_mut(),
+                request_id: 0,
+                source_node_id: 0,
+            };
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+            assert_eq!(decoded_env.msg_type, 65535);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Envelope: negative / error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn envelope_encode_negative_msg_type_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let env = HewWireEnvelope {
+                target_actor_id: 1,
+                source_actor_id: 2,
+                msg_type: -1,
+                payload_size: 0,
+                payload: std::ptr::null_mut(),
+                request_id: 0,
+                source_node_id: 0,
+            };
+            let buf = hew_wire_buf_new();
+            assert_ne!(hew_wire_encode_envelope(buf, &raw const env), 0);
+            hew_wire_buf_destroy(buf);
+        }
+    }
+
+    #[test]
+    fn envelope_encode_msg_type_too_large_fails() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let env = HewWireEnvelope {
+                target_actor_id: 1,
+                source_actor_id: 2,
+                msg_type: 65536,
+                payload_size: 0,
+                payload: std::ptr::null_mut(),
+                request_id: 0,
+                source_node_id: 0,
+            };
+            let buf = hew_wire_buf_new();
+            assert_ne!(hew_wire_encode_envelope(buf, &raw const env), 0);
+            hew_wire_buf_destroy(buf);
+        }
+    }
+
+    #[test]
+    fn envelope_decode_truncated_mid_field_fails() {
+        let tag = make_tag(1, HEW_WIRE_VARINT);
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let mut bytes = encode_varint_bytes(tag);
+            bytes.push(0x80);
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_ne!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_decode_unknown_wire_type_fails() {
+        let tag = (1u64 << 3) | 3;
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let bytes = encode_varint_bytes(tag);
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, bytes.as_ptr(), bytes.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_ne!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // write_hbf_header into wire buffer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn write_hbf_header_produces_valid_header() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let buf = hew_wire_buf_new();
+            assert_eq!(hew_wire_write_hbf_header(buf, 0, 256), 0);
+            assert_eq!((*buf).len, HBF_HEADER_LEN);
+            assert_eq!(
+                hew_wire_validate_header((*buf).data.cast_const(), (*buf).len),
+                1
+            );
+            let decoded = hew_wire_decode_header((*buf).data.cast_const(), (*buf).len);
+            assert_eq!(decoded.payload_len, 256);
+            assert_eq!(decoded.flags, 0);
+            hew_wire_buf_destroy(buf);
         }
     }
 }

@@ -17,7 +17,7 @@
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 
 use std::collections::VecDeque;
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
 use crate::internal::types::HewActorState;
@@ -179,16 +179,18 @@ static mut MESSAGES_RECEIVED: u64 = 0;
 /// Initialize the cooperative scheduler.
 ///
 /// Creates the run queue. Calling more than once is a no-op.
+/// Returns 0 on success. WASM is single-threaded so this always succeeds.
 #[cfg_attr(not(test), no_mangle)]
-pub extern "C" fn hew_sched_init() {
+pub extern "C" fn hew_sched_init() -> c_int {
     // SAFETY: Single-threaded on WASM.
     unsafe {
         if INITIALIZED {
-            return;
+            return 0;
         }
         RUN_QUEUE = Some(VecDeque::new());
         INITIALIZED = true;
     }
+    0
 }
 
 /// Shut down the cooperative scheduler.

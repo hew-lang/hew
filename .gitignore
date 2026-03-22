@@ -48,3 +48,4 @@ coverage-out/
 *.profdata
 *.backup
 rust_out
+actor_fib

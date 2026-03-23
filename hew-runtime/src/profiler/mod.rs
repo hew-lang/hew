@@ -40,6 +40,10 @@ static PROFILER_STATE: Mutex<Option<ProfilerThreads>> = Mutex::new(None);
 /// Shutdown signal shared with profiler threads.
 static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Bind address of the running profiler server, used to send a dummy
+/// connection on shutdown to unblock the `incoming_requests()` accept loop.
+static PROFILER_BIND_ADDR: Mutex<Option<String>> = Mutex::new(None);
+
 #[derive(Debug)]
 struct ProfilerThreads {
     /// Sampler thread handle.
@@ -116,6 +120,7 @@ pub fn maybe_start_with_context(
     };
 
     // HTTP server thread.
+    let bind_addr_for_shutdown = bind_addr.clone();
     let Ok(server_handle) = thread::Builder::new()
         .name("hew-pprof-server".into())
         .spawn(move || server::run(&bind_addr, &ctx))
@@ -134,6 +139,10 @@ pub fn maybe_start_with_context(
     };
     let mut state_guard = PROFILER_STATE.lock_or_recover();
     *state_guard = Some(threads);
+    drop(state_guard);
+
+    // Store bind address so shutdown() can unblock the accept loop.
+    *PROFILER_BIND_ADDR.lock_or_recover() = Some(bind_addr_for_shutdown);
 }
 
 /// Sampler loop: captures a snapshot every second.
@@ -214,14 +223,23 @@ pub(crate) fn shutdown() {
     // Signal all threads to stop.
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
 
+    // Unblock the server's accept loop by connecting to it. The server
+    // checks PROFILER_SHUTDOWN between requests, so this dummy connection
+    // wakes it up to observe the flag.
+    if let Some(addr) = PROFILER_BIND_ADDR.lock_or_recover().take() {
+        let _ = std::net::TcpStream::connect_timeout(
+            &addr
+                .parse::<std::net::SocketAddr>()
+                .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 0))),
+            Duration::from_millis(200),
+        );
+    }
+
     // Take the thread handles and join them.
     let mut state_guard = PROFILER_STATE.lock_or_recover();
     if let Some(threads) = state_guard.take() {
         drop(state_guard); // Release lock before joining.
 
-        // Join threads in reverse order (server first, then sampler).
-        // Server might be blocked on incoming requests, but it should exit
-        // when the TCP connection is dropped or after a timeout.
         let _ = threads.server_handle.join();
         let _ = threads.sampler_handle.join();
     }

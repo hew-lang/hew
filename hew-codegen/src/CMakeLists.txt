@@ -309,7 +309,16 @@ function(hew_emit_system_link_items)
       if("${_lib}" STREQUAL "stdc++" OR "${_lib}" STREQUAL "c++")
         continue()
       endif()
-      hew_embedded_append("cargo:rustc-link-lib=${_lib}")
+      # On Linux static builds, system libs must be link-args (not
+      # link-libs) so they appear AFTER the LLVM/MLIR archive group.
+      # Cargo places link-lib entries before link-arg entries, which
+      # on aarch64 causes -lm and friends to be scanned before MLIR
+      # archives that reference them (tan, log2, etc.).
+      if(HEW_STATIC_LINK AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        hew_embedded_append("cargo:rustc-link-arg=-l${_lib}")
+      else()
+        hew_embedded_append("cargo:rustc-link-lib=${_lib}")
+      endif()
     elseif(IS_ABSOLUTE "${_item}")
       hew_embedded_append("cargo:rustc-link-arg=${_item}")
     else()
@@ -399,15 +408,15 @@ if(HEW_STATIC_LINK)
       endif()
     endforeach()
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
-    # On aarch64 Linux, MLIR archives reference __stack_chk_guard (a glibc
-    # symbol in ld-linux-aarch64.so.1, a transitive DSO dependency).  GNU
-    # ld's --as-needed (default since 2.22) prevents transitive DSO symbol
-    # resolution, causing "DSO missing from command line".  Explicitly add
-    # -lc with --no-as-needed so the linker keeps libc and searches its
-    # DT_NEEDED dependencies.  Both GNU ld and lld support these flags.
-    # Harmless on x86_64 where the stack protector uses %fs:0x28 instead.
+    # On aarch64, MLIR/LLVM archives reference symbols from system libs
+    # that Cargo places as link-lib (before link-arg archives).  GNU ld
+    # scans left-to-right, so we must re-add these as link-args AFTER the
+    # archive group.  Includes: -lc (stack protector DSO on aarch64),
+    # -latomic (outline atomics: __aarch64_cas1_acq_rel etc.).  Both are
+    # harmless on x86_64 (already resolved or unused).
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--no-as-needed")
     hew_embedded_append("cargo:rustc-link-arg=-lc")
+    hew_embedded_append("cargo:rustc-link-arg=-latomic")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--as-needed")
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})

@@ -334,7 +334,13 @@ function(hew_emit_cxx_runtime)
       endif()
       get_filename_component(_hew_libstdcpp_dir "${_hew_libstdcpp}" DIRECTORY)
       hew_embedded_append("cargo:rustc-link-search=native=${_hew_libstdcpp_dir}")
-      hew_embedded_append("cargo:rustc-link-lib=static=stdc++")
+      # Must be link-args (not link-libs) on Linux so they appear AFTER the
+      # LLVM/MLIR archives that reference C++ stdlib symbols.  Cargo places
+      # link-lib entries before link-arg entries, which breaks resolution.
+      # Bracket with -Bstatic/-Bdynamic to force the static archive.
+      hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bstatic")
+      hew_embedded_append("cargo:rustc-link-arg=-lstdc++")
+      hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bdynamic")
       hew_embedded_append("cargo:rustc-link-arg=-static-libgcc")
       return()
     endif()

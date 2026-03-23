@@ -16,6 +16,7 @@
 - DateTime and JWT E2E tests (#345), JSON/YAML/TOML encoding E2E tests (#342, #343)
 - C++ unit tests for codegen_capi and msgpack_reader (#291)
 - 562 E2E tests (up from 451 in v0.2.0)
+- Pre-release cross-platform validation script for Linux, macOS, FreeBSD, and Windows (#360–#362)
 
 ### Fixed
 
@@ -29,7 +30,7 @@
 - **Analysis:** classify function calls as FUNCTION in semantic tokens (#354), classify type annotations as TYPE in semantic tokens (#269)
 - **Types:** prevent non-trivial wrappers from being treated as pass-throughs (#293), resolve channel.hew standalone type-check failures (#294), default unresolved Range type variable to i64 (#266)
 - **CLI:** use cross-platform home directory resolution in adze (#351), handle `--help` flag in hew-lsp before server initialisation (#349)
-- **Build:** fix macOS build detection and Make 3.81 segfault (#355), register encoding/hex and fix crypto interface location in stdlib (#338)
+- **Build:** fix static link ordering for aarch64 Linux release builds — include libstdc++ and libgcc in archive group for GNU ld circular dependency resolution (#359, #363–#369), fix macOS build detection and Make 3.81 segfault (#355), register encoding/hex and fix crypto interface location in stdlib (#338)
 
 ### Changed
 

@@ -126,6 +126,14 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
                 // PascalCase identifier after `:` or `->` — user-defined type.
                 token_type = token_types::TYPE;
             }
+
+            // If the identifier is followed by `(`, it's a function call.
+            if token_type == token_types::VARIABLE {
+                let next = lexer_tokens.get(i + 1).map(|(t, _)| t);
+                if matches!(next, Some(Token::LeftParen)) {
+                    token_type = token_types::FUNCTION;
+                }
+            }
         }
 
         let length = span.end - span.start;
@@ -308,6 +316,51 @@ mod tests {
                 "{ty} should be classified as TYPE"
             );
         }
+    }
+
+    #[test]
+    fn function_call_classified_as_function() {
+        let source = "fn main() { println(\"hello\"); }";
+        let tokens = build_semantic_tokens(source);
+        let println_tok = tokens
+            .iter()
+            .find(|t| &source[t.start..t.start + t.length] == "println")
+            .expect("println should produce a token");
+        assert_eq!(
+            println_tok.token_type,
+            token_types::FUNCTION,
+            "identifier followed by `(` should be classified as FUNCTION"
+        );
+    }
+
+    #[test]
+    fn method_call_classified_as_function() {
+        let source = "foo.bar(1)";
+        let tokens = build_semantic_tokens(source);
+        let bar_tok = tokens
+            .iter()
+            .find(|t| &source[t.start..t.start + t.length] == "bar")
+            .expect("bar should produce a token");
+        assert_eq!(
+            bar_tok.token_type,
+            token_types::FUNCTION,
+            "method call should be classified as FUNCTION"
+        );
+    }
+
+    #[test]
+    fn variable_without_parens_stays_variable() {
+        let source = "let x = y;";
+        let tokens = build_semantic_tokens(source);
+        let y_tok = tokens
+            .iter()
+            .find(|t| &source[t.start..t.start + t.length] == "y")
+            .expect("y should produce a token");
+        assert_eq!(
+            y_tok.token_type,
+            token_types::VARIABLE,
+            "plain variable should stay VARIABLE"
+        );
     }
 
     #[test]

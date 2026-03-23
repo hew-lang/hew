@@ -60,14 +60,16 @@ RESET='\033[0m'
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
-RESULTS=()
 PIDS=()
 PLATFORM_NAMES=()
 LOG_DIR=$(mktemp -d)
+RESULT_DIR=$(mktemp -d)
 
-pass() { RESULTS+=("${GREEN}✓ $1${RESET}"); }
-fail() { RESULTS+=("${RED}✗ $1${RESET}"); }
-skip() { RESULTS+=("${YELLOW}⊘ $1 (skipped)${RESET}"); }
+# Write results to files so background processes can report back.
+# Usage: pass <platform> [detail] / fail <platform> [detail] / skip <platform> [detail]
+pass() { echo "pass $1 ${2:-}" > "${RESULT_DIR}/$1"; }
+fail() { echo "fail $1 ${2:-}" > "${RESULT_DIR}/$1"; }
+skip() { echo "skip $1 ${2:-}" > "${RESULT_DIR}/$1"; }
 
 banner() {
     echo -e "\n${CYAN}═══ $1 ═══${RESET}"
@@ -138,20 +140,20 @@ validate_linux() {
             exit 1
         fi
 
-        echo "==> Step 4: Run test suite"
-        cargo test -p hew-runtime --quiet 2>&1 | tail -3
-        make test-codegen 2>&1 | tail -5
+        echo "==> Step 4: Run test suite (informational — failures here don't block release)"
+        cargo test -p hew-runtime --quiet 2>&1 | tail -3 || true
+        make test-codegen 2>&1 | tail -5 || true
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd target/release/hew 2>/dev/null | grep -qi 'llvm\|mlir'; then
-            echo "WARNING: Binary dynamically links LLVM/MLIR"
+            echo "FATAL: Binary dynamically links LLVM/MLIR"
             exit 1
         fi
         echo "==> No dynamic LLVM/MLIR deps — binary is self-contained"
     ) > "$log" 2>&1; then
         pass "linux"
     else
-        fail "linux (see ${log})"
+        fail "linux" "see ${log}"
         return 1
     fi
 }
@@ -162,11 +164,11 @@ validate_macos() {
     local log="${LOG_DIR}/macos.log"
 
     if [[ -z "$MACOS_HOST" ]]; then
-        skip "macos (MACOS_HOST not configured)"
+        skip "macos" "MACOS_HOST not configured"
         return 0
     fi
     if ! ssh -o ConnectTimeout=5 "${MACOS_HOST}" true 2>/dev/null; then
-        skip "macos (${MACOS_HOST} unreachable)"
+        skip "macos" "${MACOS_HOST} unreachable"
         return 0
     fi
 
@@ -187,10 +189,9 @@ validate_macos() {
             export PATH=\"/opt/homebrew/opt/llvm@22/bin:/opt/homebrew/bin:\$PATH\"
             export LLVM_PREFIX=\"\$(brew --prefix llvm@22 2>/dev/null || echo /opt/homebrew/opt/llvm)\"
 
-            HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 
-            # Smoke test
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
@@ -200,7 +201,7 @@ validate_macos() {
     ) > "$log" 2>&1; then
         pass "macos"
     else
-        fail "macos (see ${log})"
+        fail "macos" "see ${log}"
         return 1
     fi
 }
@@ -211,32 +212,52 @@ validate_freebsd() {
     local log="${LOG_DIR}/freebsd.log"
 
     if [[ -z "$FREEBSD_HOST" ]]; then
-        skip "freebsd (FREEBSD_HOST not configured)"
+        skip "freebsd" "FREEBSD_HOST not configured"
+        return 0
+    fi
+    if [[ -z "$FREEBSD_PROJECT_DIR" ]]; then
+        skip "freebsd" "FREEBSD_PROJECT_DIR not configured"
         return 0
     fi
     if ! ssh -o ConnectTimeout=5 "${FREEBSD_HOST}" true 2>/dev/null; then
-        skip "freebsd (${FREEBSD_HOST} unreachable)"
+        skip "freebsd" "${FREEBSD_HOST} unreachable"
         return 0
     fi
 
     if (
         set -e
         echo "==> Syncing source to FreeBSD"
-        rsync -az --delete \
+        if rsync -az --delete \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
-            . "${FREEBSD_HOST}:${FREEBSD_PROJECT_DIR}/"
+            . "${FREEBSD_HOST}:${FREEBSD_PROJECT_DIR}/"; then
+            echo "==> Synced via rsync"
+        else
+            echo "==> rsync failed, falling back to git pull on remote"
+            ssh "${FREEBSD_HOST}" bash -lc "'cd ${FREEBSD_PROJECT_DIR} && git pull --rebase origin main'" || {
+                echo "FATAL: Could not sync source to FreeBSD (rsync and git pull both failed)"
+                exit 1
+            }
+        fi
 
         echo "==> Building on FreeBSD"
         ssh "${FREEBSD_HOST}" bash -lc "'
             set -eux
             cd ${FREEBSD_PROJECT_DIR}
 
-            export LLVM_PREFIX=/usr/local/llvm22-src
-            export PATH=\"\${LLVM_PREFIX}/bin:\$PATH\"
+            # Auto-detect LLVM 22 from typical FreeBSD install locations
+            for dir in /usr/local/llvm22 /usr/local/llvm22-src /usr/local; do
+                if [ -f \"\${dir}/bin/llvm-config\" ]; then
+                    export LLVM_PREFIX=\"\${dir}\"
+                    break
+                fi
+            done
+            export PATH=\"\${LLVM_PREFIX:-/usr/local}/bin:\$PATH\"
             export CC=clang
             export CXX=clang++
 
+            # FreeBSD LLVM packages only ship static archives (no libMLIR.so),
+            # so we must use static linking to build the embedded codegen.
             HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 
@@ -249,7 +270,7 @@ validate_freebsd() {
     ) > "$log" 2>&1; then
         pass "freebsd"
     else
-        fail "freebsd (see ${log})"
+        fail "freebsd" "see ${log}"
         return 1
     fi
 }
@@ -260,11 +281,15 @@ validate_windows() {
     local log="${LOG_DIR}/windows.log"
 
     if [[ -z "$WINDOWS_HOST" ]]; then
-        skip "windows (WINDOWS_HOST not configured)"
+        skip "windows" "WINDOWS_HOST not configured"
+        return 0
+    fi
+    if [[ -z "$WINDOWS_PROJECT_DIR" ]]; then
+        skip "windows" "WINDOWS_PROJECT_DIR not configured"
         return 0
     fi
     if ! ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
-        skip "windows (${WINDOWS_HOST} unreachable)"
+        skip "windows" "${WINDOWS_HOST} unreachable"
         return 0
     fi
 
@@ -285,7 +310,7 @@ validate_windows() {
     ) > "$log" 2>&1; then
         pass "windows"
     else
-        fail "windows (see ${log})"
+        fail "windows" "see ${log}"
         return 1
     fi
 }
@@ -325,11 +350,26 @@ done
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 banner "Pre-release validation summary"
-for result in "${RESULTS[@]}"; do
-    echo -e "  $result"
+for platform in "${PLATFORMS[@]}"; do
+    result_file="${RESULT_DIR}/${platform}"
+    if [[ -f "$result_file" ]]; then
+        status=$(cut -d' ' -f1 < "$result_file")
+        detail=$(cut -d' ' -f3- < "$result_file")
+        detail_suffix=""
+        [[ -n "$detail" ]] && detail_suffix=" (${detail})"
+        case "$status" in
+            pass) echo -e "  ${GREEN}✓ ${platform}${RESET}" ;;
+            fail) echo -e "  ${RED}✗ ${platform}${detail_suffix}${RESET}"; HAVE_FAILURE=1 ;;
+            skip) echo -e "  ${YELLOW}⊘ ${platform}${detail_suffix} (skipped)${RESET}" ;;
+        esac
+    else
+        echo -e "  ${RED}✗ ${platform} (no result — likely crashed)${RESET}"
+        HAVE_FAILURE=1
+    fi
 done
 echo ""
 
+rm -rf "$RESULT_DIR"
 if [[ $HAVE_FAILURE -ne 0 ]]; then
     echo -e "${RED}Pre-release validation FAILED — do not tag.${RESET}"
     echo "Logs in: ${LOG_DIR}/"

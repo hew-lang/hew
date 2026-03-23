@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use crate::actor::{hew_actor_send, HewActor};
@@ -92,28 +92,29 @@ fn start_ticker_thread(tw: *mut HewTimerWheel) {
 // ---------------------------------------------------------------------------
 
 /// Per-actor registry of active periodic timer contexts. Maps the actor's
-/// raw address (as `usize`) to the set of `PeriodicCtx` pointers for that
-/// actor, so `hew_actor_free` can cancel all timers before deallocation.
-static ACTOR_TIMERS: Mutex<Option<HashMap<usize, Vec<usize>>>> = Mutex::new(None);
+/// raw address (as `usize`) to (ctx pointer, in-flight guard) pairs. The
+/// `Arc<AtomicBool>` guards survive ctx deallocation, allowing
+/// `cancel_all_timers_for_actor` to spin-wait safely.
+type TimerRegistry = HashMap<usize, Vec<(usize, Arc<AtomicBool>)>>;
+static ACTOR_TIMERS: Mutex<Option<TimerRegistry>> = Mutex::new(None);
 
-fn register_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
-    let mut guard = ACTOR_TIMERS
+fn register_timer(actor: *mut HewActor, ctx_ptr: *mut c_void, guard: Arc<AtomicBool>) {
+    let mut lock = ACTOR_TIMERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard
-        .get_or_insert_with(HashMap::new)
+    lock.get_or_insert_with(HashMap::new)
         .entry(actor as usize)
         .or_default()
-        .push(ctx_ptr as usize);
+        .push((ctx_ptr as usize, guard));
 }
 
 fn unregister_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
-    let mut guard = ACTOR_TIMERS
+    let mut lock = ACTOR_TIMERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(map) = guard.as_mut() {
+    if let Some(map) = lock.as_mut() {
         if let Some(timers) = map.get_mut(&(actor as usize)) {
-            timers.retain(|&addr| addr != ctx_ptr as usize);
+            timers.retain(|(addr, _)| *addr != ctx_ptr as usize);
             if timers.is_empty() {
                 map.remove(&(actor as usize));
             }
@@ -123,21 +124,37 @@ fn unregister_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
 
 /// Cancel all periodic timers for a given actor. Called from `hew_actor_free`
 /// before deallocation to prevent timer callbacks from sending to freed memory.
+///
+/// Phase 1 marks all contexts cancelled. Phase 2 spin-waits on the
+/// Arc'd in-flight guards — these survive ctx deallocation so the
+/// spin is safe even if a callback frees its ctx between phases.
 pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
     let timers = {
-        let mut guard = ACTOR_TIMERS
+        let mut lock = ACTOR_TIMERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard
-            .as_mut()
+        lock.as_mut()
             .and_then(|map| map.remove(&(actor as usize)))
             .unwrap_or_default()
     };
-    for ctx_addr in timers {
+
+    // Phase 1: mark all as cancelled. Ctxs are still alive here because
+    // the callback only frees after seeing cancelled=true.
+    for &(ctx_addr, _) in &timers {
         let ctx = ctx_addr as *mut PeriodicCtx;
         // SAFETY: ctx was allocated by hew_actor_schedule_periodic and is
-        // still valid (the timer callback frees it only after seeing cancelled).
-        unsafe { &*ctx }.cancelled.store(true, Ordering::Release);
+        // still valid (no callback has freed it yet — they only free after
+        // seeing cancelled, which we're setting now).
+        unsafe { &*ctx }.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    // Phase 2: wait for any in-flight callbacks to finish their send.
+    // The guards are Arc-counted separately from the ctxs, so they remain
+    // valid even after a callback frees its PeriodicCtx.
+    for (_, guard) in &timers {
+        while guard.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -160,11 +177,10 @@ pub(crate) unsafe fn is_timer_cancelled(handle: *mut c_void) -> bool {
 /// Returns the number of active (registered) periodic timers for an actor.
 #[cfg(test)]
 pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
-    let guard = ACTOR_TIMERS
+    let lock = ACTOR_TIMERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard
-        .as_ref()
+    lock.as_ref()
         .and_then(|map| map.get(&(actor as usize)))
         .map_or(0, Vec::len)
 }
@@ -176,14 +192,25 @@ struct PeriodicCtx {
     interval_ms: u64,
     wheel: *mut HewTimerWheel,
     cancelled: AtomicBool,
+    /// Set true while the callback is between the cancelled-check and the
+    /// completion of `hew_actor_send`. The `Arc` clone in `ACTOR_TIMERS`
+    /// survives ctx deallocation, letting `cancel_all_timers_for_actor`
+    /// spin-wait safely.
+    in_flight: Arc<AtomicBool>,
 }
 
 // SAFETY: Actor pointers are thread-safe (interior atomics).
 unsafe impl Send for PeriodicCtx {}
-// SAFETY: All mutable state uses AtomicBool; raw pointers are read-only after init.
+// SAFETY: All mutable state uses atomics; raw pointers are read-only after init.
 unsafe impl Sync for PeriodicCtx {}
 
 /// Timer callback: sends a zero-sized message to the actor, then re-schedules.
+///
+/// Uses a Dekker-style protocol with `in_flight` and `cancelled` (both
+/// `SeqCst`) to prevent use-after-free: either the callback sees `cancelled`
+/// and skips the send, or `cancel_all_timers_for_actor` sees `in_flight`
+/// and waits. `SeqCst` provides the total-order guarantee that at least one
+/// side observes the other's flag.
 unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     if data.is_null() {
         return;
@@ -191,7 +218,11 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     // SAFETY: data is a valid PeriodicCtx allocated by schedule_periodic.
     let ctx = unsafe { &*(data.cast::<PeriodicCtx>()) };
 
-    if ctx.cancelled.load(Ordering::Acquire) {
+    // Mark in-flight BEFORE checking cancelled (Dekker protocol).
+    ctx.in_flight.store(true, Ordering::SeqCst);
+
+    if ctx.cancelled.load(Ordering::SeqCst) {
+        ctx.in_flight.store(false, Ordering::SeqCst);
         // Cancelled — unregister from per-actor tracking, then free.
         unregister_timer(ctx.actor, data);
         // SAFETY: ctx was Box::into_raw'd, reclaim it.
@@ -200,10 +231,14 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     }
 
     // Send a zero-payload message to the actor's dispatch function.
-    // SAFETY: actor is a valid pointer; msg_type is the handler index.
+    // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
+    // on our in_flight guard and won't free the actor until we clear it.
     unsafe {
         hew_actor_send(ctx.actor, ctx.msg_type, ptr::null_mut(), 0);
     }
+
+    // Send complete — actor pointer is no longer needed.
+    ctx.in_flight.store(false, Ordering::SeqCst);
 
     // Re-schedule.
     // SAFETY: wheel is valid, cb/data are valid (we keep ctx alive).
@@ -240,17 +275,19 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
 
     let tw = global_wheel();
 
+    let in_flight = Arc::new(AtomicBool::new(false));
     let ctx = Box::new(PeriodicCtx {
         actor,
         msg_type,
         interval_ms,
         wheel: tw,
         cancelled: AtomicBool::new(false),
+        in_flight: Arc::clone(&in_flight),
     });
     let ctx_ptr = Box::into_raw(ctx).cast::<c_void>();
 
     // Track this timer for per-actor cleanup in hew_actor_free.
-    register_timer(actor, ctx_ptr);
+    register_timer(actor, ctx_ptr, in_flight);
 
     // Schedule the first tick.
     // SAFETY: tw is valid, ctx_ptr is valid.
@@ -498,25 +535,29 @@ mod tests {
 
         // Manually create PeriodicCtx entries and register them (bypassing
         // the timer wheel to avoid side-effects).
+        let guard1 = Arc::new(AtomicBool::new(false));
         let ctx1 = Box::new(PeriodicCtx {
             actor: actor_ptr,
             msg_type: 0,
             interval_ms: 100,
             wheel: ptr::null_mut(),
             cancelled: AtomicBool::new(false),
+            in_flight: Arc::clone(&guard1),
         });
         let ctx1_ptr = Box::into_raw(ctx1).cast::<c_void>();
-        register_timer(actor_ptr, ctx1_ptr);
+        register_timer(actor_ptr, ctx1_ptr, guard1);
 
+        let guard2 = Arc::new(AtomicBool::new(false));
         let ctx2 = Box::new(PeriodicCtx {
             actor: actor_ptr,
             msg_type: 1,
             interval_ms: 200,
             wheel: ptr::null_mut(),
             cancelled: AtomicBool::new(false),
+            in_flight: Arc::clone(&guard2),
         });
         let ctx2_ptr = Box::into_raw(ctx2).cast::<c_void>();
-        register_timer(actor_ptr, ctx2_ptr);
+        register_timer(actor_ptr, ctx2_ptr, guard2);
 
         assert_eq!(timer_count_for_actor(actor_ptr), 2);
 

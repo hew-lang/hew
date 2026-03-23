@@ -377,43 +377,57 @@ if(HEW_STATIC_LINK)
     file(GLOB _hew_all_llvm_archives "${LLVM_LIBRARY_DIR}/libLLVM*.a")
   endif()
 
+  # On Linux, MLIR/LLVM static archives have circular dependencies.
+  # GNU ld requires --start-group/--end-group to resolve them.
+  # Cargo places rustc-link-lib entries BEFORE rustc-link-arg entries,
+  # so we must emit the archives as link-args (not link-libs) to keep
+  # them inside the group markers.  We also force -Bstatic so the linker
+  # searches for .a archives rather than .so shared stubs.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bstatic")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--start-group")
-  endif()
-
-  foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
-    get_filename_component(_name "${_archive}" NAME)
-    if(MSVC)
-      string(REGEX REPLACE "\\.lib$" "" _name "${_name}")
-    else()
+    foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
+      get_filename_component(_name "${_archive}" NAME)
       string(REGEX REPLACE "^lib" "" _name "${_name}")
       string(REGEX REPLACE "\\.a$" "" _name "${_name}")
-    endif()
-    # Skip Polly — optional LLVM extension, archives may not be installed
-    if(NOT "${_name}" MATCHES "^Polly")
-      hew_embedded_append("cargo:rustc-link-lib=static=${_name}")
-    endif()
-  endforeach()
-
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      if(NOT "${_name}" MATCHES "^Polly")
+        hew_embedded_append("cargo:rustc-link-arg=-l${_name}")
+      endif()
+    endforeach()
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bdynamic")
+  else()
+    foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
+      get_filename_component(_name "${_archive}" NAME)
+      if(MSVC)
+        string(REGEX REPLACE "\\.lib$" "" _name "${_name}")
+      else()
+        string(REGEX REPLACE "^lib" "" _name "${_name}")
+        string(REGEX REPLACE "\\.a$" "" _name "${_name}")
+      endif()
+      if(NOT "${_name}" MATCHES "^Polly")
+        hew_embedded_append("cargo:rustc-link-lib=static=${_name}")
+      endif()
+    endforeach()
   endif()
 
-  # Platform-specific static compression libraries (Linux only)
+  # Platform-specific static compression libraries (Linux only).
+  # These must be link-args (not link-libs) to maintain ordering after
+  # the LLVM/MLIR archive group that references them.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(_HEW_ZLIB_STATIC)
       get_filename_component(_hew_zlib_dir "${_HEW_ZLIB_STATIC}" DIRECTORY)
       hew_embedded_append("cargo:rustc-link-search=native=${_hew_zlib_dir}")
-      hew_embedded_append("cargo:rustc-link-lib=static=z")
+      hew_embedded_append("cargo:rustc-link-arg=-lz")
     else()
-      hew_embedded_append("cargo:rustc-link-lib=z")
+      hew_embedded_append("cargo:rustc-link-arg=-lz")
     endif()
     if(_HEW_ZSTD_STATIC)
       get_filename_component(_hew_zstd_dir "${_HEW_ZSTD_STATIC}" DIRECTORY)
       hew_embedded_append("cargo:rustc-link-search=native=${_hew_zstd_dir}")
-      hew_embedded_append("cargo:rustc-link-lib=static=zstd")
+      hew_embedded_append("cargo:rustc-link-arg=-lzstd")
     else()
-      hew_embedded_append("cargo:rustc-link-lib=zstd")
+      hew_embedded_append("cargo:rustc-link-arg=-lzstd")
     endif()
   endif()
 

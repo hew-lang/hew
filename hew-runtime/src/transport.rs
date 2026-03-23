@@ -8,7 +8,7 @@
 //! framing for send/recv. Connections are stored in a fixed-size array.
 
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -961,9 +961,7 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *mut c_char {
     if vec.is_null() {
-        return CString::new("")
-            .map(CString::into_raw)
-            .unwrap_or(std::ptr::null_mut());
+        return crate::cabi::str_to_malloc("");
     }
     // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
     let len = unsafe { crate::vec::hew_vec_len(vec) };
@@ -983,11 +981,10 @@ pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *m
         )]
         bytes.push(val as u8);
     }
-    // Strip embedded NUL bytes so CString::new succeeds.
+    // Strip embedded NUL bytes before creating the C string.
     bytes.retain(|&b| b != 0);
-    CString::new(bytes)
-        .map(CString::into_raw)
-        .unwrap_or(std::ptr::null_mut())
+    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
+    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Broadcast one message to all open TCP connections except `exclude_conn`.

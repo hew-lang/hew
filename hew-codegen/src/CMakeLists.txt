@@ -389,6 +389,11 @@ if(HEW_STATIC_LINK)
   # symbols like __stack_chk_guard on aarch64) to be static, which
   # fails because those symbols only exist in the dynamic linker.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # --push-state --no-as-needed ensures that when static archives
+    # reference symbols from implicitly-linked DSOs (like __stack_chk_guard
+    # from ld-linux on aarch64), the linker will search those DSOs.
+    # Without this, GNU ld errors with "DSO missing from command line".
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,--push-state,--no-as-needed")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--start-group")
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)
@@ -399,6 +404,7 @@ if(HEW_STATIC_LINK)
       endif()
     endforeach()
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,--pop-state")
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)

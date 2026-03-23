@@ -166,6 +166,15 @@ const SYS_MSG_SUPERVISOR_STOP: i32 = 102;
 pub const SYS_MSG_EXIT: i32 = 103;
 /// Monitor notification system message (when monitored actor dies).
 pub const SYS_MSG_DOWN: i32 = 104;
+/// Delayed restart: timer thread → supervisor mailbox (avoids budget race).
+const SYS_MSG_DELAYED_RESTART: i32 = 105;
+
+/// Payload for [`SYS_MSG_DELAYED_RESTART`] system messages.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct DelayedRestartEvent {
+    child_index: usize,
+}
 
 /// Overflow policy: drop new messages.
 const OVERFLOW_DROP_NEW: c_int = 1;
@@ -785,7 +794,10 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
     }
 
     // Check restart delay — if backoff delay hasn't elapsed, schedule a
-    // delayed restart by spawning a timer thread. Don't abandon the child.
+    // delayed restart by posting a system message to the supervisor's own
+    // mailbox after the delay. This funnels budget accounting through the
+    // single-threaded actor dispatch, avoiding a data race when multiple
+    // timer threads fire concurrently.
     if !restart_delay_allows_restart(spec) {
         let delay_remaining_ns = spec
             .next_restart_time_ns
@@ -800,11 +812,38 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
             // SAFETY: hew_supervisor_stop spin-waits on pending_restart_timers
             // before freeing the supervisor, so sup_ptr is still valid here.
             unsafe {
-                let s = &mut *sup_ptr;
-                if !s.cancelled.load(Ordering::Acquire) && s.running.load(Ordering::Acquire) != 0 {
-                    restart_with_budget_and_strategy(s, idx);
+                let s = &*sup_ptr;
+                if !s.cancelled.load(Ordering::Acquire)
+                    && s.running.load(Ordering::Acquire) != 0
+                    && !s.self_actor.is_null()
+                {
+                    let event = DelayedRestartEvent { child_index: idx };
+                    let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
+                    mailbox::hew_mailbox_send_sys(
+                        mb,
+                        SYS_MSG_DELAYED_RESTART,
+                        (&raw const event).cast::<c_void>().cast_mut(),
+                        std::mem::size_of::<DelayedRestartEvent>(),
+                    );
+                    // Wake the supervisor actor if idle.
+                    let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
+                    if current == HewActorState::Idle as i32
+                        && (*s.self_actor)
+                            .actor_state
+                            .compare_exchange(
+                                HewActorState::Idle as i32,
+                                HewActorState::Runnable as i32,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                    {
+                        scheduler::sched_enqueue(s.self_actor);
+                    }
                 }
-                s.pending_restart_timers.fetch_sub(1, Ordering::AcqRel);
+                (*sup_ptr)
+                    .pending_restart_timers
+                    .fetch_sub(1, Ordering::AcqRel);
             }
         });
         return;
@@ -883,6 +922,18 @@ unsafe extern "C" fn supervisor_dispatch(
                     // SAFETY: child pointer is valid.
                     unsafe { actor::hew_actor_stop(sup.children[i]) };
                 }
+            }
+        }
+        SYS_MSG_DELAYED_RESTART => {
+            if data.is_null() || data_size < std::mem::size_of::<DelayedRestartEvent>() {
+                return;
+            }
+            // SAFETY: data is valid for at least sizeof(DelayedRestartEvent).
+            let event = unsafe { &*data.cast::<DelayedRestartEvent>() };
+            let idx = event.child_index;
+            if idx < sup.child_count {
+                // SAFETY: sup is valid, idx is within bounds.
+                unsafe { restart_with_budget_and_strategy(sup, idx) };
             }
         }
         _ => {}

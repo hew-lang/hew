@@ -174,10 +174,14 @@ pub unsafe extern "C" fn hew_scope_spawn(scope: *mut HewScope, actor: *mut c_voi
     0
 }
 
+/// Maximum time Phase 3 will spin waiting for an actor to reach a terminal
+/// state before giving up.
+const SCOPE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Wait for all actors in the scope to finish, then free them.
 ///
 /// Drains all mailboxes, closes actors, spin-waits until each actor
-/// reaches `STOPPED`, and then frees the actor.
+/// reaches a terminal state, and then frees the actor.
 ///
 /// # Safety
 ///
@@ -224,7 +228,10 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
     // SAFETY: Lock is held.
     unsafe { mutex_unlock(&raw mut s.lock) };
 
-    // Phase 3: Wait for all actors to reach STOPPED.
+    // Phase 3: Wait for all actors to reach a terminal state (Stopped or
+    // Crashed).  `Stopping` is *not* terminal — the scheduler is still
+    // unwinding the actor's stack and will CAS it to `Stopped` itself, so
+    // we must keep spinning until that completes.
     for i in 0..s.actor_count as usize {
         let actor_ptr = s.actors[i].cast::<HewActor>();
         if actor_ptr.is_null() {
@@ -232,39 +239,33 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         }
         // SAFETY: actor_ptr is valid.
         let a = unsafe { &*actor_ptr };
-        while {
+        let deadline = std::time::Instant::now() + SCOPE_WAIT_TIMEOUT;
+        loop {
             let state = a.actor_state.load(Ordering::Acquire);
-            state == HewActorState::Running as i32 || state == HewActorState::Runnable as i32
-        } {
+            if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_micros(100));
-        }
-        // CAS to STOPPED if not already.
-        let state = a.actor_state.load(Ordering::Acquire);
-        if state != HewActorState::Stopped as i32
-            && state != HewActorState::Crashed as i32
-            && a.actor_state
-                .compare_exchange(
-                    state,
-                    HewActorState::Stopped as i32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-        {
-            // Won the CAS — run terminate for this actor.
-            // SAFETY: actor just transitioned to Stopped; not being dispatched.
-            unsafe { actor::call_terminate_fn(actor_ptr) };
         }
     }
 
-    // Phase 4: Free all actors.
+    // Phase 4: Free actors that reached a terminal state.  Non-terminal
+    // actors (still in Stopping after the timeout) remain tracked in
+    // LIVE_ACTORS and will be reclaimed at process exit by cleanup_all_actors.
     for i in 0..s.actor_count as usize {
         let actor_ptr = s.actors[i].cast::<HewActor>();
         if actor_ptr.is_null() {
             continue;
         }
-        // SAFETY: actor_ptr is valid.
-        unsafe { actor::hew_actor_free(actor_ptr) };
+        // SAFETY: actor_ptr is valid per spawn contract.
+        let state = unsafe { &*actor_ptr }.actor_state.load(Ordering::Acquire);
+        if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
+            // SAFETY: actor reached a terminal state and is not being dispatched.
+            unsafe { actor::hew_actor_free(actor_ptr) };
+        }
         s.actors[i] = std::ptr::null_mut();
     }
 }
@@ -353,5 +354,146 @@ pub unsafe extern "C" fn hew_scope_free(scope: *mut HewScope) {
     unsafe {
         hew_scope_destroy(scope);
         libc::free(scope.cast());
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
+
+    /// An actor stuck in `Stopping` must NOT be freed before it reaches a
+    /// terminal state. A background thread simulates the scheduler
+    /// completing the `Stopping → Stopped` transition after a delay.
+    #[test]
+    fn stopping_actor_waits_for_terminal_state() {
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let actor = unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: scope is valid; actor was just spawned.
+        let mut scope = unsafe { hew_scope_new() };
+        // SAFETY: scope and actor are valid.
+        let rc = unsafe { hew_scope_spawn(&raw mut scope, actor.cast()) };
+        assert_eq!(rc, 0);
+
+        // Simulate: actor called self_stop mid-dispatch → Stopping.
+        // SAFETY: actor is valid.
+        let a = unsafe { &*actor };
+        a.actor_state
+            .store(HewActorState::Stopping as i32, Ordering::Release);
+
+        // Background thread simulates the scheduler finishing dispatch.
+        let actor_addr = actor as usize;
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            // SAFETY: actor_addr came from a valid actor pointer above.
+            let a = unsafe { &*(actor_addr as *const HewActor) };
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+        });
+
+        let start = Instant::now();
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_wait_all(&raw mut scope) };
+        let elapsed = start.elapsed();
+
+        // Scope must have waited for the transition — not exited instantly.
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "scope exited too early ({elapsed:?}); Stopping was treated as terminal"
+        );
+
+        handle.join().unwrap();
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_destroy(&raw mut scope) };
+    }
+
+    /// Actors already in `Stopped` or `Crashed` are freed without delay.
+    #[test]
+    fn terminal_actors_freed_promptly() {
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let a1 = unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let a2 = unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!a1.is_null());
+        assert!(!a2.is_null());
+
+        // Pre-set to terminal states.
+        // SAFETY: a1 is valid (non-null checked above).
+        unsafe { &*a1 }
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+        // SAFETY: a2 is valid (non-null checked above).
+        unsafe { &*a2 }
+            .actor_state
+            .store(HewActorState::Crashed as i32, Ordering::Release);
+
+        // SAFETY: scope and actors are valid.
+        let mut scope = unsafe { hew_scope_new() };
+        // SAFETY: scope and actors are valid.
+        let rc1 = unsafe { hew_scope_spawn(&raw mut scope, a1.cast()) };
+        assert_eq!(rc1, 0);
+        // SAFETY: scope and actors are valid.
+        let rc2 = unsafe { hew_scope_spawn(&raw mut scope, a2.cast()) };
+        assert_eq!(rc2, 0);
+
+        let start = Instant::now();
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_wait_all(&raw mut scope) };
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "scope took too long for terminal actors ({elapsed:?})"
+        );
+
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_destroy(&raw mut scope) };
+    }
+
+    /// If an actor is permanently stuck in `Stopping` (the scheduler never
+    /// completes the transition), the scope wait must still return after its
+    /// bounded timeout rather than spinning forever.
+    #[test]
+    fn scope_wait_bounded_on_stuck_stopping() {
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let actor = unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid.
+        unsafe { &*actor }
+            .actor_state
+            .store(HewActorState::Stopping as i32, Ordering::Release);
+
+        // SAFETY: scope and actor are valid.
+        let mut scope = unsafe { hew_scope_new() };
+        // SAFETY: scope and actor are valid.
+        let rc = unsafe { hew_scope_spawn(&raw mut scope, actor.cast()) };
+        assert_eq!(rc, 0);
+
+        let start = Instant::now();
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_wait_all(&raw mut scope) };
+        let elapsed = start.elapsed();
+
+        // Must have waited at least the scope timeout, not returned instantly.
+        assert!(
+            elapsed >= Duration::from_secs(1),
+            "scope returned too quickly on stuck Stopping actor ({elapsed:?})"
+        );
+
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_destroy(&raw mut scope) };
     }
 }

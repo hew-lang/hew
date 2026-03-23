@@ -604,7 +604,8 @@ fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
 
 /// Deep-copy `src` into a new malloc'd buffer.
 ///
-/// Returns null if `src` is null or `size` is 0.
+/// Returns null if `src` is null, `size` is 0, or allocation fails.
+/// On allocation failure, sets `hew_last_error` with the details.
 ///
 /// # Safety
 ///
@@ -616,7 +617,12 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
     // SAFETY: Caller guarantees `src` is readable for `size` bytes.
     unsafe {
         let dst = libc::malloc(size);
-        assert!(!dst.is_null(), "OOM allocating actor state ({size} bytes)");
+        if dst.is_null() {
+            crate::set_last_error(format!(
+                "OOM: failed to allocate {size} bytes for actor state copy"
+            ));
+            return ptr::null_mut();
+        }
         ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), size);
         dst
     }
@@ -649,6 +655,21 @@ struct ActorSpawnConfig {
 unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // SAFETY: Caller already deep-copied state; make a second copy for restart.
     let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
+
+    // OOM on the restart-state copy: free resources the caller transferred
+    // ownership of and propagate the failure as null.
+    if !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
+        // SAFETY: config.state was malloc'd by the caller's deep_copy_state;
+        // config.mailbox was allocated by the caller via hew_mailbox_new*.
+        unsafe {
+            libc::free(config.state);
+            let mb = config.mailbox.cast::<HewMailbox>();
+            if !mb.is_null() {
+                mailbox::hew_mailbox_free(mb);
+            }
+        }
+        return ptr::null_mut();
+    }
 
     let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
@@ -705,6 +726,21 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // SAFETY: Caller already deep-copied state; make a second copy for restart.
     let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
 
+    // OOM on the restart-state copy: free resources the caller transferred
+    // ownership of and propagate the failure as null.
+    if !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
+        // SAFETY: config.state was malloc'd by the caller's deep_copy_state;
+        // config.mailbox was allocated by the caller via hew_mailbox_new*.
+        unsafe {
+            libc::free(config.state);
+            let mb = config.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+            if !mb.is_null() {
+                crate::mailbox_wasm::hew_mailbox_free(mb);
+            }
+        }
+        return ptr::null_mut();
+    }
+
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
@@ -743,7 +779,8 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
 /// Spawn a new actor with an unbounded mailbox.
 ///
 /// The initial state is deep-copied. The returned pointer must be freed
-/// with [`hew_actor_free`].
+/// with [`hew_actor_free`]. Returns null on allocation failure
+/// (details via [`hew_last_error`]).
 ///
 /// # Safety
 ///
@@ -760,6 +797,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    if !state.is_null() && state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
 
     // SAFETY: hew_mailbox_new returns a valid pointer.
     let mailbox = unsafe { mailbox::hew_mailbox_new() };
@@ -800,6 +840,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 
     // SAFETY: Caller guarantees state validity.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
+    if !opts.init_state.is_null() && opts.state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
@@ -850,6 +893,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    if !state.is_null() && state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
 
     // SAFETY: Returns a valid pointer.
     let mailbox = unsafe { mailbox::hew_mailbox_new_bounded(capacity) };
@@ -2043,6 +2089,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    if !state.is_null() && state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
     // SAFETY: hew_mailbox_new is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new() };
 
@@ -2074,6 +2123,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    if !state.is_null() && state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
     // SAFETY: hew_mailbox_new_bounded is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new_bounded(capacity) };
 
@@ -2106,6 +2158,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 
     // SAFETY: Caller guarantees opts.init_state is readable for opts.state_size bytes.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
+    if !opts.init_state.is_null() && opts.state_size > 0 && actor_state.is_null() {
+        return ptr::null_mut();
+    }
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
@@ -2413,6 +2468,54 @@ mod tests {
     }
 
     #[test]
+    fn deep_copy_state_copies_data_correctly() {
+        let src: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        // SAFETY: src is a valid 4-byte buffer.
+        let dst = unsafe { deep_copy_state(src.as_ptr().cast_mut().cast(), 4) };
+        assert!(!dst.is_null());
+        // SAFETY: dst is a freshly-allocated 4-byte buffer.
+        let copied = unsafe { std::slice::from_raw_parts(dst.cast::<u8>(), 4) };
+        assert_eq!(copied, &src);
+        // SAFETY: dst was allocated with libc::malloc.
+        unsafe { libc::free(dst) };
+    }
+
+    #[test]
+    fn deep_copy_state_null_source_returns_null() {
+        // SAFETY: null source is explicitly handled.
+        let dst = unsafe { deep_copy_state(ptr::null_mut(), 64) };
+        assert!(dst.is_null());
+        // No error should be set for a legitimate null/zero call.
+        assert!(crate::hew_last_error().is_null());
+    }
+
+    #[test]
+    fn deep_copy_state_zero_size_returns_null() {
+        let src: u8 = 42;
+        // SAFETY: src is valid; size=0 triggers the early return.
+        let dst = unsafe { deep_copy_state(std::ptr::from_ref(&src).cast_mut().cast(), 0) };
+        assert!(dst.is_null());
+    }
+
+    #[test]
+    fn deep_copy_state_absurd_size_returns_null_and_sets_error() {
+        let src: u8 = 1;
+        // Request an impossibly large allocation to exercise the OOM path.
+        // SAFETY: src is valid; malloc will fail for usize::MAX bytes.
+        let dst =
+            unsafe { deep_copy_state(std::ptr::from_ref(&src).cast_mut().cast(), usize::MAX) };
+        assert!(dst.is_null(), "should return null on allocation failure");
+        let err = crate::hew_last_error();
+        assert!(!err.is_null(), "hew_last_error should be set after OOM");
+        // SAFETY: hew_last_error returned a non-null C string.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
+        assert!(
+            msg.contains("OOM"),
+            "error message should mention OOM, got: {msg}"
+        );
+    }
+
+    #[test]
     fn free_actor_resources_times_out_on_hanging_terminate() {
         // Simulate an actor whose terminate_called is true but
         // terminate_finished never becomes true. The bounded spin-wait in
@@ -2446,5 +2549,21 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "should not hang much longer than the timeout, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn spawn_with_absurd_state_returns_null() {
+        let src: u8 = 1;
+        // SAFETY: src is valid; the absurd size triggers OOM in deep_copy_state.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::from_ref(&src).cast_mut().cast(),
+                usize::MAX,
+                Some(noop_dispatch),
+            )
+        };
+        assert!(actor.is_null(), "spawn should return null on OOM");
+        let err = crate::hew_last_error();
+        assert!(!err.is_null(), "hew_last_error should be set after OOM");
     }
 }

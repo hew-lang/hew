@@ -16,6 +16,7 @@
 # Usage:
 #   make              — build everything (debug)
 #   make release      — build everything (release, optimized)
+#   make pre-release  — release + validate on all platforms before tagging
 #   make hew          — just the compiler driver
 #   make adze         — just the package manager
 #   make astgen       — regenerate the C++ msgpack reader from Rust AST defs
@@ -37,7 +38,7 @@
 .PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
-.PHONY: assemble assemble-release
+.PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -236,6 +237,13 @@ release:
 	cargo build -p hew-lib --release
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 	$(MAKE) assemble-release
+
+# Validate release builds on all supported platforms before tagging.
+# Runs linux locally first (fail-fast), then remote platforms in parallel.
+#   make pre-release                    — all platforms
+#   make pre-release PLATFORMS="linux"  — linux only
+pre-release: release
+	scripts/pre-release-validate.sh $(PLATFORMS)
 
 # Assemble build/ with release symlinks.
 assemble-release:

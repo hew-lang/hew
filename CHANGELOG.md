@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-23
+
+### Added
+
+- Generic `Channel<T>` for String and int types (#271)
+- `Stream<T>` and `Sink<T>` monomorphization for String and bytes (#265)
+- Stream bytes API exposed in stdlib (#265)
+- Actor terminate cleanup blocks — run teardown logic when an actor stops (#268)
+- Temporary materialization for RAII drop of unbound heap values (#274)
+- `Option<T>` return from Channel `try_recv` (#272)
+- 17 new test modules covering wire protocol, file I/O, timers, routing, crypto, generators, HTTP, iterators, streams, and Result/Option FFI wrappers (#295–#350)
+- DateTime and JWT E2E tests (#345), JSON/YAML/TOML encoding E2E tests (#342, #343)
+- C++ unit tests for codegen_capi and msgpack_reader (#291)
+- 562 E2E tests (up from 451 in v0.2.0)
+
+### Fixed
+
+- **Runtime hardening (memory safety):** prevent use-after-free in actor lifecycle cleanup (#311), cache actor data before supervisor trap in crash handler (#303), drain queued values on generator free (#317), make `HewTask.state` atomic to prevent data races (#314), sync WASM `HewActor` struct with native layout (#322)
+- **Runtime hardening (concurrency):** correct atomic orderings and consolidate CStr conversion (#332), eliminate lock unwraps and panics from production code (#333), use poison-recovery for blocking pool, registry, and link RwLocks (#318, #320), route supervisor restarts through mailbox to prevent budget race (#313), make actor state copy fallible on allocation failure (#326)
+- **Runtime hardening (shutdown):** harden profiler shutdown and timer cancel protocol (#353), add graceful ticker shutdown to prevent timer wheel UAF (#307), prevent shutdown self-deadlock and spawn-failure stall (#309), close shutdown lifecycle and env-lock gaps (#330), shutdown profiler thread before freeing node resources (#308), shutdown sockets before dropping to prevent reader thread deadlock (#292)
+- **Runtime hardening (networking):** harden Noise crypto — zeroize handshake buffers and return full keypair (#329), clean up connection on decrypt failure (#300), harden stream buffering — cap line buffer and add buffer-reuse API (#328)
+- **Runtime hardening (scheduling):** propagate worker spawn failures during scheduler init (#315), treat Stopping as non-terminal in scope wait (#316), synchronise environment variable access with RwLock (#302), auto-seed MT19937 from OS entropy (#304)
+- **Runtime hardening (observability):** preserve trace context in mailbox MPSC dequeue (#301), add `set_last_error` calls to FFI functions that silently return null (#335), standardise FFI string ownership on `malloc_cstring` (#324)
+- **Codegen:** RAII drop system hardening with null-guard and infrastructure (#273), align actor send drop semantics with deep-copy transport (#275), path-specific drops for struct return from nested scopes (#284), handle Result return type in actor receive functions (#267), systematic RAII memory leak audit
+- **Analysis:** classify function calls as FUNCTION in semantic tokens (#354), classify type annotations as TYPE in semantic tokens (#269)
+- **Types:** prevent non-trivial wrappers from being treated as pass-throughs (#293), resolve channel.hew standalone type-check failures (#294), default unresolved Range type variable to i64 (#266)
+- **CLI:** use cross-platform home directory resolution in adze (#351), handle `--help` flag in hew-lsp before server initialisation (#349)
+- **Build:** fix macOS build detection and Make 3.81 segfault (#355), register encoding/hex and fix crypto interface location in stdlib (#338)
+
+### Changed
+
+- Embed MLIR/LLVM codegen into single `hew` binary — `hew-codegen` is no longer a separate executable (#261)
+- Decompose `compile()` into pipeline stages (#287)
+- Decompose `synthesize_inner` into focused helpers (#285)
+- Simplify type checker and enrich passes (#283)
+- Simplify enrich.rs tree-walkers and eliminate duplication (#286, #299)
+- Decompose method dispatch and extract helpers (#282)
+- Unify let/var drop registration and extract helpers (#280)
+- Extract shared overflow-policy logic from mailbox send functions (#334)
+- Replace LIVE_ACTORS linear scan with HashMap index (#325)
+- Auto-discover E2E tests and consolidate test categories
+- Strip `hew_` prefix from internal connection helpers (#331)
+
 ## [0.2.0] - 2026-03-15
 
 ### Added

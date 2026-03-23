@@ -125,8 +125,8 @@ impl Xorshift64 {
 /// Spawns one worker thread per available CPU core (falls back to 4).
 /// Calling this more than once is a harmless no-op (returns 0).
 ///
-/// Returns 0 on success, -1 on failure. On failure the scheduler is
-/// torn down and [`set_last_error`] describes the cause.
+/// Returns 0 on success. On failure the process exits with code 1 after
+/// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
     let default_count = thread::available_parallelism()
@@ -236,18 +236,17 @@ pub extern "C" fn hew_sched_init() -> c_int {
             "hew: scheduler init failed — could not spawn worker {spawned}/{worker_count}: {e}"
         );
         teardown_after_spawn_failure(handles);
-        return -1;
+        std::process::exit(1);
     }
 
     // We know `SCHEDULER` was just set by us.
     let Some(sched) = get_scheduler() else {
-        return -1;
+        eprintln!("hew: scheduler init failed — global pointer lost after CAS");
+        std::process::exit(1);
     };
     let Ok(mut lock) = sched.worker_handles.lock() else {
-        // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
-        // scheduler integrity is lost; report error and bail.
-        set_last_error("hew_sched_init: mutex poisoned (a thread panicked)");
-        return -1;
+        eprintln!("hew: scheduler init failed — worker_handles mutex poisoned");
+        std::process::exit(1);
     };
     *lock = handles;
 

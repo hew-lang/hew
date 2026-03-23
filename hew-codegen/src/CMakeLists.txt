@@ -332,20 +332,9 @@ function(hew_emit_cxx_runtime)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
        (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
         CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-      execute_process(
-        COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.a
-        OUTPUT_VARIABLE _hew_libstdcpp
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-      )
-      if(NOT _hew_libstdcpp OR _hew_libstdcpp STREQUAL "libstdc++.a")
-        message(FATAL_ERROR "HEW_STATIC_LINK requires libstdc++.a for the embedded Rust final link")
-      endif()
-      # Use the absolute path to libstdc++.a so the linker picks up the
-      # static archive without -Bstatic (which would also force glibc
-      # symbols like __stack_chk_guard to be resolved statically, failing
-      # on aarch64 where that symbol lives in the dynamic linker).
-      hew_embedded_append("cargo:rustc-link-arg=${_hew_libstdcpp}")
+      # On Linux static builds, libstdc++.a is already included inside the
+      # --start-group/--end-group archive block (see above) to resolve
+      # circular dependencies with MLIR/LLVM and libatomic.  Skip here.
       return()
     endif()
   endif()
@@ -387,17 +376,39 @@ if(HEW_STATIC_LINK)
     file(GLOB _hew_all_llvm_archives "${LLVM_LIBRARY_DIR}/libLLVM*.a")
   endif()
 
-  # On Linux, MLIR/LLVM static archives have circular dependencies.
-  # GNU ld requires --start-group/--end-group to resolve them.
-  # Cargo places rustc-link-lib entries BEFORE rustc-link-arg entries,
-  # so we must emit the archives as link-args (not link-libs) to keep
-  # them inside the group markers.
+  # On Linux, MLIR/LLVM static archives have circular dependencies
+  # with each other AND with libstdc++.a (C++ runtime) and libatomic.a
+  # (outline atomics on aarch64).  GNU ld requires --start-group/
+  # --end-group to resolve circular references via iterative scanning.
   #
-  # We use absolute paths to the .a files instead of -Bstatic/-l pairs.
-  # Using -Bstatic would force ALL symbol resolution (including glibc
-  # symbols like __stack_chk_guard on aarch64) to be static, which
-  # fails because those symbols only exist in the dynamic linker.
+  # All mutually-dependent archives must be INSIDE the group:
+  #   - MLIR/LLVM .a files (circular deps among themselves)
+  #   - libstdc++.a (__cxa_guard_* references __aarch64_swp4_acq_rel
+  #     from libgcc; MLIR/LLVM reference __cxa_* from libstdc++)
+  #   - libgcc.a (aarch64 outline atomics: __aarch64_cas1_acq_rel,
+  #     __aarch64_swp1_acq, __aarch64_ldset4_relax — these are GCC
+  #     builtins for -moutline-atomics, NOT in libatomic.a)
+  #
+  # We use absolute paths instead of -Bstatic/-l pairs because -Bstatic
+  # forces ALL symbol resolution to static mode, breaking glibc symbols
+  # like __stack_chk_guard on aarch64 (lives only in ld-linux-aarch64).
+  #
+  # Cargo places rustc-link-lib before rustc-link-arg, so everything
+  # that needs ordering control must be emitted as link-args.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Find absolute paths for libraries that participate in circular deps.
+    # libstdc++.a: C++ runtime (__cxa_guard_* uses outline atomics on aarch64)
+    # libgcc.a:    outline atomics (__aarch64_cas1_acq_rel, __aarch64_swp1_acq,
+    #              __aarch64_ldset4_relax, etc.) — NOT in libatomic.a!
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.a
+      OUTPUT_VARIABLE _hew_libstdcpp_group
+      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libgcc.a
+      OUTPUT_VARIABLE _hew_libgcc_group
+      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--start-group")
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)
@@ -407,16 +418,21 @@ if(HEW_STATIC_LINK)
         hew_embedded_append("cargo:rustc-link-arg=${_archive}")
       endif()
     endforeach()
+    # Include libstdc++ and libgcc inside the group so their circular
+    # dependencies with MLIR/LLVM archives resolve via iterative scanning.
+    # On aarch64, MLIR/LLVM archives and libstdc++ reference outline atomic
+    # builtins from libgcc.a; libstdc++ also references MLIR-provided symbols.
+    if(_hew_libstdcpp_group AND NOT _hew_libstdcpp_group STREQUAL "libstdc++.a")
+      hew_embedded_append("cargo:rustc-link-arg=${_hew_libstdcpp_group}")
+    endif()
+    if(_hew_libgcc_group AND NOT _hew_libgcc_group STREQUAL "libgcc.a")
+      hew_embedded_append("cargo:rustc-link-arg=${_hew_libgcc_group}")
+    endif()
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
-    # On aarch64, MLIR/LLVM archives reference symbols from system libs
-    # that Cargo places as link-lib (before link-arg archives).  GNU ld
-    # scans left-to-right, so we must re-add these as link-args AFTER the
-    # archive group.  Includes: -lc (stack protector DSO on aarch64),
-    # -latomic (outline atomics: __aarch64_cas1_acq_rel etc.).  Both are
-    # harmless on x86_64 (already resolved or unused).
+    # Ensure libc is available for stack protector DSO on aarch64
+    # (__stack_chk_guard lives in ld-linux-aarch64, resolved via -lc).
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--no-as-needed")
     hew_embedded_append("cargo:rustc-link-arg=-lc")
-    hew_embedded_append("cargo:rustc-link-arg=-latomic")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--as-needed")
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})

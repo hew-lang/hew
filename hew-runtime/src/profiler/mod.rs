@@ -21,6 +21,7 @@ pub mod pprof;
 mod server;
 
 use crate::util::MutexExt;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -39,6 +40,10 @@ static PROFILER_STATE: Mutex<Option<ProfilerThreads>> = Mutex::new(None);
 
 /// Shutdown signal shared with profiler threads.
 static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Resolved bind address of the running profiler server, used to send a
+/// shutdown request to unblock the `incoming_requests()` accept loop.
+static PROFILER_BIND_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
 
 #[derive(Debug)]
 struct ProfilerThreads {
@@ -116,6 +121,9 @@ pub fn maybe_start_with_context(
     };
 
     // HTTP server thread.
+    // Resolve the bind address to a concrete SocketAddr before spawning, so
+    // shutdown() can connect to it even for hostnames like "localhost:6060".
+    let resolved_addr = bind_addr.to_socket_addrs().ok().and_then(|mut a| a.next());
     let Ok(server_handle) = thread::Builder::new()
         .name("hew-pprof-server".into())
         .spawn(move || server::run(&bind_addr, &ctx))
@@ -134,6 +142,10 @@ pub fn maybe_start_with_context(
     };
     let mut state_guard = PROFILER_STATE.lock_or_recover();
     *state_guard = Some(threads);
+    drop(state_guard);
+
+    // Store resolved address so shutdown() can unblock the accept loop.
+    *PROFILER_BIND_ADDR.lock_or_recover() = resolved_addr;
 }
 
 /// Sampler loop: captures a snapshot every second.
@@ -214,14 +226,23 @@ pub(crate) fn shutdown() {
     // Signal all threads to stop.
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
 
+    // Unblock the server's accept loop by sending a minimal HTTP request.
+    // A bare TCP connect is not enough — tiny_http only yields parsed
+    // Request objects, so we must send enough for a valid request line.
+    if let Some(addr) = PROFILER_BIND_ADDR.lock_or_recover().take() {
+        if let Ok(mut stream) =
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200))
+        {
+            use std::io::Write;
+            let _ = stream.write_all(b"GET / HTTP/1.0\r\n\r\n");
+        }
+    }
+
     // Take the thread handles and join them.
     let mut state_guard = PROFILER_STATE.lock_or_recover();
     if let Some(threads) = state_guard.take() {
         drop(state_guard); // Release lock before joining.
 
-        // Join threads in reverse order (server first, then sampler).
-        // Server might be blocked on incoming requests, but it should exit
-        // when the TCP connection is dropped or after a timeout.
         let _ = threads.server_handle.join();
         let _ = threads.sampler_handle.join();
     }

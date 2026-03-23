@@ -50,3 +50,4 @@ coverage-out/
 rust_out
 actor_fib
 examples/actor_fib
+.env.pre-release

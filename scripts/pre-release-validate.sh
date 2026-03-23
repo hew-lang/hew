@@ -296,13 +296,12 @@ validate_windows() {
     if (
         set -e
         echo "==> Syncing source to Windows"
-        # Windows uses a pre-existing checkout — just pull latest
         # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
-        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git pull --rebase origin main"
+        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
         echo "==> Building on Windows"
         # shellcheck disable=SC2029
-        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && set HEW_EMBED_STATIC=1 && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
+        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
 
         echo "==> Smoke test on Windows"
         # shellcheck disable=SC2029

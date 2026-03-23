@@ -28,6 +28,7 @@ use crate::mailbox::{
 };
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
+use crate::util::MutexExt;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -441,11 +442,7 @@ fn worker_loop(id: usize, local: &WorkDeque) {
 
         // 5. Park on per-worker condvar until notified or timeout.
         let parker = &sched.parkers[id];
-        let Ok(guard) = parker.mutex.lock() else {
-            // Policy: per-scheduler state — poisoned parker means worker
-            // integrity is lost; shut down this worker.
-            panic!("hew: worker parker mutex poisoned (a thread panicked); cannot safely continue");
-        };
+        let guard = parker.mutex.lock_or_recover();
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }

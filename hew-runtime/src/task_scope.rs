@@ -16,6 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::internal::types::{HewTaskError, HewTaskState};
 use crate::rc::hew_rc_drop;
+use crate::util::{CondvarExt, MutexExt};
 
 // ── Thread-local current task scope ────────────────────────────────────
 
@@ -88,15 +89,15 @@ impl TaskDoneSignal {
     }
 
     fn notify_done(&self) {
-        let mut done = self.lock.lock().unwrap();
+        let mut done = self.lock.lock_or_recover();
         *done = true;
         self.cond.notify_all();
     }
 
     fn wait_until_done(&self) {
-        let mut done = self.lock.lock().unwrap();
+        let mut done = self.lock.lock_or_recover();
         while !*done {
-            done = self.cond.wait(done).unwrap();
+            done = self.cond.wait_or_recover(done);
         }
     }
 }

@@ -15,6 +15,7 @@ use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::scheduler;
 use crate::set_last_error;
+use crate::util::{CondvarExt, MutexExt};
 
 #[cfg(feature = "profiler")]
 fn supervisor_strategy_name(strategy: c_int) -> &'static str {
@@ -608,7 +609,7 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
 /// [`hew_supervisor_wait_restart`].
 fn notify_restart(sup: &HewSupervisor) {
     if let Some(ref pair) = sup.restart_notify {
-        let mut count = pair.0.lock().unwrap();
+        let mut count = pair.0.lock_or_recover();
         *count += 1;
         pair.1.notify_all();
     }
@@ -1770,10 +1771,6 @@ pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervis
 /// Returns the current restart count on success, or `0` on timeout / null
 /// pointer.  The counter is cumulative and never resets.
 ///
-/// # Panics
-///
-/// Panics if the internal mutex is poisoned (a thread panicked while holding it).
-///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`] with a
@@ -1793,13 +1790,13 @@ pub unsafe extern "C" fn hew_supervisor_wait_restart(
     };
     let timeout = std::time::Duration::from_millis(timeout_ms);
     let deadline = std::time::Instant::now() + timeout;
-    let mut count = pair.0.lock().unwrap();
+    let mut count = pair.0.lock_or_recover();
     while *count < target {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return 0;
         }
-        let (guard, wait_result) = pair.1.wait_timeout(count, remaining).unwrap();
+        let (guard, wait_result) = pair.1.wait_timeout_or_recover(count, remaining);
         count = guard;
         if wait_result.timed_out() && *count < target {
             return 0;

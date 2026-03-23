@@ -12,6 +12,7 @@ use std::sync::{Arc, LazyLock};
 use crate::actor::{self, HewActor};
 use crate::internal::types::{HewActorState, HewError};
 use crate::io_time;
+use crate::util::{CondvarExt, MutexExt};
 
 /// Initial capacity of the actor array.
 const HEW_ACTOR_GROUP_INIT_CAP: usize = 16;
@@ -26,13 +27,13 @@ static DEATH_NOTIFIERS: LazyLock<std::sync::Mutex<HashMap<u64, Vec<Arc<std::sync
 
 /// Register a condvar to be notified when `actor_id` dies.
 fn register_death_notifier(actor_id: u64, cv: Arc<std::sync::Condvar>) {
-    let mut map = DEATH_NOTIFIERS.lock().unwrap();
+    let mut map = DEATH_NOTIFIERS.lock_or_recover();
     map.entry(actor_id).or_default().push(cv);
 }
 
 /// Unregister all condvar entries for `actor_id` that point to `cv`.
 fn unregister_death_notifier(actor_id: u64, cv: &Arc<std::sync::Condvar>) {
-    let mut map = DEATH_NOTIFIERS.lock().unwrap();
+    let mut map = DEATH_NOTIFIERS.lock_or_recover();
     if let Some(list) = map.get_mut(&actor_id) {
         list.retain(|c| !Arc::ptr_eq(c, cv));
         if list.is_empty() {
@@ -45,7 +46,7 @@ fn unregister_death_notifier(actor_id: u64, cv: &Arc<std::sync::Condvar>) {
 ///
 /// Called from actor death paths (trap, self-stop finalisation).
 pub(crate) fn notify_actor_death(actor_id: u64) {
-    let map = DEATH_NOTIFIERS.lock().unwrap();
+    let map = DEATH_NOTIFIERS.lock_or_recover();
     if let Some(condvars) = map.get(&actor_id) {
         for cv in condvars {
             cv.notify_all();
@@ -119,10 +120,6 @@ pub unsafe extern "C" fn hew_actor_group_destroy(g: *mut HewActorGroup) {
 ///
 /// Returns `0` on success, `-1` on null arguments.
 ///
-/// # Panics
-///
-/// Panics if the internal mutex is poisoned.
-///
 /// # Safety
 ///
 /// - `g` must be a valid pointer returned by [`hew_actor_group_new`].
@@ -135,7 +132,7 @@ pub unsafe extern "C" fn hew_actor_group_add(g: *mut HewActorGroup, actor: *mut 
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &mut *g };
 
-    let _guard = group.lock.lock().unwrap();
+    let _guard = group.lock.lock_or_recover();
 
     // Register death notifier so wait_all wakes immediately on actor death.
     let a = actor.cast::<HewActor>();
@@ -175,10 +172,6 @@ fn all_stopped(group: &HewActorGroup) -> bool {
 
 /// Block until all actors in the group have stopped.
 ///
-/// # Panics
-///
-/// Panics if the internal mutex or condvar is poisoned.
-///
 /// # Safety
 ///
 /// `g` must be a valid pointer returned by [`hew_actor_group_new`].
@@ -191,25 +184,20 @@ pub unsafe extern "C" fn hew_actor_group_wait_all(g: *mut HewActorGroup) {
     let group = unsafe { &*g };
 
     loop {
-        let guard = group.lock.lock().unwrap();
+        let guard = group.lock.lock_or_recover();
         if all_stopped(group) {
             return;
         }
         // Wait with a 10 ms timeout to re-check actor states.
-        let _guard = group
+        let (_guard, _timeout) = group
             .done_cond
-            .wait_timeout(guard, std::time::Duration::from_millis(10))
-            .unwrap();
+            .wait_timeout_or_recover(guard, std::time::Duration::from_millis(10));
     }
 }
 
 /// Block until all actors stop or the timeout expires.
 ///
 /// Returns `0` on success, [`HewError::ErrTimeout`] on timeout.
-///
-/// # Panics
-///
-/// Panics if the internal mutex or condvar is poisoned.
 ///
 /// # Safety
 ///
@@ -235,24 +223,19 @@ pub unsafe extern "C" fn hew_actor_group_wait_timeout(
             return HewError::ErrTimeout as i32;
         }
 
-        let guard = group.lock.lock().unwrap();
+        let guard = group.lock.lock_or_recover();
         if all_stopped(group) {
             return 0;
         }
-        let _guard = group
+        let (_guard, _timeout) = group
             .done_cond
-            .wait_timeout(guard, std::time::Duration::from_millis(10))
-            .unwrap();
+            .wait_timeout_or_recover(guard, std::time::Duration::from_millis(10));
     }
 }
 
 // ── Stop ───────────────────────────────────────────────────────────────
 
 /// Stop all actors in the group.
-///
-/// # Panics
-///
-/// Panics if the internal mutex is poisoned.
 ///
 /// # Safety
 ///
@@ -265,7 +248,7 @@ pub unsafe extern "C" fn hew_actor_group_stop_all(g: *mut HewActorGroup) {
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &*g };
 
-    let _guard = group.lock.lock().unwrap();
+    let _guard = group.lock.lock_or_recover();
     for &actor_ptr in &group.actors {
         if !actor_ptr.is_null() {
             // SAFETY: actor pointer is valid per add contract.

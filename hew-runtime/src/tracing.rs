@@ -410,13 +410,9 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 }
 
 /// Return the number of recorded trace events.
-///
-/// # Panics
-///
-/// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
-    let events = TRACE_EVENTS.lock().unwrap();
+    let events = TRACE_EVENTS.lock_or_recover();
     events.len() as u64
 }
 
@@ -427,14 +423,10 @@ pub extern "C" fn hew_trace_event_count() -> u64 {
 /// # Safety
 ///
 /// `out` must point to an array of at least `max_count` [`HewTraceEvent`]s.
-///
-/// # Panics
-///
-/// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32) -> u32 {
     cabi_guard!(out.is_null() || max_count == 0, 0);
-    let mut events = TRACE_EVENTS.lock().unwrap();
+    let mut events = TRACE_EVENTS.lock_or_recover();
     let count = events.len().min(max_count as usize);
     for i in 0..count {
         if let Some(event) = events.pop_front() {
@@ -452,25 +444,17 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
 }
 
 /// Clear all recorded trace events.
-///
-/// # Panics
-///
-/// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
-    let mut events = TRACE_EVENTS.lock().unwrap();
+    let mut events = TRACE_EVENTS.lock_or_recover();
     events.clear();
 }
 
 /// Reset all tracing state (disable + clear events + reset context).
-///
-/// # Panics
-///
-/// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
     TRACING_ENABLED.store(false, Ordering::Release);
-    let mut events = TRACE_EVENTS.lock().unwrap();
+    let mut events = TRACE_EVENTS.lock_or_recover();
     events.clear();
     CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
 }

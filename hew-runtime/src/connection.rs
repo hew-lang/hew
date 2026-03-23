@@ -46,6 +46,7 @@ use crate::cluster::{
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
+use crate::util::MutexExt;
 use crate::wire::{
     hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
     hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope, HBF_FLAG_COMPRESSED, HBF_MAGIC,
@@ -311,11 +312,7 @@ fn sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
 }
 
 fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
-    let Ok(mut workers) = mgr.reconnect_workers.lock() else {
-        // Policy: per-connection-manager state — poisoned mutex means
-        // reconnect registry is corrupted.
-        panic!("hew: connmgr reconnect_workers mutex poisoned (a thread panicked); cannot safely continue");
-    };
+    let mut workers = mgr.reconnect_workers.lock_or_recover();
     let mut idx = 0usize;
     while idx < workers.len() {
         if workers[idx].is_finished() {
@@ -333,13 +330,7 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
     {
         return None;
     }
-    let Ok(conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state — poisoned mutex means
-        // connection registry is corrupted.
-        panic!(
-            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
-        );
-    };
+    let conns = mgr.connections.lock_or_recover();
     let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
     let reconnect = conn.reconnect.as_ref()?;
     Some(ReconnectPlan {
@@ -392,11 +383,7 @@ fn spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectP
     });
     match handle {
         Ok(worker) => {
-            let Ok(mut workers) = mgr_ref.reconnect_workers.lock() else {
-                // Policy: per-connection-manager state — poisoned mutex means
-                // reconnect registry is corrupted.
-                panic!("hew: connmgr reconnect_workers mutex poisoned (a thread panicked); cannot safely continue");
-            };
+            let mut workers = mgr_ref.reconnect_workers.lock_or_recover();
             workers.push(worker);
         }
         Err(_) => {
@@ -863,11 +850,7 @@ fn reader_loop(
         #[cfg(feature = "encryption")]
         {
             let mut decrypted = vec![0u8; read_len];
-            let Ok(mut guard) = noise_transport.lock() else {
-                // Policy: per-connection state — poisoned noise transport means
-                // this connection's encryption state is corrupted.
-                panic!("hew: noise_transport mutex poisoned (a thread panicked); cannot safely continue");
-            };
+            let mut guard = noise_transport.lock_or_recover();
             if let Some(noise) = guard.as_mut() {
                 let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
                     set_last_error("connection decrypt failure".to_string());
@@ -1618,20 +1601,10 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
 ///
 /// Each element: `{"conn_id":N,"peer_node_id":N,"state":"S","last_activity_ms":N}`
 #[cfg(feature = "profiler")]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "panics indicate unrecoverable connection failure"
-)]
 pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
     use std::fmt::Write as _;
 
-    let Ok(connections) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state — poisoned mutex means
-        // connection registry is corrupted.
-        panic!(
-            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
-        );
-    };
+    let connections = mgr.connections.lock_or_recover();
 
     let mut json = String::from("[");
     for (i, c) in connections.iter().enumerate() {

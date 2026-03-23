@@ -177,7 +177,8 @@ fn monotonic_time_ns() -> u64 {
         reason = "monotonic ns since process start won't exceed u64"
     )]
     {
-        epoch.elapsed().as_nanos() as u64
+        // Add 1 so the timestamp is never zero — callers use 0 as "not set".
+        (epoch.elapsed().as_nanos() as u64).saturating_add(1)
     }
 }
 

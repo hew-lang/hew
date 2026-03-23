@@ -332,15 +332,11 @@ function(hew_emit_cxx_runtime)
       if(NOT _hew_libstdcpp OR _hew_libstdcpp STREQUAL "libstdc++.a")
         message(FATAL_ERROR "HEW_STATIC_LINK requires libstdc++.a for the embedded Rust final link")
       endif()
-      get_filename_component(_hew_libstdcpp_dir "${_hew_libstdcpp}" DIRECTORY)
-      hew_embedded_append("cargo:rustc-link-search=native=${_hew_libstdcpp_dir}")
-      # Must be link-args (not link-libs) on Linux so they appear AFTER the
-      # LLVM/MLIR archives that reference C++ stdlib symbols.  Cargo places
-      # link-lib entries before link-arg entries, which breaks resolution.
-      # Bracket with -Bstatic/-Bdynamic to force the static archive.
-      hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bstatic")
-      hew_embedded_append("cargo:rustc-link-arg=-lstdc++")
-      hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bdynamic")
+      # Use the absolute path to libstdc++.a so the linker picks up the
+      # static archive without -Bstatic (which would also force glibc
+      # symbols like __stack_chk_guard to be resolved statically, failing
+      # on aarch64 where that symbol lives in the dynamic linker).
+      hew_embedded_append("cargo:rustc-link-arg=${_hew_libstdcpp}")
       return()
     endif()
   endif()
@@ -386,21 +382,23 @@ if(HEW_STATIC_LINK)
   # GNU ld requires --start-group/--end-group to resolve them.
   # Cargo places rustc-link-lib entries BEFORE rustc-link-arg entries,
   # so we must emit the archives as link-args (not link-libs) to keep
-  # them inside the group markers.  We also force -Bstatic so the linker
-  # searches for .a archives rather than .so shared stubs.
+  # them inside the group markers.
+  #
+  # We use absolute paths to the .a files instead of -Bstatic/-l pairs.
+  # Using -Bstatic would force ALL symbol resolution (including glibc
+  # symbols like __stack_chk_guard on aarch64) to be static, which
+  # fails because those symbols only exist in the dynamic linker.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bstatic")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--start-group")
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)
       string(REGEX REPLACE "^lib" "" _name "${_name}")
       string(REGEX REPLACE "\\.a$" "" _name "${_name}")
       if(NOT "${_name}" MATCHES "^Polly")
-        hew_embedded_append("cargo:rustc-link-arg=-l${_name}")
+        hew_embedded_append("cargo:rustc-link-arg=${_archive}")
       endif()
     endforeach()
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
-    hew_embedded_append("cargo:rustc-link-arg=-Wl,-Bdynamic")
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)

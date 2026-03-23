@@ -139,7 +139,7 @@ echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
 sudo apt-get install -y cmake ninja-build \
-  llvm-22-dev libmlir-21-dev mlir-21-tools clang-22
+  llvm-22-dev libmlir-22-dev mlir-22-tools clang-22
 ```
 
 **Install on macOS:**
@@ -148,8 +148,8 @@ sudo apt-get install -y cmake ninja-build \
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# LLVM 22 + MLIR
-brew install llvm@22 ninja cmake
+# LLVM 22 + MLIR + build tools
+brew install llvm ninja cmake
 ```
 
 ### Build

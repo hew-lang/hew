@@ -280,7 +280,8 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn detect_llvm_prefix() -> Option<PathBuf> {
-    [
+    // Linux (apt.llvm.org) and FreeBSD well-known paths
+    let static_candidates = [
         "/usr/lib/llvm-22",
         "/usr/lib/llvm-21",
         "/usr/lib/llvm-20",
@@ -290,10 +291,29 @@ fn detect_llvm_prefix() -> Option<PathBuf> {
         "/usr/local/llvm21",
         "/usr/local/llvm20",
         "/usr/local/llvm19",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .find(|path| path.exists())
+    ];
+    if let Some(path) = static_candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+    {
+        return Some(path);
+    }
+
+    // macOS: ask Homebrew
+    if cfg!(target_os = "macos") {
+        if let Ok(output) = Command::new("brew").args(["--prefix", "llvm"]).output() {
+            if output.status.success() {
+                let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let path = PathBuf::from(&prefix);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn reset_build_dir_if_needed(build_dir: &Path, signature: &str) {

@@ -32,7 +32,7 @@ echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
 sudo apt-get install -y cmake ninja-build \
-  llvm-22-dev libmlir-21-dev mlir-21-tools clang-22
+  llvm-22-dev libmlir-22-dev mlir-22-tools clang-22
 ```
 
 ### Build
@@ -115,14 +115,14 @@ components: the compiler, the linker, and the C++ standard library.
 ### Prerequisites
 
 ```bash
-brew install llvm@22 ninja cmake
+brew install llvm ninja cmake
 ```
 
 Homebrew LLVM is keg-only (not symlinked into `/usr/local/bin`). You need the
 prefix path:
 
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm@22)"
+LLVM_PREFIX="$(brew --prefix llvm)"
 # x86_64: /usr/local/opt/llvm
 # aarch64: /opt/homebrew/opt/llvm
 ```
@@ -130,7 +130,7 @@ LLVM_PREFIX="$(brew --prefix llvm@22)"
 ### Build
 
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm@22)"
+LLVM_PREFIX="$(brew --prefix llvm)"
 cd hew-codegen
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \

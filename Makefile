@@ -153,7 +153,7 @@ ifndef LLVM_PREFIX
   endif
   # Try Homebrew on macOS
   ifeq ($(LLVM_PREFIX),)
-    LLVM_PREFIX := $(shell brew --prefix llvm@22 2>/dev/null || brew --prefix llvm@21 2>/dev/null || brew --prefix llvm 2>/dev/null)
+    LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
   endif
 endif
 
@@ -425,8 +425,7 @@ JAVA        := $(JAVA_HOME)/bin/java
 JAVAC       := $(JAVA_HOME)/bin/javac
 GRAMMAR     := docs/specs/Hew.g4
 GRAMMAR_OUT := .tmp/hew-grammar-test
-rwildcard   = $(filter $(subst *,%,$2),$(wildcard $1$2)) $(foreach d,$(wildcard $1*/),$(call rwildcard,$d,$2))
-HEW_FILES   := $(sort $(call rwildcard,examples/,*.hew))
+HEW_FILES   := $(sort $(shell find examples/ -name '*.hew' 2>/dev/null))
 
 grammar: $(GRAMMAR) $(HEW_FILES)
 	@echo "==> Generating ANTLR4 parser"

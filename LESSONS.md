@@ -28,6 +28,15 @@ In this repo, shell completions, README command summaries, and `docs/specs/HEW-S
 can preserve dead behaviour long after the implementation is gone, so CLI removals need
 an explicit docs/completions sweep.
 
+## From the 2026-03-24 adze-cli gitignore dedup pass
+
+### 1. Duplicate file-update helpers drift even when the logic starts identical
+
+`write_init_gitignore()` already delegated to a reusable entry appender, but
+`update_gitignore()` reimplemented the same `.gitignore` read/append/write flow
+for install. Reusing the shared helper keeps init and install behaviour aligned
+and makes small correctness fixes, like trimmed-line matching, land everywhere.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

@@ -82,6 +82,22 @@ Remove CLI flags and subcommands that are parsed or advertised but have no live 
 - Treat the Hew spec note about `--Werror` as stale documentation and update it to match
   current fatal type-error behaviour.
 
+## Phase 8: adze-cli gitignore helper deduplication (2026-03-24)
+
+### Goal
+
+Remove the duplicated `.gitignore` append logic in `adze-cli` so init and install
+share one helper and future changes only need to touch one code path.
+
+### Decision
+
+- Keep `write_init_gitignore()` as the higher-level init helper because it expresses
+  the two-entry contract for new projects.
+- Reuse `ensure_gitignore_entry()` for the install path instead of maintaining a
+  second `.adze/`-specific helper.
+- Retarget the focused tests at the shared helper and add coverage for the trimmed
+  line match so the deduplication preserves existing behaviour.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

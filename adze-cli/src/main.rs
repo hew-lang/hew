@@ -545,7 +545,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         std::process::exit(1);
     }
 
-    update_gitignore(&cwd);
+    ensure_gitignore_entry(&cwd, ".adze/");
 
     if m.dependencies.is_empty() {
         // Write an empty lockfile for consistency.
@@ -1885,27 +1885,6 @@ fn is_valid_package_name(name: &str) -> bool {
     true
 }
 
-/// Add `.adze/` to the `.gitignore` in `dir` if not already present.
-fn update_gitignore(dir: &Path) {
-    const ENTRY: &str = ".adze/";
-    let path = dir.join(".gitignore");
-    if let Ok(contents) = std::fs::read_to_string(&path) {
-        if contents.lines().any(|l| l.trim() == ENTRY) {
-            return;
-        }
-        let updated = if contents.ends_with('\n') {
-            format!("{contents}{ENTRY}\n")
-        } else if contents.is_empty() {
-            format!("{ENTRY}\n")
-        } else {
-            format!("{contents}\n{ENTRY}\n")
-        };
-        let _ = std::fs::write(&path, updated);
-    } else {
-        let _ = std::fs::write(&path, format!("{ENTRY}\n"));
-    }
-}
-
 /// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.adze`.
 ///
 /// # Errors
@@ -1936,30 +1915,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_gitignore_creates_file() {
+    fn ensure_gitignore_entry_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        update_gitignore(dir.path());
+        ensure_gitignore_entry(dir.path(), ".adze/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(contents.contains(".adze/"));
     }
 
     #[test]
-    fn update_gitignore_no_duplicate() {
+    fn ensure_gitignore_entry_no_duplicate() {
         let dir = tempfile::tempdir().unwrap();
-        update_gitignore(dir.path());
-        update_gitignore(dir.path());
+        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".adze/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(contents.matches(".adze/").count(), 1);
     }
 
     #[test]
-    fn update_gitignore_appends_to_existing() {
+    fn ensure_gitignore_entry_appends_to_existing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        update_gitignore(dir.path());
+        ensure_gitignore_entry(dir.path(), ".adze/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(contents.contains("target/"));
         assert!(contents.contains(".adze/"));
+    }
+
+    #[test]
+    fn ensure_gitignore_entry_appends_after_missing_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
+        ensure_gitignore_entry(dir.path(), ".adze/");
+        let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(contents, "target/\n.adze/\n");
+    }
+
+    #[test]
+    fn ensure_gitignore_entry_matches_trimmed_existing_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".adze/   \n").unwrap();
+        ensure_gitignore_entry(dir.path(), ".adze/");
+        let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(contents.matches(".adze/").count(), 1);
     }
 
     #[test]

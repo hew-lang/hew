@@ -1,5 +1,23 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Named-method fallback deduplication (2026-03-24)
+
+### Goal
+
+Collapse the repeated named-type fallback logic in `hew-types/src/check.rs`
+without changing any built-in method behaviour.
+
+### Decisions
+
+- Kept `try_resolve_named_method` as the single resolver and added a small
+  `check_named_method_fallback` wrapper for the shared
+  resolve-or-`UndefinedMethod` pattern.
+- Passed the resolved receiver type into the helper so qualified names such as
+  `channel.Sender` still resolve through the existing module-prefix stripping
+  path, while the error text stays customized via an explicit display string.
+- Limited the refactor to the eight `_` fallback arms called out in
+  `check_method_call`; the built-in method arms remain unchanged.
+
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 
 ### Goal

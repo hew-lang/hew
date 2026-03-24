@@ -602,6 +602,28 @@ impl Checker {
         None
     }
 
+    fn check_named_method_fallback(
+        &mut self,
+        receiver_ty: &Ty,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+        type_display_name: &str,
+    ) -> Ty {
+        if let Ty::Named { name, .. } = receiver_ty {
+            if let Some(ty) = self.try_resolve_named_method(name, method_name, args, span) {
+                return ty;
+            }
+        }
+
+        self.report_error(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!("no method `{method_name}` on {type_display_name}"),
+        );
+        Ty::Error
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "all builtins registered in one place"
@@ -6464,18 +6486,7 @@ impl Checker {
                     args: vec![],
                 },
                 "close" => Ty::Unit,
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Server"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
             },
             // http.Request methods/properties
             (Ty::Named { name, .. }, _) if name == "http.Request" => match method {
@@ -6519,16 +6530,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Request"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
                 }
             },
             // net.Listener methods
@@ -6539,16 +6541,7 @@ impl Checker {
                 },
                 "close" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Listener"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
                 }
             },
             // net.Connection methods
@@ -6569,18 +6562,13 @@ impl Checker {
                     }
                     Ty::I32
                 }
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Connection"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(
+                    &resolved,
+                    method,
+                    args,
+                    span,
+                    "net.Connection",
+                ),
             },
             // regex.Pattern methods
             (Ty::Named { name, .. }, _) if name == "regex.Pattern" => match method {
@@ -6611,16 +6599,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on regex.Pattern"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }
             },
             // process.Child methods
@@ -6628,16 +6607,7 @@ impl Checker {
                 "wait" | "kill" => Ty::I32,
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on process.Child"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
                 }
             },
             // Generator methods: .next() returns the yielded type
@@ -6755,18 +6725,7 @@ impl Checker {
                     "clone" => Ty::sender(inner),
                     "close" => Ty::Unit,
                     _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Sender", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Sender<T>"),
-                            );
-                            Ty::Error
-                        }
+                        self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
                     }
                 }
             }
@@ -6799,20 +6758,13 @@ impl Checker {
                 match method {
                     "recv" | "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
-                    _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Receiver", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Receiver<T>"),
-                            );
-                            Ty::Error
-                        }
-                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "Receiver<T>",
+                    ),
                 }
             }
             // Machine methods: step(), state_name()

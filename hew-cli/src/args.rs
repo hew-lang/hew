@@ -10,13 +10,6 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
-
-    /// Compile a .hew file directly (shorthand for `hew build`).
-    ///
-    /// This is a hidden positional argument that allows `hew file.hew` as a
-    /// shorthand for `hew build file.hew`.
-    #[arg(hide = true)]
-    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -193,6 +186,9 @@ impl RunArgs {
 pub struct DebugArgs {
     /// Input .hew file.
     pub input: PathBuf,
+    /// Accepted for compatibility (debug info is always enabled).
+    #[arg(long, short = 'g', hide = true)]
+    pub debug: bool,
     /// Pass an extra library or linker argument to the native link step.
     #[arg(long = "link-lib", value_name = "PATH")]
     pub link_libs: Vec<String>,

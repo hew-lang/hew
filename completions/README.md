@@ -2,6 +2,8 @@
 
 Tab-completion scripts for the Hew compiler CLI (`hew`) and the Adze package manager (`adze`).
 
+Completions are auto-generated from the CLI definitions using [`clap_complete`](https://docs.rs/clap_complete).
+
 ## Quick Install
 
 The `hew completions <shell>` and `adze completions <shell>` commands print the completion script to stdout:
@@ -27,6 +29,14 @@ eval "$(adze completions zsh)"
 ```bash
 hew completions fish > ~/.config/fish/completions/hew.fish
 adze completions fish > ~/.config/fish/completions/adze.fish
+```
+
+### PowerShell
+
+```powershell
+# Add to your PowerShell profile ($PROFILE):
+hew completions powershell | Out-String | Invoke-Expression
+adze completions powershell | Out-String | Invoke-Expression
 ```
 
 ## Manual Install
@@ -70,18 +80,28 @@ cp completions/hew.fish ~/.config/fish/completions/hew.fish
 cp completions/adze.fish ~/.config/fish/completions/adze.fish
 ```
 
-## What's Completed
+### PowerShell
 
-### hew
+Copy the completion scripts to your PowerShell profile directory:
 
-- **Subcommands**: `build`, `run`, `check`, `doc`, `eval`, `test`, `wire`, `fmt`, `init`, `completions`, `version`, `help`
-- **File arguments**: `.hew` files for `build`, `run`, `check`, `fmt`, and `wire check`
-- **Options**: `-o`, `--Werror`, `--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj`
-- **Wire subcommands**: `wire check` with `--against`
-- **Shorthand**: `hew file.hew` completes `.hew` files at the top level
+```powershell
+cp completions/hew.ps1 $HOME/.config/powershell/hew.ps1
+cp completions/adze.ps1 $HOME/.config/powershell/adze.ps1
+# Then source them from your $PROFILE
+```
 
-### adze
+## Regenerating
 
-- **Subcommands**: `init`, `add`, `install`, `publish`, `list`, `search`, `info`, `tree`, `update`, `remove`, `check`, `outdated`, `login`, `logout`, `key`, `namespace`, `yank`, `registry-key`, `deprecate`, `index`, `completions`
-- **Nested subcommands**: `key {generate,list,info}`, `namespace {register,list,info}`, `index {sync,resolve,list}`
-- **Per-command options**: `--version`, `--registry`/`-r`, `--locked`, `--category`, `--page`, `--per-page`, `--lib`, `--bin`, `--actor`, `--reason`, `--undo`, `--message`, `--successor`
+Completions are auto-generated from the CLI argument definitions:
+
+```bash
+hew completions bash > completions/hew.bash
+hew completions zsh > completions/hew.zsh
+hew completions fish > completions/hew.fish
+hew completions powershell > completions/hew.ps1
+
+adze completions bash > completions/adze.bash
+adze completions zsh > completions/adze.zsh
+adze completions fish > completions/adze.fish
+adze completions powershell > completions/adze.ps1
+```

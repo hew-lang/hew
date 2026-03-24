@@ -3029,16 +3029,20 @@ impl Checker {
         for method in &ad.methods {
             self.env.push_scope();
             // Bind actor fields directly in scope (bare field access)
-            for field in &ad.fields {
-                let field_ty = self.resolve_type_expr(&field.ty.0);
-                self.env.define(field.name.clone(), field_ty, true);
-            }
+            self.bind_actor_fields(&ad.fields);
             self.check_function(method);
             self.env.pop_scope();
         }
 
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
+    }
+
+    fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty.0);
+            self.env.define(field.name.clone(), field_ty, true);
+        }
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -3053,10 +3057,7 @@ impl Checker {
 
         // Bind actor fields directly in scope (bare field access, mutable
         // in init body). Hew uses bare names, not `self.field`.
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        self.bind_actor_fields(fields);
 
         // Bind init parameters
         for p in &init.params {
@@ -3090,10 +3091,7 @@ impl Checker {
 
         // Bind actor fields directly in scope (bare field access, mutable
         // so the terminate body can read/modify fields for cleanup).
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        self.bind_actor_fields(fields);
 
         // Terminate returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
@@ -3218,11 +3216,8 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        // Bind actor fields directly in scope (bare field access)
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        // Bind actor fields directly in scope (bare field access).
+        self.bind_actor_fields(fields);
 
         // Push a separate scope for parameters so shadowing checks can
         // detect collisions with actor field names in the outer scope.

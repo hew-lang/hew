@@ -164,6 +164,22 @@ without changing either the MessagePack or JSON schema.
   and MessagePack serialization through the same constructor so field order and
   names remain identical.
 
+## Phase 9: Actor field binding deduplication (2026-03-24)
+
+### Goal
+
+Remove the repeated actor-field binding loop in `hew-types/src/check.rs`
+without changing actor scope behaviour.
+
+### Decision
+
+- Extract a single `Checker::bind_actor_fields()` helper that resolves each
+  field type once per binding pass and defines the field as mutable in the
+  current scope.
+- Reuse that helper from actor methods, `init`, `terminate`, and receive
+  handlers so future changes to actor field binding semantics only need one
+  edit.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

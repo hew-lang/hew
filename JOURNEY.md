@@ -46,6 +46,22 @@ Add `hew_cabi::cstr_to_string_lossy` with the bridge's existing semantics and
 switch the bridge metadata loader to call it. This removes the duplicate helper
 without changing how actor metadata names and type strings are decoded.
 
+## Phase 7: Deduplicate hew-wasm analysis scaffold (2026-03-24)
+
+### Goal
+
+Remove the repeated parse-plus-type-check setup in `hew-wasm/src/lib.rs`
+without changing any analysis behaviour.
+
+### Decisions
+
+- Extracted a single `parse_and_type_check()` helper that always returns the
+  parsed program plus optional type-check output.
+- Kept the helper local to `hew-wasm/src/lib.rs` instead of creating a shared
+  module because the duplication exists entirely within one file.
+- Avoided a configuration flag for type-checking because every repeated call
+  site already wanted the same "type-check only after a clean parse" behaviour.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

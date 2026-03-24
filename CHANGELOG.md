@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Remove the unused export-metadata toolchain (`hew-stdlib-gen`,
+  `hew-export-macro`, `hew-export-types`, and the `export-meta` Cargo feature)
+  now that `hew-types` loads canonical stdlib `.hew` sources directly.
+
 ## [0.2.1] - 2026-03-23
 
 ### Added

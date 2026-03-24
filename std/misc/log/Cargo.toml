@@ -12,12 +12,5 @@ categories = ["compilers"]
 [lib]
 crate-type = ["staticlib", "lib"]
 
-[features]
-export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
-
-[dependencies]
-hew-export-macro = { path = "../../../hew-export-macro", optional = true }
-hew-export-types = { path = "../../../hew-export-types", optional = true }
-
 [lints]
 workspace = true

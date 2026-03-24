@@ -1,6 +1,5 @@
 # Distributed Actor Infrastructure — Journey Log
 
-<<<<<<< HEAD
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 
 ### Goal
@@ -225,6 +224,22 @@ dropping exact-item or explicit-close behaviour.
   behaviour for native packages.
 - Let `HewSink::close()` delegate through the stored close callback before
   releasing the backing, so file-style flush-on-close behaviour still works.
+
+## Phase 10: Remove dead export metadata tooling (2026-03-24)
+
+### Goal
+
+Remove the unused `hew-stdlib-gen` pipeline and its proc-macro metadata path now
+that the type checker loads canonical stdlib `.hew` sources directly.
+
+### Decision
+
+- `Makefile` and `.github/` no longer invoke `hew-stdlib-gen`.
+- `hew-types/build.rs` only watches `std/` and `ecosystem/` source trees, which
+  confirms the generated descriptor path has already been replaced.
+- The remaining `export-meta` feature only fed the unused generator, so removing
+  it keeps the runtime and stdlib crates simpler without changing runtime
+  behaviour.
 
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 

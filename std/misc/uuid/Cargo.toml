@@ -12,16 +12,11 @@ categories = ["compilers"]
 [lib]
 crate-type = ["staticlib", "lib"]
 
-[features]
-export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
-
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
 uuid = { version = "1", features = ["v4", "v7"] }
 libc = "0.2"
-hew-export-macro = { path = "../../../hew-export-macro", optional = true }
-hew-export-types = { path = "../../../hew-export-types", optional = true }
 
 [lints]
 workspace = true

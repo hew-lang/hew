@@ -93,9 +93,6 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 ### Standard Library & Build Support
 
 - **std/** — Standard library modules (`.hew` source files + Rust FFI crates)
-- **hew-export-macro/** — Proc macro for stdlib export declarations
-- **hew-export-types/** — Shared types for the export system
-- **hew-stdlib-gen/** — Generates stdlib module descriptors for the type checker
 
 ### Distribution
 

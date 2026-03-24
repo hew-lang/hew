@@ -70,6 +70,15 @@ whose only job was asserting the reserved helper returned `None` when unset.
 When auditing dead code, distinguish real behaviour coverage from tests that
 exist only to justify an otherwise unused function.
 
+## From the 2026-03-24 export-tooling cleanup
+
+### 1. Workspace members can stay alive long after their build path dies
+
+`hew-stdlib-gen` and its export-metadata crates still compiled in the workspace
+even though neither `Makefile` nor CI invoked them anymore. When a code
+generator is superseded, verify the new data path end-to-end and then remove the
+old crates instead of letting dead tooling accumulate.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

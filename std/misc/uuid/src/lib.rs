@@ -9,9 +9,6 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-#[cfg(feature = "export-meta")]
-pub mod export_meta;
-
 use std::ffi::c_char;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
@@ -22,13 +19,6 @@ use uuid::Uuid;
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
 /// hyphenated UUID (36 chars + NUL). The caller must free it with
 /// [`hew_uuid_free`]. Returns null on allocation failure.
-#[cfg_attr(
-    feature = "export-meta",
-    hew_export_macro::hew_export(
-        module = "std::misc::uuid",
-        doc = "Generate a random (v4) UUID string"
-    )
-)]
 #[no_mangle]
 pub extern "C" fn hew_uuid_v4() -> *mut c_char {
     str_to_malloc(&Uuid::new_v4().to_string())
@@ -39,13 +29,6 @@ pub extern "C" fn hew_uuid_v4() -> *mut c_char {
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
 /// hyphenated UUID (36 chars + NUL). The caller must free it with
 /// [`hew_uuid_free`]. Returns null on allocation failure.
-#[cfg_attr(
-    feature = "export-meta",
-    hew_export_macro::hew_export(
-        module = "std::misc::uuid",
-        doc = "Generate a time-ordered (v7) UUID string"
-    )
-)]
 #[no_mangle]
 pub extern "C" fn hew_uuid_v7() -> *mut c_char {
     str_to_malloc(&Uuid::now_v7().to_string())
@@ -59,14 +42,6 @@ pub extern "C" fn hew_uuid_v7() -> *mut c_char {
 /// # Safety
 ///
 /// `s` must be a valid NUL-terminated C string, or null.
-#[cfg_attr(
-    feature = "export-meta",
-    hew_export_macro::hew_export(
-        module = "std::misc::uuid",
-        name = "is_valid",
-        doc = "Return 1 if the string is a valid UUID, 0 otherwise"
-    )
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_uuid_parse(s: *const c_char) -> i32 {
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string (or null).

@@ -24,6 +24,28 @@ keeping the remaining error-formatting tests focused on observable behaviour.
 - `cargo test -p hew-types`
 - `cargo clippy -p hew-types -- -D warnings`
 
+## Phase 7: C string helper deduplication (2026-03-24)
+
+### Goal
+
+Remove the WASM bridge's private lossy C-string helper if the shared ABI helper
+crate can carry the same behaviour without adding new coupling.
+
+### Findings
+
+- `hew-runtime` already depends on `hew-cabi`, so this refactor does not add a
+  new crate edge or create a cycle.
+- The existing helpers were close but not identical: `hew-cabi::cstr_to_str`
+  rejects invalid UTF-8 with `None`, while `hew-runtime::bridge::cstr_to_string`
+  intentionally keeps lossy conversion and turns null pointers into empty
+  strings.
+
+### Decision
+
+Add `hew_cabi::cstr_to_string_lossy` with the bridge's existing semantics and
+switch the bridge metadata loader to call it. This removes the duplicate helper
+without changing how actor metadata names and type strings are decoded.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

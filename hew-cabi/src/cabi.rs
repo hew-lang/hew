@@ -54,6 +54,25 @@ pub unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(ptr) }.to_str().ok()
 }
 
+/// Extract a NUL-terminated C string pointer into an owned `String`, replacing
+/// invalid UTF-8 sequences with U+FFFD.
+///
+/// Returns an empty string when `ptr` is null.
+///
+/// # Safety
+///
+/// If non-null, `ptr` must point to a valid NUL-terminated C string.
+#[must_use]
+pub unsafe fn cstr_to_string_lossy(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: Caller guarantees ptr is a valid NUL-terminated C string.
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +243,31 @@ mod tests {
         // SAFETY: s is a valid C string literal.
         let result = unsafe { cstr_to_str(s.as_ptr()) };
         assert_eq!(result, Some("héllo 🍁"));
+    }
+
+    // ── cstr_to_string_lossy ───────────────────────────────────────────────
+
+    #[test]
+    fn cstr_to_string_lossy_null_returns_empty_string() {
+        // SAFETY: Passing null is the scenario under test.
+        let result = unsafe { cstr_to_string_lossy(std::ptr::null()) };
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn cstr_to_string_lossy_valid_utf8_preserves_text() {
+        let s = c"metadata";
+        // SAFETY: s is a valid C string literal.
+        let result = unsafe { cstr_to_string_lossy(s.as_ptr()) };
+        assert_eq!(result, "metadata");
+    }
+
+    #[test]
+    fn cstr_to_string_lossy_invalid_utf8_replaces_bad_bytes() {
+        let bytes: &[u8] = &[b'f', b'o', 0x80, 0x00];
+        // SAFETY: bytes is a NUL-terminated buffer; invalid UTF-8 is intentional.
+        let result = unsafe { cstr_to_string_lossy(bytes.as_ptr().cast::<c_char>()) };
+        assert_eq!(result, "fo�");
     }
 
     // ── roundtrip: str_to_malloc → cstr_to_str ───────────────────────────

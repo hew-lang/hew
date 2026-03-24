@@ -9,6 +9,16 @@ instantiate a helper to prove the helper exists. In `hew-types`, the dead
 `TypeError` constructors and unqualified `ModuleRegistry` predicates looked
 alive until their call sites were filtered down to test-only references.
 
+## From the 2026-03-24 C string helper dedup pass
+
+### 1. "Shared helper already exists" must be checked for semantic parity
+
+`hew-cabi::cstr_to_str` and `hew-runtime::bridge::cstr_to_string` both start
+from `CStr`, but they do different jobs: one rejects invalid UTF-8 and the
+other preserves the boundary by decoding lossily into an owned `String`.
+Deduplicating ABI helpers safely sometimes means adding the right shared helper,
+not reusing the closest existing one.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

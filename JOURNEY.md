@@ -98,6 +98,22 @@ share one helper and future changes only need to touch one code path.
 - Retarget the focused tests at the shared helper and add coverage for the trimmed
   line match so the deduplication preserves existing behaviour.
 
+## Phase 8: Deduplicate `find_hew_binary()` (2026-03-24)
+
+### Goal
+
+Remove the duplicated `find_hew_binary()` helper from the REPL and test runner
+without changing how either feature locates the built `hew` executable.
+
+### Decision
+
+- Verified the two implementations were functionally identical: same
+  `current_exe()` probe, same direct-name fast path, same three relative-path
+  candidates, and the same canonicalization/error behaviour.
+- Extracted the shared logic into `hew-cli/src/util.rs` and wired both callers
+  through `crate::util::find_hew_binary()` so future path-search changes only
+  need one edit.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

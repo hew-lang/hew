@@ -2,7 +2,6 @@
 
 use super::classify::{self, InputKind, ReplCommand};
 use super::session::Session;
-use std::path::PathBuf;
 use std::process::Command;
 
 /// Result of evaluating a single input in the REPL.
@@ -291,48 +290,9 @@ impl ReplSession {
     }
 }
 
-/// Locate the `hew` binary.
-///
-/// When running as `hew eval`, `current_exe()` is the hew binary itself.
-/// When running unit tests, the test binary is in `target/debug/deps/` and
-/// the hew binary is at `target/debug/hew`.
-fn find_hew_binary() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate self: {e}"))?;
-
-    // If the current binary is named "hew" (or "hew.exe" on Windows), use it directly.
-    if exe
-        .file_name()
-        .is_some_and(|n| n == "hew" || n == "hew.exe")
-    {
-        return Ok(exe);
-    }
-
-    // Otherwise, search relative to the current binary.
-    let exe_dir = exe.parent().expect("exe should have a parent directory");
-    let hew_name = format!("hew{}", crate::platform::exe_suffix());
-    let candidates = [
-        exe_dir.join(format!("../{hew_name}")), // target/debug/deps/../hew
-        exe_dir.join(&hew_name),                // same dir
-        exe_dir.join(format!("../../debug/{hew_name}")), // fallback
-    ];
-
-    for c in &candidates {
-        if c.exists() {
-            return c
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve hew binary path: {e}"));
-        }
-    }
-
-    Err(format!(
-        "cannot find hew binary (searched relative to {})",
-        exe_dir.display()
-    ))
-}
-
 /// Compile Hew source to a native binary via `hew build` and execute it.
 fn compile_and_execute(source: &str) -> Result<String, String> {
-    let hew_binary = find_hew_binary()?;
+    let hew_binary = crate::util::find_hew_binary()?;
 
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
@@ -549,7 +509,7 @@ mod tests {
     fn require_toolchain() -> bool {
         static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *OK.get_or_init(|| {
-            let Ok(hew) = find_hew_binary() else {
+            let Ok(hew) = crate::util::find_hew_binary() else {
                 eprintln!("REPL integration tests skipped: hew binary not found");
                 return false;
             };

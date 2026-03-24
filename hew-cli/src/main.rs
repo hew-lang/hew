@@ -29,6 +29,7 @@ mod platform;
 #[cfg(unix)]
 mod signal;
 mod test_runner;
+mod util;
 mod watch;
 mod wire;
 

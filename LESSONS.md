@@ -1,5 +1,14 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-24 dead-helper cleanup
+
+### 1. Self-tests can be the only evidence a helper is still "used"
+
+Searcher output needs to distinguish real production callers from tests that only
+instantiate a helper to prove the helper exists. In `hew-types`, the dead
+`TypeError` constructors and unqualified `ModuleRegistry` predicates looked
+alive until their call sites were filtered down to test-only references.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

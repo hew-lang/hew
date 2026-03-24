@@ -1,5 +1,29 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 7: Delete dead `hew-types` helpers (2026-03-24)
+
+### Goal
+
+Remove `hew-types` helper APIs that no production checker code calls anymore while
+keeping the remaining error-formatting tests focused on observable behaviour.
+
+### Decisions
+
+- Verified the targeted `TypeError` convenience constructors with a caller search
+  across `hew-types/src/`; every call site was inside `error.rs` tests, so the
+  helpers were dead in production.
+- Verified `ModuleRegistry::is_unqualified_handle_type` and
+  `is_unqualified_drop_type` the same way; both methods were only exercised by
+  tests that existed solely to prove those helpers themselves worked.
+- Kept the display-oriented `TypeError` tests, but rewrote them to build errors
+  through `TypeError::new(...)` so they still cover formatting behaviour instead
+  of the removed helper APIs.
+
+### Validation
+
+- `cargo test -p hew-types`
+- `cargo clippy -p hew-types -- -D warnings`
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

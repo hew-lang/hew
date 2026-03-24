@@ -129,15 +129,6 @@ impl ModuleGraph {
         self.modules.insert(module.id.clone(), module);
     }
 
-    #[must_use]
-    pub fn get_module(&self, id: &ModuleId) -> Option<&Module> {
-        self.modules.get(id)
-    }
-
-    pub fn get_module_mut(&mut self, id: &ModuleId) -> Option<&mut Module> {
-        self.modules.get_mut(id)
-    }
-
     /// Return the direct dependencies (import targets) of a module.
     #[must_use]
     pub fn dependencies(&self, id: &ModuleId) -> Vec<&ModuleId> {

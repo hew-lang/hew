@@ -1193,3 +1193,15 @@ functions returning `Result<T, IoError>` directly.
 - **Path forward:** Implement null-check-before-drop in `emitDropEntry`, then add
   null-after-move at consumption sites (match destructuring, callee args, return).
   Only then re-enable param drops.
+
+## Phase 8: Deduplicate profiler snapshot JSON building (2026-03-24)
+
+### Goal
+
+Remove repeated profiler snapshot JSON array assembly in the runtime without introducing a heavy serialization abstraction.
+
+### Decision
+
+- Added small `hew-runtime::util` helpers for writing JSON arrays and escaped string values directly into a `String`.
+- Reused that helper from routing, connection, and cluster snapshots because all three shared the same comma-delimited array pattern.
+- Kept each snapshot's per-record formatting local so the helper stays generic and does not hide field-specific logic.

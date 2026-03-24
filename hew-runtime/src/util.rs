@@ -8,6 +8,47 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Build a JSON array by writing each element directly into the output string.
+pub(crate) fn json_array<I, F>(items: I, mut write_item: F) -> String
+where
+    I: IntoIterator,
+    F: FnMut(&mut String, I::Item),
+{
+    let mut json = String::from("[");
+    let mut first = true;
+    for item in items {
+        if first {
+            first = false;
+        } else {
+            json.push(',');
+        }
+        write_item(&mut json, item);
+    }
+    json.push(']');
+    json
+}
+
+/// Push a JSON string value into `out`, escaping control characters as needed.
+pub(crate) fn push_json_string(out: &mut String, s: &str) {
+    use std::fmt::Write as _;
+
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => {
+                let _ = write!(out, "\\u{:04x}", ch as u32);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
 /// Extension trait for [`Mutex`] that recovers from poisoned locks.
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
@@ -80,5 +121,34 @@ impl CondvarExt for Condvar {
     ) -> (MutexGuard<'a, T>, std::sync::WaitTimeoutResult) {
         self.wait_timeout(guard, dur)
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_array_empty_returns_empty_array() {
+        let json = json_array(std::iter::empty::<i32>(), |_, _| unreachable!());
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn json_array_multiple_items_inserts_commas_between_items() {
+        use std::fmt::Write as _;
+
+        let json = json_array([1, 2, 3], |out, value| {
+            let _ = write!(out, "{value}");
+        });
+
+        assert_eq!(json, "[1,2,3]");
+    }
+
+    #[test]
+    fn push_json_string_escapes_json_metacharacters_and_controls() {
+        let mut json = String::new();
+        push_json_string(&mut json, "quo\"te\\slash\nline\rreturn\t\x1f");
+        assert_eq!(json, r#""quo\"te\\slash\nline\rreturn\t\u001f""#);
     }
 }

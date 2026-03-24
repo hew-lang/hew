@@ -150,20 +150,16 @@ pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
     use std::fmt::Write as _;
 
     let routes = table.routes.read_or_recover();
+    let routes_json = crate::util::json_array(routes.iter(), |json, (&node_id, &conn_id)| {
+        let _ = write!(json, r#"{{"node_id":{node_id},"conn_id":{conn_id}}}"#);
+    });
 
     let mut json = String::new();
     let _ = write!(
         json,
-        r#"{{"local_node_id":{},"routes":["#,
-        table.local_node_id
+        r#"{{"local_node_id":{},"routes":{routes_json}}}"#,
+        table.local_node_id,
     );
-    for (i, (&node_id, &conn_id)) in routes.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
-        let _ = write!(json, r#"{{"node_id":{node_id},"conn_id":{conn_id}}}"#,);
-    }
-    json.push_str("]}");
     json
 }
 
@@ -179,6 +175,23 @@ mod tests {
     unsafe impl Send for SharedTable {}
     // SAFETY: routing table internals are synchronized by an RwLock.
     unsafe impl Sync for SharedTable {}
+
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn snapshot_routing_json_emits_local_node_and_routes() {
+        // SAFETY: pointer lifecycle is bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(7);
+            hew_routing_add_route(table, 9, 55);
+
+            assert_eq!(
+                snapshot_routing_json(&*table),
+                r#"{"local_node_id":7,"routes":[{"node_id":9,"conn_id":55}]}"#
+            );
+
+            hew_routing_table_free(table);
+        }
+    }
 
     #[test]
     fn local_lookup_returns_minus_one() {

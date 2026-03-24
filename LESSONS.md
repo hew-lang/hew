@@ -606,3 +606,13 @@ When using `git worktree`, the cmake configuration caches `HEW_CLI` from `find_p
 If the cmake cache points to a different checkout's binary (e.g., main's release build),
 tests will run against the wrong compiler. Delete `CMakeCache.txt` and rebuild to
 reconfigure. Symptom: tests pass when run manually but fail in ctest.
+
+## From the 2026-03-24 profiler JSON dedup pass
+
+### 1. Small JSON writers are a better fit here than a serializer dependency
+
+The profiler snapshot endpoints all needed the same comma-delimited array assembly, but each record still had subsystem-specific fields. A tiny shared array writer reduced duplication without forcing the runtime into a generic object-builder abstraction.
+
+### 2. Refactors around manual JSON are a good time to close escaping gaps
+
+The cluster member snapshot already shared the array-building pattern, and moving it onto a helper made it straightforward to emit `addr` through a proper JSON string escaper. When JSON is hand-built, deduplication work is also a good audit point for correctness of quoted fields.

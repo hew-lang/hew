@@ -33,11 +33,19 @@ pub struct ExprTypeEntry {
     pub ty: Spanned<TypeExpr>,
 }
 
-/// Top-level serialization wrapper: the program AST plus the resolved
-/// expression type map from the type checker.
+/// Top-level serialization wrapper: the program AST plus type-checker and
+/// source metadata used by C++ codegen.
 ///
-/// Serialized as a `MessagePack` map with three keys: `"items"`,
-/// `"module_doc"`, and `"expr_types"`.
+/// Serialized as a `MessagePack` map with these keys:
+/// - `"schema_version"`
+/// - `"items"`
+/// - `"module_doc"`
+/// - `"expr_types"`
+/// - `"handle_types"`
+/// - `"handle_type_repr"`
+/// - `"module_graph"` when module graph data is available
+/// - `"source_path"` when debug source paths are available
+/// - `"line_map"` when debug line mapping data is available
 #[derive(Debug, Serialize)]
 struct TypedProgram<'a> {
     /// Schema version — always serialized first so the C++ reader can

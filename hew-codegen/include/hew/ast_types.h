@@ -999,7 +999,8 @@ struct ExprTypeEntry {
 
 struct Program {
   /// Schema version of the msgpack AST payload.
-  /// 0 means the payload pre-dates versioning (always accepted).
+  /// The reader requires an explicit exact match and rejects missing or
+  /// mismatched versions.
   uint32_t schema_version = 0;
   std::vector<Spanned<Item>> items;
   std::optional<std::string> module_doc;

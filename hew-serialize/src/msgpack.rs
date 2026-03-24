@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use hew_parser::ast::{Spanned, TypeExpr};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleId};
 use serde::{Deserialize, Serialize};
 
 /// Schema version for the msgpack AST boundary.
@@ -47,7 +47,7 @@ pub struct ExprTypeEntry {
 /// - `"source_path"` when debug source paths are available
 /// - `"line_map"` when debug line mapping data is available
 #[derive(Debug, Serialize)]
-struct TypedProgram<'a> {
+struct TypedProgram<'a, ModuleGraphRepr> {
     /// Schema version — always serialized first so the C++ reader can
     /// reject incompatible payloads before parsing the rest of the AST.
     schema_version: u32,
@@ -63,7 +63,7 @@ struct TypedProgram<'a> {
     /// `"i32"` means the type is represented as a 32-bit integer (e.g., file descriptors).
     handle_type_repr: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    module_graph: Option<&'a ModuleGraph>,
+    module_graph: Option<ModuleGraphRepr>,
     /// Absolute path to the source .hew file (for DWARF debug info).
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<&'a str>,
@@ -72,6 +72,30 @@ struct TypedProgram<'a> {
     /// Used by codegen to convert byte-offset spans to line:column for DWARF.
     #[serde(skip_serializing_if = "Option::is_none")]
     line_map: Option<&'a [usize]>,
+}
+
+impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
+    fn new(
+        program: &'a hew_parser::ast::Program,
+        expr_types: &'a [ExprTypeEntry],
+        handle_types: Vec<String>,
+        handle_type_repr: HashMap<String, String>,
+        module_graph: Option<ModuleGraphRepr>,
+        source_path: Option<&'a str>,
+        line_map: Option<&'a [usize]>,
+    ) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            items: &program.items,
+            module_doc: &program.module_doc,
+            expr_types,
+            handle_types,
+            handle_type_repr,
+            module_graph,
+            source_path,
+            line_map,
+        }
+    }
 }
 
 /// Serialize a [`Program`](hew_parser::ast::Program) to `MessagePack` bytes,
@@ -97,49 +121,25 @@ pub fn serialize_to_msgpack(
     source_path: Option<&str>,
     line_map: Option<&[usize]>,
 ) -> Vec<u8> {
-    let typed = TypedProgram {
-        schema_version: SCHEMA_VERSION,
-        items: &program.items,
-        module_doc: &program.module_doc,
-        expr_types: &expr_types,
+    let typed = TypedProgram::new(
+        program,
+        &expr_types,
         handle_types,
         handle_type_repr,
-        module_graph: program.module_graph.as_ref(),
+        program.module_graph.as_ref(),
         source_path,
         line_map,
-    };
+    );
     rmp_serde::to_vec_named(&typed).expect("AST MessagePack serialization failed")
 }
 
 /// JSON-friendly module graph: uses `ModuleId.to_string()` as map keys
 /// instead of the struct form (which JSON cannot represent as object keys).
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ModuleGraphJson<'a> {
     modules: BTreeMap<String, &'a Module>,
     root: &'a ModuleId,
     topo_order: &'a Vec<ModuleId>,
-}
-
-/// JSON-friendly top-level wrapper. Identical to [`TypedProgram`] except
-/// `module_graph` uses string keys for the modules map.
-#[derive(Serialize)]
-struct TypedProgramJson<'a> {
-    schema_version: u32,
-    items: &'a Vec<Spanned<hew_parser::ast::Item>>,
-    module_doc: &'a Option<String>,
-    expr_types: &'a [ExprTypeEntry],
-    handle_types: Vec<String>,
-    handle_type_repr: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    module_graph: Option<ModuleGraphJson<'a>>,
-    /// Absolute path to the source .hew file (for DWARF debug info).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_path: Option<&'a str>,
-    /// Byte offset of the start of each line in the source file.
-    /// `line_map`[0] = offset of line 1, `line_map`[1] = offset of line 2, etc.
-    /// Used by codegen to convert byte-offset spans to line:column for DWARF.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    line_map: Option<&'a [usize]>,
 }
 
 /// Serialize a [`Program`](hew_parser::ast::Program) to pretty-printed JSON.
@@ -171,17 +171,15 @@ pub fn serialize_to_json(
         root: &mg.root,
         topo_order: &mg.topo_order,
     });
-    let typed = TypedProgramJson {
-        schema_version: SCHEMA_VERSION,
-        items: &program.items,
-        module_doc: &program.module_doc,
-        expr_types: &expr_types,
+    let typed = TypedProgram::new(
+        program,
+        &expr_types,
         handle_types,
         handle_type_repr,
-        module_graph: module_graph_json,
+        module_graph_json,
         source_path,
         line_map,
-    };
+    );
     serde_json::to_string_pretty(&typed).expect("AST JSON serialization failed")
 }
 

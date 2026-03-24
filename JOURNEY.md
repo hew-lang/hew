@@ -148,6 +148,22 @@ how plain strings or interpolated string literals behave.
 - Added a parser test that proves `\{` stays literal while shared escapes like `\xNN`
   still decode inside interpolated strings.
 
+## Phase 9: TypedProgram wrapper deduplication (2026-03-24)
+
+### Goal
+
+Remove repeated top-level wire-wrapper code in `hew-serialize/src/msgpack.rs`
+without changing either the MessagePack or JSON schema.
+
+### Decision
+
+- Chose a generic `TypedProgram<'a, ModuleGraphRepr>` over an enum or layered
+  base/wrapper split because the only variation is the `module_graph` field
+  type.
+- Kept `ModuleGraphJson` as the JSON-specific adapter, then routed both JSON
+  and MessagePack serialization through the same constructor so field order and
+  names remain identical.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

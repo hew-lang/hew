@@ -1,21 +1,21 @@
 # Distributed Actor Infrastructure — Journey Log
 
-## Phase 8: Stream/Sink guard deduplication (2026-03-24)
+## Phase 8: Parser super-trait helper extraction (2026-03-24)
 
 ### Goal
 
-Remove the duplicated Stream/Sink element-type guard in `hew-types/src/check.rs`
-without changing method resolution behaviour or diagnostics.
+Deduplicate the parser's repeated trait-bound loops without changing how trait,
+actor, generic, associated-type, or where-clause bounds are parsed.
 
 ### Decisions
 
-- Verified the Stream and Sink guards were structurally identical before
-  extracting anything: both inferred the first type argument, allowed only
-  `String`, `bytes`, type variables, and `Ty::Error`, and reported the same
-  invalid-operation wording with only the type name changed.
-- Extracted just the shared element-type validator instead of introducing a full
-  `check_sink_method()` helper, because the remaining Sink match arm is small and
-  not duplicated elsewhere.
+- Read all four `parse_trait_bound` loop sites before refactoring and confirmed
+  the only behavioural split was return shape: trait/actor declarations produce
+  `Option<Vec<TraitBound>>`, while associated types, generic parameters, and
+  where clauses need the plain `Vec<TraitBound>`.
+- Extracted `parse_optional_super_traits()` for the colon-gated trait/actor
+  cases and `parse_trait_bound_list()` for the shared `Trait + Bound` loop so
+  every site still consumes separators and parse failures the same way.
 
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 

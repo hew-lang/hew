@@ -46,7 +46,9 @@ use std::sync::mpsc;
 // These are the shared ABI types that native packages (e.g. HTTP) also use.
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
-pub use hew_cabi::sink::{into_sink_ptr, set_last_error, take_last_error, HewSink, SinkBacking};
+pub use hew_cabi::sink::{
+    into_sink_ptr, into_write_sink_ptr, set_last_error, take_last_error, HewSink,
+};
 
 // hew_stream_last_error is defined in hew-cabi::sink (with #[no_mangle])
 // so we re-export it here for Rust callers but don't redefine the C symbol.
@@ -82,7 +84,7 @@ trait StreamBacking: Send + std::fmt::Debug {
     fn is_closed(&self) -> bool;
 }
 
-// SinkBacking is defined in hew_cabi::sink and re-exported above.
+// HewSink is defined in hew_cabi::sink and re-exported above.
 
 // ── Public handle types ────────────────────────────────────────────────────────
 
@@ -162,30 +164,20 @@ impl StreamBacking for ChannelStream {
     }
 }
 
-impl SinkBacking for ChannelSink {
-    fn write_item(&mut self, data: &[u8]) {
-        // Blocks (with backpressure) if the bounded channel is full.
-        if self.tx.send(data.to_vec()).is_err() {
-            set_last_error("hew_sink_write: failed to send to channel sink".to_string());
-        }
+impl Write for ChannelSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.tx.send(data.to_vec()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "failed to send to channel sink",
+            )
+        })?;
+        Ok(data.len())
     }
 
-    fn flush(&mut self) {
-        // In-memory channels have no buffering to flush.
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
-
-    fn close(&mut self) {
-        // Dropping tx disconnects the channel; the stream side sees EOF
-        // on the next recv().  We signal this by sending a sentinel via
-        // the channel disconnect (tx drop happens when HewSink is freed).
-    }
-}
-
-// ── Vec backing (drain) ────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct VecStream {
-    items: VecDeque<Item>,
 }
 
 impl StreamBacking for VecStream {
@@ -232,32 +224,11 @@ impl StreamBacking for FileReadStream {
     }
 }
 
-// ── File-write backing ────────────────────────────────────────────────────────
+// ── Vec backing (drain) ────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct FileWriteSink {
-    writer: fs::File,
-}
-
-impl SinkBacking for FileWriteSink {
-    fn write_item(&mut self, data: &[u8]) {
-        if let Err(e) = self.writer.write_all(data) {
-            set_last_error(format!("hew_sink_write: file write failed: {e}"));
-        }
-    }
-
-    fn flush(&mut self) {
-        if let Err(e) = self.writer.flush() {
-            set_last_error(format!("hew_sink_flush: file flush failed: {e}"));
-        }
-    }
-
-    fn close(&mut self) {
-        if let Err(e) = self.writer.flush() {
-            set_last_error(format!("hew_sink_close: file flush failed: {e}"));
-        }
-        // File is closed when the struct is dropped.
-    }
+struct VecStream {
+    items: VecDeque<Item>,
 }
 
 // ── Lines adapter backing ─────────────────────────────────────────────────────
@@ -694,7 +665,7 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
     let (tx, rx) = mpsc::sync_channel::<Item>(cap);
 
     let stream_ptr = into_stream_ptr(ChannelStream { rx });
-    let sink_ptr = into_sink_ptr(ChannelSink { tx });
+    let sink_ptr = into_write_sink_ptr(ChannelSink { tx });
 
     Box::into_raw(Box::new(HewStreamPair {
         sink: sink_ptr,
@@ -824,7 +795,7 @@ pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut
         return ptr::null_mut();
     };
     match fs::File::create(path_str) {
-        Ok(f) => into_sink_ptr(FileWriteSink { writer: f }),
+        Ok(f) => into_write_sink_ptr(f),
         Err(e) => {
             set_last_error(format!("{e}"));
             ptr::null_mut()
@@ -1037,7 +1008,7 @@ pub unsafe extern "C" fn hew_sink_write(sink: *mut HewSink, data: *const c_void,
     // SAFETY: Caller guarantees data points to size readable bytes.
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
     // SAFETY: sink is valid per caller contract.
-    unsafe { (*sink).inner.write_item(bytes) };
+    unsafe { (*sink).write_item(bytes) };
 }
 
 /// Flush buffered writes in a sink (no-op for in-memory sinks).
@@ -1049,7 +1020,7 @@ pub unsafe extern "C" fn hew_sink_write(sink: *mut HewSink, data: *const c_void,
 pub unsafe extern "C" fn hew_sink_flush(sink: *mut HewSink) {
     if !sink.is_null() {
         // SAFETY: sink is valid per caller contract.
-        unsafe { (*sink).inner.flush() };
+        unsafe { (*sink).flush() };
     }
 }
 
@@ -1085,9 +1056,9 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
     let k = unsafe { &mut *sink };
 
     while let Some(item) = s.inner.next() {
-        k.inner.write_item(&item);
+        k.write_item(&item);
     }
-    k.inner.close();
+    k.close();
 
     // Free both handles.
     // SAFETY: Both were allocated with Box::into_raw.
@@ -1217,7 +1188,7 @@ pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const 
     let bytes = s.to_bytes();
 
     // SAFETY: sink is valid per caller contract.
-    unsafe { (*sink).inner.write_item(bytes) };
+    unsafe { (*sink).write_item(bytes) };
 }
 
 /// Check if a stream has been closed/exhausted.
@@ -1463,7 +1434,7 @@ pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut Hew
         // hew_sink_write short-circuits on size=0, but empty bytes are valid
         // data items that must be delivered.  Write directly to the backing.
         // SAFETY: sink is valid per caller contract.
-        unsafe { (*sink).inner.write_item(&[]) };
+        unsafe { (*sink).write_item(&[]) };
     } else {
         // SAFETY: sink is valid; bytes slice is valid for its length.
         unsafe {

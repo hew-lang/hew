@@ -29,6 +29,7 @@ mod platform;
 #[cfg(unix)]
 mod signal;
 mod test_runner;
+mod util;
 mod watch;
 mod wire;
 
@@ -534,9 +535,6 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
                 }
                 output = Some(args[i].clone());
             }
-            "--Werror" => {
-                options.werror = true;
-            }
             "--no-typecheck" => {
                 options.no_typecheck = true;
             }
@@ -589,6 +587,10 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
                 options.pkg_path = Some(std::path::PathBuf::from(
                     s.strip_prefix("--pkg-path=").unwrap(),
                 ));
+            }
+            s if s.starts_with('-') => {
+                eprintln!("Unknown option: {s}");
+                std::process::exit(1);
             }
             _ => {
                 if input.is_none() {
@@ -648,7 +650,6 @@ Commands:
   help                            Show this message
 
 Build/check options:
-  --Werror                        Accepted for spec compatibility (no-op)
   --no-typecheck                  Skip type-checking phase
   --debug, -g                     Build with debug info (no optimization, no stripping)
   --emit-ast                      Emit enriched AST as JSON

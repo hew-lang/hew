@@ -9,7 +9,6 @@ _hew_files() {
 _hew_build_opts() {
     local -a opts=(
         '-o[Output file path]:output file:_files'
-        '--Werror[Treat warnings as errors]'
         '--no-typecheck[Skip type-checking phase]'
         '--emit-mlir[Emit MLIR instead of linking]'
         '--emit-llvm[Emit LLVM IR instead of linking]'
@@ -54,7 +53,6 @@ _hew() {
                 run)
                     local -a run_opts=(
                         '-o[Output file path]:output file:_files'
-                        '--Werror[Treat warnings as errors]'
                         '--no-typecheck[Skip type-checking phase]'
                         '--pkg-path[Override package search directory]:package dir:_directories'
                     )
@@ -91,7 +89,6 @@ _hew() {
                         '--run[Build and run on successful check]'
                         '--clear[Clear terminal before each re-check]'
                         '--debounce[Debounce time in milliseconds]:milliseconds:'
-                        '--Werror[Treat warnings as errors]'
                         '--no-typecheck[Skip type-checking phase]'
                         '--pkg-path[Override package search directory]:package dir:_directories'
                     )

@@ -3810,7 +3810,7 @@ The parser (`hew-parser/src/parser.rs`) is implemented in Rust as a recursive-de
 
 ### 8.4 Type Checking
 
-Type checking is an optional pass enabled by default. The `TypeChecker` (`hew-types/src/`) walks the AST and produces a `TypeCheckOutput` containing inferred types, resolved names, and diagnostic errors. By default, type errors are reported as **warnings** and compilation proceeds. The `--Werror` flag promotes type errors to fatal errors. The `--no-typecheck` flag skips the pass entirely.
+Type checking is an optional pass enabled by default. The `TypeChecker` (`hew-types/src/`) walks the AST and produces a `TypeCheckOutput` containing inferred types, resolved names, and diagnostic errors. Type errors are fatal by default. The `--no-typecheck` flag skips the pass entirely.
 
 When type check output is available, it is provided to the MLIR generation stage for type-informed code generation.
 

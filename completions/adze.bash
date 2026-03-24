@@ -7,7 +7,7 @@ _adze() {
 
     local commands="init add install publish list search info tree update remove check outdated login logout key namespace yank registry-key deprecate index completions"
     local key_commands="generate list info"
-    local namespace_commands="register list info"
+    local namespace_commands="register info"
     local index_commands="sync resolve list"
 
     # Complete subcommands at position 1
@@ -21,7 +21,7 @@ _adze() {
     case "$cmd" in
         init)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--lib --bin --actor" -- "$cur"))
+                COMPREPLY=($(compgen -W "--lib --actor" -- "$cur"))
                 return
             fi
             ;;

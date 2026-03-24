@@ -964,11 +964,7 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
 
     let members = cluster.members.lock_or_recover();
 
-    let mut json = String::from("[");
-    for (i, m) in members.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
+    crate::util::json_array(members.iter(), |json, m| {
         let state_str = match m.state {
             MEMBER_ALIVE => "alive",
             MEMBER_SUSPECT => "suspect",
@@ -983,12 +979,12 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
         let last_seen_ago_ms = now_ms.saturating_sub(m.last_seen_ms);
         let _ = write!(
             json,
-            r#"{{"node_id":{},"state":"{}","incarnation":{},"addr":"{}","last_seen_ms":{}}}"#,
-            m.node_id, state_str, m.incarnation, addr, last_seen_ago_ms,
+            r#"{{"node_id":{},"state":"{}","incarnation":{},"addr":"#,
+            m.node_id, state_str, m.incarnation,
         );
-    }
-    json.push(']');
-    json
+        crate::util::push_json_string(json, addr);
+        let _ = write!(json, r#","last_seen_ms":{last_seen_ago_ms}}}"#);
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -1002,6 +998,50 @@ mod tests {
             local_node_id: node_id,
             ..ClusterConfig::default()
         }
+    }
+
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn snapshot_members_json_escapes_addr_field() {
+        let cluster = HewCluster::new(make_config(1));
+        // SAFETY: hew_now_ms has no preconditions.
+        let before_snapshot_ms = unsafe { crate::io_time::hew_now_ms() };
+        let fixture_last_seen_ms = before_snapshot_ms.saturating_sub(25);
+        let mut member = ClusterMember {
+            node_id: 7,
+            state: MEMBER_ALIVE,
+            incarnation: 42,
+            addr: [0; 128],
+            last_seen_ms: fixture_last_seen_ms,
+        };
+        let addr = b"node\"\\\\name\n:9000";
+        member.addr[..addr.len()].copy_from_slice(addr);
+        cluster.members.lock_or_recover().push(member);
+
+        let json = snapshot_members_json(&cluster);
+        // SAFETY: hew_now_ms has no preconditions.
+        let after_snapshot_ms = unsafe { crate::io_time::hew_now_ms() };
+        let prefix = r#"[{"node_id":7,"state":"alive","incarnation":42,"addr":"node\"\\\\name\n:9000","last_seen_ms":"#;
+        assert!(
+            json.starts_with(prefix),
+            "snapshot should preserve field order and escape the address: {json}"
+        );
+        assert!(
+            json.ends_with("}]"),
+            "snapshot should end with a single object: {json}"
+        );
+
+        let last_seen_ms = json
+            .trim_start_matches(prefix)
+            .trim_end_matches("}]")
+            .parse::<u64>()
+            .expect("last_seen_ms should be numeric");
+        let min_elapsed_ms = before_snapshot_ms.saturating_sub(fixture_last_seen_ms);
+        let max_elapsed_ms = after_snapshot_ms.saturating_sub(fixture_last_seen_ms);
+        assert!(
+            (min_elapsed_ms..=max_elapsed_ms).contains(&last_seen_ms),
+            "snapshot should emit relative ms-ago output in [{min_elapsed_ms}, {max_elapsed_ms}], got {last_seen_ms}"
+        );
     }
 
     #[test]

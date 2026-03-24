@@ -5,7 +5,7 @@
 //!
 //! - String conversion helpers (`malloc_cstring`, `str_to_malloc`, `cstr_to_str`)
 //! - `HewVec` type definition and byte-conversion helpers
-//! - `HewSink` / `SinkBacking` trait for custom sink implementations
+//! - `HewSink` construction helpers for custom sink implementations
 //!
 //! Native package authors depend on this crate; it gets compiled into each
 //! package's staticlib. At link time, `hew_vec_*` symbols resolve against

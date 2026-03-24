@@ -4,9 +4,9 @@
 //! compiled Hew programs via the C ABI functions below.
 
 use hew_cabi::cabi::str_to_malloc;
-use hew_cabi::sink::{into_sink_ptr, set_last_error, HewSink, SinkBacking};
+use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use std::ffi::{c_char, CStr};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc;
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -422,18 +422,22 @@ struct HttpResponseSink {
     tx: Option<mpsc::SyncSender<Vec<u8>>>,
 }
 
-impl SinkBacking for HttpResponseSink {
-    fn write_item(&mut self, data: &[u8]) {
+impl Write for HttpResponseSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         if let Some(ref tx) = self.tx {
-            let _ = tx.send(data.to_vec());
+            tx.send(data.to_vec()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "failed to send to HTTP response sink",
+                )
+            })?;
         }
+        Ok(data.len())
     }
-    fn flush(&mut self) {
+
+    fn flush(&mut self) -> std::io::Result<()> {
         // tiny_http flushes on its own schedule; nothing to do here.
-    }
-    fn close(&mut self) {
-        // Drop the sender to signal EOF to the ChannelReader.
-        self.tx.take();
+        Ok(())
     }
 }
 
@@ -516,7 +520,7 @@ pub unsafe extern "C" fn hew_http_respond_stream(
         let _ = inner.respond(response);
     });
 
-    into_sink_ptr(HttpResponseSink { tx: Some(tx) })
+    into_write_sink_ptr(HttpResponseSink { tx: Some(tx) })
 }
 
 /// Close and free the HTTP server.
@@ -1006,9 +1010,9 @@ mod tests {
 
         // SAFETY: sink is a valid HewSink from into_sink_ptr.
         let sink_ref = unsafe { &mut *sink };
-        sink_ref.inner.write_item(b"chunk1");
-        sink_ref.inner.write_item(b"chunk2");
-        sink_ref.inner.close();
+        sink_ref.write_item(b"chunk1");
+        sink_ref.write_item(b"chunk2");
+        sink_ref.close();
 
         let resp = handle.join().unwrap();
         assert_eq!(resp.status().as_u16(), 200);

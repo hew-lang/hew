@@ -32,8 +32,6 @@ quic = [
 profiler = ["dep:tiny_http", "dep:flate2"]
 # OpenTelemetry OTLP/HTTP trace exporter (no tokio — pure sync HTTP via ureq)
 otel = ["dep:ureq"]
-# Emit __hew_export_meta_* companion functions for stdlib code generation
-export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
 
 [dependencies]
 # Core dependencies — always linked (collections, print, string, etc.)
@@ -55,8 +53,6 @@ tiny_http = { version = "0.12", optional = true }
 # Sync HTTP client for the OTel OTLP/HTTP exporter (no async runtime needed).
 # TLS is opt-in — most OTel endpoints (Jaeger, Tempo) run on plain HTTP locally.
 ureq = { version = "3", optional = true, default-features = false }
-hew-export-macro = { path = "../hew-export-macro", optional = true }
-hew-export-types = { path = "../hew-export-types", optional = true }
 
 # QUIC transport dependencies (optional, behind "quic" feature)
 quinn = { version = "0.11", optional = true, default-features = false, features = [

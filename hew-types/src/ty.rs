@@ -378,24 +378,6 @@ impl Ty {
         }
     }
 
-    /// If this is `Sender<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_sender(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
-    /// If this is `Receiver<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_receiver(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named { name, args } if name == "Receiver" && args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
     /// If this is `Generator<Y, R>`, return `Some((&Y, &R))`.
     #[must_use]
     pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {

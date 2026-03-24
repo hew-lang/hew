@@ -113,26 +113,6 @@ impl TypeError {
         )
     }
 
-    /// Create an undefined variable error.
-    #[must_use]
-    pub fn undefined_variable(span: Span, name: &str) -> Self {
-        Self::new(
-            TypeErrorKind::UndefinedVariable,
-            span,
-            format!("cannot find value `{name}` in this scope"),
-        )
-    }
-
-    /// Create an undefined type error.
-    #[must_use]
-    pub fn undefined_type(span: Span, name: &str) -> Self {
-        Self::new(
-            TypeErrorKind::UndefinedType,
-            span,
-            format!("cannot find type `{name}` in this scope"),
-        )
-    }
-
     /// Create an undefined function error.
     #[must_use]
     pub fn undefined_function(span: Span, name: &str) -> Self {
@@ -153,30 +133,6 @@ impl TypeError {
         )
     }
 
-    /// Create an undefined method error.
-    #[must_use]
-    pub fn undefined_method(span: Span, ty: &Ty, method: &str) -> Self {
-        Self::new(
-            TypeErrorKind::UndefinedMethod,
-            span,
-            format!("no method named `{method}` found for type `{ty}`"),
-        )
-    }
-
-    /// Create an invalid send error (value not Send).
-    #[must_use]
-    pub fn invalid_send(span: Span, ty: &Ty) -> Self {
-        Self::new(
-            TypeErrorKind::InvalidSend,
-            span.clone(),
-            format!("`{ty}` cannot be sent to another actor"),
-        )
-        .with_note(
-            span,
-            "the type must implement `Send` to cross actor boundaries".to_string(),
-        )
-    }
-
     /// Create an invalid operation error.
     #[must_use]
     pub fn invalid_operation(span: Span, op: &str, ty: &Ty) -> Self {
@@ -184,26 +140,6 @@ impl TypeError {
             TypeErrorKind::InvalidOperation,
             span,
             format!("cannot apply `{op}` to type `{ty}`"),
-        )
-    }
-
-    /// Create an arity mismatch error.
-    #[must_use]
-    pub fn arity_mismatch(span: Span, expected: usize, actual: usize) -> Self {
-        Self::new(
-            TypeErrorKind::ArityMismatch,
-            span,
-            format!("this function takes {expected} argument(s) but {actual} were supplied"),
-        )
-    }
-
-    /// Create a bounds not satisfied error.
-    #[must_use]
-    pub fn bounds_not_satisfied(span: Span, ty: &Ty, bound: &str) -> Self {
-        Self::new(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!("`{ty}` does not satisfy the bound `{bound}`"),
         )
     }
 
@@ -493,7 +429,11 @@ mod tests {
 
     #[test]
     fn test_undefined_variable_display() {
-        let err = TypeError::undefined_variable(5..15, "colour");
+        let err = TypeError::new(
+            TypeErrorKind::UndefinedVariable,
+            5..15,
+            "cannot find value `colour` in this scope",
+        );
         assert_eq!(err.to_string(), "cannot find value `colour` in this scope");
         assert_eq!(err.kind, TypeErrorKind::UndefinedVariable);
         assert_eq!(err.span, (5..15));
@@ -501,7 +441,11 @@ mod tests {
 
     #[test]
     fn test_undefined_type_display() {
-        let err = TypeError::undefined_type(0..6, "Colour");
+        let err = TypeError::new(
+            TypeErrorKind::UndefinedType,
+            0..6,
+            "cannot find type `Colour` in this scope",
+        );
         assert_eq!(err.to_string(), "cannot find type `Colour` in this scope");
         assert_eq!(err.kind, TypeErrorKind::UndefinedType);
     }
@@ -532,13 +476,10 @@ mod tests {
 
     #[test]
     fn test_undefined_method_display() {
-        let err = TypeError::undefined_method(
+        let err = TypeError::new(
+            TypeErrorKind::UndefinedMethod,
             10..20,
-            &Ty::Named {
-                name: "Vec".into(),
-                args: vec![Ty::I32],
-            },
-            "sort_by",
+            "no method named `sort_by` found for type `Vec<i32>`",
         );
         assert_eq!(
             err.to_string(),
@@ -549,16 +490,17 @@ mod tests {
 
     #[test]
     fn test_invalid_send_display() {
-        let err = TypeError::invalid_send(
+        let err = TypeError::new(
+            TypeErrorKind::InvalidSend,
             0..5,
-            &Ty::Named {
-                name: "Rc".into(),
-                args: vec![Ty::I32],
-            },
+            "`Rc<i32>` cannot be sent to another actor",
+        )
+        .with_note(
+            0..5,
+            "the type must implement `Send` to cross actor boundaries".to_string(),
         );
         assert_eq!(err.to_string(), "`Rc<i32>` cannot be sent to another actor");
         assert_eq!(err.kind, TypeErrorKind::InvalidSend);
-        // invalid_send attaches a note automatically
         assert_eq!(err.notes.len(), 1);
         assert_eq!(
             err.notes[0].1,
@@ -575,7 +517,11 @@ mod tests {
 
     #[test]
     fn test_arity_mismatch_display() {
-        let err = TypeError::arity_mismatch(0..10, 2, 3);
+        let err = TypeError::new(
+            TypeErrorKind::ArityMismatch,
+            0..10,
+            "this function takes 2 argument(s) but 3 were supplied",
+        );
         assert_eq!(
             err.to_string(),
             "this function takes 2 argument(s) but 3 were supplied"
@@ -585,7 +531,11 @@ mod tests {
 
     #[test]
     fn test_bounds_not_satisfied_display() {
-        let err = TypeError::bounds_not_satisfied(0..5, &Ty::I32, "Display");
+        let err = TypeError::new(
+            TypeErrorKind::BoundsNotSatisfied,
+            0..5,
+            "`i32` does not satisfy the bound `Display`",
+        );
         assert_eq!(
             err.to_string(),
             "`i32` does not satisfy the bound `Display`"
@@ -798,8 +748,16 @@ mod tests {
     fn test_multi_error_collection() {
         let errors: Vec<TypeError> = vec![
             TypeError::mismatch(0..5, &Ty::I32, &Ty::Bool),
-            TypeError::undefined_variable(10..15, "x"),
-            TypeError::arity_mismatch(20..30, 2, 0),
+            TypeError::new(
+                TypeErrorKind::UndefinedVariable,
+                10..15,
+                "cannot find value `x` in this scope",
+            ),
+            TypeError::new(
+                TypeErrorKind::ArityMismatch,
+                20..30,
+                "this function takes 2 argument(s) but 0 were supplied",
+            ),
         ];
         assert_eq!(errors.len(), 3);
         assert_eq!(
@@ -836,7 +794,11 @@ mod tests {
 
     #[test]
     fn test_undefined_method_on_primitive() {
-        let err = TypeError::undefined_method(0..5, &Ty::I32, "frobnicate");
+        let err = TypeError::new(
+            TypeErrorKind::UndefinedMethod,
+            0..5,
+            "no method named `frobnicate` found for type `i32`",
+        );
         assert_eq!(
             err.to_string(),
             "no method named `frobnicate` found for type `i32`"

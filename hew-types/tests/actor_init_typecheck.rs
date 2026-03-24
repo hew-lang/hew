@@ -120,3 +120,47 @@ fn test_actor_no_init_still_works() {
         output.errors
     );
 }
+
+#[test]
+fn test_actor_method_valid_field_access() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            fn current() -> i32 {
+                count
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "actor method should be able to read bare field names: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn test_actor_terminate_valid_field_access() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            let id: i32;
+
+            terminate {
+                println(id);
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "terminate block should be able to read bare field names: {:?}",
+        output.errors
+    );
+}

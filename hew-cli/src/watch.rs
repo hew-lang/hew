@@ -31,7 +31,6 @@ pub fn cmd_watch(args: &[String]) {
                     std::process::exit(1);
                 });
             }
-            "--Werror" => options.werror = true,
             "--no-typecheck" => options.no_typecheck = true,
             "--pkg-path" => {
                 i += 1;

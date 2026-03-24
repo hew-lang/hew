@@ -73,7 +73,6 @@ impl CodegenMode {
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
-    pub werror: bool,
     pub no_typecheck: bool,
     pub codegen_mode: CodegenMode,
     pub target: Option<String>,

@@ -9,9 +9,6 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-#[cfg(feature = "export-meta")]
-pub mod export_meta;
-
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::c_char;
 
@@ -53,13 +50,6 @@ fn strip_html_tags(html_str: &str) -> String {
 /// # Safety
 ///
 /// `md` must be a valid NUL-terminated C string.
-#[cfg_attr(
-    feature = "export-meta",
-    hew_export_macro::hew_export(
-        module = "std::encoding::markdown",
-        doc = "Render Markdown to HTML"
-    )
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char {
     // SAFETY: md is a valid NUL-terminated C string per caller contract.
@@ -82,13 +72,6 @@ pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char 
 /// # Safety
 ///
 /// `md` must be a valid NUL-terminated C string.
-#[cfg_attr(
-    feature = "export-meta",
-    hew_export_macro::hew_export(
-        module = "std::encoding::markdown",
-        doc = "Render Markdown to HTML with raw HTML tags stripped"
-    )
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const c_char) -> *mut c_char {
     // SAFETY: md is a valid NUL-terminated C string per caller contract.

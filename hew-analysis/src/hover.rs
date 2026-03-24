@@ -174,15 +174,10 @@ mod tests {
 
     fn make_fn_sig(param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> FnSig {
         FnSig {
-            type_params: vec![],
-            type_param_bounds: HashMap::new(),
             param_names: param_names.into_iter().map(String::from).collect(),
             params,
             return_type: ret,
-            is_async: false,
-            is_pure: false,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         }
     }
 

@@ -79,49 +79,65 @@ fn unquote_str(s: &str) -> &str {
         .unwrap_or(s)
 }
 
+fn push_unescaped_sequence(
+    chars: &[(usize, char)],
+    idx: usize,
+    out: &mut String,
+    extra_escapes: &[char],
+) -> usize {
+    debug_assert_eq!(chars[idx].1, '\\');
+
+    let Some((_, next)) = chars.get(idx + 1).copied() else {
+        out.push('\\');
+        return 1;
+    };
+
+    match next {
+        'n' => out.push('\n'),
+        't' => out.push('\t'),
+        'r' => out.push('\r'),
+        '"' => out.push('"'),
+        '0' => out.push('\0'),
+        'x' if idx + 3 < chars.len() => {
+            let (_, hi) = chars[idx + 2];
+            let (_, lo) = chars[idx + 3];
+            if let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                out.push(byte as char);
+            } else {
+                out.push('\\');
+                out.push('x');
+                out.push(hi);
+                out.push(lo);
+            }
+            return 4;
+        }
+        'x' => {
+            out.push('\\');
+            out.push('x');
+        }
+        '\\' => out.push('\\'),
+        other if extra_escapes.contains(&other) => out.push(other),
+        other => {
+            out.push('\\');
+            out.push(other);
+        }
+    }
+
+    2
+}
+
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
 /// `\\`, `\"`, and `\0` to their corresponding characters.
 fn unescape_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('"') => out.push('"'),
-                Some('0') => out.push('\0'),
-                Some('x') => {
-                    // \xNN hex escape
-                    let hi = chars.next();
-                    let lo = chars.next();
-                    if let (Some(h), Some(l)) = (hi, lo) {
-                        if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
-                            out.push(byte as char);
-                        } else {
-                            out.push('\\');
-                            out.push('x');
-                            out.push(h);
-                            out.push(l);
-                        }
-                    } else {
-                        out.push('\\');
-                        out.push('x');
-                        if let Some(h) = hi {
-                            out.push(h);
-                        }
-                    }
-                }
-                Some('\\') | None => out.push('\\'),
-                Some(other) => {
-                    // Unknown escape: preserve as-is
-                    out.push('\\');
-                    out.push(other);
-                }
-            }
+    let chars: Vec<_> = s.char_indices().collect();
+    let mut idx = 0;
+    while idx < chars.len() {
+        if chars[idx].1 == '\\' {
+            idx += push_unescaped_sequence(&chars, idx, &mut out, &[]);
         } else {
-            out.push(c);
+            out.push(chars[idx].1);
+            idx += 1;
         }
     }
     out
@@ -135,10 +151,6 @@ fn unescape_string(s: &str) -> String {
 /// * `suffix_len` — bytes to strip from the end (1 for `"` or `` ` ``)
 /// * `expr_open` — the marker that opens an expression (`"{"` or `"${"`)
 /// * `span_start` — byte offset of the token in the original source
-#[expect(
-    clippy::too_many_lines,
-    reason = "string interpolation parser has many branches and is clearer kept in one function"
-)]
 fn parse_string_parts(
     raw: &str,
     prefix_len: usize,
@@ -158,38 +170,8 @@ fn parse_string_parts(
         let (byte_pos, c) = chars[idx];
 
         // Handle escape sequences — prevents `\{` or `\$` from opening an expr
-        if c == '\\' && idx + 1 < chars.len() {
-            let (_, next) = chars[idx + 1];
-            match next {
-                'n' => literal_buf.push('\n'),
-                't' => literal_buf.push('\t'),
-                'r' => literal_buf.push('\r'),
-                '"' => literal_buf.push('"'),
-                '0' => literal_buf.push('\0'),
-                'x' if idx + 3 < chars.len() => {
-                    let (_, h) = chars[idx + 2];
-                    let (_, l) = chars[idx + 3];
-                    if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
-                        literal_buf.push(byte as char);
-                    } else {
-                        literal_buf.push('\\');
-                        literal_buf.push('x');
-                        literal_buf.push(h);
-                        literal_buf.push(l);
-                    }
-                    idx += 4;
-                    continue;
-                }
-                '\\' => literal_buf.push('\\'),
-                '{' => literal_buf.push('{'),
-                '$' => literal_buf.push('$'),
-                '`' => literal_buf.push('`'),
-                other => {
-                    literal_buf.push('\\');
-                    literal_buf.push(other);
-                }
-            }
-            idx += 2;
+        if c == '\\' {
+            idx += push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '$', '`']);
             continue;
         }
 
@@ -321,6 +303,25 @@ struct WireFieldModifiers {
     json_name: Option<String>,
     yaml_name: Option<String>,
     since: Option<u32>,
+}
+
+#[derive(Debug)]
+struct ParsedWireField {
+    explicit_number: Option<u32>,
+    field_number: Option<u32>,
+    modifiers: WireFieldModifiers,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WireFieldParseMode {
+    Struct,
+    Decl { next_auto_number: u32 },
+}
+
+#[derive(Debug, Default)]
+struct WireNamingCases {
+    json_case: Option<NamingCase>,
+    yaml_case: Option<NamingCase>,
 }
 
 /// Parser state wrapping a token stream.
@@ -762,6 +763,87 @@ impl<'src> Parser<'src> {
         }
 
         modifiers
+    }
+
+    fn parse_wire_field_number_after_marker(
+        &mut self,
+        mode: WireFieldParseMode,
+    ) -> Result<u32, ()> {
+        let Some(Token::Integer(num_str)) = self.peek() else {
+            match mode {
+                WireFieldParseMode::Struct => {
+                    self.error("expected field number after '@'".to_string());
+                }
+                WireFieldParseMode::Decl { .. } => {
+                    self.error("expected integer for wire field number".to_string());
+                }
+            }
+            return Err(());
+        };
+
+        let raw = (*num_str).to_string();
+        self.advance();
+
+        parse_int_literal(&raw)
+            .ok()
+            .and_then(|(value, _)| u32::try_from(value).ok())
+            .ok_or_else(|| match mode {
+                WireFieldParseMode::Struct => {
+                    self.error("invalid field number after '@'".to_string());
+                }
+                WireFieldParseMode::Decl { .. } => {
+                    self.error(format!("invalid wire field number: {raw}"));
+                }
+            })
+    }
+
+    fn parse_wire_field_number_and_modifiers(
+        &mut self,
+        mode: WireFieldParseMode,
+    ) -> Option<ParsedWireField> {
+        let (explicit_number, field_number) = match mode {
+            WireFieldParseMode::Struct => {
+                if self.eat(&Token::At) {
+                    let explicit_number = self.parse_wire_field_number_after_marker(mode).ok();
+                    (explicit_number, explicit_number)
+                } else {
+                    (None, None)
+                }
+            }
+            WireFieldParseMode::Decl { next_auto_number } => {
+                if self.eat(&Token::Equal) || self.eat(&Token::At) {
+                    let field_number = self.parse_wire_field_number_after_marker(mode).ok()?;
+                    (Some(field_number), Some(field_number))
+                } else {
+                    (None, Some(next_auto_number))
+                }
+            }
+        };
+
+        let modifiers = self.parse_wire_field_modifiers();
+        Some(ParsedWireField {
+            explicit_number,
+            field_number,
+            modifiers,
+        })
+    }
+
+    fn extract_wire_naming_cases(attrs: &[Attribute]) -> WireNamingCases {
+        let parse_case = |attr_name| {
+            attrs
+                .iter()
+                .find(|attr| attr.name == attr_name)
+                .and_then(|attr| {
+                    attr.args
+                        .first()
+                        .and_then(|arg| NamingCase::from_attr(arg.as_str()))
+                })
+        };
+
+        WireNamingCases {
+            json_case: parse_case("json"),
+            yaml_case: parse_case("yaml"),
+        }
     }
 
     /// Collect consecutive doc comment tokens with the given prefix and return
@@ -2348,26 +2430,11 @@ impl<'src> Parser<'src> {
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let ty = self.parse_type()?;
-
-            // Optional explicit field number @N
-            let explicit_num = if self.eat(&Token::At) {
-                if let Some(Token::Integer(n_str)) = self.peek() {
-                    let num = parse_int_literal(n_str)
-                        .ok()
-                        .and_then(|(v, _)| u32::try_from(v).ok())
-                        .unwrap_or(0);
-                    explicit_numbers.push(num);
-                    self.advance();
-                    Some(num)
-                } else {
-                    self.error("expected field number after '@'".to_string());
-                    None
-                }
-            } else {
-                None
-            };
-
-            let modifiers = self.parse_wire_field_modifiers();
+            let parsed_field =
+                self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct)?;
+            if let Some(explicit_num) = parsed_field.explicit_number {
+                explicit_numbers.push(explicit_num);
+            }
 
             fields.push(TypeBodyItem::Field {
                 name: field_name.clone(),
@@ -2376,13 +2443,13 @@ impl<'src> Parser<'src> {
             });
             field_meta.push((
                 field_name,
-                explicit_num,
-                modifiers.is_optional,
-                modifiers.is_deprecated,
-                modifiers.is_repeated,
-                modifiers.json_name,
-                modifiers.yaml_name,
-                modifiers.since,
+                parsed_field.explicit_number,
+                parsed_field.modifiers.is_optional,
+                parsed_field.modifiers.is_deprecated,
+                parsed_field.modifiers.is_repeated,
+                parsed_field.modifiers.json_name,
+                parsed_field.modifiers.yaml_name,
+                parsed_field.modifiers.since,
             ));
 
             // Accept comma or semicolon as separator
@@ -2434,17 +2501,10 @@ impl<'src> Parser<'src> {
             });
         }
 
-        // Extract struct-level JSON/YAML naming conventions from attributes.
-        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
-        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
 
         // Extract version and min_version from #[wire(version = N, min_version = M)]
         let wire_attr = attrs.iter().find(|a| a.name == "wire");
@@ -2534,48 +2594,28 @@ impl<'src> Parser<'src> {
                         _ => raw_ty,
                     };
 
-                    // Field number: `field: type = N`, `field: type @N`, or auto-assigned
-                    let field_number = if self.eat(&Token::Equal) || self.eat(&Token::At) {
-                        if let Some(Token::Integer(num_str)) = self.peek() {
-                            let raw = (*num_str).to_string();
-                            self.advance();
-                            if let Some(n) = parse_int_literal(&raw)
-                                .ok()
-                                .and_then(|(v, _)| u32::try_from(v).ok())
-                            {
-                                n
-                            } else {
-                                self.error(format!("invalid wire field number: {raw}"));
-                                return None;
-                            }
-                        } else {
-                            self.error("expected integer for wire field number".to_string());
-                            return None;
-                        }
-                    } else {
-                        // Auto-assign field number
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "wire field numbers won't exceed u32::MAX"
-                        )]
-                        {
-                            fields.len() as u32 + 1
-                        }
-                    };
-
-                    let modifiers = self.parse_wire_field_modifiers();
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "wire field numbers won't exceed u32::MAX"
+                    )]
+                    let next_auto_number = fields.len() as u32 + 1;
+                    let parsed_field =
+                        self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Decl {
+                            next_auto_number,
+                        })?;
+                    let field_number = parsed_field.field_number?;
 
                     fields.push(WireFieldDecl {
                         name: field_name,
                         ty,
                         field_number,
-                        is_optional: modifiers.is_optional,
-                        is_repeated: modifiers.is_repeated,
+                        is_optional: parsed_field.modifiers.is_optional,
+                        is_repeated: parsed_field.modifiers.is_repeated,
                         is_reserved: false,
-                        is_deprecated: modifiers.is_deprecated,
-                        json_name: modifiers.json_name,
-                        yaml_name: modifiers.yaml_name,
-                        since: modifiers.since,
+                        is_deprecated: parsed_field.modifiers.is_deprecated,
+                        json_name: parsed_field.modifiers.json_name,
+                        yaml_name: parsed_field.modifiers.yaml_name,
+                        since: parsed_field.modifiers.since,
                     });
 
                     if !self.eat(&Token::Semicolon) {
@@ -2625,17 +2665,10 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
-        // Extract struct-level JSON/YAML naming conventions from outer attributes.
-        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
-        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
 
         Some(WireDecl {
             visibility,
@@ -5285,6 +5318,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_interpolated_string_shared_escapes_decode_and_escaped_delimiters_stay_literal() {
+        let result = parse(r#"fn main() { let s = f"left \{ \x41 {name}"; }"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected interpolated string");
+        };
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], StringPart::Literal("left { A ".to_string()));
+        assert!(matches!(
+            parts[1],
+            StringPart::Expr((Expr::Identifier(ref name), _)) if name == "name"
+        ));
+    }
+
+    #[test]
     fn parse_interpolated_string_empty_expr_reports_error() {
         let result = parse(r#"fn main() { let s = f"hello {}"; }"#);
         assert!(
@@ -6001,6 +6057,32 @@ struct Msg {
     }
 
     #[test]
+    fn wire_struct_field_metadata_preserves_number_and_outer_naming_cases() {
+        let source = "\
+#[wire]
+#[json(\"camelCase\")]
+#[yaml(\"snake_case\")]
+struct Msg {
+    added: String @2 optional yaml(\"added_name\"),
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::SnakeCase));
+
+        let meta = &wire.field_meta[0];
+        assert_eq!(meta.field_number, 2);
+        assert!(meta.is_optional);
+        assert_eq!(meta.yaml_name.as_deref(), Some("added_name"));
+    }
+
+    #[test]
     fn parse_legacy_wire_type_preserves_since_modifier() {
         let source = "\
 wire type Msg {
@@ -6018,6 +6100,31 @@ wire type Msg {
         assert!(meta.is_repeated);
         assert_eq!(meta.yaml_name.as_deref(), Some("added"));
         assert_eq!(meta.since, Some(3));
+    }
+
+    #[test]
+    fn legacy_wire_type_field_metadata_preserves_number_and_outer_naming_cases() {
+        let source = "\
+#[json(\"camelCase\")]
+#[yaml(\"kebab-case\")]
+wire type Msg {
+    added: String = 4 repeated json(\"added_name\");
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
+
+        let meta = &wire.field_meta[0];
+        assert_eq!(meta.field_number, 4);
+        assert!(meta.is_repeated);
+        assert_eq!(meta.json_name.as_deref(), Some("added_name"));
     }
 
     #[test]

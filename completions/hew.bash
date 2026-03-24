@@ -6,8 +6,8 @@ _hew() {
     _init_completion || return
 
     local commands="build run check watch doc eval test wire fmt init completions version help"
-    local build_opts="-o --Werror --no-typecheck --emit-mlir --emit-llvm --emit-obj --target --pkg-path"
-    local run_opts="-o --Werror --no-typecheck --pkg-path"
+    local build_opts="-o --no-typecheck --emit-mlir --emit-llvm --emit-obj --target --pkg-path"
+    local run_opts="-o --no-typecheck --pkg-path"
 
     # Complete subcommands at position 1
     if [[ $cword -eq 1 ]]; then
@@ -62,7 +62,7 @@ _hew() {
                 return
             fi
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--run --clear --debounce --Werror --no-typecheck --pkg-path" -- "$cur"))
+                COMPREPLY=($(compgen -W "--run --clear --debounce --no-typecheck --pkg-path" -- "$cur"))
                 return
             fi
             COMPREPLY=($(compgen -f -X '!*.hew' -- "$cur"))

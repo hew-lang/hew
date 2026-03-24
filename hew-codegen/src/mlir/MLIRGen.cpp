@@ -299,7 +299,10 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
             << "cannot determine element type for Vec; add explicit type annotation";
         return nullptr;
       }
-      mlir::Type elemType = convertType((*named->type_args)[0].value);
+      auto elemType = convertTypeOrError(
+          (*named->type_args)[0].value, "cannot resolve element type for Vec");
+      if (!elemType)
+        return nullptr;
       return hew::VecType::get(&context, elemType);
     }
     // HashMap<K,V>: extract key/value types from generic args
@@ -310,8 +313,14 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
             << "cannot determine key/value types for HashMap; add explicit type annotation";
         return nullptr;
       }
-      mlir::Type keyType = convertType((*named->type_args)[0].value);
-      mlir::Type valType = convertType((*named->type_args)[1].value);
+      auto keyType = convertTypeOrError(
+          (*named->type_args)[0].value, "cannot resolve key type for HashMap");
+      if (!keyType)
+        return nullptr;
+      auto valType = convertTypeOrError(
+          (*named->type_args)[1].value, "cannot resolve value type for HashMap");
+      if (!valType)
+        return nullptr;
       return hew::HashMapType::get(&context, keyType, valType);
     }
     // HashSet<T>: opaque pointer (backed by HashMap<T, ()> in runtime)
@@ -682,7 +691,14 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
           forwardArgs.push_back(entry.getArgument(i));
 
         auto realFunc = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-        assert(realFunc && "thunk target function must exist");
+        if (!realFunc) {
+          ++errorCount_;
+          emitError(location) << "thunk target function '" << funcName
+                              << "' not found in module";
+          thunkOp.erase();
+          builder.restoreInsertionPoint(savedIP);
+          return value; // return original value unchanged
+        }
         auto callOp = mlir::func::CallOp::create(builder, location, realFunc, forwardArgs);
         if (callOp.getNumResults() > 0)
           mlir::func::ReturnOp::create(builder, location, callOp.getResults());

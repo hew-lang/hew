@@ -16,7 +16,6 @@
 //!
 //! - `HEW_QUIC_CERT` — PEM file path for the server certificate chain
 //! - `HEW_QUIC_KEY` — PEM file path for the server private key
-//! - `HEW_QUIC_CA` — PEM file path for the CA certificate (client trust root)
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Arc;
@@ -212,20 +211,6 @@ pub(crate) fn load_pem_creds() -> Result<Option<TlsCreds>, String> {
         private_key: key,
         cert_der,
     }))
-}
-
-/// Load a CA certificate from PEM (for client trust).
-/// If `HEW_QUIC_CA` is not set, returns `Ok(None)`.
-#[allow(dead_code, reason = "reserved for custom CA trust-root support")]
-pub(crate) fn load_ca_cert() -> Result<Option<CertificateDer<'static>>, String> {
-    let Some(ca_path) = std::env::var("HEW_QUIC_CA").ok() else {
-        return Ok(None);
-    };
-    let ca_pem = std::fs::read(&ca_path).map_err(|e| format!("reading {ca_path}: {e}"))?;
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &ca_pem[..])
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("parsing CA PEM: {e}"))?;
-    Ok(certs.into_iter().next())
 }
 
 /// Build a [`ServerConfig`] from TLS credentials.
@@ -947,13 +932,6 @@ mod tests {
         std::env::remove_var("HEW_QUIC_CERT");
         std::env::remove_var("HEW_QUIC_KEY");
         let result = load_pem_creds().unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn load_ca_cert_returns_none_when_unset() {
-        std::env::remove_var("HEW_QUIC_CA");
-        let result = load_ca_cert().unwrap();
         assert!(result.is_none());
     }
 

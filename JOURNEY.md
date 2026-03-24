@@ -191,6 +191,21 @@ Remove duplicated parser logic for wire field numbers, field modifiers, and oute
 - Shared parsing now lives in a helper that parses field numbers and modifiers together, while leaving `parse_wire_struct()` responsible for deferred auto-number assignment and `parse_wire_decl()` responsible for immediate numbering.
 - Struct-level JSON/YAML naming extraction also moved into a helper so both wire parsing paths read outer attributes consistently.
 
+## Phase 10: QUIC runtime dead-code trim (2026-03-24)
+
+### Goal
+
+Remove the unused `load_ca_cert()` helper from `hew-runtime` now that the QUIC
+transport does not support a custom CA trust-root path.
+
+### Decisions
+
+- Verified `load_ca_cert()` had no production callers; the only remaining
+  reference was a unit test that existed solely to keep the placeholder alive.
+- Removed both the placeholder and its test instead of keeping a reserved
+  function behind `#[allow(dead_code)]`, so the runtime surface reflects the
+  features that actually exist today.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

@@ -61,6 +61,15 @@ the decoder is safe if that delimiter-specific difference stays explicit in the 
 
 `#[wire] struct` and legacy `wire type` both parse field numbers and modifiers, but they diverge on when auto-numbering happens. A good deduplication seam shares token consumption and keeps number assignment on the side of the call site that still owns the semantic difference.
 
+## From the 2026-03-24 QUIC dead-code trim
+
+### 1. Placeholder tests can hide that the placeholder itself is the only caller
+
+`load_ca_cert()` looked unused in production, but grep still found one unit test
+whose only job was asserting the reserved helper returned `None` when unset.
+When auditing dead code, distinguish real behaviour coverage from tests that
+exist only to justify an otherwise unused function.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

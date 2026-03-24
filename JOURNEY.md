@@ -1,5 +1,6 @@
 # Distributed Actor Infrastructure — Journey Log
 
+<<<<<<< HEAD
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 
 ### Goal
@@ -205,6 +206,25 @@ transport does not support a custom CA trust-root path.
 - Removed both the placeholder and its test instead of keeping a reserved
   function behind `#[allow(dead_code)]`, so the runtime surface reflects the
   features that actually exist today.
+
+## Phase 10: Sink backing simplification (2026-03-24)
+
+### Goal
+
+Remove the custom `SinkBacking` trait from the shared C ABI layer without
+dropping exact-item or explicit-close behaviour.
+
+### Decisions
+
+- Verified first that `SinkBacking` was no longer single-implementation: the
+  runtime and HTTP server both had concrete sink backings, so a single concrete
+  replacement was not possible without crossing crate boundaries.
+- Replaced the public trait with inherent `HewSink::{write_item, flush, close}`
+  methods plus constructor helpers, so the public API no longer exposes a
+  bespoke sink trait while still preserving exact-item and explicit-close
+  behaviour for native packages.
+- Let `HewSink::close()` delegate through the stored close callback before
+  releasing the backing, so file-style flush-on-close behaviour still works.
 
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 

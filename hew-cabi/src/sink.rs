@@ -1,8 +1,10 @@
 //! Sink ABI types shared between the Hew runtime and native packages.
 //!
 //! Native packages that produce `Sink` handles (e.g. HTTP streaming responses)
-//! implement [`SinkBacking`] and call [`into_sink_ptr`] to create heap-allocated
+//! call [`into_sink_ptr`] or [`into_write_sink_ptr`] to create heap-allocated
 //! opaque handles compatible with the runtime's C ABI.
+
+use std::io::Write;
 
 // ── Thread-local error for fallible stream/sink operations ────────────────────
 
@@ -44,35 +46,127 @@ pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
     }
 }
 
-// ── Sink trait and handle ─────────────────────────────────────────────────────
+// ── Sink handle ───────────────────────────────────────────────────────────────
 
-/// Trait for writable stream sinks. Implement this to create custom Sink
-/// backends (e.g. HTTP response bodies, TCP sockets).
-pub trait SinkBacking: Send + std::fmt::Debug {
-    /// Write one item (exact bytes). Blocks if the backing buffer is full.
+trait SinkOps: Send {
     fn write_item(&mut self, data: &[u8]);
-    /// Flush any buffered writes (file sinks).
     fn flush(&mut self);
-    /// Signal EOF to the reader.
     fn close(&mut self);
 }
 
+struct CallbackSink<T> {
+    backing: T,
+    write_item: fn(&mut T, &[u8]),
+    flush: fn(&mut T),
+    close: fn(&mut T),
+}
+
+impl<T: Send> SinkOps for CallbackSink<T> {
+    fn write_item(&mut self, data: &[u8]) {
+        (self.write_item)(&mut self.backing, data);
+    }
+
+    fn flush(&mut self) {
+        (self.flush)(&mut self.backing);
+    }
+
+    fn close(&mut self) {
+        (self.close)(&mut self.backing);
+    }
+}
+
 /// Opaque writable sink handle.
-#[derive(Debug)]
 pub struct HewSink {
-    pub inner: Box<dyn SinkBacking>,
+    inner: Option<Box<dyn SinkOps>>,
+}
+
+impl std::fmt::Debug for HewSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewSink").finish_non_exhaustive()
+    }
+}
+
+impl HewSink {
+    /// Write one item (exact bytes). Blocks if the backing buffer is full.
+    pub fn write_item(&mut self, data: &[u8]) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        inner.write_item(data);
+    }
+
+    /// Flush any buffered writes (file sinks).
+    pub fn flush(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        inner.flush();
+    }
+
+    /// Signal EOF to the reader and release the backing resource.
+    pub fn close(&mut self) {
+        let Some(mut inner) = self.inner.take() else {
+            return;
+        };
+        inner.close();
+    }
 }
 
 impl Drop for HewSink {
     fn drop(&mut self) {
-        self.inner.close();
+        self.close();
     }
 }
 
-/// Create a heap-allocated [`HewSink`] from a [`SinkBacking`] implementation.
-pub fn into_sink_ptr(backing: impl SinkBacking + 'static) -> *mut HewSink {
+/// Create a heap-allocated [`HewSink`] from custom sink callbacks.
+pub fn into_sink_ptr<T: Send + 'static>(
+    backing: T,
+    write_item: fn(&mut T, &[u8]),
+    flush: fn(&mut T),
+    close: fn(&mut T),
+) -> *mut HewSink {
     Box::into_raw(Box::new(HewSink {
-        inner: Box::new(backing),
+        inner: Some(Box::new(CallbackSink {
+            backing,
+            write_item,
+            flush,
+            close,
+        })),
+    }))
+}
+
+fn write_via_write<W: Write>(backing: &mut W, data: &[u8]) {
+    let result = if data.is_empty() {
+        backing.write(data).map(|_| ())
+    } else {
+        backing.write_all(data)
+    };
+    if let Err(err) = result {
+        set_last_error(format!("hew_sink_write: {err}"));
+    }
+}
+
+fn flush_via_write<W: Write>(backing: &mut W) {
+    if let Err(err) = backing.flush() {
+        set_last_error(format!("hew_sink_flush: {err}"));
+    }
+}
+
+fn close_via_write<W: Write>(backing: &mut W) {
+    if let Err(err) = backing.flush() {
+        set_last_error(format!("hew_sink_close: {err}"));
+    }
+}
+
+/// Create a heap-allocated [`HewSink`] from a [`Write`] implementation.
+pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink {
+    Box::into_raw(Box::new(HewSink {
+        inner: Some(Box::new(CallbackSink {
+            backing,
+            write_item: write_via_write::<_>,
+            flush: flush_via_write::<_>,
+            close: close_via_write::<_>,
+        })),
     }))
 }
 
@@ -167,13 +261,19 @@ mod tests {
         }
     }
 
-    // ── SinkBacking / HewSink / into_sink_ptr ────────────────────────────
+    // ── HewSink / into_sink_ptr / into_write_sink_ptr ───────────────────
 
     /// Test double that records calls to `write_item`, flush, and close.
     #[derive(Debug)]
     struct MockSink {
         written: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
         flush_count: Arc<AtomicUsize>,
+        close_count: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct RawSink {
+        written: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
         close_count: Arc<AtomicUsize>,
     }
 
@@ -204,34 +304,39 @@ mod tests {
         }
     }
 
-    impl SinkBacking for MockSink {
-        fn write_item(&mut self, data: &[u8]) {
+    impl Write for MockSink {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
             self.written.lock().unwrap().push(data.to_vec());
+            Ok(data.len())
         }
-        fn flush(&mut self) {
+
+        fn flush(&mut self) -> std::io::Result<()> {
             self.flush_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn close(&mut self) {
+    }
+
+    impl Drop for MockSink {
+        fn drop(&mut self) {
             self.close_count.fetch_add(1, Ordering::SeqCst);
         }
     }
 
     #[test]
-    fn sink_backing_write_flush_close() {
+    fn hew_sink_write_flush_close() {
         let (mock, written, flush_count, close_count) = MockSink::new();
-        let mut sink = HewSink {
-            inner: Box::new(mock),
-        };
-        sink.inner.write_item(b"hello");
-        sink.inner.write_item(b"world");
-        sink.inner.flush();
-        sink.inner.close();
+        // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
+        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) };
+        sink.write_item(b"hello");
+        sink.write_item(b"world");
+        sink.flush();
+        sink.close();
 
         let items = written.lock().unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], b"hello");
         assert_eq!(items[1], b"world");
-        assert_eq!(flush_count.load(Ordering::SeqCst), 1);
+        assert_eq!(flush_count.load(Ordering::SeqCst), 2);
         assert_eq!(close_count.load(Ordering::SeqCst), 1);
     }
 
@@ -239,9 +344,8 @@ mod tests {
     fn hew_sink_drop_calls_close() {
         let (mock, _written, _flush_count, close_count) = MockSink::new();
         {
-            let _sink = HewSink {
-                inner: Box::new(mock),
-            };
+            // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
+            let _sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) };
             assert_eq!(close_count.load(Ordering::SeqCst), 0);
             // _sink is dropped here.
         }
@@ -255,12 +359,12 @@ mod tests {
     #[test]
     fn into_sink_ptr_returns_valid_heap_allocation() {
         let (mock, written, _flush_count, close_count) = MockSink::new();
-        let ptr = into_sink_ptr(mock);
+        let ptr = into_write_sink_ptr(mock);
         assert!(!ptr.is_null());
 
         // SAFETY: ptr was just created by into_sink_ptr via Box::into_raw.
         unsafe {
-            (*ptr).inner.write_item(b"via pointer");
+            (*ptr).write_item(b"via pointer");
             // Reclaim and drop to free memory and trigger close.
             let _ = Box::from_raw(ptr);
         }
@@ -278,14 +382,42 @@ mod tests {
     #[test]
     fn into_sink_ptr_write_empty_data() {
         let (mock, written, _flush_count, _close_count) = MockSink::new();
-        let ptr = into_sink_ptr(mock);
+        let ptr = into_write_sink_ptr(mock);
         // SAFETY: ptr was just created by into_sink_ptr.
         unsafe {
-            (*ptr).inner.write_item(b"");
+            (*ptr).write_item(b"");
             let _ = Box::from_raw(ptr);
         }
         let items = written.lock().unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].is_empty(), "empty write should produce empty vec");
+    }
+
+    #[test]
+    fn into_sink_ptr_custom_callbacks_preserve_item_boundaries() {
+        let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let close_count = Arc::new(AtomicUsize::new(0));
+
+        let ptr = into_sink_ptr(
+            RawSink {
+                written: Arc::clone(&written),
+                close_count: Arc::clone(&close_count),
+            },
+            |sink, data| sink.written.lock().unwrap().push(data.to_vec()),
+            |_sink| {},
+            |sink| {
+                sink.close_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        // SAFETY: ptr was created by into_sink_ptr above.
+        unsafe {
+            (*ptr).write_item(b"abc");
+            let _ = Box::from_raw(ptr);
+        }
+
+        let items = written.lock().unwrap();
+        assert_eq!(items.as_slice(), &[b"abc".to_vec()]);
+        assert_eq!(close_count.load(Ordering::SeqCst), 1);
     }
 }

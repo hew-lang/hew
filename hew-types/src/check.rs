@@ -5716,26 +5716,10 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let inner = type_args
-            .first()
-            .cloned()
-            .unwrap_or(Ty::Var(TypeVar::fresh()));
-        // Reject concrete element types that lack runtime
-        // implementations.  Only String and bytes are supported;
-        // type variables and Ty::Error pass through (Error
-        // preserves the original diagnostic instead of masking it).
-        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-        if !is_supported {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Stream<{inner}>` is not supported; \
-                     Stream<T> is currently only implemented for String and bytes"
-                ),
-            );
+        let Some(inner) = self.validate_stream_sink_element_type(type_args, "Stream", method, span)
+        else {
             return Ty::Error;
-        }
+        };
         match method {
             "next" => Ty::option(inner),
             "close" => Ty::Unit,
@@ -5813,6 +5797,37 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn validate_stream_sink_element_type(
+        &mut self,
+        type_args: &[Ty],
+        type_name: &str,
+        method_name: &str,
+        span: &Span,
+    ) -> Option<Ty> {
+        let _ = method_name;
+        let inner = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        // Reject concrete element types that lack runtime
+        // implementations. Only String and bytes are supported;
+        // type variables and Ty::Error pass through (Error
+        // preserves the original diagnostic instead of masking it).
+        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
+        if !is_supported {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`{type_name}<{inner}>` is not supported; \
+                     {type_name}<T> is currently only implemented for String and bytes"
+                ),
+            );
+            return None;
+        }
+        Some(inner)
     }
 
     fn check_string_method(&mut self, method: &str, args: &[CallArg], span: &Span) -> Ty {
@@ -6647,23 +6662,11 @@ impl Checker {
                 },
                 _,
             ) if name == "Sink" || name == "stream.Sink" => {
-                let inner = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let is_supported =
-                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-                if !is_supported {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Sink<{inner}>` is not supported; \
-                             Sink<T> is currently only implemented for String and bytes"
-                        ),
-                    );
+                let Some(inner) =
+                    self.validate_stream_sink_element_type(type_args, "Sink", method, span)
+                else {
                     return Ty::Error;
-                }
+                };
                 match method {
                     "write" => {
                         if let Some(arg) = args.first() {

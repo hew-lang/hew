@@ -1,22 +1,21 @@
 # Distributed Actor Infrastructure — Journey Log
 
-## Phase 8: Named-method fallback deduplication (2026-03-24)
+## Phase 8: Stream/Sink guard deduplication (2026-03-24)
 
 ### Goal
 
-Collapse the repeated named-type fallback logic in `hew-types/src/check.rs`
-without changing any built-in method behaviour.
+Remove the duplicated Stream/Sink element-type guard in `hew-types/src/check.rs`
+without changing method resolution behaviour or diagnostics.
 
 ### Decisions
 
-- Kept `try_resolve_named_method` as the single resolver and added a small
-  `check_named_method_fallback` wrapper for the shared
-  resolve-or-`UndefinedMethod` pattern.
-- Passed the resolved receiver type into the helper so qualified names such as
-  `channel.Sender` still resolve through the existing module-prefix stripping
-  path, while the error text stays customized via an explicit display string.
-- Limited the refactor to the eight `_` fallback arms called out in
-  `check_method_call`; the built-in method arms remain unchanged.
+- Verified the Stream and Sink guards were structurally identical before
+  extracting anything: both inferred the first type argument, allowed only
+  `String`, `bytes`, type variables, and `Ty::Error`, and reported the same
+  invalid-operation wording with only the type name changed.
+- Extracted just the shared element-type validator instead of introducing a full
+  `check_sink_method()` helper, because the remaining Sink match arm is small and
+  not duplicated elsewhere.
 
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 

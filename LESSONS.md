@@ -55,6 +55,12 @@ The parser's plain-string and interpolated-string paths used the same `\n`/`\t`/
 would otherwise start interpolation (`\{`, and future-facing `\$`/``\``` handling). Sharing
 the decoder is safe if that delimiter-specific difference stays explicit in the call site.
 
+## From the 2026-03-24 wire parser dedup pass
+
+### 1. Shared parser helpers should stop at the true semantic boundary
+
+`#[wire] struct` and legacy `wire type` both parse field numbers and modifiers, but they diverge on when auto-numbering happens. A good deduplication seam shares token consumption and keeps number assignment on the side of the call site that still owns the semantic difference.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

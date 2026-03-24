@@ -180,6 +180,17 @@ without changing actor scope behaviour.
   handlers so future changes to actor field binding semantics only need one
   edit.
 
+## Phase 9: Deduplicate wire-field parsing (2026-03-24)
+
+### Goal
+
+Remove duplicated parser logic for wire field numbers, field modifiers, and outer JSON/YAML naming extraction without collapsing the remaining semantic differences between `#[wire] struct` and legacy `wire type`.
+
+### Decisions
+
+- Shared parsing now lives in a helper that parses field numbers and modifiers together, while leaving `parse_wire_struct()` responsible for deferred auto-number assignment and `parse_wire_decl()` responsible for immediate numbering.
+- Struct-level JSON/YAML naming extraction also moved into a helper so both wire parsing paths read outer attributes consistently.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

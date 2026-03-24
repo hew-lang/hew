@@ -305,6 +305,25 @@ struct WireFieldModifiers {
     since: Option<u32>,
 }
 
+#[derive(Debug)]
+struct ParsedWireField {
+    explicit_number: Option<u32>,
+    field_number: Option<u32>,
+    modifiers: WireFieldModifiers,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WireFieldParseMode {
+    Struct,
+    Decl { next_auto_number: u32 },
+}
+
+#[derive(Debug, Default)]
+struct WireNamingCases {
+    json_case: Option<NamingCase>,
+    yaml_case: Option<NamingCase>,
+}
+
 /// Parser state wrapping a token stream.
 #[derive(Debug)]
 pub struct Parser<'src> {
@@ -744,6 +763,87 @@ impl<'src> Parser<'src> {
         }
 
         modifiers
+    }
+
+    fn parse_wire_field_number_after_marker(
+        &mut self,
+        mode: WireFieldParseMode,
+    ) -> Result<u32, ()> {
+        let Some(Token::Integer(num_str)) = self.peek() else {
+            match mode {
+                WireFieldParseMode::Struct => {
+                    self.error("expected field number after '@'".to_string());
+                }
+                WireFieldParseMode::Decl { .. } => {
+                    self.error("expected integer for wire field number".to_string());
+                }
+            }
+            return Err(());
+        };
+
+        let raw = (*num_str).to_string();
+        self.advance();
+
+        parse_int_literal(&raw)
+            .ok()
+            .and_then(|(value, _)| u32::try_from(value).ok())
+            .ok_or_else(|| match mode {
+                WireFieldParseMode::Struct => {
+                    self.error("invalid field number after '@'".to_string());
+                }
+                WireFieldParseMode::Decl { .. } => {
+                    self.error(format!("invalid wire field number: {raw}"));
+                }
+            })
+    }
+
+    fn parse_wire_field_number_and_modifiers(
+        &mut self,
+        mode: WireFieldParseMode,
+    ) -> Option<ParsedWireField> {
+        let (explicit_number, field_number) = match mode {
+            WireFieldParseMode::Struct => {
+                if self.eat(&Token::At) {
+                    let explicit_number = self.parse_wire_field_number_after_marker(mode).ok();
+                    (explicit_number, explicit_number)
+                } else {
+                    (None, None)
+                }
+            }
+            WireFieldParseMode::Decl { next_auto_number } => {
+                if self.eat(&Token::Equal) || self.eat(&Token::At) {
+                    let field_number = self.parse_wire_field_number_after_marker(mode).ok()?;
+                    (Some(field_number), Some(field_number))
+                } else {
+                    (None, Some(next_auto_number))
+                }
+            }
+        };
+
+        let modifiers = self.parse_wire_field_modifiers();
+        Some(ParsedWireField {
+            explicit_number,
+            field_number,
+            modifiers,
+        })
+    }
+
+    fn extract_wire_naming_cases(attrs: &[Attribute]) -> WireNamingCases {
+        let parse_case = |attr_name| {
+            attrs
+                .iter()
+                .find(|attr| attr.name == attr_name)
+                .and_then(|attr| {
+                    attr.args
+                        .first()
+                        .and_then(|arg| NamingCase::from_attr(arg.as_str()))
+                })
+        };
+
+        WireNamingCases {
+            json_case: parse_case("json"),
+            yaml_case: parse_case("yaml"),
+        }
     }
 
     /// Collect consecutive doc comment tokens with the given prefix and return
@@ -2330,26 +2430,11 @@ impl<'src> Parser<'src> {
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let ty = self.parse_type()?;
-
-            // Optional explicit field number @N
-            let explicit_num = if self.eat(&Token::At) {
-                if let Some(Token::Integer(n_str)) = self.peek() {
-                    let num = parse_int_literal(n_str)
-                        .ok()
-                        .and_then(|(v, _)| u32::try_from(v).ok())
-                        .unwrap_or(0);
-                    explicit_numbers.push(num);
-                    self.advance();
-                    Some(num)
-                } else {
-                    self.error("expected field number after '@'".to_string());
-                    None
-                }
-            } else {
-                None
-            };
-
-            let modifiers = self.parse_wire_field_modifiers();
+            let parsed_field =
+                self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct)?;
+            if let Some(explicit_num) = parsed_field.explicit_number {
+                explicit_numbers.push(explicit_num);
+            }
 
             fields.push(TypeBodyItem::Field {
                 name: field_name.clone(),
@@ -2358,13 +2443,13 @@ impl<'src> Parser<'src> {
             });
             field_meta.push((
                 field_name,
-                explicit_num,
-                modifiers.is_optional,
-                modifiers.is_deprecated,
-                modifiers.is_repeated,
-                modifiers.json_name,
-                modifiers.yaml_name,
-                modifiers.since,
+                parsed_field.explicit_number,
+                parsed_field.modifiers.is_optional,
+                parsed_field.modifiers.is_deprecated,
+                parsed_field.modifiers.is_repeated,
+                parsed_field.modifiers.json_name,
+                parsed_field.modifiers.yaml_name,
+                parsed_field.modifiers.since,
             ));
 
             // Accept comma or semicolon as separator
@@ -2416,17 +2501,10 @@ impl<'src> Parser<'src> {
             });
         }
 
-        // Extract struct-level JSON/YAML naming conventions from attributes.
-        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
-        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
 
         // Extract version and min_version from #[wire(version = N, min_version = M)]
         let wire_attr = attrs.iter().find(|a| a.name == "wire");
@@ -2516,48 +2594,28 @@ impl<'src> Parser<'src> {
                         _ => raw_ty,
                     };
 
-                    // Field number: `field: type = N`, `field: type @N`, or auto-assigned
-                    let field_number = if self.eat(&Token::Equal) || self.eat(&Token::At) {
-                        if let Some(Token::Integer(num_str)) = self.peek() {
-                            let raw = (*num_str).to_string();
-                            self.advance();
-                            if let Some(n) = parse_int_literal(&raw)
-                                .ok()
-                                .and_then(|(v, _)| u32::try_from(v).ok())
-                            {
-                                n
-                            } else {
-                                self.error(format!("invalid wire field number: {raw}"));
-                                return None;
-                            }
-                        } else {
-                            self.error("expected integer for wire field number".to_string());
-                            return None;
-                        }
-                    } else {
-                        // Auto-assign field number
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "wire field numbers won't exceed u32::MAX"
-                        )]
-                        {
-                            fields.len() as u32 + 1
-                        }
-                    };
-
-                    let modifiers = self.parse_wire_field_modifiers();
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "wire field numbers won't exceed u32::MAX"
+                    )]
+                    let next_auto_number = fields.len() as u32 + 1;
+                    let parsed_field =
+                        self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Decl {
+                            next_auto_number,
+                        })?;
+                    let field_number = parsed_field.field_number?;
 
                     fields.push(WireFieldDecl {
                         name: field_name,
                         ty,
                         field_number,
-                        is_optional: modifiers.is_optional,
-                        is_repeated: modifiers.is_repeated,
+                        is_optional: parsed_field.modifiers.is_optional,
+                        is_repeated: parsed_field.modifiers.is_repeated,
                         is_reserved: false,
-                        is_deprecated: modifiers.is_deprecated,
-                        json_name: modifiers.json_name,
-                        yaml_name: modifiers.yaml_name,
-                        since: modifiers.since,
+                        is_deprecated: parsed_field.modifiers.is_deprecated,
+                        json_name: parsed_field.modifiers.json_name,
+                        yaml_name: parsed_field.modifiers.yaml_name,
+                        since: parsed_field.modifiers.since,
                     });
 
                     if !self.eat(&Token::Semicolon) {
@@ -2607,17 +2665,10 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
-        // Extract struct-level JSON/YAML naming conventions from outer attributes.
-        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
-        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
-            a.args
-                .first()
-                .and_then(|s| NamingCase::from_attr(s.as_str()))
-        });
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
 
         Some(WireDecl {
             visibility,
@@ -6006,6 +6057,32 @@ struct Msg {
     }
 
     #[test]
+    fn wire_struct_field_metadata_preserves_number_and_outer_naming_cases() {
+        let source = "\
+#[wire]
+#[json(\"camelCase\")]
+#[yaml(\"snake_case\")]
+struct Msg {
+    added: String @2 optional yaml(\"added_name\"),
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::SnakeCase));
+
+        let meta = &wire.field_meta[0];
+        assert_eq!(meta.field_number, 2);
+        assert!(meta.is_optional);
+        assert_eq!(meta.yaml_name.as_deref(), Some("added_name"));
+    }
+
+    #[test]
     fn parse_legacy_wire_type_preserves_since_modifier() {
         let source = "\
 wire type Msg {
@@ -6023,6 +6100,31 @@ wire type Msg {
         assert!(meta.is_repeated);
         assert_eq!(meta.yaml_name.as_deref(), Some("added"));
         assert_eq!(meta.since, Some(3));
+    }
+
+    #[test]
+    fn legacy_wire_type_field_metadata_preserves_number_and_outer_naming_cases() {
+        let source = "\
+#[json(\"camelCase\")]
+#[yaml(\"kebab-case\")]
+wire type Msg {
+    added: String = 4 repeated json(\"added_name\");
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
+
+        let meta = &wire.field_meta[0];
+        assert_eq!(meta.field_number, 4);
+        assert!(meta.is_repeated);
+        assert_eq!(meta.json_name.as_deref(), Some("added_name"));
     }
 
     #[test]

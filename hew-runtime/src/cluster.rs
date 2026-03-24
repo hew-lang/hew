@@ -1021,13 +1021,15 @@ mod tests {
         let json = snapshot_members_json(&cluster);
         // SAFETY: hew_now_ms has no preconditions.
         let after_snapshot_ms = unsafe { crate::io_time::hew_now_ms() };
-        let prefix =
-            r#"[{"node_id":7,"state":"alive","incarnation":42,"addr":"node\"\\\\name\n:9000","last_seen_ms":"#;
+        let prefix = r#"[{"node_id":7,"state":"alive","incarnation":42,"addr":"node\"\\\\name\n:9000","last_seen_ms":"#;
         assert!(
             json.starts_with(prefix),
             "snapshot should preserve field order and escape the address: {json}"
         );
-        assert!(json.ends_with("}]"), "snapshot should end with a single object: {json}");
+        assert!(
+            json.ends_with("}]"),
+            "snapshot should end with a single object: {json}"
+        );
 
         let last_seen_ms = json
             .trim_start_matches(prefix)

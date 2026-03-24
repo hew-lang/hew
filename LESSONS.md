@@ -1,5 +1,14 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-24 shutdown test isolation fix
+
+### 1. Global runtime-phase tests must prove order independence, not just correctness in isolation
+
+The shutdown tests all touched `SHUTDOWN_PHASE` and the registered-supervisor list,
+so they passed one-by-one but failed under `cargo test --workspace` when those
+globals were shared across parallel test threads. A small test-only mutex and a
+full state reset are enough when the mutable state is confined to one module.
+
 ## From the 2026-03-24 dead-helper cleanup
 
 ### 1. Self-tests can be the only evidence a helper is still "used"

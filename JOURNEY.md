@@ -1,5 +1,23 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Runtime shutdown test isolation (2026-03-24)
+
+### Goal
+
+Keep the consolidation branch green after the Phase 8 cherry-picks by making the
+shutdown tests independent under `cargo test --workspace`.
+
+### Decisions
+
+- Reproduced the workspace failure, then re-ran the two failing shutdown tests in
+  isolation and serially to confirm the assertions only failed under parallel test
+  execution.
+- Added a test-only mutex plus reset helper in `hew-runtime/src/shutdown.rs` so
+  every shutdown test starts from a clean phase/supervisor state and cannot race
+  other tests mutating the same globals.
+- Kept the fix inside the existing shutdown test module instead of adding a new
+  dependency, because the problem is localized to one group of stateful tests.
+
 ## Phase 7: Delete dead `hew-types` helpers (2026-03-24)
 
 ### Goal

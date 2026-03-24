@@ -34,9 +34,6 @@ enum Command {
         /// Create a library project
         #[arg(long)]
         lib: bool,
-        /// Create a binary project
-        #[arg(long)]
-        bin: bool,
         /// Create an actor project
         #[arg(long)]
         actor: bool,
@@ -202,8 +199,6 @@ enum NamespaceAction {
         /// Namespace prefix to claim
         prefix: String,
     },
-    /// List namespaces you own
-    List,
     /// Show info about a namespace
     Info {
         /// Namespace prefix to look up
@@ -224,12 +219,7 @@ fn main() {
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
 
     match cli.command {
-        Command::Init {
-            name,
-            lib,
-            bin: _,
-            actor,
-        } => {
+        Command::Init { name, lib, actor } => {
             let template = if lib {
                 manifest::ManifestTemplate::Lib
             } else if actor {
@@ -283,7 +273,6 @@ fn main() {
         },
         Command::Namespace { action } => match action {
             NamespaceAction::Register { prefix } => cmd_namespace_register(&prefix),
-            NamespaceAction::List => cmd_namespace_list(),
             NamespaceAction::Info { prefix } => cmd_namespace_info(&prefix),
         },
         Command::Yank {
@@ -1615,18 +1604,6 @@ fn cmd_namespace_register(prefix: &str) {
             std::process::exit(1);
         }
     }
-}
-
-fn cmd_namespace_list() {
-    let cred_path = credentials::credentials_path();
-    if credentials::get_token(&cred_path).is_err() {
-        eprintln!("adze namespace list: not logged in");
-        eprintln!("Run `adze login` first.");
-        std::process::exit(1);
-    }
-    // TODO: implement via API call to list owned namespaces.
-    println!("Namespace listing requires registry connection.");
-    println!("Your GitHub username is auto-reserved as a namespace.");
 }
 
 fn cmd_yank(version: &str, reason: Option<&str>, undo: bool) {

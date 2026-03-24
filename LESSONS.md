@@ -19,6 +19,15 @@ other preserves the boundary by decoding lossily into an owned `String`.
 Deduplicating ABI helpers safely sometimes means adding the right shared helper,
 not reusing the closest existing one.
 
+## From the 2026-03-24 dead CLI pruning pass
+
+### 1. Dead CLI surface lives in completions and specs, not just argument parsing
+
+Removing a no-op flag or placeholder subcommand from Rust code is only half the work.
+In this repo, shell completions, README command summaries, and `docs/specs/HEW-SPEC.md`
+can preserve dead behaviour long after the implementation is gone, so CLI removals need
+an explicit docs/completions sweep.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

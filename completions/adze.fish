@@ -53,7 +53,6 @@ complete -c adze -n __adze_no_subcommand -a completions -d 'Generate shell compl
 
 # --- init options ---
 complete -c adze -n '__adze_using_subcommand init' -l lib -d 'Create a library project'
-complete -c adze -n '__adze_using_subcommand init' -l bin -d 'Create a binary project'
 complete -c adze -n '__adze_using_subcommand init' -l actor -d 'Create an actor project'
 
 # --- add options ---
@@ -92,7 +91,6 @@ complete -c adze -n '__adze_using_subcommand key' -a info -d 'Look up a signing 
 
 # --- namespace subcommands ---
 complete -c adze -n '__adze_using_subcommand namespace' -a register -d 'Register a custom namespace prefix'
-complete -c adze -n '__adze_using_subcommand namespace' -a list -d 'List namespaces you own'
 complete -c adze -n '__adze_using_subcommand namespace' -a info -d 'Show info about a namespace'
 
 # --- index subcommands ---

@@ -47,7 +47,6 @@ complete -c hew -n __hew_no_subcommand -F -a '(complete -C "echo *.hew")'
 
 # --- build/check options ---
 complete -c hew -n '__hew_using_subcommand build' -s o -r -d 'Output file path'
-complete -c hew -n '__hew_using_subcommand build' -l Werror -d 'Treat warnings as errors'
 complete -c hew -n '__hew_using_subcommand build' -l no-typecheck -d 'Skip type-checking phase'
 complete -c hew -n '__hew_using_subcommand build' -l emit-mlir -d 'Emit MLIR instead of linking'
 complete -c hew -n '__hew_using_subcommand build' -l emit-llvm -d 'Emit LLVM IR instead of linking'
@@ -56,7 +55,6 @@ complete -c hew -n '__hew_using_subcommand build' -l target -x -d 'Target triple
 complete -c hew -n '__hew_using_subcommand build' -l pkg-path -r -d 'Override package search directory'
 complete -c hew -n '__hew_using_subcommand build' -F -a '(__fish_complete_suffix .hew)'
 
-complete -c hew -n '__hew_using_subcommand check' -l Werror -d 'Treat warnings as errors'
 complete -c hew -n '__hew_using_subcommand check' -l no-typecheck -d 'Skip type-checking phase'
 complete -c hew -n '__hew_using_subcommand check' -l emit-mlir -d 'Emit MLIR instead of linking'
 complete -c hew -n '__hew_using_subcommand check' -l emit-llvm -d 'Emit LLVM IR instead of linking'
@@ -66,7 +64,6 @@ complete -c hew -n '__hew_using_subcommand check' -F -a '(__fish_complete_suffix
 
 # --- run options (no --emit-* as run rejects them) ---
 complete -c hew -n '__hew_using_subcommand run' -s o -r -d 'Output file path'
-complete -c hew -n '__hew_using_subcommand run' -l Werror -d 'Treat warnings as errors'
 complete -c hew -n '__hew_using_subcommand run' -l no-typecheck -d 'Skip type-checking phase'
 complete -c hew -n '__hew_using_subcommand run' -l pkg-path -r -d 'Override package search directory'
 complete -c hew -n '__hew_using_subcommand run' -F -a '(__fish_complete_suffix .hew)'
@@ -93,7 +90,6 @@ complete -c hew -n '__hew_using_subcommand fmt' -F -a '(__fish_complete_suffix .
 complete -c hew -n '__hew_using_subcommand watch' -l run -d 'Build and run on successful check'
 complete -c hew -n '__hew_using_subcommand watch' -l clear -d 'Clear terminal before each re-check'
 complete -c hew -n '__hew_using_subcommand watch' -l debounce -x -d 'Debounce time in milliseconds'
-complete -c hew -n '__hew_using_subcommand watch' -l Werror -d 'Treat warnings as errors'
 complete -c hew -n '__hew_using_subcommand watch' -l no-typecheck -d 'Skip type-checking phase'
 complete -c hew -n '__hew_using_subcommand watch' -l pkg-path -r -d 'Override package search directory'
 complete -c hew -n '__hew_using_subcommand watch' -F -a '(__fish_complete_suffix .hew)'

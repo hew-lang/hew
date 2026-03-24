@@ -40,7 +40,6 @@ _adze() {
                 init)
                     _arguments \
                         '--lib[Create a library project]' \
-                        '--bin[Create a binary project]' \
                         '--actor[Create an actor project]' \
                         '1:project name:'
                     ;;
@@ -117,7 +116,6 @@ _adze() {
                 namespace)
                     local -a namespace_commands=(
                         'register:Register a custom namespace prefix'
-                        'list:List namespaces you own'
                         'info:Show info about a namespace'
                     )
                     _arguments -C \

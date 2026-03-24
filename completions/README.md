@@ -76,12 +76,12 @@ cp completions/adze.fish ~/.config/fish/completions/adze.fish
 
 - **Subcommands**: `build`, `run`, `check`, `doc`, `eval`, `test`, `wire`, `fmt`, `init`, `completions`, `version`, `help`
 - **File arguments**: `.hew` files for `build`, `run`, `check`, `fmt`, and `wire check`
-- **Options**: `-o`, `--Werror`, `--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj`
+- **Options**: `-o`, `--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj`
 - **Wire subcommands**: `wire check` with `--against`
 - **Shorthand**: `hew file.hew` completes `.hew` files at the top level
 
 ### adze
 
 - **Subcommands**: `init`, `add`, `install`, `publish`, `list`, `search`, `info`, `tree`, `update`, `remove`, `check`, `outdated`, `login`, `logout`, `key`, `namespace`, `yank`, `registry-key`, `deprecate`, `index`, `completions`
-- **Nested subcommands**: `key {generate,list,info}`, `namespace {register,list,info}`, `index {sync,resolve,list}`
-- **Per-command options**: `--version`, `--registry`/`-r`, `--locked`, `--category`, `--page`, `--per-page`, `--lib`, `--bin`, `--actor`, `--reason`, `--undo`, `--message`, `--successor`
+- **Nested subcommands**: `key {generate,list,info}`, `namespace {register,info}`, `index {sync,resolve,list}`
+- **Per-command options**: `--version`, `--registry`/`-r`, `--locked`, `--category`, `--page`, `--per-page`, `--lib`, `--actor`, `--reason`, `--undo`, `--message`, `--successor`

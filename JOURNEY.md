@@ -62,6 +62,26 @@ without changing any analysis behaviour.
 - Avoided a configuration flag for type-checking because every repeated call
   site already wanted the same "type-check only after a clean parse" behaviour.
 
+## Phase 7: Prune dead CLI surface (2026-03-24)
+
+### Goal
+
+Remove CLI flags and subcommands that are parsed or advertised but have no live behaviour.
+
+### Verification
+
+- Read the cited `hew-cli` and `adze-cli` call sites before editing.
+- Confirmed `hew --Werror` only set `CompileOptions.werror` and was never consumed.
+- Confirmed `adze init --bin` was parsed but discarded before template selection.
+- Confirmed `adze namespace list` was wired to a TODO placeholder instead of a real implementation.
+
+### Decisions
+
+- Delete the dead surface instead of keeping compatibility shims so help text, completions,
+  and docs match the real CLI.
+- Treat the Hew spec note about `--Werror` as stale documentation and update it to match
+  current fatal type-error behaviour.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

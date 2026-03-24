@@ -277,9 +277,10 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
         emitError(builder.getUnknownLoc()) << "Range type requires a type argument";
         return mlir::NoneType::get(&context);
       }
-      auto elemType = convertType((*named->type_args)[0].value);
+      auto elemType = convertTypeOrError(
+          (*named->type_args)[0].value, "cannot resolve element type for Range");
       if (!elemType)
-        return mlir::NoneType::get(&context);
+        return nullptr;
       return hew::HewTupleType::get(&context, {elemType, elemType});
     }
     if (name == "char")

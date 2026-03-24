@@ -526,23 +526,25 @@ impl Checker {
         &self.module_registry
     }
 
+    /// Strip a known module prefix from a qualified name (e.g. `json.Value` → `Value`).
+    fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
+        let dot = name.find('.')?;
+        if self.modules.contains(&name[..dot]) {
+            Some(&name[dot + 1..])
+        } else {
+            None
+        }
+    }
+
     /// Look up a type definition, handling module-qualified names like `json.Value`.
-    /// Tries exact match first, then strips a known module prefix to find unqualified name.
     fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
-        if let Some(td) = self.type_defs.get(name) {
-            return Some(td.clone());
-        }
-        // Strip module prefix only if the prefix is a known module
-        if let Some(dot) = name.find('.') {
-            let prefix = &name[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &name[dot + 1..];
-                if let Some(td) = self.type_defs.get(unqualified) {
-                    return Some(td.clone());
-                }
-            }
-        }
-        None
+        self.type_defs
+            .get(name)
+            .or_else(|| {
+                self.strip_module_prefix(name)
+                    .and_then(|u| self.type_defs.get(u))
+            })
+            .cloned()
     }
 
     /// Look up a type definition mutably, handling module-qualified names.
@@ -550,35 +552,19 @@ impl Checker {
         if self.type_defs.contains_key(name) {
             return self.type_defs.get_mut(name);
         }
-        if let Some(dot) = name.find('.') {
-            let prefix = &name[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &name[dot + 1..];
-                if self.type_defs.contains_key(unqualified) {
-                    return self.type_defs.get_mut(unqualified);
-                }
-            }
-        }
-        None
+        let unqualified = self.strip_module_prefix(name)?;
+        self.type_defs.get_mut(unqualified)
     }
 
     /// Look up a function signature, handling module-qualified names.
-    /// For method keys like `json.Value::method`, also tries `Value::method`.
     fn lookup_fn_sig(&self, key: &str) -> Option<FnSig> {
-        if let Some(sig) = self.fn_sigs.get(key) {
-            return Some(sig.clone());
-        }
-        // Strip module prefix only if the prefix is a known module
-        if let Some(dot) = key.find('.') {
-            let prefix = &key[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &key[dot + 1..];
-                if let Some(sig) = self.fn_sigs.get(unqualified) {
-                    return Some(sig.clone());
-                }
-            }
-        }
-        None
+        self.fn_sigs
+            .get(key)
+            .or_else(|| {
+                self.strip_module_prefix(key)
+                    .and_then(|u| self.fn_sigs.get(u))
+            })
+            .cloned()
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.

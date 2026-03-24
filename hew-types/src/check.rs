@@ -154,6 +154,22 @@ pub struct FnSig {
     pub doc_comment: Option<String>,
 }
 
+impl Default for FnSig {
+    fn default() -> Self {
+        Self {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names: vec![],
+            params: vec![],
+            return_type: Ty::Unit,
+            is_async: false,
+            is_pure: false,
+            accepts_kwargs: false,
+            doc_comment: None,
+        }
+    }
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -808,15 +824,9 @@ impl Checker {
         self.fn_sigs.insert(
             name.to_string(),
             FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
-                param_names: vec![],
                 params,
                 return_type,
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             },
         );
     }
@@ -905,13 +915,8 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    param_names: vec![],
-                                    params: vec![],
                                     return_type,
-                                    is_async: false,
-                                    is_pure: false,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -932,13 +937,9 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    param_names: vec![],
                                     params: constructor_params,
                                     return_type,
-                                    is_async: false,
-                                    is_pure: false,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -1014,15 +1015,10 @@ impl Checker {
                 type_def.methods.insert(
                     method_name.to_string(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
                         params,
                         return_type,
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             }
@@ -1040,15 +1036,10 @@ impl Checker {
             self.fn_sigs.insert(
                 qualified_name,
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1076,15 +1067,9 @@ impl Checker {
                 type_def.methods.insert(
                     method_name.to_string(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
-                        params: vec![],
                         return_type,
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             }
@@ -1108,15 +1093,10 @@ impl Checker {
             self.fn_sigs.insert(
                 qualified_name,
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1208,10 +1188,6 @@ impl Checker {
     }
 
     /// Register a machine declaration as a type definition with variants and methods.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "machine registration requires registering states, events, transitions, and methods"
-    )]
     fn register_machine_decl(&mut self, md: &MachineDecl) {
         let machine_ty = Ty::Machine {
             name: md.name.clone(),
@@ -1231,15 +1207,9 @@ impl Checker {
                 self.fn_sigs.insert(
                     state.name.clone(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
-                        params: vec![],
                         return_type: machine_ty.clone(),
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             } else {
@@ -1309,30 +1279,18 @@ impl Checker {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
                     param_names: vec!["event".to_string()],
                     params: vec![event_ty],
-                    return_type: Ty::Unit,
-                    is_async: false,
-                    is_pure: false,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
             // Register state_name() method
             td.methods.insert(
                 "state_name".to_string(),
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
-                    params: vec![],
                     return_type: Ty::String,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1867,30 +1825,22 @@ impl Checker {
                                     .as_ref()
                                     .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
                                 let sig = FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
-                                    is_async: false,
                                     is_pure: m.is_pure,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
                                 if let Some(td) = self.lookup_type_def_mut(type_name) {
                                     td.methods.insert(
                                         m.name.clone(),
                                         FnSig {
-                                            type_params: vec![],
-                                            type_param_bounds: HashMap::new(),
                                             param_names,
                                             params,
                                             return_type,
-                                            is_async: false,
                                             is_pure: m.is_pure,
-                                            accepts_kwargs: false,
-                                            doc_comment: None,
+                                            ..FnSig::default()
                                         },
                                     );
                                 }
@@ -1940,15 +1890,12 @@ impl Checker {
                             type_def.methods.insert(
                                 method_name,
                                 FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
                                     param_names,
                                     params,
                                     return_type,
                                     is_async,
                                     is_pure: method.is_pure,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -2107,8 +2054,8 @@ impl Checker {
             return_type,
             is_async: fd.is_async,
             is_pure: fd.is_pure,
-            accepts_kwargs: false,
             doc_comment: fd.doc_comment.clone(),
+            ..FnSig::default()
         };
 
         self.fn_sigs.insert(name.to_string(), sig);
@@ -2174,8 +2121,7 @@ impl Checker {
             return_type,
             is_async: method.is_async,
             is_pure: method.is_pure,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
@@ -2224,10 +2170,8 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_async: false,
             is_pure: rf.is_pure,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
@@ -2247,15 +2191,10 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
             let sig = FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names,
                 params,
                 return_type,
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             };
             self.fn_sigs.insert(f.name.clone(), sig);
             self.unsafe_functions.insert(f.name.clone());
@@ -2303,15 +2242,10 @@ impl Checker {
                 continue;
             }
             let sig = FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names: vec!["rx".to_string()],
                 params: vec![receiver_ty.clone()],
                 return_type: ret_ty.clone(),
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             };
             self.fn_sigs.insert((*name).to_string(), sig);
             self.unsafe_functions.insert((*name).to_string());
@@ -2354,15 +2288,10 @@ impl Checker {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type: ret,
-                    is_async: false,
-                    is_pure: false,
                     accepts_kwargs,
-                    doc_comment: None,
+                    ..FnSig::default()
                 };
                 self.unsafe_functions.insert(name.clone());
                 self.fn_sigs.insert(name, sig);
@@ -2373,15 +2302,10 @@ impl Checker {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type: ret,
-                    is_async: false,
-                    is_pure: false,
                     accepts_kwargs,
-                    doc_comment: None,
+                    ..FnSig::default()
                 };
                 self.fn_sigs.insert(name, sig);
             }
@@ -2834,8 +2758,8 @@ impl Checker {
             return_type,
             is_async: fd.is_async,
             is_pure: fd.is_pure,
-            accepts_kwargs: false,
             doc_comment: fd.doc_comment.clone(),
+            ..FnSig::default()
         }
     }
 
@@ -8085,15 +8009,11 @@ impl Checker {
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             return Some(FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names,
                 params,
                 return_type,
-                is_async: false,
                 is_pure: m.is_pure,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             });
         }
         // Walk super-traits — clone to release borrow

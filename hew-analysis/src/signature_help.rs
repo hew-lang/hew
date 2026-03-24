@@ -163,15 +163,10 @@ mod tests {
         ret: Ty,
     ) -> TypeCheckOutput {
         let sig = FnSig {
-            type_params: vec![],
-            type_param_bounds: HashMap::new(),
             param_names: param_names.into_iter().map(String::from).collect(),
             params,
             return_type: ret,
-            is_async: false,
-            is_pure: false,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         };
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(name.to_string(), sig);

@@ -79,49 +79,65 @@ fn unquote_str(s: &str) -> &str {
         .unwrap_or(s)
 }
 
+fn push_unescaped_sequence(
+    chars: &[(usize, char)],
+    idx: usize,
+    out: &mut String,
+    extra_escapes: &[char],
+) -> usize {
+    debug_assert_eq!(chars[idx].1, '\\');
+
+    let Some((_, next)) = chars.get(idx + 1).copied() else {
+        out.push('\\');
+        return 1;
+    };
+
+    match next {
+        'n' => out.push('\n'),
+        't' => out.push('\t'),
+        'r' => out.push('\r'),
+        '"' => out.push('"'),
+        '0' => out.push('\0'),
+        'x' if idx + 3 < chars.len() => {
+            let (_, hi) = chars[idx + 2];
+            let (_, lo) = chars[idx + 3];
+            if let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                out.push(byte as char);
+            } else {
+                out.push('\\');
+                out.push('x');
+                out.push(hi);
+                out.push(lo);
+            }
+            return 4;
+        }
+        'x' => {
+            out.push('\\');
+            out.push('x');
+        }
+        '\\' => out.push('\\'),
+        other if extra_escapes.contains(&other) => out.push(other),
+        other => {
+            out.push('\\');
+            out.push(other);
+        }
+    }
+
+    2
+}
+
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
 /// `\\`, `\"`, and `\0` to their corresponding characters.
 fn unescape_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('"') => out.push('"'),
-                Some('0') => out.push('\0'),
-                Some('x') => {
-                    // \xNN hex escape
-                    let hi = chars.next();
-                    let lo = chars.next();
-                    if let (Some(h), Some(l)) = (hi, lo) {
-                        if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
-                            out.push(byte as char);
-                        } else {
-                            out.push('\\');
-                            out.push('x');
-                            out.push(h);
-                            out.push(l);
-                        }
-                    } else {
-                        out.push('\\');
-                        out.push('x');
-                        if let Some(h) = hi {
-                            out.push(h);
-                        }
-                    }
-                }
-                Some('\\') | None => out.push('\\'),
-                Some(other) => {
-                    // Unknown escape: preserve as-is
-                    out.push('\\');
-                    out.push(other);
-                }
-            }
+    let chars: Vec<_> = s.char_indices().collect();
+    let mut idx = 0;
+    while idx < chars.len() {
+        if chars[idx].1 == '\\' {
+            idx += push_unescaped_sequence(&chars, idx, &mut out, &[]);
         } else {
-            out.push(c);
+            out.push(chars[idx].1);
+            idx += 1;
         }
     }
     out
@@ -135,10 +151,6 @@ fn unescape_string(s: &str) -> String {
 /// * `suffix_len` — bytes to strip from the end (1 for `"` or `` ` ``)
 /// * `expr_open` — the marker that opens an expression (`"{"` or `"${"`)
 /// * `span_start` — byte offset of the token in the original source
-#[expect(
-    clippy::too_many_lines,
-    reason = "string interpolation parser has many branches and is clearer kept in one function"
-)]
 fn parse_string_parts(
     raw: &str,
     prefix_len: usize,
@@ -158,38 +170,8 @@ fn parse_string_parts(
         let (byte_pos, c) = chars[idx];
 
         // Handle escape sequences — prevents `\{` or `\$` from opening an expr
-        if c == '\\' && idx + 1 < chars.len() {
-            let (_, next) = chars[idx + 1];
-            match next {
-                'n' => literal_buf.push('\n'),
-                't' => literal_buf.push('\t'),
-                'r' => literal_buf.push('\r'),
-                '"' => literal_buf.push('"'),
-                '0' => literal_buf.push('\0'),
-                'x' if idx + 3 < chars.len() => {
-                    let (_, h) = chars[idx + 2];
-                    let (_, l) = chars[idx + 3];
-                    if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
-                        literal_buf.push(byte as char);
-                    } else {
-                        literal_buf.push('\\');
-                        literal_buf.push('x');
-                        literal_buf.push(h);
-                        literal_buf.push(l);
-                    }
-                    idx += 4;
-                    continue;
-                }
-                '\\' => literal_buf.push('\\'),
-                '{' => literal_buf.push('{'),
-                '$' => literal_buf.push('$'),
-                '`' => literal_buf.push('`'),
-                other => {
-                    literal_buf.push('\\');
-                    literal_buf.push(other);
-                }
-            }
-            idx += 2;
+        if c == '\\' {
+            idx += push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '$', '`']);
             continue;
         }
 
@@ -5282,6 +5264,29 @@ mod tests {
             panic!("expected interpolated string");
         };
         assert!(parts.iter().any(|p| matches!(p, StringPart::Expr(_))));
+    }
+
+    #[test]
+    fn parse_interpolated_string_shared_escapes_decode_and_escaped_delimiters_stay_literal() {
+        let result = parse(r#"fn main() { let s = f"left \{ \x41 {name}"; }"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected interpolated string");
+        };
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], StringPart::Literal("left { A ".to_string()));
+        assert!(matches!(
+            parts[1],
+            StringPart::Expr((Expr::Identifier(ref name), _)) if name == "name"
+        ));
     }
 
     #[test]

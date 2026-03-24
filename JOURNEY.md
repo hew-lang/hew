@@ -114,6 +114,22 @@ without changing how either feature locates the built `hew` executable.
   through `crate::util::find_hew_binary()` so future path-search changes only
   need one edit.
 
+## Phase 8: Parser string escape deduplication (2026-03-24)
+
+### Goal
+
+Remove the duplicated string escape table in `hew-parser/src/parser.rs` without changing
+how plain strings or interpolated string literals behave.
+
+### Decisions
+
+- Kept interpolation parsing separate and extracted only the escape decoding into a shared
+  helper that consumes characters from the current literal segment.
+- Parameterized the helper with interpolation-only escapes (`\{`, `\$`, ``\```), because
+  those are the only behaviour difference from plain string literals.
+- Added a parser test that proves `\{` stays literal while shared escapes like `\xNN`
+  still decode inside interpolated strings.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal

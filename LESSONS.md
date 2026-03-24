@@ -37,6 +37,15 @@ an explicit docs/completions sweep.
 for install. Reusing the shared helper keeps init and install behaviour aligned
 and makes small correctness fixes, like trimmed-line matching, land everywhere.
 
+## From the 2026-03-24 parser escape deduplication
+
+### 1. Interpolated strings differ at the delimiter boundary, not in core escapes
+
+The parser's plain-string and interpolated-string paths used the same `\n`/`\t`/`\r`/`\"`/
+`\0`/`\\`/`\xNN` decoding, but interpolation also needs a small allow-list for escapes that
+would otherwise start interpolation (`\{`, and future-facing `\$`/``\``` handling). Sharing
+the decoder is safe if that delimiter-specific difference stays explicit in the call site.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries

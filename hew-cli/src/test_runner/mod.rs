@@ -8,74 +8,25 @@ pub mod discovery;
 pub mod output;
 pub mod runner;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Top-level CLI argument parser; splitting into helpers would obscure the flag-to-field mapping"
-)]
-pub fn cmd_test(args: &[String]) {
-    let mut filter: Option<String> = None;
-    let mut use_color = true;
-    let mut include_ignored = false;
-    let mut format = output::OutputFormat::Text;
-    let mut timeout = runner::DEFAULT_TEST_TIMEOUT;
-    let mut paths: Vec<String> = Vec::new();
-    let mut i = 0;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--filter" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --filter requires an argument");
-                    std::process::exit(1);
-                }
-                filter = Some(args[i].clone());
-            }
-            "--no-color" => use_color = false,
-            "--include-ignored" => include_ignored = true,
-            "--timeout" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --timeout requires an argument in seconds");
-                    std::process::exit(1);
-                }
-                let seconds = args[i].parse::<u64>().unwrap_or_else(|_| {
-                    eprintln!(
-                        "Error: invalid timeout '{}'; expected a positive integer number of seconds",
-                        args[i]
-                    );
-                    std::process::exit(1);
-                });
-                if seconds == 0 {
-                    eprintln!("Error: --timeout must be at least 1 second");
-                    std::process::exit(1);
-                }
-                timeout = std::time::Duration::from_secs(seconds);
-            }
-            "--format" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --format requires an argument (text, junit)");
-                    std::process::exit(1);
-                }
-                format = match args[i].as_str() {
-                    "text" => output::OutputFormat::Text,
-                    "junit" => output::OutputFormat::Junit,
-                    other => {
-                        eprintln!("Error: unknown format '{other}' (expected: text, junit)");
-                        std::process::exit(1);
-                    }
-                };
-            }
-            arg => paths.push(arg.to_string()),
-        }
-        i += 1;
-    }
-
-    // If no paths given, search current directory.
-    if paths.is_empty() {
-        paths.push(".".to_string());
-    }
+pub fn cmd_test(args: &crate::args::TestArgs) {
+    let filter = args.filter.as_deref();
+    let use_color = !args.no_color;
+    let include_ignored = args.include_ignored;
+    let format = match args.format {
+        crate::args::TestFormat::Text => output::OutputFormat::Text,
+        crate::args::TestFormat::Junit => output::OutputFormat::Junit,
+    };
+    let timeout = if args.timeout == 0 {
+        eprintln!("Error: --timeout must be at least 1 second");
+        std::process::exit(1);
+    } else {
+        std::time::Duration::from_secs(args.timeout)
+    };
+    let paths: Vec<String> = if args.paths.is_empty() {
+        vec![".".to_string()]
+    } else {
+        args.paths.iter().map(|p| p.display().to_string()).collect()
+    };
 
     // Discover test files and test cases.
     let mut all_tests = Vec::new();
@@ -148,7 +99,7 @@ pub fn cmd_test(args: &[String]) {
 
     let summary = runner::run_tests(
         &all_tests,
-        filter.as_deref(),
+        filter,
         include_ignored,
         ffi_lib.as_deref(),
         timeout,

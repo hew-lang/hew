@@ -6,7 +6,8 @@ use std::process::Command;
 use std::time::Duration;
 
 /// Default per-test execution timeout.
-pub const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Result of running a single test.
 #[derive(Debug)]

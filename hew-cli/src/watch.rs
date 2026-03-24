@@ -8,66 +8,10 @@ use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::compile;
 
-pub fn cmd_watch(args: &[String]) {
-    let mut input = None;
-    let mut run = false;
-    let mut clear = false;
-    let mut debounce_ms: u64 = 300;
-    let mut options = compile::CompileOptions::default();
-    let mut i = 0;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--run" => run = true,
-            "--clear" => clear = true,
-            "--debounce" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --debounce requires an argument");
-                    std::process::exit(1);
-                }
-                debounce_ms = args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("Error: --debounce requires a numeric value");
-                    std::process::exit(1);
-                });
-            }
-            "--Werror" => options.werror = true,
-            "--no-typecheck" => options.no_typecheck = true,
-            "--pkg-path" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --pkg-path requires an argument");
-                    std::process::exit(1);
-                }
-                options.pkg_path = Some(std::path::PathBuf::from(&args[i]));
-            }
-            s if s.starts_with("--pkg-path=") => {
-                options.pkg_path = Some(std::path::PathBuf::from(
-                    s.strip_prefix("--pkg-path=").unwrap(),
-                ));
-            }
-            s if s.starts_with('-') => {
-                eprintln!("Unknown option: {s}");
-                std::process::exit(1);
-            }
-            _ => {
-                if input.is_none() {
-                    input = Some(args[i].clone());
-                } else {
-                    eprintln!("Error: unexpected argument '{}'", args[i]);
-                    std::process::exit(1);
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let Some(input) = input else {
-        eprintln!("Usage: hew watch <file.hew | directory> [--run] [--clear] [--debounce <ms>]");
-        std::process::exit(1);
-    };
-
-    watch_loop(&input, run, clear, debounce_ms, &options);
+pub fn cmd_watch(args: &crate::args::WatchArgs) {
+    let input = args.input.display().to_string();
+    let options = args.to_compile_options();
+    watch_loop(&input, args.run, args.clear, args.debounce, &options);
 }
 
 fn watch_loop(

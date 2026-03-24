@@ -18,6 +18,7 @@
 //! hew version                      # Print version info
 //! ```
 
+mod args;
 mod compile;
 mod diagnostic;
 mod doc;
@@ -31,6 +32,11 @@ mod signal;
 mod test_runner;
 mod watch;
 mod wire;
+
+use std::path::Path;
+
+use args::{Cli, Command};
+use clap::Parser;
 
 fn main() {
     // Spawn the real entry point on a thread with a large stack so deeply
@@ -49,41 +55,46 @@ fn main() {
 }
 
 fn hew_main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() < 2 {
-        print_usage();
-        std::process::exit(1);
-    }
-
-    match args[1].as_str() {
-        "build" => cmd_build(&args[2..]),
-        "run" => cmd_run(&args[2..]),
-        "debug" => cmd_debug(&args[2..]),
-        "check" => cmd_check(&args[2..]),
-        "doc" => doc::cmd_doc(&args[2..]),
-        "eval" => eval::cmd_eval(&args[2..]),
-        "test" => test_runner::cmd_test(&args[2..]),
-        "watch" => watch::cmd_watch(&args[2..]),
-        "wire" => wire::cmd_wire(&args[2..]),
-        "machine" => machine::cmd_machine(&args[2..]),
-        "fmt" => cmd_fmt(&args[2..]),
-        "init" => cmd_init(&args[2..]),
-        "completions" => cmd_completions(&args[2..]),
-        "version" | "--version" | "-V" => cmd_version(),
-        "help" | "--help" | "-h" => {
-            print_usage();
+    // Try normal clap parse first; if it fails and the first arg looks like
+    // a .hew file, re-parse as `hew build <file> [rest...]`.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let raw_args: Vec<String> = std::env::args().collect();
+            if raw_args.len() >= 2
+                && Path::new(&raw_args[1])
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"))
+            {
+                let mut new_args = vec![raw_args[0].clone(), "build".into()];
+                new_args.extend_from_slice(&raw_args[1..]);
+                Cli::parse_from(new_args)
+            } else {
+                e.exit();
+            }
         }
-        // `hew file.hew` is shorthand for `hew build file.hew`
-        arg if std::path::Path::new(arg)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("hew")) =>
-        {
-            cmd_build(&args[1..]);
-        }
-        other => {
-            eprintln!("Unknown command: {other}");
-            print_usage();
+    };
+
+    match cli.command {
+        Some(Command::Build(ref a)) => cmd_build(a),
+        Some(Command::Run(ref a)) => cmd_run(a),
+        Some(Command::Debug(ref a)) => cmd_debug(a),
+        Some(Command::Check(ref a)) => cmd_check(a),
+        Some(Command::Doc(ref a)) => doc::cmd_doc(a),
+        Some(Command::Eval(ref a)) => eval::cmd_eval(a),
+        Some(Command::Test(ref a)) => test_runner::cmd_test(a),
+        Some(Command::Watch(ref a)) => watch::cmd_watch(a),
+        Some(Command::Wire(ref a)) => wire::cmd_wire(a),
+        Some(Command::Machine(ref a)) => machine::cmd_machine(a),
+        Some(Command::Fmt(ref a)) => cmd_fmt(a),
+        Some(Command::Init(ref a)) => cmd_init(a),
+        Some(Command::Completions(ref a)) => cmd_completions(a),
+        Some(Command::Version) => cmd_version(),
+        None => {
+            // No subcommand — shouldn't normally happen since clap shows help,
+            // but handle gracefully.
+            let _ = <Cli as clap::CommandFactory>::command().print_help();
+            eprintln!();
             std::process::exit(1);
         }
     }
@@ -93,14 +104,11 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
-fn cmd_build(args: &[String]) {
-    let build_args = parse_build_args(args);
-    match compile::compile(
-        &build_args.input,
-        build_args.output.as_deref(),
-        false,
-        &build_args.options,
-    ) {
+fn cmd_build(a: &args::BuildArgs) {
+    let input = a.input.display().to_string();
+    let output = a.output.as_ref().map(|p| p.display().to_string());
+    let options = a.to_compile_options();
+    match compile::compile(&input, output.as_deref(), false, &options) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("{e}");
@@ -109,18 +117,9 @@ fn cmd_build(args: &[String]) {
     }
 }
 
-fn cmd_run(args: &[String]) {
-    // Split at `--` to separate compiler args from program args.
-    let (compiler_args, program_args) = match args.iter().position(|a| a == "--") {
-        Some(pos) => (&args[..pos], &args[pos + 1..]),
-        None => (args, [].as_slice()),
-    };
-
-    let build_args = parse_build_args(compiler_args);
-    if build_args.options.codegen_mode != compile::CodegenMode::LinkExecutable {
-        eprintln!("Error: run does not support --emit-* options");
-        std::process::exit(1);
-    }
+fn cmd_run(a: &args::RunArgs) {
+    let input = a.input.display().to_string();
+    let options = a.to_compile_options();
 
     // Compile to a temporary binary
     let tmp_path = tempfile::Builder::new()
@@ -134,12 +133,7 @@ fn cmd_run(args: &[String]) {
         .into_temp_path();
     let tmp_bin = tmp_path.display().to_string();
 
-    match compile::compile(
-        &build_args.input,
-        Some(&tmp_bin),
-        false,
-        &build_args.options,
-    ) {
+    match compile::compile(&input, Some(&tmp_bin), false, &options) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("{e}");
@@ -153,7 +147,7 @@ fn cmd_run(args: &[String]) {
     // Run the compiled binary, holding a Child handle so signals sent directly
     // to `hew run` also terminate the compiled program instead of orphaning it.
     let mut child = match std::process::Command::new(&tmp_bin)
-        .args(program_args)
+        .args(&a.program_args)
         .spawn()
     {
         Ok(c) => c,
@@ -183,11 +177,12 @@ fn cmd_run(args: &[String]) {
     }
 }
 
-fn cmd_check(args: &[String]) {
-    let build_args = parse_build_args(args);
-    match compile::compile(&build_args.input, None, true, &build_args.options) {
+fn cmd_check(a: &args::CheckArgs) {
+    let input = a.input.display().to_string();
+    let options = a.to_compile_options();
+    match compile::compile(&input, None, true, &options) {
         Ok(_) => {
-            eprintln!("{}: OK", build_args.input);
+            eprintln!("{input}: OK");
         }
         Err(e) => {
             eprintln!("{e}");
@@ -196,20 +191,9 @@ fn cmd_check(args: &[String]) {
     }
 }
 
-fn cmd_debug(args: &[String]) {
-    // Split at `--` to separate compiler args from program args.
-    let (compiler_args, program_args) = match args.iter().position(|a| a == "--") {
-        Some(pos) => (&args[..pos], &args[pos + 1..]),
-        None => (args, [].as_slice()),
-    };
-
-    let mut build_args = parse_build_args(compiler_args);
-    build_args.options.debug = true;
-
-    if build_args.options.codegen_mode != compile::CodegenMode::LinkExecutable {
-        eprintln!("Error: debug does not support --emit-* options");
-        std::process::exit(1);
-    }
+fn cmd_debug(a: &args::DebugArgs) {
+    let input = a.input.display().to_string();
+    let options = a.to_compile_options();
 
     // Compile to a temporary binary with debug info
     let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
@@ -220,12 +204,7 @@ fn cmd_debug(args: &[String]) {
     let tmp_bin = tmp_dir.path().join(debug_bin_name);
     let tmp_bin_str = tmp_bin.display().to_string();
 
-    match compile::compile(
-        &build_args.input,
-        Some(&tmp_bin_str),
-        false,
-        &build_args.options,
-    ) {
+    match compile::compile(&input, Some(&tmp_bin_str), false, &options) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("{e}");
@@ -244,7 +223,7 @@ fn cmd_debug(args: &[String]) {
         }
         gdb_args.push("--args".to_string());
         gdb_args.push(tmp_bin_str.clone());
-        gdb_args.extend(program_args.iter().cloned());
+        gdb_args.extend(a.program_args.iter().cloned());
         ("gdb".to_string(), gdb_args)
     } else if which_exists("lldb") {
         let lldb_script = find_debug_script("hew_lldb.py");
@@ -255,17 +234,14 @@ fn cmd_debug(args: &[String]) {
         }
         lldb_args.push("--".to_string());
         lldb_args.push(tmp_bin_str.clone());
-        lldb_args.extend(program_args.iter().cloned());
+        lldb_args.extend(a.program_args.iter().cloned());
         ("lldb".to_string(), lldb_args)
     } else {
         eprintln!("Error: no debugger found. Install gdb or lldb.");
         std::process::exit(1);
     };
 
-    eprintln!(
-        "Launching {debugger} with debug build of {}...",
-        build_args.input
-    );
+    eprintln!("Launching {debugger} with debug build of {input}...");
 
     let status = std::process::Command::new(&debugger)
         .args(&debugger_args)
@@ -316,22 +292,8 @@ fn find_debug_script(name: &str) -> Option<String> {
     None
 }
 
-fn cmd_fmt(args: &[String]) {
-    let mut check_mode = false;
-    let mut files: Vec<String> = Vec::new();
-
-    for arg in args {
-        match arg.as_str() {
-            "--check" => check_mode = true,
-            a if a.starts_with('-') => {
-                eprintln!("Unknown option: {a}");
-                std::process::exit(1);
-            }
-            _ => files.push(arg.clone()),
-        }
-    }
-
-    if files.is_empty() {
+fn cmd_fmt(a: &args::FmtArgs) {
+    if a.files.is_empty() {
         eprintln!("Usage: hew fmt [--check] <file.hew>...");
         std::process::exit(1);
     }
@@ -339,8 +301,9 @@ fn cmd_fmt(args: &[String]) {
     let mut had_errors = false;
     let mut needs_formatting = false;
 
-    for file in &files {
-        let source = match std::fs::read_to_string(file) {
+    for file_path in &a.files {
+        let file = file_path.display().to_string();
+        let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error: cannot read {file}: {e}");
@@ -364,13 +327,13 @@ fn cmd_fmt(args: &[String]) {
 
         let formatted = hew_parser::fmt::format_source(&source, &result.program);
 
-        if check_mode {
+        if a.check {
             if formatted != source {
                 eprintln!("{file}: needs formatting");
                 needs_formatting = true;
             }
         } else if formatted != source {
-            if let Err(e) = std::fs::write(file, &formatted) {
+            if let Err(e) = std::fs::write(file_path, &formatted) {
                 eprintln!("Error: cannot write {file}: {e}");
                 had_errors = true;
             } else {
@@ -384,18 +347,15 @@ fn cmd_fmt(args: &[String]) {
     }
 }
 
-fn cmd_init(args: &[String]) {
-    let force = args.iter().any(|a| a == "--force");
-    let name_arg = args.iter().find(|a| !a.starts_with('-'));
-
-    let (project_name, project_dir) = if let Some(name) = name_arg {
+fn cmd_init(a: &args::InitArgs) {
+    let (project_name, project_dir) = if let Some(ref name) = a.name {
         let dir = std::path::PathBuf::from(name);
         let pname = dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("hew-project")
             .to_string();
-        if dir.exists() && !force {
+        if dir.exists() && !a.force {
             eprintln!(
                 "Error: directory '{}' already exists (use --force to overwrite)",
                 dir.display()
@@ -425,7 +385,7 @@ fn cmd_init(args: &[String]) {
     let readme = project_dir.join("README.md");
 
     // Guard against overwriting existing files unless --force is given.
-    if !force {
+    if !a.force {
         for path in [&main_hew, &readme] {
             if path.exists() {
                 eprintln!(
@@ -471,21 +431,18 @@ hew build main.hew -o {project_name}
     println!("Created project \"{project_name}\" with main.hew");
 }
 
-fn cmd_completions(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("Usage: hew completions <bash|zsh|fish>");
-        std::process::exit(1);
-    }
-    match args[0].as_str() {
-        "bash" => print!("{}", include_str!("../../completions/hew.bash")),
-        "zsh" => print!("{}", include_str!("../../completions/hew.zsh")),
-        "fish" => print!("{}", include_str!("../../completions/hew.fish")),
-        other => {
-            eprintln!("Unknown shell: {other}");
-            eprintln!("Supported shells: bash, zsh, fish");
-            std::process::exit(1);
-        }
-    }
+fn cmd_completions(a: &args::CompletionsArgs) {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+
+    let mut cmd = Cli::command();
+    let shell = match a.shell {
+        args::ShellChoice::Bash => Shell::Bash,
+        args::ShellChoice::Zsh => Shell::Zsh,
+        args::ShellChoice::Fish => Shell::Fish,
+        args::ShellChoice::PowerShell => Shell::PowerShell,
+    };
+    generate(shell, &mut cmd, "hew", &mut std::io::stdout());
 }
 
 fn cmd_version() {
@@ -509,180 +466,5 @@ fn cmd_version() {
 }
 
 // ---------------------------------------------------------------------------
-// Argument parsing helpers
+// Helper utilities
 // ---------------------------------------------------------------------------
-
-struct BuildArgs {
-    input: String,
-    output: Option<String>,
-    options: compile::CompileOptions,
-}
-
-fn parse_build_args(args: &[String]) -> BuildArgs {
-    let mut input = None;
-    let mut output = None;
-    let mut options = compile::CompileOptions::default();
-    let mut i = 0;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "-o" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: -o requires an argument");
-                    std::process::exit(1);
-                }
-                output = Some(args[i].clone());
-            }
-            "--Werror" => {
-                options.werror = true;
-            }
-            "--no-typecheck" => {
-                options.no_typecheck = true;
-            }
-            "--debug" | "-g" => {
-                options.debug = true;
-            }
-            "--link-lib" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --link-lib requires an argument");
-                    std::process::exit(1);
-                }
-                options.extra_libs.push(args[i].clone());
-            }
-            s if s.starts_with("--link-lib=") => {
-                options
-                    .extra_libs
-                    .push(s.strip_prefix("--link-lib=").unwrap().to_string());
-            }
-            "--emit-ast" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitAst);
-            }
-            "--emit-json" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitJson);
-            }
-            "--emit-msgpack" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitMsgpack);
-            }
-            "--emit-mlir" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitMlir);
-            }
-            "--emit-llvm" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitLlvm);
-            }
-            "--emit-obj" => {
-                set_codegen_mode(&mut options, compile::CodegenMode::EmitObj);
-            }
-            s if s.starts_with("--target=") => {
-                options.target = Some(s.strip_prefix("--target=").unwrap().to_string());
-            }
-            "--pkg-path" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --pkg-path requires an argument");
-                    std::process::exit(1);
-                }
-                options.pkg_path = Some(std::path::PathBuf::from(&args[i]));
-            }
-            s if s.starts_with("--pkg-path=") => {
-                options.pkg_path = Some(std::path::PathBuf::from(
-                    s.strip_prefix("--pkg-path=").unwrap(),
-                ));
-            }
-            _ => {
-                if input.is_none() {
-                    input = Some(args[i].clone());
-                } else {
-                    eprintln!("Error: unexpected argument '{}'", args[i]);
-                    std::process::exit(1);
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let Some(input) = input else {
-        eprintln!("Error: no input file specified");
-        print_usage();
-        std::process::exit(1);
-    };
-
-    BuildArgs {
-        input,
-        output,
-        options,
-    }
-}
-
-fn set_codegen_mode(options: &mut compile::CompileOptions, mode: compile::CodegenMode) {
-    if options.codegen_mode != compile::CodegenMode::LinkExecutable {
-        eprintln!("Error: only one --emit-* option may be specified");
-        std::process::exit(1);
-    }
-    options.codegen_mode = mode;
-}
-
-fn print_usage() {
-    eprintln!(
-        "\
-Usage: hew <command> [options]
-
-Commands:
-  build <file.hew> [-o output]    Compile to executable
-  run <file.hew> [-- args...]     Compile and run
-  debug <file.hew> [-- args...]   Build with debug info and launch under gdb/lldb
-  check <file.hew>                Parse + typecheck only
-  watch <file_or_dir> [options]   Watch for changes and re-check automatically
-  doc <file_or_dir> [options]     Generate HTML documentation
-  eval [expr | -f file]           Interactive REPL or evaluate expression
-  test [file|dir] [options]       Run tests
-  wire check <file.hew> --against <baseline.hew>
-                                  Check wire schema compatibility
-  machine diagram <file.hew>     Generate Mermaid state diagram from machines
-  machine list <file.hew>        List all machines with states and events
-  fmt <file.hew>... [--check]     Format source files in-place
-  init [name]                     Scaffold a new project
-  completions <shell>             Print shell completion script
-  version                         Print version info
-  help                            Show this message
-
-Build/check options:
-  --Werror                        Accepted for spec compatibility (no-op)
-  --no-typecheck                  Skip type-checking phase
-  --debug, -g                     Build with debug info (no optimization, no stripping)
-  --emit-ast                      Emit enriched AST as JSON
-  --emit-json                     Emit full codegen IR as JSON (same as msgpack, for debugging)
-  --emit-msgpack                  Emit full codegen IR as msgpack
-  --emit-mlir                     Emit MLIR instead of linking
-  --emit-llvm                     Emit LLVM IR instead of linking
-  --emit-obj                      Emit object code instead of linking
-  --link-lib <path>               Pass an extra library or linker argument to the native link step
-  --pkg-path <dir>                Override package search directory (default: .adze/packages/)
-
-Fmt options:
-  --check                         Check formatting without writing (exit 1 if unformatted)
-
-Doc options:
-  --output-dir <dir>              Output directory (default: ./doc)
-  --open                          Open docs in browser after generation
-Watch options:
-  --run                           Build and run on successful check
-  --clear                         Clear terminal before each re-check
-  --debounce <ms>                 Debounce time in milliseconds (default: 300)
-Test options:
-  --filter <pattern>              Run only tests matching pattern
-  --format <text|junit>           Output format (default: text)
-  --timeout <seconds>             Per-test timeout (default: 30)
-  --no-color                      Disable coloured output
-  --include-ignored               Run ignored tests too
-
-Shell completions:
-  hew completions bash            Print bash completion script
-  hew completions zsh             Print zsh completion script
-  hew completions fish            Print fish completion script
-
-Shorthand:
-  hew file.hew                    Same as: hew build file.hew"
-    );
-}

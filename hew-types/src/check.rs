@@ -602,6 +602,28 @@ impl Checker {
         None
     }
 
+    fn check_named_method_fallback(
+        &mut self,
+        receiver_ty: &Ty,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+        type_display_name: &str,
+    ) -> Ty {
+        if let Ty::Named { name, .. } = receiver_ty {
+            if let Some(ty) = self.try_resolve_named_method(name, method_name, args, span) {
+                return ty;
+            }
+        }
+
+        self.report_error(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!("no method `{method_name}` on {type_display_name}"),
+        );
+        Ty::Error
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "all builtins registered in one place"
@@ -5694,26 +5716,10 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let inner = type_args
-            .first()
-            .cloned()
-            .unwrap_or(Ty::Var(TypeVar::fresh()));
-        // Reject concrete element types that lack runtime
-        // implementations.  Only String and bytes are supported;
-        // type variables and Ty::Error pass through (Error
-        // preserves the original diagnostic instead of masking it).
-        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-        if !is_supported {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Stream<{inner}>` is not supported; \
-                     Stream<T> is currently only implemented for String and bytes"
-                ),
-            );
+        let Some(inner) = self.validate_stream_sink_element_type(type_args, "Stream", method, span)
+        else {
             return Ty::Error;
-        }
+        };
         match method {
             "next" => Ty::option(inner),
             "close" => Ty::Unit,
@@ -5791,6 +5797,37 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn validate_stream_sink_element_type(
+        &mut self,
+        type_args: &[Ty],
+        type_name: &str,
+        method_name: &str,
+        span: &Span,
+    ) -> Option<Ty> {
+        let _ = method_name;
+        let inner = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        // Reject concrete element types that lack runtime
+        // implementations. Only String and bytes are supported;
+        // type variables and Ty::Error pass through (Error
+        // preserves the original diagnostic instead of masking it).
+        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
+        if !is_supported {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`{type_name}<{inner}>` is not supported; \
+                     {type_name}<T> is currently only implemented for String and bytes"
+                ),
+            );
+            return None;
+        }
+        Some(inner)
     }
 
     fn check_string_method(&mut self, method: &str, args: &[CallArg], span: &Span) -> Ty {
@@ -6464,18 +6501,7 @@ impl Checker {
                     args: vec![],
                 },
                 "close" => Ty::Unit,
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Server"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
             },
             // http.Request methods/properties
             (Ty::Named { name, .. }, _) if name == "http.Request" => match method {
@@ -6519,16 +6545,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Request"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
                 }
             },
             // net.Listener methods
@@ -6539,16 +6556,7 @@ impl Checker {
                 },
                 "close" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Listener"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
                 }
             },
             // net.Connection methods
@@ -6569,18 +6577,13 @@ impl Checker {
                     }
                     Ty::I32
                 }
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Connection"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(
+                    &resolved,
+                    method,
+                    args,
+                    span,
+                    "net.Connection",
+                ),
             },
             // regex.Pattern methods
             (Ty::Named { name, .. }, _) if name == "regex.Pattern" => match method {
@@ -6611,16 +6614,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on regex.Pattern"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }
             },
             // process.Child methods
@@ -6628,16 +6622,7 @@ impl Checker {
                 "wait" | "kill" => Ty::I32,
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on process.Child"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
                 }
             },
             // Generator methods: .next() returns the yielded type
@@ -6677,23 +6662,11 @@ impl Checker {
                 },
                 _,
             ) if name == "Sink" || name == "stream.Sink" => {
-                let inner = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let is_supported =
-                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-                if !is_supported {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Sink<{inner}>` is not supported; \
-                             Sink<T> is currently only implemented for String and bytes"
-                        ),
-                    );
+                let Some(inner) =
+                    self.validate_stream_sink_element_type(type_args, "Sink", method, span)
+                else {
                     return Ty::Error;
-                }
+                };
                 match method {
                     "write" => {
                         if let Some(arg) = args.first() {
@@ -6755,18 +6728,7 @@ impl Checker {
                     "clone" => Ty::sender(inner),
                     "close" => Ty::Unit,
                     _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Sender", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Sender<T>"),
-                            );
-                            Ty::Error
-                        }
+                        self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
                     }
                 }
             }
@@ -6799,20 +6761,13 @@ impl Checker {
                 match method {
                     "recv" | "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
-                    _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Receiver", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Receiver<T>"),
-                            );
-                            Ty::Error
-                        }
-                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "Receiver<T>",
+                    ),
                 }
             }
             // Machine methods: step(), state_name()

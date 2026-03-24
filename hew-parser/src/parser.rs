@@ -1502,18 +1502,7 @@ impl<'src> Parser<'src> {
 
         let type_params = self.parse_opt_type_params()?;
 
-        let super_traits = if self.eat(&Token::Colon) {
-            let mut bounds = Vec::new();
-            loop {
-                bounds.push(self.parse_trait_bound()?);
-                if !self.eat(&Token::Plus) {
-                    break;
-                }
-            }
-            Some(bounds)
-        } else {
-            None
-        };
+        let super_traits = self.parse_optional_super_traits()?;
 
         self.expect(&Token::LeftBrace)?;
 
@@ -1581,14 +1570,7 @@ impl<'src> Parser<'src> {
                 let name = self.expect_ident()?;
 
                 let bounds = if self.eat(&Token::Colon) {
-                    let mut bounds = Vec::new();
-                    loop {
-                        bounds.push(self.parse_trait_bound()?);
-                        if !self.eat(&Token::Plus) {
-                            break;
-                        }
-                    }
-                    bounds
+                    self.parse_trait_bound_list()?
                 } else {
                     Vec::new()
                 };
@@ -1707,18 +1689,7 @@ impl<'src> Parser<'src> {
     fn parse_actor_decl(&mut self, visibility: Visibility) -> Option<ActorDecl> {
         let name = self.expect_ident()?;
 
-        let super_traits = if self.eat(&Token::Colon) {
-            let mut bounds = Vec::new();
-            loop {
-                bounds.push(self.parse_trait_bound()?);
-                if !self.eat(&Token::Plus) {
-                    break;
-                }
-            }
-            Some(bounds)
-        } else {
-            None
-        };
+        let super_traits = self.parse_optional_super_traits()?;
 
         self.expect(&Token::LeftBrace)?;
 
@@ -2967,14 +2938,7 @@ impl<'src> Parser<'src> {
             let name = self.expect_ident()?;
 
             let bounds = if self.eat(&Token::Colon) {
-                let mut bounds = Vec::new();
-                loop {
-                    bounds.push(self.parse_trait_bound()?);
-                    if !self.eat(&Token::Plus) {
-                        break;
-                    }
-                }
-                bounds
+                self.parse_trait_bound_list()?
             } else {
                 Vec::new()
             };
@@ -3062,6 +3026,29 @@ impl<'src> Parser<'src> {
         Some(TraitBound { name, type_args })
     }
 
+    #[allow(
+        clippy::option_option,
+        reason = "outer Option is parser error propagation; inner distinguishes colon-present from absent"
+    )]
+    fn parse_optional_super_traits(&mut self) -> Option<Option<Vec<TraitBound>>> {
+        if self.eat(&Token::Colon) {
+            Some(Some(self.parse_trait_bound_list()?))
+        } else {
+            Some(None)
+        }
+    }
+
+    fn parse_trait_bound_list(&mut self) -> Option<Vec<TraitBound>> {
+        let mut bounds = Vec::new();
+        loop {
+            bounds.push(self.parse_trait_bound()?);
+            if !self.eat(&Token::Plus) {
+                break;
+            }
+        }
+        Some(bounds)
+    }
+
     fn parse_where_clause(&mut self) -> Option<WhereClause> {
         let mut predicates = Vec::new();
 
@@ -3069,13 +3056,7 @@ impl<'src> Parser<'src> {
             let ty = self.parse_type()?;
             self.expect(&Token::Colon)?;
 
-            let mut bounds = Vec::new();
-            loop {
-                bounds.push(self.parse_trait_bound()?);
-                if !self.eat(&Token::Plus) {
-                    break;
-                }
-            }
+            let bounds = self.parse_trait_bound_list()?;
 
             predicates.push(WherePredicate { ty, bounds });
 

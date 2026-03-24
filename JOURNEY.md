@@ -1,5 +1,22 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Parser super-trait helper extraction (2026-03-24)
+
+### Goal
+
+Deduplicate the parser's repeated trait-bound loops without changing how trait,
+actor, generic, associated-type, or where-clause bounds are parsed.
+
+### Decisions
+
+- Read all four `parse_trait_bound` loop sites before refactoring and confirmed
+  the only behavioural split was return shape: trait/actor declarations produce
+  `Option<Vec<TraitBound>>`, while associated types, generic parameters, and
+  where clauses need the plain `Vec<TraitBound>`.
+- Extracted `parse_optional_super_traits()` for the colon-gated trait/actor
+  cases and `parse_trait_bound_list()` for the shared `Trait + Bound` loop so
+  every site still consumes separators and parse failures the same way.
+
 ## Phase 8: Runtime shutdown test isolation (2026-03-24)
 
 ### Goal

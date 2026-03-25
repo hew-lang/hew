@@ -51,7 +51,6 @@ Register-ArgumentCompleter -Native -CommandName 'adze' -ScriptBlock {
         }
         'adze;init' {
             [CompletionResult]::new('--lib', '--lib', [CompletionResultType]::ParameterName, 'Create a library project')
-            [CompletionResult]::new('--bin', '--bin', [CompletionResultType]::ParameterName, 'Create a binary project')
             [CompletionResult]::new('--actor', '--actor', [CompletionResultType]::ParameterName, 'Create an actor project')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
@@ -184,17 +183,11 @@ Register-ArgumentCompleter -Native -CommandName 'adze' -ScriptBlock {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('register', 'register', [CompletionResultType]::ParameterValue, 'Register a custom namespace prefix')
-            [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List namespaces you own')
             [CompletionResult]::new('info', 'info', [CompletionResultType]::ParameterValue, 'Show info about a namespace')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
         'adze;namespace;register' {
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'adze;namespace;list' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -206,15 +199,11 @@ Register-ArgumentCompleter -Native -CommandName 'adze' -ScriptBlock {
         }
         'adze;namespace;help' {
             [CompletionResult]::new('register', 'register', [CompletionResultType]::ParameterValue, 'Register a custom namespace prefix')
-            [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List namespaces you own')
             [CompletionResult]::new('info', 'info', [CompletionResultType]::ParameterValue, 'Show info about a namespace')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
         'adze;namespace;help;register' {
-            break
-        }
-        'adze;namespace;help;list' {
             break
         }
         'adze;namespace;help;info' {
@@ -376,14 +365,10 @@ Register-ArgumentCompleter -Native -CommandName 'adze' -ScriptBlock {
         }
         'adze;help;namespace' {
             [CompletionResult]::new('register', 'register', [CompletionResultType]::ParameterValue, 'Register a custom namespace prefix')
-            [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List namespaces you own')
             [CompletionResult]::new('info', 'info', [CompletionResultType]::ParameterValue, 'Show info about a namespace')
             break
         }
         'adze;help;namespace;register' {
-            break
-        }
-        'adze;help;namespace;list' {
             break
         }
         'adze;help;namespace;info' {

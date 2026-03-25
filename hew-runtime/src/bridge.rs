@@ -41,6 +41,8 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use hew_cabi::cabi::cstr_to_string_lossy;
+
 use crate::actor::HewActor;
 
 // ── Outbound message queue ──────────────────────────────────────────────
@@ -487,14 +489,14 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     let meta = unsafe { &*meta };
 
     // SAFETY: Caller guarantees meta.name is a valid NUL-terminated C string.
-    let name = unsafe { cstr_to_string(meta.name) };
+    let name = unsafe { cstr_to_string_lossy(meta.name.cast()) };
 
     let mut handlers = Vec::with_capacity(meta.handler_count as usize);
     for i in 0..meta.handler_count as usize {
         // SAFETY: handlers array has handler_count entries.
         let h = unsafe { &*meta.handlers.add(i) };
         // SAFETY: Handler name is a valid NUL-terminated C string per caller contract.
-        let handler_name = unsafe { cstr_to_string(h.name) };
+        let handler_name = unsafe { cstr_to_string_lossy(h.name.cast()) };
 
         let mut params = Vec::with_capacity(h.param_count as usize);
         for j in 0..h.param_count as usize {
@@ -502,9 +504,9 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
             let p = unsafe { &*h.params.add(j) };
             params.push(ParamMetaEntry {
                 // SAFETY: Param name is a valid NUL-terminated C string per caller contract.
-                name: unsafe { cstr_to_string(p.name) },
+                name: unsafe { cstr_to_string_lossy(p.name.cast()) },
                 // SAFETY: Param type_name is a valid NUL-terminated C string per caller contract.
-                type_name: unsafe { cstr_to_string(p.type_name) },
+                type_name: unsafe { cstr_to_string_lossy(p.type_name.cast()) },
                 offset: p.offset,
                 size: p.size,
             });
@@ -518,7 +520,7 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
                 None
             } else {
                 // SAFETY: Non-null return_type is a valid NUL-terminated C string.
-                Some(unsafe { cstr_to_string(h.return_type) })
+                Some(unsafe { cstr_to_string_lossy(h.return_type.cast()) })
             },
             return_size: h.return_size,
         });
@@ -529,21 +531,6 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
         .registry
         .insert(name.clone(), ActorMetaEntry { name, handlers });
     state.cache_all = None;
-}
-
-/// Read a NUL-terminated C string into an owned `String`.
-///
-/// # Safety
-///
-/// `ptr` must point to a valid NUL-terminated UTF-8 string.
-unsafe fn cstr_to_string(ptr: *const u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    // SAFETY: Caller guarantees ptr is a valid NUL-terminated string.
-    unsafe { std::ffi::CStr::from_ptr(ptr.cast()) }
-        .to_string_lossy()
-        .into_owned()
 }
 
 // ── Type metadata query (called by host) ────────────────────────────────

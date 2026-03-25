@@ -31,6 +31,7 @@ mod platform;
 mod signal;
 mod test_runner;
 mod watch;
+mod util;
 mod wire;
 
 use std::path::Path;

@@ -31,7 +31,6 @@ _adze() {
             (init)
 _arguments "${_arguments_options[@]}" : \
 '--lib[Create a library project]' \
-'--bin[Create a binary project]' \
 '--actor[Create an actor project]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -226,12 +225,6 @@ _arguments "${_arguments_options[@]}" : \
 ':prefix -- Namespace prefix to claim:_default' \
 && ret=0
 ;;
-(list)
-_arguments "${_arguments_options[@]}" : \
-'-h[Print help]' \
-'--help[Print help]' \
-&& ret=0
-;;
 (info)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
@@ -252,10 +245,6 @@ _arguments "${_arguments_options[@]}" : \
         curcontext="${curcontext%:*:*}:adze-namespace-help-command-$line[1]:"
         case $line[1] in
             (register)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -487,10 +476,6 @@ _arguments "${_arguments_options[@]}" : \
         curcontext="${curcontext%:*:*}:adze-help-namespace-command-$line[1]:"
         case $line[1] in
             (register)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -742,7 +727,6 @@ _adze__help__logout_commands() {
 _adze__help__namespace_commands() {
     local commands; commands=(
 'register:Register a custom namespace prefix' \
-'list:List namespaces you own' \
 'info:Show info about a namespace' \
     )
     _describe -t commands 'adze help namespace commands' commands "$@"
@@ -751,11 +735,6 @@ _adze__help__namespace_commands() {
 _adze__help__namespace__info_commands() {
     local commands; commands=()
     _describe -t commands 'adze help namespace info commands' commands "$@"
-}
-(( $+functions[_adze__help__namespace__list_commands] )) ||
-_adze__help__namespace__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'adze help namespace list commands' commands "$@"
 }
 (( $+functions[_adze__help__namespace__register_commands] )) ||
 _adze__help__namespace__register_commands() {
@@ -946,7 +925,6 @@ _adze__logout_commands() {
 _adze__namespace_commands() {
     local commands; commands=(
 'register:Register a custom namespace prefix' \
-'list:List namespaces you own' \
 'info:Show info about a namespace' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -956,7 +934,6 @@ _adze__namespace_commands() {
 _adze__namespace__help_commands() {
     local commands; commands=(
 'register:Register a custom namespace prefix' \
-'list:List namespaces you own' \
 'info:Show info about a namespace' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -972,11 +949,6 @@ _adze__namespace__help__info_commands() {
     local commands; commands=()
     _describe -t commands 'adze namespace help info commands' commands "$@"
 }
-(( $+functions[_adze__namespace__help__list_commands] )) ||
-_adze__namespace__help__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'adze namespace help list commands' commands "$@"
-}
 (( $+functions[_adze__namespace__help__register_commands] )) ||
 _adze__namespace__help__register_commands() {
     local commands; commands=()
@@ -986,11 +958,6 @@ _adze__namespace__help__register_commands() {
 _adze__namespace__info_commands() {
     local commands; commands=()
     _describe -t commands 'adze namespace info commands' commands "$@"
-}
-(( $+functions[_adze__namespace__list_commands] )) ||
-_adze__namespace__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'adze namespace list commands' commands "$@"
 }
 (( $+functions[_adze__namespace__register_commands] )) ||
 _adze__namespace__register_commands() {

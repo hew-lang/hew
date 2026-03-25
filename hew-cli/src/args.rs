@@ -129,7 +129,6 @@ impl BuildArgs {
 
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            werror: self.common.werror,
             no_typecheck: self.common.no_typecheck,
             codegen_mode: self.codegen_mode(),
             target: self.target.clone(),
@@ -167,7 +166,6 @@ pub struct RunArgs {
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            werror: self.common.werror,
             no_typecheck: self.common.no_typecheck,
             codegen_mode: crate::compile::CodegenMode::LinkExecutable,
             target: self.target.clone(),
@@ -205,7 +203,6 @@ pub struct DebugArgs {
 impl DebugArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            werror: self.common.werror,
             no_typecheck: self.common.no_typecheck,
             codegen_mode: crate::compile::CodegenMode::LinkExecutable,
             target: self.target.clone(),
@@ -231,7 +228,6 @@ pub struct CheckArgs {
 impl CheckArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            werror: self.common.werror,
             no_typecheck: self.common.no_typecheck,
             pkg_path: self.common.pkg_path.clone(),
             ..Default::default()
@@ -333,7 +329,6 @@ pub struct WatchArgs {
 impl WatchArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            werror: self.common.werror,
             no_typecheck: self.common.no_typecheck,
             pkg_path: self.common.pkg_path.clone(),
             ..Default::default()

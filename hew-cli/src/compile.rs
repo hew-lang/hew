@@ -73,11 +73,6 @@ impl CodegenMode {
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
-    #[expect(
-        dead_code,
-        reason = "spec-compat flag; will be wired to diagnostics severity"
-    )]
-    pub werror: bool,
     pub no_typecheck: bool,
     pub codegen_mode: CodegenMode,
     pub target: Option<String>,

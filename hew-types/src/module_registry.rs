@@ -139,26 +139,6 @@ impl ModuleRegistry {
         self.drop_types.contains(name)
     }
 
-    /// Check if an unqualified name matches the short part of any handle type.
-    ///
-    /// For example, "Value" matches "json.Value", "Connection" matches "net.Connection".
-    #[must_use]
-    pub fn is_unqualified_handle_type(&self, name: &str) -> bool {
-        self.handle_types
-            .iter()
-            .any(|ht| ht.rsplit('.').next() == Some(name))
-    }
-
-    /// Check if an unqualified name matches the short part of any drop type.
-    ///
-    /// Same pattern as `is_unqualified_handle_type` but for drop types.
-    #[must_use]
-    pub fn is_unqualified_drop_type(&self, name: &str) -> bool {
-        self.drop_types
-            .iter()
-            .any(|dt| dt.rsplit('.').next() == Some(name))
-    }
-
     /// If an unqualified name matches a handle type, return the fully-qualified form.
     ///
     /// For example, "Value" -> Some("json.Value") after loading the json module.
@@ -320,20 +300,6 @@ mod tests {
     }
 
     #[test]
-    fn is_unqualified_handle_type_works() {
-        let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
-        assert!(
-            reg.is_unqualified_handle_type("Value"),
-            "'Value' should match json.Value"
-        );
-        assert!(
-            !reg.is_unqualified_handle_type("NonExistent"),
-            "'NonExistent' should not match"
-        );
-    }
-
-    #[test]
     fn qualify_handle_type_works() {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
@@ -358,20 +324,6 @@ mod tests {
         assert!(
             all.contains(&"json.Value".to_string()),
             "all_handle_types should include json.Value"
-        );
-    }
-
-    #[test]
-    fn is_unqualified_drop_type_works() {
-        let mut reg = registry();
-        reg.load("std::net::http").unwrap();
-        assert!(
-            reg.is_unqualified_drop_type("Request"),
-            "'Request' should match http.Request"
-        );
-        assert!(
-            !reg.is_unqualified_drop_type("NonExistent"),
-            "'NonExistent' should not match"
         );
     }
 }

@@ -374,24 +374,45 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
-    fn reset_shutdown_phase() {
+    fn shutdown_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("shutdown test mutex poisoned")
+    }
+
+    fn reset_shutdown_state() {
         SHUTDOWN_PHASE.store(PHASE_RUNNING, Ordering::Release);
+
+        let mut supervisors = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+        for supervisor in supervisors.drain(..) {
+            if !supervisor.0.is_null() {
+                // SAFETY: tests only store pointers returned by hew_supervisor_new
+                // and this cleanup runs after each test has finished using them.
+                unsafe { crate::supervisor::hew_supervisor_stop(supervisor.0) };
+            }
+        }
     }
 
     #[test]
     fn initial_phase_is_running() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_RUNNING);
     }
 
     #[test]
     fn is_shutting_down_returns_zero_when_running() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         assert_eq!(hew_is_shutting_down(), 0);
     }
 
     #[test]
     fn shutdown_phase_constants() {
+        let _guard = shutdown_test_guard();
         assert_eq!(PHASE_RUNNING, 0);
         assert_eq!(PHASE_QUIESCE, 1);
         assert_eq!(PHASE_DRAIN, 2);
@@ -401,6 +422,8 @@ mod tests {
 
     #[test]
     fn register_null_supervisor_is_noop() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         // SAFETY: null pointer is explicitly handled.
         unsafe { hew_shutdown_register_supervisor(std::ptr::null_mut()) };
         // No crash = success.
@@ -408,18 +431,23 @@ mod tests {
 
     #[test]
     fn unregister_null_supervisor_is_noop() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         // SAFETY: null pointer is explicitly handled.
         unsafe { hew_shutdown_unregister_supervisor(std::ptr::null_mut()) };
     }
 
     #[test]
     fn shutdown_wait_returns_error_if_not_initiated() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         assert_eq!(hew_shutdown_wait(), -1);
     }
 
     #[test]
     fn hew_shutdown_phase_reflects_state() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         // Just test the accessor against the atomic.
         let prev = SHUTDOWN_PHASE.load(Ordering::Acquire);
         assert_eq!(hew_shutdown_phase(), prev);
@@ -432,7 +460,8 @@ mod tests {
     /// Positive test: Register a supervisor and verify shutdown completes without deadlock.
     #[test]
     fn shutdown_orchestrate_no_deadlock_with_supervisor() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // Create a mock supervisor using the C ABI function.
         // SAFETY: hew_supervisor_new is safe to call with valid parameters.
@@ -460,13 +489,14 @@ mod tests {
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
         // Clean up.
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 
     /// Negative test: Unregistering a supervisor that was never registered is a no-op.
     #[test]
     fn unregister_nonexistent_supervisor_is_noop() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // Create a mock supervisor that was never registered.
         // SAFETY: hew_supervisor_new is safe to call with valid parameters.
@@ -488,7 +518,8 @@ mod tests {
     /// Positive test: Normal shutdown initiation completes successfully.
     #[test]
     fn shutdown_initiate_completes_normally() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // Test the simple case where we transition phases manually.
         // In a real runtime, this would be done by the scheduler.
@@ -505,14 +536,15 @@ mod tests {
         // Verify we reached DONE.
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 
     /// Negative test: Verify shutdown completes even if thread spawn fails.
     /// Note: This test may be skipped if we can't actually trigger spawn failure.
     #[test]
     fn shutdown_spawn_failure_fallback() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // This test is challenging because we need to force spawn failure.
         // For deterministic testing, we'll test the synchronous path directly:
@@ -527,13 +559,15 @@ mod tests {
         // Verify it completed.
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 
     // Test to verify the spawn failure detection works by testing thread creation under stress.
     // This documents the behaviour but doesn't require spawn failure.
     #[test]
     fn thread_spawn_stress_test() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         // This test verifies our understanding of thread spawn failure conditions.
         // We try to spawn many threads rapidly and see if any fail.
         let mut spawn_failures = 0;
@@ -568,7 +602,8 @@ mod tests {
     #[test]
     #[ignore = "Manually run to verify test detects deadlock bug"]
     fn sabotage_deadlock_test() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // Create and register a supervisor.
         // SAFETY: hew_supervisor_new is safe to call with valid parameters.
@@ -591,7 +626,7 @@ mod tests {
         assert!(result.is_ok(), "Shutdown should complete without deadlock");
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 
     /// Sabotage test for Bug #10: This test should stall if we revert the spawn fallback.
@@ -600,7 +635,8 @@ mod tests {
     #[test]
     #[ignore = "Manually run to verify test catches spawn failure stall"]
     fn sabotage_spawn_failure_test() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
 
         // Test the case where spawn fails by calling orchestrate directly.
         // In the old code (without fallback), if spawn failed, nothing would
@@ -616,7 +652,7 @@ mod tests {
         shutdown_orchestrate(Duration::from_millis(10));
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 
     /// When `shutdown_orchestrate` runs on a worker thread (spawn-failure
@@ -625,11 +661,12 @@ mod tests {
     /// thread to verify no deadlock occurs.
     #[test]
     fn shutdown_fallback_skips_self_join() {
-        reset_shutdown_phase();
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
         SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
 
         // Capture the phase inside the thread before another test
-        // calls reset_shutdown_phase().
+        // calls reset_shutdown_state().
         let handle = std::thread::Builder::new()
             .name("fallback-worker".into())
             .spawn(|| {
@@ -643,6 +680,6 @@ mod tests {
             .expect("spawn-failure fallback must not self-join deadlock");
         assert_eq!(phase, PHASE_DONE);
 
-        reset_shutdown_phase();
+        reset_shutdown_state();
     }
 }

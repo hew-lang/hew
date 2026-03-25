@@ -33,7 +33,6 @@ hew build main.hew
 
 - `adze init [NAME]` — Create a new Hew project
   - `--lib` — Library project template
-  - `--bin` — Binary project template (default)
   - `--actor` — Actor project template
 - `adze check` — Validate your manifest
 

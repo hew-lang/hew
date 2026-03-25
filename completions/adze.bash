@@ -169,9 +169,6 @@ _adze() {
             adze__help__namespace,info)
                 cmd="adze__help__namespace__info"
                 ;;
-            adze__help__namespace,list)
-                cmd="adze__help__namespace__list"
-                ;;
             adze__help__namespace,register)
                 cmd="adze__help__namespace__register"
                 ;;
@@ -229,9 +226,6 @@ _adze() {
             adze__namespace,info)
                 cmd="adze__namespace__info"
                 ;;
-            adze__namespace,list)
-                cmd="adze__namespace__list"
-                ;;
             adze__namespace,register)
                 cmd="adze__namespace__register"
                 ;;
@@ -240,9 +234,6 @@ _adze() {
                 ;;
             adze__namespace__help,info)
                 cmd="adze__namespace__help__info"
-                ;;
-            adze__namespace__help,list)
-                cmd="adze__namespace__help__list"
                 ;;
             adze__namespace__help,register)
                 cmd="adze__namespace__help__register"
@@ -624,7 +615,7 @@ _adze() {
             return 0
             ;;
         adze__help__namespace)
-            opts="register list info"
+            opts="register info"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -638,20 +629,6 @@ _adze() {
             return 0
             ;;
         adze__help__namespace__info)
-            opts=""
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
-        adze__help__namespace__list)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -944,7 +921,7 @@ _adze() {
             return 0
             ;;
         adze__init)
-            opts="-h --lib --bin --actor --help [NAME]"
+            opts="-h --lib --actor --help [NAME]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1148,7 +1125,7 @@ _adze() {
             return 0
             ;;
         adze__namespace)
-            opts="-h --help register list info help"
+            opts="-h --help register info help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1162,7 +1139,7 @@ _adze() {
             return 0
             ;;
         adze__namespace__help)
-            opts="register list info help"
+            opts="register info help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1203,20 +1180,6 @@ _adze() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        adze__namespace__help__list)
-            opts=""
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
         adze__namespace__help__register)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -1233,20 +1196,6 @@ _adze() {
             ;;
         adze__namespace__info)
             opts="-h --help <PREFIX>"
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
-        adze__namespace__list)
-            opts="-h --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

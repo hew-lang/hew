@@ -452,88 +452,11 @@ pub enum Token<'src> {
 }
 
 impl std::fmt::Display for Token<'_> {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "lexer Display covers all token types"
-    )]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(kw) = self.keyword_str() {
+            return write!(f, "`{kw}`");
+        }
         match self {
-            // Keywords
-            Token::Let => f.write_str("`let`"),
-            Token::Var => f.write_str("`var`"),
-            Token::Const => f.write_str("`const`"),
-            Token::Fn => f.write_str("`fn`"),
-            Token::If => f.write_str("`if`"),
-            Token::Else => f.write_str("`else`"),
-            Token::Match => f.write_str("`match`"),
-            Token::Loop => f.write_str("`loop`"),
-            Token::For => f.write_str("`for`"),
-            Token::While => f.write_str("`while`"),
-            Token::Break => f.write_str("`break`"),
-            Token::Continue => f.write_str("`continue`"),
-            Token::Return => f.write_str("`return`"),
-            Token::Import => f.write_str("`import`"),
-            Token::Pub => f.write_str("`pub`"),
-            Token::Package => f.write_str("`package`"),
-            Token::Super => f.write_str("`super`"),
-            Token::Struct => f.write_str("`struct`"),
-            Token::Indirect => f.write_str("`indirect`"),
-            Token::Enum => f.write_str("`enum`"),
-            Token::Trait => f.write_str("`trait`"),
-            Token::Impl => f.write_str("`impl`"),
-            Token::Wire => f.write_str("`wire`"),
-            Token::Actor => f.write_str("`actor`"),
-            Token::Supervisor => f.write_str("`supervisor`"),
-            Token::Child => f.write_str("`child`"),
-            Token::Restart => f.write_str("`restart`"),
-            Token::Budget => f.write_str("`budget`"),
-            Token::Strategy => f.write_str("`strategy`"),
-            Token::Permanent => f.write_str("`permanent`"),
-            Token::Transient => f.write_str("`transient`"),
-            Token::Temporary => f.write_str("`temporary`"),
-            Token::OneForOne => f.write_str("`one_for_one`"),
-            Token::OneForAll => f.write_str("`one_for_all`"),
-            Token::RestForOne => f.write_str("`rest_for_one`"),
-            Token::Scope => f.write_str("`scope`"),
-            Token::Spawn => f.write_str("`spawn`"),
-            Token::Async => f.write_str("`async`"),
-            Token::Await => f.write_str("`await`"),
-            Token::Receive => f.write_str("`receive`"),
-            Token::Init => f.write_str("`init`"),
-            Token::Terminate => f.write_str("`terminate`"),
-            Token::Type => f.write_str("`type`"),
-            Token::This => f.write_str("`this`"),
-            Token::Dyn => f.write_str("`dyn`"),
-            Token::Move => f.write_str("`move`"),
-            Token::Try => f.write_str("`try`"),
-            Token::True => f.write_str("`true`"),
-            Token::False => f.write_str("`false`"),
-            Token::Reserved => f.write_str("`reserved`"),
-            Token::Optional => f.write_str("`optional`"),
-            Token::Deprecated => f.write_str("`deprecated`"),
-            Token::Default => f.write_str("`default`"),
-            Token::Unsafe => f.write_str("`unsafe`"),
-            Token::Extern => f.write_str("`extern`"),
-            Token::Foreign => f.write_str("`foreign`"),
-            Token::In => f.write_str("`in`"),
-            Token::Select => f.write_str("`select`"),
-            Token::Race => f.write_str("`race`"),
-            Token::Join => f.write_str("`join`"),
-            Token::From => f.write_str("`from`"),
-            Token::After => f.write_str("`after`"),
-            Token::Gen => f.write_str("`gen`"),
-            Token::Yield => f.write_str("`yield`"),
-            Token::Where => f.write_str("`where`"),
-            Token::Cooperate => f.write_str("`cooperate`"),
-            Token::Catch => f.write_str("`catch`"),
-            Token::Defer => f.write_str("`defer`"),
-            Token::Pure => f.write_str("`pure`"),
-            Token::As => f.write_str("`as`"),
-            Token::Machine => f.write_str("`machine`"),
-            Token::State => f.write_str("`state`"),
-            Token::Event => f.write_str("`event`"),
-            Token::On => f.write_str("`on`"),
-            Token::When => f.write_str("`when`"),
             // Delimiters and punctuation
             Token::LeftParen => f.write_str("`(`"),
             Token::RightParen => f.write_str("`)`"),
@@ -605,100 +528,126 @@ impl std::fmt::Display for Token<'_> {
             Token::InnerDocComment(_) => f.write_str("inner doc comment"),
             Token::_BlockComment | Token::_LineComment => f.write_str("comment"),
             Token::Error => f.write_str("unrecognized token"),
+            // Keywords are handled by the `keyword_str()` early return above.
+            _ => unreachable!(),
         }
     }
 }
 
-impl Token<'_> {
-    /// If this token is a keyword, return its source string; otherwise `None`.
-    #[must_use]
-    pub fn keyword_str(&self) -> Option<&'static str> {
-        match self {
-            Token::Let => Some("let"),
-            Token::Var => Some("var"),
-            Token::Const => Some("const"),
-            Token::Fn => Some("fn"),
-            Token::If => Some("if"),
-            Token::Else => Some("else"),
-            Token::Match => Some("match"),
-            Token::Loop => Some("loop"),
-            Token::For => Some("for"),
-            Token::While => Some("while"),
-            Token::Break => Some("break"),
-            Token::Continue => Some("continue"),
-            Token::Return => Some("return"),
-            Token::Import => Some("import"),
-            Token::Pub => Some("pub"),
-            Token::Package => Some("package"),
-            Token::Super => Some("super"),
-            Token::Struct => Some("struct"),
-            Token::Indirect => Some("indirect"),
-            Token::Enum => Some("enum"),
-            Token::Trait => Some("trait"),
-            Token::Impl => Some("impl"),
-            Token::Wire => Some("wire"),
-            Token::Actor => Some("actor"),
-            Token::Supervisor => Some("supervisor"),
-            Token::Child => Some("child"),
-            Token::Restart => Some("restart"),
-            Token::Budget => Some("budget"),
-            Token::Strategy => Some("strategy"),
-            Token::Permanent => Some("permanent"),
-            Token::Transient => Some("transient"),
-            Token::Temporary => Some("temporary"),
-            Token::OneForOne => Some("one_for_one"),
-            Token::OneForAll => Some("one_for_all"),
-            Token::RestForOne => Some("rest_for_one"),
-            Token::Scope => Some("scope"),
-            Token::Spawn => Some("spawn"),
-            Token::Async => Some("async"),
-            Token::Await => Some("await"),
-            Token::Receive => Some("receive"),
-            Token::Init => Some("init"),
-            Token::Terminate => Some("terminate"),
-            Token::Type => Some("type"),
-            Token::This => Some("this"),
-            Token::Dyn => Some("dyn"),
-            Token::Move => Some("move"),
-            Token::Try => Some("try"),
-            Token::True => Some("true"),
-            Token::False => Some("false"),
-            Token::Reserved => Some("reserved"),
-            Token::Optional => Some("optional"),
-            Token::Deprecated => Some("deprecated"),
-            Token::Default => Some("default"),
-            Token::Unsafe => Some("unsafe"),
-            Token::Extern => Some("extern"),
-            Token::Foreign => Some("foreign"),
-            Token::In => Some("in"),
-            Token::Select => Some("select"),
-            Token::Race => Some("race"),
-            Token::Join => Some("join"),
-            Token::From => Some("from"),
-            Token::After => Some("after"),
-            Token::Gen => Some("gen"),
-            Token::Yield => Some("yield"),
-            Token::Where => Some("where"),
-            Token::Cooperate => Some("cooperate"),
-            Token::Catch => Some("catch"),
-            Token::Defer => Some("defer"),
-            Token::Pure => Some("pure"),
-            Token::As => Some("as"),
-            Token::Machine => Some("machine"),
-            Token::State => Some("state"),
-            Token::Event => Some("event"),
-            Token::On => Some("on"),
-            Token::When => Some("when"),
-            _ => None,
+// ---------------------------------------------------------------------------
+// Keyword table — single source of truth
+// ---------------------------------------------------------------------------
+//
+// To add a new keyword: add ONE entry to the `define_keywords!` invocation
+// below. This generates `Token::keyword_str()`, `Token::is_keyword()`, and
+// `ALL_KEYWORDS` automatically.
+macro_rules! define_keywords {
+    ($($variant:ident => $str:literal),* $(,)?) => {
+        impl Token<'_> {
+            /// If this token is a keyword, return its source string; otherwise `None`.
+            #[must_use]
+            pub fn keyword_str(&self) -> Option<&'static str> {
+                match self {
+                    $(Token::$variant => Some($str),)*
+                    _ => None,
+                }
+            }
+
+            /// Returns `true` if this token is a language keyword.
+            #[must_use]
+            pub fn is_keyword(&self) -> bool {
+                self.keyword_str().is_some()
+            }
         }
-    }
 
-    /// Returns `true` if this token is a language keyword.
-    #[must_use]
-    pub fn is_keyword(&self) -> bool {
-        self.keyword_str().is_some()
-    }
+        /// All keyword strings recognised by the lexer, in definition order.
+        ///
+        /// This is the single source of truth for the set of Hew keywords —
+        /// downstream consumers (e.g. the LSP) should use this instead of
+        /// maintaining their own keyword list.
+        pub const ALL_KEYWORDS: &[&str] = &[$($str),*];
+    };
+}
 
+define_keywords! {
+    Let        => "let",
+    Var        => "var",
+    Const      => "const",
+    Fn         => "fn",
+    If         => "if",
+    Else       => "else",
+    Match      => "match",
+    Loop       => "loop",
+    For        => "for",
+    While      => "while",
+    Break      => "break",
+    Continue   => "continue",
+    Return     => "return",
+    Import     => "import",
+    Pub        => "pub",
+    Package    => "package",
+    Super      => "super",
+    Struct     => "struct",
+    Indirect   => "indirect",
+    Enum       => "enum",
+    Trait      => "trait",
+    Impl       => "impl",
+    Wire       => "wire",
+    Actor      => "actor",
+    Supervisor => "supervisor",
+    Child      => "child",
+    Restart    => "restart",
+    Budget     => "budget",
+    Strategy   => "strategy",
+    Permanent  => "permanent",
+    Transient  => "transient",
+    Temporary  => "temporary",
+    OneForOne  => "one_for_one",
+    OneForAll  => "one_for_all",
+    RestForOne => "rest_for_one",
+    Scope      => "scope",
+    Spawn      => "spawn",
+    Async      => "async",
+    Await      => "await",
+    Receive    => "receive",
+    Init       => "init",
+    Terminate  => "terminate",
+    Type       => "type",
+    This       => "this",
+    Dyn        => "dyn",
+    Move       => "move",
+    Try        => "try",
+    True       => "true",
+    False      => "false",
+    Reserved   => "reserved",
+    Optional   => "optional",
+    Deprecated => "deprecated",
+    Default    => "default",
+    Unsafe     => "unsafe",
+    Extern     => "extern",
+    Foreign    => "foreign",
+    In         => "in",
+    Select     => "select",
+    Race       => "race",
+    Join       => "join",
+    From       => "from",
+    After      => "after",
+    Gen        => "gen",
+    Yield      => "yield",
+    Where      => "where",
+    Cooperate  => "cooperate",
+    Catch      => "catch",
+    Defer      => "defer",
+    Pure       => "pure",
+    As         => "as",
+    Machine    => "machine",
+    State      => "state",
+    Event      => "event",
+    On         => "on",
+    When       => "when",
+}
+
+impl Token<'_> {
     /// Returns `true` if this token is an operator (arithmetic, comparison,
     /// logical, bitwise, assignment, arrow, or range).
     #[must_use]
@@ -784,89 +733,6 @@ impl Token<'_> {
         )
     }
 }
-
-/// All keyword strings recognised by the lexer, in definition order.
-///
-/// This is the single source of truth for the set of Hew keywords —
-/// downstream consumers (e.g. the LSP) should use this instead of
-/// maintaining their own keyword list.
-pub const ALL_KEYWORDS: &[&str] = &[
-    "let",
-    "var",
-    "const",
-    "fn",
-    "if",
-    "else",
-    "match",
-    "loop",
-    "for",
-    "while",
-    "break",
-    "continue",
-    "return",
-    "import",
-    "pub",
-    "package",
-    "super",
-    "struct",
-    "indirect",
-    "enum",
-    "trait",
-    "impl",
-    "wire",
-    "actor",
-    "supervisor",
-    "child",
-    "restart",
-    "budget",
-    "strategy",
-    "permanent",
-    "transient",
-    "temporary",
-    "one_for_one",
-    "one_for_all",
-    "rest_for_one",
-    "scope",
-    "spawn",
-    "async",
-    "await",
-    "receive",
-    "init",
-    "terminate",
-    "type",
-    "this",
-    "dyn",
-    "move",
-    "try",
-    "true",
-    "false",
-    "reserved",
-    "optional",
-    "deprecated",
-    "default",
-    "unsafe",
-    "extern",
-    "foreign",
-    "in",
-    "select",
-    "race",
-    "join",
-    "from",
-    "after",
-    "gen",
-    "yield",
-    "where",
-    "cooperate",
-    "catch",
-    "defer",
-    "pure",
-    "as",
-    "machine",
-    "state",
-    "event",
-    "on",
-    "when",
-];
 
 #[cfg(test)]
 mod tests {

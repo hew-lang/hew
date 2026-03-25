@@ -154,6 +154,22 @@ pub struct FnSig {
     pub doc_comment: Option<String>,
 }
 
+impl Default for FnSig {
+    fn default() -> Self {
+        Self {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names: vec![],
+            params: vec![],
+            return_type: Ty::Unit,
+            is_async: false,
+            is_pure: false,
+            accepts_kwargs: false,
+            doc_comment: None,
+        }
+    }
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -510,23 +526,25 @@ impl Checker {
         &self.module_registry
     }
 
+    /// Strip a known module prefix from a qualified name (e.g. `json.Value` → `Value`).
+    fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
+        let dot = name.find('.')?;
+        if self.modules.contains(&name[..dot]) {
+            Some(&name[dot + 1..])
+        } else {
+            None
+        }
+    }
+
     /// Look up a type definition, handling module-qualified names like `json.Value`.
-    /// Tries exact match first, then strips a known module prefix to find unqualified name.
     fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
-        if let Some(td) = self.type_defs.get(name) {
-            return Some(td.clone());
-        }
-        // Strip module prefix only if the prefix is a known module
-        if let Some(dot) = name.find('.') {
-            let prefix = &name[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &name[dot + 1..];
-                if let Some(td) = self.type_defs.get(unqualified) {
-                    return Some(td.clone());
-                }
-            }
-        }
-        None
+        self.type_defs
+            .get(name)
+            .or_else(|| {
+                self.strip_module_prefix(name)
+                    .and_then(|u| self.type_defs.get(u))
+            })
+            .cloned()
     }
 
     /// Look up a type definition mutably, handling module-qualified names.
@@ -534,35 +552,19 @@ impl Checker {
         if self.type_defs.contains_key(name) {
             return self.type_defs.get_mut(name);
         }
-        if let Some(dot) = name.find('.') {
-            let prefix = &name[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &name[dot + 1..];
-                if self.type_defs.contains_key(unqualified) {
-                    return self.type_defs.get_mut(unqualified);
-                }
-            }
-        }
-        None
+        let unqualified = self.strip_module_prefix(name)?;
+        self.type_defs.get_mut(unqualified)
     }
 
     /// Look up a function signature, handling module-qualified names.
-    /// For method keys like `json.Value::method`, also tries `Value::method`.
     fn lookup_fn_sig(&self, key: &str) -> Option<FnSig> {
-        if let Some(sig) = self.fn_sigs.get(key) {
-            return Some(sig.clone());
-        }
-        // Strip module prefix only if the prefix is a known module
-        if let Some(dot) = key.find('.') {
-            let prefix = &key[..dot];
-            if self.modules.contains(prefix) {
-                let unqualified = &key[dot + 1..];
-                if let Some(sig) = self.fn_sigs.get(unqualified) {
-                    return Some(sig.clone());
-                }
-            }
-        }
-        None
+        self.fn_sigs
+            .get(key)
+            .or_else(|| {
+                self.strip_module_prefix(key)
+                    .and_then(|u| self.fn_sigs.get(u))
+            })
+            .cloned()
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -598,6 +600,28 @@ impl Checker {
             return Some(sig.return_type.clone());
         }
         None
+    }
+
+    fn check_named_method_fallback(
+        &mut self,
+        receiver_ty: &Ty,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+        type_display_name: &str,
+    ) -> Ty {
+        if let Ty::Named { name, .. } = receiver_ty {
+            if let Some(ty) = self.try_resolve_named_method(name, method_name, args, span) {
+                return ty;
+            }
+        }
+
+        self.report_error(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!("no method `{method_name}` on {type_display_name}"),
+        );
+        Ty::Error
     }
 
     #[expect(
@@ -808,15 +832,9 @@ impl Checker {
         self.fn_sigs.insert(
             name.to_string(),
             FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
-                param_names: vec![],
                 params,
                 return_type,
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             },
         );
     }
@@ -905,13 +923,8 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    param_names: vec![],
-                                    params: vec![],
                                     return_type,
-                                    is_async: false,
-                                    is_pure: false,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -932,13 +945,9 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    param_names: vec![],
                                     params: constructor_params,
                                     return_type,
-                                    is_async: false,
-                                    is_pure: false,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -1014,15 +1023,10 @@ impl Checker {
                 type_def.methods.insert(
                     method_name.to_string(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
                         params,
                         return_type,
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             }
@@ -1040,15 +1044,10 @@ impl Checker {
             self.fn_sigs.insert(
                 qualified_name,
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1076,15 +1075,9 @@ impl Checker {
                 type_def.methods.insert(
                     method_name.to_string(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
-                        params: vec![],
                         return_type,
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             }
@@ -1108,15 +1101,10 @@ impl Checker {
             self.fn_sigs.insert(
                 qualified_name,
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1208,10 +1196,6 @@ impl Checker {
     }
 
     /// Register a machine declaration as a type definition with variants and methods.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "machine registration requires registering states, events, transitions, and methods"
-    )]
     fn register_machine_decl(&mut self, md: &MachineDecl) {
         let machine_ty = Ty::Machine {
             name: md.name.clone(),
@@ -1231,15 +1215,9 @@ impl Checker {
                 self.fn_sigs.insert(
                     state.name.clone(),
                     FnSig {
-                        type_params: vec![],
-                        type_param_bounds: HashMap::new(),
-                        param_names: vec![],
-                        params: vec![],
                         return_type: machine_ty.clone(),
-                        is_async: false,
                         is_pure: true,
-                        accepts_kwargs: false,
-                        doc_comment: None,
+                        ..FnSig::default()
                     },
                 );
             } else {
@@ -1309,30 +1287,18 @@ impl Checker {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
                     param_names: vec!["event".to_string()],
                     params: vec![event_ty],
-                    return_type: Ty::Unit,
-                    is_async: false,
-                    is_pure: false,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
             // Register state_name() method
             td.methods.insert(
                 "state_name".to_string(),
                 FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
-                    params: vec![],
                     return_type: Ty::String,
-                    is_async: false,
                     is_pure: true,
-                    accepts_kwargs: false,
-                    doc_comment: None,
+                    ..FnSig::default()
                 },
             );
         }
@@ -1867,30 +1833,22 @@ impl Checker {
                                     .as_ref()
                                     .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
                                 let sig = FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
-                                    is_async: false,
                                     is_pure: m.is_pure,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
                                 if let Some(td) = self.lookup_type_def_mut(type_name) {
                                     td.methods.insert(
                                         m.name.clone(),
                                         FnSig {
-                                            type_params: vec![],
-                                            type_param_bounds: HashMap::new(),
                                             param_names,
                                             params,
                                             return_type,
-                                            is_async: false,
                                             is_pure: m.is_pure,
-                                            accepts_kwargs: false,
-                                            doc_comment: None,
+                                            ..FnSig::default()
                                         },
                                     );
                                 }
@@ -1940,15 +1898,12 @@ impl Checker {
                             type_def.methods.insert(
                                 method_name,
                                 FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
                                     param_names,
                                     params,
                                     return_type,
                                     is_async,
                                     is_pure: method.is_pure,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
+                                    ..FnSig::default()
                                 },
                             );
                         }
@@ -2107,8 +2062,8 @@ impl Checker {
             return_type,
             is_async: fd.is_async,
             is_pure: fd.is_pure,
-            accepts_kwargs: false,
             doc_comment: fd.doc_comment.clone(),
+            ..FnSig::default()
         };
 
         self.fn_sigs.insert(name.to_string(), sig);
@@ -2174,8 +2129,7 @@ impl Checker {
             return_type,
             is_async: method.is_async,
             is_pure: method.is_pure,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
@@ -2224,10 +2178,8 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_async: false,
             is_pure: rf.is_pure,
-            accepts_kwargs: false,
-            doc_comment: None,
+            ..FnSig::default()
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
@@ -2247,15 +2199,10 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
             let sig = FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names,
                 params,
                 return_type,
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             };
             self.fn_sigs.insert(f.name.clone(), sig);
             self.unsafe_functions.insert(f.name.clone());
@@ -2303,15 +2250,10 @@ impl Checker {
                 continue;
             }
             let sig = FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names: vec!["rx".to_string()],
                 params: vec![receiver_ty.clone()],
                 return_type: ret_ty.clone(),
-                is_async: false,
-                is_pure: false,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             };
             self.fn_sigs.insert((*name).to_string(), sig);
             self.unsafe_functions.insert((*name).to_string());
@@ -2354,15 +2296,10 @@ impl Checker {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type: ret,
-                    is_async: false,
-                    is_pure: false,
                     accepts_kwargs,
-                    doc_comment: None,
+                    ..FnSig::default()
                 };
                 self.unsafe_functions.insert(name.clone());
                 self.fn_sigs.insert(name, sig);
@@ -2373,15 +2310,10 @@ impl Checker {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
-                    type_params: vec![],
-                    type_param_bounds: HashMap::new(),
-                    param_names: vec![],
                     params,
                     return_type: ret,
-                    is_async: false,
-                    is_pure: false,
                     accepts_kwargs,
-                    doc_comment: None,
+                    ..FnSig::default()
                 };
                 self.fn_sigs.insert(name, sig);
             }
@@ -2834,8 +2766,8 @@ impl Checker {
             return_type,
             is_async: fd.is_async,
             is_pure: fd.is_pure,
-            accepts_kwargs: false,
             doc_comment: fd.doc_comment.clone(),
+            ..FnSig::default()
         }
     }
 
@@ -3105,16 +3037,20 @@ impl Checker {
         for method in &ad.methods {
             self.env.push_scope();
             // Bind actor fields directly in scope (bare field access)
-            for field in &ad.fields {
-                let field_ty = self.resolve_type_expr(&field.ty.0);
-                self.env.define(field.name.clone(), field_ty, true);
-            }
+            self.bind_actor_fields(&ad.fields);
             self.check_function(method);
             self.env.pop_scope();
         }
 
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
+    }
+
+    fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty.0);
+            self.env.define(field.name.clone(), field_ty, true);
+        }
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -3129,10 +3065,7 @@ impl Checker {
 
         // Bind actor fields directly in scope (bare field access, mutable
         // in init body). Hew uses bare names, not `self.field`.
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        self.bind_actor_fields(fields);
 
         // Bind init parameters
         for p in &init.params {
@@ -3166,10 +3099,7 @@ impl Checker {
 
         // Bind actor fields directly in scope (bare field access, mutable
         // so the terminate body can read/modify fields for cleanup).
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        self.bind_actor_fields(fields);
 
         // Terminate returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
@@ -3294,11 +3224,8 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        // Bind actor fields directly in scope (bare field access)
-        for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
-            self.env.define(field.name.clone(), field_ty, true);
-        }
+        // Bind actor fields directly in scope (bare field access).
+        self.bind_actor_fields(fields);
 
         // Push a separate scope for parameters so shadowing checks can
         // detect collisions with actor field names in the outer scope.
@@ -5789,26 +5716,10 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let inner = type_args
-            .first()
-            .cloned()
-            .unwrap_or(Ty::Var(TypeVar::fresh()));
-        // Reject concrete element types that lack runtime
-        // implementations.  Only String and bytes are supported;
-        // type variables and Ty::Error pass through (Error
-        // preserves the original diagnostic instead of masking it).
-        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-        if !is_supported {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Stream<{inner}>` is not supported; \
-                     Stream<T> is currently only implemented for String and bytes"
-                ),
-            );
+        let Some(inner) = self.validate_stream_sink_element_type(type_args, "Stream", method, span)
+        else {
             return Ty::Error;
-        }
+        };
         match method {
             "next" => Ty::option(inner),
             "close" => Ty::Unit,
@@ -5886,6 +5797,37 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn validate_stream_sink_element_type(
+        &mut self,
+        type_args: &[Ty],
+        type_name: &str,
+        method_name: &str,
+        span: &Span,
+    ) -> Option<Ty> {
+        let _ = method_name;
+        let inner = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        // Reject concrete element types that lack runtime
+        // implementations. Only String and bytes are supported;
+        // type variables and Ty::Error pass through (Error
+        // preserves the original diagnostic instead of masking it).
+        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
+        if !is_supported {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`{type_name}<{inner}>` is not supported; \
+                     {type_name}<T> is currently only implemented for String and bytes"
+                ),
+            );
+            return None;
+        }
+        Some(inner)
     }
 
     fn check_string_method(&mut self, method: &str, args: &[CallArg], span: &Span) -> Ty {
@@ -6559,18 +6501,7 @@ impl Checker {
                     args: vec![],
                 },
                 "close" => Ty::Unit,
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Server"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
             },
             // http.Request methods/properties
             (Ty::Named { name, .. }, _) if name == "http.Request" => match method {
@@ -6614,16 +6545,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on http.Request"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
                 }
             },
             // net.Listener methods
@@ -6634,16 +6556,7 @@ impl Checker {
                 },
                 "close" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Listener"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
                 }
             },
             // net.Connection methods
@@ -6664,18 +6577,13 @@ impl Checker {
                     }
                     Ty::I32
                 }
-                _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on net.Connection"),
-                        );
-                        Ty::Error
-                    }
-                }
+                _ => self.check_named_method_fallback(
+                    &resolved,
+                    method,
+                    args,
+                    span,
+                    "net.Connection",
+                ),
             },
             // regex.Pattern methods
             (Ty::Named { name, .. }, _) if name == "regex.Pattern" => match method {
@@ -6706,16 +6614,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on regex.Pattern"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }
             },
             // process.Child methods
@@ -6723,16 +6622,7 @@ impl Checker {
                 "wait" | "kill" => Ty::I32,
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
-                        ty
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on process.Child"),
-                        );
-                        Ty::Error
-                    }
+                    self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
                 }
             },
             // Generator methods: .next() returns the yielded type
@@ -6772,23 +6662,11 @@ impl Checker {
                 },
                 _,
             ) if name == "Sink" || name == "stream.Sink" => {
-                let inner = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let is_supported =
-                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-                if !is_supported {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Sink<{inner}>` is not supported; \
-                             Sink<T> is currently only implemented for String and bytes"
-                        ),
-                    );
+                let Some(inner) =
+                    self.validate_stream_sink_element_type(type_args, "Sink", method, span)
+                else {
                     return Ty::Error;
-                }
+                };
                 match method {
                     "write" => {
                         if let Some(arg) = args.first() {
@@ -6850,18 +6728,7 @@ impl Checker {
                     "clone" => Ty::sender(inner),
                     "close" => Ty::Unit,
                     _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Sender", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Sender<T>"),
-                            );
-                            Ty::Error
-                        }
+                        self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
                     }
                 }
             }
@@ -6894,20 +6761,13 @@ impl Checker {
                 match method {
                     "recv" | "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
-                    _ => {
-                        if let Some(ty) =
-                            self.try_resolve_named_method("Receiver", method, args, span)
-                        {
-                            ty
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!("no method `{method}` on Receiver<T>"),
-                            );
-                            Ty::Error
-                        }
-                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "Receiver<T>",
+                    ),
                 }
             }
             // Machine methods: step(), state_name()
@@ -8085,15 +7945,11 @@ impl Checker {
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             return Some(FnSig {
-                type_params: vec![],
-                type_param_bounds: HashMap::new(),
                 param_names,
                 params,
                 return_type,
-                is_async: false,
                 is_pure: m.is_pure,
-                accepts_kwargs: false,
-                doc_comment: None,
+                ..FnSig::default()
             });
         }
         // Walk super-traits — clone to release borrow

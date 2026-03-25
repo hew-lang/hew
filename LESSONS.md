@@ -1,5 +1,84 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-24 shutdown test isolation fix
+
+### 1. Global runtime-phase tests must prove order independence, not just correctness in isolation
+
+The shutdown tests all touched `SHUTDOWN_PHASE` and the registered-supervisor list,
+so they passed one-by-one but failed under `cargo test --workspace` when those
+globals were shared across parallel test threads. A small test-only mutex and a
+full state reset are enough when the mutable state is confined to one module.
+
+## From the 2026-03-24 dead-helper cleanup
+
+### 1. Self-tests can be the only evidence a helper is still "used"
+
+Searcher output needs to distinguish real production callers from tests that only
+instantiate a helper to prove the helper exists. In `hew-types`, the dead
+`TypeError` constructors and unqualified `ModuleRegistry` predicates looked
+alive until their call sites were filtered down to test-only references.
+
+## From the 2026-03-24 C string helper dedup pass
+
+### 1. "Shared helper already exists" must be checked for semantic parity
+
+`hew-cabi::cstr_to_str` and `hew-runtime::bridge::cstr_to_string` both start
+from `CStr`, but they do different jobs: one rejects invalid UTF-8 and the
+other preserves the boundary by decoding lossily into an owned `String`.
+Deduplicating ABI helpers safely sometimes means adding the right shared helper,
+not reusing the closest existing one.
+
+## From the 2026-03-24 dead CLI pruning pass
+
+### 1. Dead CLI surface lives in completions and specs, not just argument parsing
+
+Removing a no-op flag or placeholder subcommand from Rust code is only half the work.
+In this repo, shell completions, README command summaries, and `docs/specs/HEW-SPEC.md`
+can preserve dead behaviour long after the implementation is gone, so CLI removals need
+an explicit docs/completions sweep.
+
+## From the 2026-03-24 adze-cli gitignore dedup pass
+
+### 1. Duplicate file-update helpers drift even when the logic starts identical
+
+`write_init_gitignore()` already delegated to a reusable entry appender, but
+`update_gitignore()` reimplemented the same `.gitignore` read/append/write flow
+for install. Reusing the shared helper keeps init and install behaviour aligned
+and makes small correctness fixes, like trimmed-line matching, land everywhere.
+
+## From the 2026-03-24 parser escape deduplication
+
+### 1. Interpolated strings differ at the delimiter boundary, not in core escapes
+
+The parser's plain-string and interpolated-string paths used the same `\n`/`\t`/`\r`/`\"`/
+`\0`/`\\`/`\xNN` decoding, but interpolation also needs a small allow-list for escapes that
+would otherwise start interpolation (`\{`, and future-facing `\$`/``\``` handling). Sharing
+the decoder is safe if that delimiter-specific difference stays explicit in the call site.
+
+## From the 2026-03-24 wire parser dedup pass
+
+### 1. Shared parser helpers should stop at the true semantic boundary
+
+`#[wire] struct` and legacy `wire type` both parse field numbers and modifiers, but they diverge on when auto-numbering happens. A good deduplication seam shares token consumption and keeps number assignment on the side of the call site that still owns the semantic difference.
+
+## From the 2026-03-24 QUIC dead-code trim
+
+### 1. Placeholder tests can hide that the placeholder itself is the only caller
+
+`load_ca_cert()` looked unused in production, but grep still found one unit test
+whose only job was asserting the reserved helper returned `None` when unset.
+When auditing dead code, distinguish real behaviour coverage from tests that
+exist only to justify an otherwise unused function.
+
+## From the 2026-03-24 export-tooling cleanup
+
+### 1. Workspace members can stay alive long after their build path dies
+
+`hew-stdlib-gen` and its export-metadata crates still compiled in the workspace
+even though neither `Makefile` nor CI invoked them anymore. When a code
+generator is superseded, verify the new data path end-to-end and then remove the
+old crates instead of letting dead tooling accumulate.
+
 ## From the 2026-03-15 observe wiring pass
 
 ### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries
@@ -569,3 +648,13 @@ When using `git worktree`, the cmake configuration caches `HEW_CLI` from `find_p
 If the cmake cache points to a different checkout's binary (e.g., main's release build),
 tests will run against the wrong compiler. Delete `CMakeCache.txt` and rebuild to
 reconfigure. Symptom: tests pass when run manually but fail in ctest.
+
+## From the 2026-03-24 profiler JSON dedup pass
+
+### 1. Small JSON writers are a better fit here than a serializer dependency
+
+The profiler snapshot endpoints all needed the same comma-delimited array assembly, but each record still had subsystem-specific fields. A tiny shared array writer reduced duplication without forcing the runtime into a generic object-builder abstraction.
+
+### 2. Refactors around manual JSON are a good time to close escaping gaps
+
+The cluster member snapshot already shared the array-building pattern, and moving it onto a helper made it straightforward to emit `addr` through a proper JSON string escaper. When JSON is hand-built, deduplication work is also a good audit point for correctness of quoted fields.

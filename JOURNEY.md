@@ -1,5 +1,263 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Parser super-trait helper extraction (2026-03-24)
+
+### Goal
+
+Deduplicate the parser's repeated trait-bound loops without changing how trait,
+actor, generic, associated-type, or where-clause bounds are parsed.
+
+### Decisions
+
+- Read all four `parse_trait_bound` loop sites before refactoring and confirmed
+  the only behavioural split was return shape: trait/actor declarations produce
+  `Option<Vec<TraitBound>>`, while associated types, generic parameters, and
+  where clauses need the plain `Vec<TraitBound>`.
+- Extracted `parse_optional_super_traits()` for the colon-gated trait/actor
+  cases and `parse_trait_bound_list()` for the shared `Trait + Bound` loop so
+  every site still consumes separators and parse failures the same way.
+
+## Phase 8: Runtime shutdown test isolation (2026-03-24)
+
+### Goal
+
+Keep the consolidation branch green after the Phase 8 cherry-picks by making the
+shutdown tests independent under `cargo test --workspace`.
+
+### Decisions
+
+- Reproduced the workspace failure, then re-ran the two failing shutdown tests in
+  isolation and serially to confirm the assertions only failed under parallel test
+  execution.
+- Added a test-only mutex plus reset helper in `hew-runtime/src/shutdown.rs` so
+  every shutdown test starts from a clean phase/supervisor state and cannot race
+  other tests mutating the same globals.
+- Kept the fix inside the existing shutdown test module instead of adding a new
+  dependency, because the problem is localized to one group of stateful tests.
+
+## Phase 7: Delete dead `hew-types` helpers (2026-03-24)
+
+### Goal
+
+Remove `hew-types` helper APIs that no production checker code calls anymore while
+keeping the remaining error-formatting tests focused on observable behaviour.
+
+### Decisions
+
+- Verified the targeted `TypeError` convenience constructors with a caller search
+  across `hew-types/src/`; every call site was inside `error.rs` tests, so the
+  helpers were dead in production.
+- Verified `ModuleRegistry::is_unqualified_handle_type` and
+  `is_unqualified_drop_type` the same way; both methods were only exercised by
+  tests that existed solely to prove those helpers themselves worked.
+- Kept the display-oriented `TypeError` tests, but rewrote them to build errors
+  through `TypeError::new(...)` so they still cover formatting behaviour instead
+  of the removed helper APIs.
+
+### Validation
+
+- `cargo test -p hew-types`
+- `cargo clippy -p hew-types -- -D warnings`
+
+## Phase 7: C string helper deduplication (2026-03-24)
+
+### Goal
+
+Remove the WASM bridge's private lossy C-string helper if the shared ABI helper
+crate can carry the same behaviour without adding new coupling.
+
+### Findings
+
+- `hew-runtime` already depends on `hew-cabi`, so this refactor does not add a
+  new crate edge or create a cycle.
+- The existing helpers were close but not identical: `hew-cabi::cstr_to_str`
+  rejects invalid UTF-8 with `None`, while `hew-runtime::bridge::cstr_to_string`
+  intentionally keeps lossy conversion and turns null pointers into empty
+  strings.
+
+### Decision
+
+Add `hew_cabi::cstr_to_string_lossy` with the bridge's existing semantics and
+switch the bridge metadata loader to call it. This removes the duplicate helper
+without changing how actor metadata names and type strings are decoded.
+
+## Phase 7: Deduplicate hew-wasm analysis scaffold (2026-03-24)
+
+### Goal
+
+Remove the repeated parse-plus-type-check setup in `hew-wasm/src/lib.rs`
+without changing any analysis behaviour.
+
+### Decisions
+
+- Extracted a single `parse_and_type_check()` helper that always returns the
+  parsed program plus optional type-check output.
+- Kept the helper local to `hew-wasm/src/lib.rs` instead of creating a shared
+  module because the duplication exists entirely within one file.
+- Avoided a configuration flag for type-checking because every repeated call
+  site already wanted the same "type-check only after a clean parse" behaviour.
+
+## Phase 7: Prune dead CLI surface (2026-03-24)
+
+### Goal
+
+Remove CLI flags and subcommands that are parsed or advertised but have no live behaviour.
+
+### Verification
+
+- Read the cited `hew-cli` and `adze-cli` call sites before editing.
+- Confirmed `hew --Werror` only set `CompileOptions.werror` and was never consumed.
+- Confirmed `adze init --bin` was parsed but discarded before template selection.
+- Confirmed `adze namespace list` was wired to a TODO placeholder instead of a real implementation.
+
+### Decisions
+
+- Delete the dead surface instead of keeping compatibility shims so help text, completions,
+  and docs match the real CLI.
+- Treat the Hew spec note about `--Werror` as stale documentation and update it to match
+  current fatal type-error behaviour.
+
+## Phase 8: adze-cli gitignore helper deduplication (2026-03-24)
+
+### Goal
+
+Remove the duplicated `.gitignore` append logic in `adze-cli` so init and install
+share one helper and future changes only need to touch one code path.
+
+### Decision
+
+- Keep `write_init_gitignore()` as the higher-level init helper because it expresses
+  the two-entry contract for new projects.
+- Reuse `ensure_gitignore_entry()` for the install path instead of maintaining a
+  second `.adze/`-specific helper.
+- Retarget the focused tests at the shared helper and add coverage for the trimmed
+  line match so the deduplication preserves existing behaviour.
+
+## Phase 8: Deduplicate `find_hew_binary()` (2026-03-24)
+
+### Goal
+
+Remove the duplicated `find_hew_binary()` helper from the REPL and test runner
+without changing how either feature locates the built `hew` executable.
+
+### Decision
+
+- Verified the two implementations were functionally identical: same
+  `current_exe()` probe, same direct-name fast path, same three relative-path
+  candidates, and the same canonicalization/error behaviour.
+- Extracted the shared logic into `hew-cli/src/util.rs` and wired both callers
+  through `crate::util::find_hew_binary()` so future path-search changes only
+  need one edit.
+
+## Phase 8: Parser string escape deduplication (2026-03-24)
+
+### Goal
+
+Remove the duplicated string escape table in `hew-parser/src/parser.rs` without changing
+how plain strings or interpolated string literals behave.
+
+### Decisions
+
+- Kept interpolation parsing separate and extracted only the escape decoding into a shared
+  helper that consumes characters from the current literal segment.
+- Parameterized the helper with interpolation-only escapes (`\{`, `\$`, ``\```), because
+  those are the only behaviour difference from plain string literals.
+- Added a parser test that proves `\{` stays literal while shared escapes like `\xNN`
+  still decode inside interpolated strings.
+
+## Phase 9: TypedProgram wrapper deduplication (2026-03-24)
+
+### Goal
+
+Remove repeated top-level wire-wrapper code in `hew-serialize/src/msgpack.rs`
+without changing either the MessagePack or JSON schema.
+
+### Decision
+
+- Chose a generic `TypedProgram<'a, ModuleGraphRepr>` over an enum or layered
+  base/wrapper split because the only variation is the `module_graph` field
+  type.
+- Kept `ModuleGraphJson` as the JSON-specific adapter, then routed both JSON
+  and MessagePack serialization through the same constructor so field order and
+  names remain identical.
+
+## Phase 9: Actor field binding deduplication (2026-03-24)
+
+### Goal
+
+Remove the repeated actor-field binding loop in `hew-types/src/check.rs`
+without changing actor scope behaviour.
+
+### Decision
+
+- Extract a single `Checker::bind_actor_fields()` helper that resolves each
+  field type once per binding pass and defines the field as mutable in the
+  current scope.
+- Reuse that helper from actor methods, `init`, `terminate`, and receive
+  handlers so future changes to actor field binding semantics only need one
+  edit.
+
+## Phase 9: Deduplicate wire-field parsing (2026-03-24)
+
+### Goal
+
+Remove duplicated parser logic for wire field numbers, field modifiers, and outer JSON/YAML naming extraction without collapsing the remaining semantic differences between `#[wire] struct` and legacy `wire type`.
+
+### Decisions
+
+- Shared parsing now lives in a helper that parses field numbers and modifiers together, while leaving `parse_wire_struct()` responsible for deferred auto-number assignment and `parse_wire_decl()` responsible for immediate numbering.
+- Struct-level JSON/YAML naming extraction also moved into a helper so both wire parsing paths read outer attributes consistently.
+
+## Phase 10: QUIC runtime dead-code trim (2026-03-24)
+
+### Goal
+
+Remove the unused `load_ca_cert()` helper from `hew-runtime` now that the QUIC
+transport does not support a custom CA trust-root path.
+
+### Decisions
+
+- Verified `load_ca_cert()` had no production callers; the only remaining
+  reference was a unit test that existed solely to keep the placeholder alive.
+- Removed both the placeholder and its test instead of keeping a reserved
+  function behind `#[allow(dead_code)]`, so the runtime surface reflects the
+  features that actually exist today.
+
+## Phase 10: Sink backing simplification (2026-03-24)
+
+### Goal
+
+Remove the custom `SinkBacking` trait from the shared C ABI layer without
+dropping exact-item or explicit-close behaviour.
+
+### Decisions
+
+- Verified first that `SinkBacking` was no longer single-implementation: the
+  runtime and HTTP server both had concrete sink backings, so a single concrete
+  replacement was not possible without crossing crate boundaries.
+- Replaced the public trait with inherent `HewSink::{write_item, flush, close}`
+  methods plus constructor helpers, so the public API no longer exposes a
+  bespoke sink trait while still preserving exact-item and explicit-close
+  behaviour for native packages.
+- Let `HewSink::close()` delegate through the stored close callback before
+  releasing the backing, so file-style flush-on-close behaviour still works.
+
+## Phase 10: Remove dead export metadata tooling (2026-03-24)
+
+### Goal
+
+Remove the unused `hew-stdlib-gen` pipeline and its proc-macro metadata path now
+that the type checker loads canonical stdlib `.hew` sources directly.
+
+### Decision
+
+- `Makefile` and `.github/` no longer invoke `hew-stdlib-gen`.
+- `hew-types/build.rs` only watches `std/` and `ecosystem/` source trees, which
+  confirms the generated descriptor path has already been replaced.
+- The remaining `export-meta` feature only fed the unused generator, so removing
+  it keeps the runtime and stdlib crates simpler without changing runtime
+  behaviour.
+
 ## Phase 9: Slim stdlib packaging (2026-03-15)
 
 ### Goal
@@ -1079,3 +1337,15 @@ functions returning `Result<T, IoError>` directly.
 - **Path forward:** Implement null-check-before-drop in `emitDropEntry`, then add
   null-after-move at consumption sites (match destructuring, callee args, return).
   Only then re-enable param drops.
+
+## Phase 8: Deduplicate profiler snapshot JSON building (2026-03-24)
+
+### Goal
+
+Remove repeated profiler snapshot JSON array assembly in the runtime without introducing a heavy serialization abstraction.
+
+### Decision
+
+- Added small `hew-runtime::util` helpers for writing JSON arrays and escaped string values directly into a `String`.
+- Reused that helper from routing, connection, and cluster snapshots because all three shared the same comma-delimited array pattern.
+- Kept each snapshot's per-record formatting local so the helper stays generic and does not hide field-specific logic.

@@ -34,15 +34,13 @@ pub fn get_keywords() -> String {
 #[must_use]
 #[wasm_bindgen]
 pub fn hover(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    let type_output = if parse_result.errors.is_empty() {
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        Some(checker.check_program(&parse_result.program))
-    } else {
-        None
-    };
-    match hew_analysis::hover::hover(source, &parse_result, type_output.as_ref(), offset) {
+    let analysis = parse_and_type_check(source);
+    match hew_analysis::hover::hover(
+        source,
+        &analysis.parse_result,
+        analysis.type_output.as_ref(),
+        offset,
+    ) {
         Some(result) => serde_json::to_string(&result).unwrap_or_default(),
         None => String::new(),
     }
@@ -54,16 +52,13 @@ pub fn hover(source: &str, offset: usize) -> String {
 #[must_use]
 #[wasm_bindgen]
 pub fn complete(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    let type_output = if parse_result.errors.is_empty() {
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        Some(checker.check_program(&parse_result.program))
-    } else {
-        None
-    };
-    let items =
-        hew_analysis::completions::complete(source, &parse_result, type_output.as_ref(), offset);
+    let analysis = parse_and_type_check(source);
+    let items = hew_analysis::completions::complete(
+        source,
+        &analysis.parse_result,
+        analysis.type_output.as_ref(),
+        offset,
+    );
     serde_json::to_string(&items).unwrap_or_default()
 }
 
@@ -159,14 +154,11 @@ pub fn folding_ranges(source: &str) -> String {
 #[must_use]
 #[wasm_bindgen]
 pub fn signature_help(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    if !parse_result.errors.is_empty() {
+    let analysis = parse_and_type_check(source);
+    let Some(type_output) = analysis.type_output.as_ref() else {
         return String::new();
-    }
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let type_output = checker.check_program(&parse_result.program);
-    match hew_analysis::signature_help::build_signature_help(source, &type_output, offset) {
+    };
+    match hew_analysis::signature_help::build_signature_help(source, type_output, offset) {
         Some(result) => serde_json::to_string(&result).unwrap_or_default(),
         None => String::new(),
     }
@@ -176,14 +168,12 @@ pub fn signature_help(source: &str, offset: usize) -> String {
 #[must_use]
 #[wasm_bindgen]
 pub fn inlay_hints(source: &str) -> String {
-    let parse_result = hew_parser::parse(source);
-    if !parse_result.errors.is_empty() {
+    let analysis = parse_and_type_check(source);
+    let Some(type_output) = analysis.type_output.as_ref() else {
         return String::new();
-    }
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let type_output = checker.check_program(&parse_result.program);
-    let hints = hew_analysis::inlay_hints::build_inlay_hints(source, &parse_result, &type_output);
+    };
+    let hints =
+        hew_analysis::inlay_hints::build_inlay_hints(source, &analysis.parse_result, type_output);
     serde_json::to_string(&hints).unwrap_or_default()
 }
 
@@ -222,13 +212,34 @@ struct AnalysisResult {
     symbols: Vec<hew_analysis::SymbolInfo>,
 }
 
+struct AnalyzedSource {
+    parse_result: hew_parser::ParseResult,
+    type_output: Option<hew_types::TypeCheckOutput>,
+}
+
+fn parse_and_type_check(source: &str) -> AnalyzedSource {
+    let parse_result = hew_parser::parse(source);
+    let type_output = if parse_result.errors.is_empty() {
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        Some(checker.check_program(&parse_result.program))
+    } else {
+        None
+    };
+
+    AnalyzedSource {
+        parse_result,
+        type_output,
+    }
+}
+
 fn run_analysis(source: &str) -> AnalysisResult {
     let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
 
-    let parse_result = hew_parser::parse(source);
+    let analysis = parse_and_type_check(source);
     let mut diagnostics = Vec::new();
 
-    for err in &parse_result.errors {
+    for err in &analysis.parse_result.errors {
         diagnostics.push(WasmDiagnostic {
             severity: "error".to_string(),
             message: err.message.clone(),
@@ -238,11 +249,7 @@ fn run_analysis(source: &str) -> AnalysisResult {
         });
     }
 
-    if parse_result.errors.is_empty() {
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-
+    if let Some(type_output) = analysis.type_output.as_ref() {
         for err in &type_output.errors {
             diagnostics.push(WasmDiagnostic {
                 severity: "error".to_string(),
@@ -254,7 +261,7 @@ fn run_analysis(source: &str) -> AnalysisResult {
         }
     }
 
-    let symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+    let symbols = hew_analysis::symbols::build_document_symbols(source, &analysis.parse_result);
 
     AnalysisResult {
         diagnostics,

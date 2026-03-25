@@ -1108,6 +1108,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         set_last_error("hew_connmgr_add: manager is null");
         return -1;
     }
+    // Preserve the raw pointer before reborrowing — `SendConnMgr` needs
+    // `*mut` for the reader thread, and round-tripping `&T → *mut T`
+    // violates Rust aliasing rules.
+    let mgr_ptr = mgr;
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
@@ -1238,7 +1242,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let transport_send = SendTransport(mgr.transport);
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
-    let mgr_send = SendConnMgr(std::ptr::from_ref::<HewConnMgr>(mgr).cast_mut());
+    let mgr_send = SendConnMgr(mgr_ptr);
     #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
@@ -1607,11 +1611,7 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 
     let connections = mgr.connections.lock_or_recover();
 
-    let mut json = String::from("[");
-    for (i, c) in connections.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
+    crate::util::json_array(connections.iter(), |json, c| {
         let state_val = c.state.load(Ordering::Acquire);
         let state_str = match state_val {
             CONN_STATE_CONNECTING => "connecting",
@@ -1626,9 +1626,7 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
             r#"{{"conn_id":{},"peer_node_id":{},"state":"{}","last_activity_ms":{}}}"#,
             c.conn_id, c.peer_node_id, state_str, last_activity,
         );
-    }
-    json.push(']');
-    json
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -1636,6 +1634,37 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn snapshot_connections_json_emits_expected_array() {
+        let mut active = ConnectionActor::new(7);
+        active.peer_node_id = 42;
+        active.state.store(CONN_STATE_ACTIVE, Ordering::Relaxed);
+        active.last_activity_ms.store(123, Ordering::Relaxed);
+
+        let mut draining = ConnectionActor::new(8);
+        draining.peer_node_id = 9;
+        draining.state.store(CONN_STATE_DRAINING, Ordering::Relaxed);
+        draining.last_activity_ms.store(456, Ordering::Relaxed);
+
+        let mgr = HewConnMgr {
+            connections: Mutex::new(vec![active, draining]),
+            transport: std::ptr::null_mut(),
+            inbound_router: None,
+            routing_table: std::ptr::null_mut(),
+            cluster: std::ptr::null_mut(),
+            reconnect_enabled: AtomicBool::new(false),
+            reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
+            reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            reconnect_workers: Mutex::new(Vec::new()),
+        };
+
+        assert_eq!(
+            snapshot_connections_json(&mgr),
+            r#"[{"conn_id":7,"peer_node_id":42,"state":"active","last_activity_ms":123},{"conn_id":8,"peer_node_id":9,"state":"draining","last_activity_ms":456}]"#
+        );
+    }
 
     #[test]
     fn conn_actor_states() {

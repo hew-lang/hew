@@ -1,7 +1,6 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -128,45 +127,6 @@ pub fn run_tests(
     }
 }
 
-/// Locate the `hew` binary.
-///
-/// When running as `hew test`, `current_exe()` is the hew binary itself.
-/// When running unit tests, the test binary is in `target/debug/deps/` and
-/// the hew binary is at `target/debug/hew`.
-fn find_hew_binary() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate self: {e}"))?;
-
-    // If the current binary is named "hew" (or "hew.exe" on Windows), use it directly.
-    if exe
-        .file_name()
-        .is_some_and(|n| n == "hew" || n == "hew.exe")
-    {
-        return Ok(exe);
-    }
-
-    // Otherwise, search relative to the current binary.
-    let exe_dir = exe.parent().expect("exe should have a parent directory");
-    let hew_name = format!("hew{}", crate::platform::exe_suffix());
-    let candidates = [
-        exe_dir.join(format!("../{hew_name}")), // target/debug/deps/../hew
-        exe_dir.join(&hew_name),                // same dir
-        exe_dir.join(format!("../../debug/{hew_name}")), // fallback
-    ];
-
-    for c in &candidates {
-        if c.exists() {
-            return c
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve hew binary path: {e}"));
-        }
-    }
-
-    Err(format!(
-        "cannot find hew binary (searched relative to {})",
-        exe_dir.display()
-    ))
-}
-
 /// Compile a synthetic test program to a native binary.
 ///
 /// Returns the paths to the temp source and binary on success, or an error
@@ -181,7 +141,7 @@ fn compile_test(
         name = test.name,
     );
 
-    let hew_binary = find_hew_binary()?;
+    let hew_binary = crate::util::find_hew_binary()?;
 
     let test_dir = std::path::Path::new(&test.file)
         .parent()
@@ -399,7 +359,7 @@ mod tests {
     /// Skip tests that require the linked native backend when this crate was
     /// built without the embedded MLIR/LLVM bridge.
     fn require_codegen() -> bool {
-        ensure_test_toolchain() && find_hew_binary().is_ok()
+        ensure_test_toolchain() && crate::util::find_hew_binary().is_ok()
     }
 
     /// Ensure the full native test toolchain is available before tests that

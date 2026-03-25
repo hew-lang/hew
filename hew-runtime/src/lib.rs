@@ -26,7 +26,6 @@
 //! - `full` (default) — encryption + profiler
 //! - `encryption` — Noise protocol encryption via `snow`
 //! - `profiler` — built-in profiler dashboard and pprof export
-//! - `export-meta` — emit `__hew_export_meta_*` companion functions
 
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
@@ -306,9 +305,6 @@ pub mod otel {
 }
 
 pub mod log_core;
-
-#[cfg(feature = "export-meta")]
-pub mod export_meta;
 
 // ── WASM entry point ─────────────────────────────────────────────────────────
 // Provides `_start` for WASI command modules. The compiler renames the user's

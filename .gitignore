@@ -20,6 +20,9 @@ dist/
 # Worktrees
 .worktrees/
 
+# Generated shell completions (produced at install time)
+completions/
+
 # Compiled test binaries
 .tmp/
 

@@ -24,8 +24,7 @@ fn werror_flag_is_accepted_as_noop_by_build_style_commands() {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            !stderr.contains("Unknown option: --Werror")
-                && !stderr.contains("unexpected argument"),
+            !stderr.contains("Unknown option: --Werror") && !stderr.contains("unexpected argument"),
             "{command} rejected --Werror flag: {stderr}",
         );
     }

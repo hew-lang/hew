@@ -30,8 +30,8 @@ mod platform;
 #[cfg(unix)]
 mod signal;
 mod test_runner;
-mod watch;
 mod util;
+mod watch;
 mod wire;
 
 use std::path::Path;

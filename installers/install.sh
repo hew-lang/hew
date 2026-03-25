@@ -270,13 +270,18 @@ main() {
 
     cp -f "${extracted_dir}/lib/libhew.a" "${INSTALL_PREFIX}/lib/libhew.a"
 
-    # Standard library and completions (best-effort — may not be in older releases)
+    # Standard library (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then
         cp -rf "${extracted_dir}/std/." "${INSTALL_PREFIX}/std/"
     fi
-    if [ -d "${extracted_dir}/completions" ]; then
-        cp -rf "${extracted_dir}/completions/." "${INSTALL_PREFIX}/completions/"
-    fi
+
+    # Generate shell completions from the installed binaries
+    for shell in bash zsh fish; do
+        "${INSTALL_PREFIX}/bin/hew" completions "${shell}" \
+            > "${INSTALL_PREFIX}/completions/hew.${shell}" 2>/dev/null || true
+        "${INSTALL_PREFIX}/bin/adze" completions "${shell}" \
+            > "${INSTALL_PREFIX}/completions/adze.${shell}" 2>/dev/null || true
+    done
 
     for f in LICENSE-MIT LICENSE-APACHE NOTICE README.md; do
         [ -f "${extracted_dir}/${f}" ] && cp -f "${extracted_dir}/${f}" "${INSTALL_PREFIX}/${f}"

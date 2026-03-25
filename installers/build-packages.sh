@@ -195,12 +195,13 @@ build_tarball() {
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
-    cp "${REPO_DIR}/completions/hew.bash" \
-        "${REPO_DIR}/completions/hew.zsh" \
-        "${REPO_DIR}/completions/hew.fish" \
-        "${REPO_DIR}/completions/adze.bash" \
-        "${REPO_DIR}/completions/adze.zsh" \
-        "${REPO_DIR}/completions/adze.fish" "${staging}/completions/" 2>/dev/null || true
+
+    # Generate shell completions from built binaries
+    for shell in bash zsh fish; do
+        "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
+        "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
+    done
+
     cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
         "${REPO_DIR}/NOTICE" "${REPO_DIR}/README.md" "${staging}/"
 
@@ -465,9 +466,13 @@ build_alpine() {
 
         # Standard library sources (all .hew files, including subdirectories)
         cp -r "${REPO_DIR}/std/." "${staging}/std/"
-        cp "${REPO_DIR}/completions/"*.bash \
-            "${REPO_DIR}/completions/"*.zsh \
-            "${REPO_DIR}/completions/"*.fish "${staging}/completions/" 2>/dev/null || true
+
+        # Generate shell completions from built binaries
+        for shell in bash zsh fish; do
+            "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
+            "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
+        done
+
         cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
             "${REPO_DIR}/NOTICE" "${REPO_DIR}/README.md" "${staging}/"
 

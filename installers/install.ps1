@@ -394,14 +394,21 @@ try {
             Copy-Item -Path $hewLibWin -Destination (Join-Path $InstallDir "lib/hew.lib") -Force
         }
 
-        # Standard library and completions (best-effort — may not be in older releases)
+        # Standard library (best-effort — may not be in older releases)
         $stdSrc = Join-Path $innerDir.FullName "std"
         if (Test-Path $stdSrc) {
             Copy-Item -Path (Join-Path $stdSrc "*") -Destination (Join-Path $InstallDir "std") -Recurse -Force
         }
-        $compSrc = Join-Path $innerDir.FullName "completions"
-        if (Test-Path $compSrc) {
-            Copy-Item -Path (Join-Path $compSrc "*") -Destination (Join-Path $InstallDir "completions") -Recurse -Force
+
+        # Generate shell completions from installed binaries
+        $hewBin = Join-Path $InstallDir "bin/hew.exe"
+        $adzeBin = Join-Path $InstallDir "bin/adze.exe"
+        if (-not (Test-Path $hewBin)) { $hewBin = Join-Path $InstallDir "bin/hew" }
+        if (-not (Test-Path $adzeBin)) { $adzeBin = Join-Path $InstallDir "bin/adze" }
+        $compDir = Join-Path $InstallDir "completions"
+        foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
+            try { & $hewBin completions $shell | Out-File -Encoding utf8NoBOM (Join-Path $compDir "hew.$shell") } catch {}
+            try { & $adzeBin completions $shell | Out-File -Encoding utf8NoBOM (Join-Path $compDir "adze.$shell") } catch {}
         }
 
         # Copy license and doc files

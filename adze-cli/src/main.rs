@@ -15,7 +15,7 @@ mod tarball;
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// adze — the Hew package manager
 #[derive(Debug, Parser)]
@@ -155,9 +155,18 @@ enum Command {
     },
     /// Generate shell completion scripts
     Completions {
-        /// Shell type: bash, zsh, or fish
-        shell: String,
+        /// Shell to generate completions for.
+        shell: ShellChoice,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ShellChoice {
+    Bash,
+    Zsh,
+    Fish,
+    #[value(name = "powershell")]
+    PowerShell,
 }
 
 #[derive(Debug, Subcommand)]
@@ -211,7 +220,7 @@ fn main() {
 
     // Handle commands that don't need config/registry.
     if let Command::Completions { shell } = &cli.command {
-        cmd_completions(shell);
+        cmd_completions(*shell);
         return;
     }
 
@@ -302,17 +311,18 @@ fn main() {
     }
 }
 
-fn cmd_completions(shell: &str) {
-    match shell {
-        "bash" => print!("{}", include_str!("../../completions/adze.bash")),
-        "zsh" => print!("{}", include_str!("../../completions/adze.zsh")),
-        "fish" => print!("{}", include_str!("../../completions/adze.fish")),
-        other => {
-            eprintln!("Unknown shell: {other}");
-            eprintln!("Supported shells: bash, zsh, fish");
-            std::process::exit(1);
-        }
-    }
+fn cmd_completions(shell: ShellChoice) {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+
+    let mut cmd = Cli::command();
+    let s = match shell {
+        ShellChoice::Bash => Shell::Bash,
+        ShellChoice::Zsh => Shell::Zsh,
+        ShellChoice::Fish => Shell::Fish,
+        ShellChoice::PowerShell => Shell::PowerShell,
+    };
+    generate(s, &mut cmd, "adze", &mut std::io::stdout());
 }
 
 /// Build a [`RegistryClient`] for the given named registry (or default).

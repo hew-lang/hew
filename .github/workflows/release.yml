@@ -9,7 +9,7 @@
 #   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew.a      — combined runtime + stdlib static library
 #   std/              — standard library sources
-#   completions/      — shell completions (bash, zsh, fish)
+#   completions/      — shell completions (bash, zsh, fish), generated at build time
 #
 # Required secrets for macOS code signing (optional — skipped if absent):
 #   APPLE_CERTIFICATE_P12       — Base64-encoded .p12 signing certificate
@@ -260,10 +260,11 @@ jobs:
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"
 
-          # Shell completions (hew + adze)
-          cp completions/hew.bash completions/hew.zsh completions/hew.fish \
-             completions/adze.bash completions/adze.zsh completions/adze.fish \
-             "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+          # Generate shell completions from built binaries
+          for shell in bash zsh fish; do
+            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
+            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
+          done
 
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
@@ -282,7 +283,7 @@ jobs:
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
           $ReleaseDir = "target/${{ matrix.rust_target }}/release"
 
-          New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std" -Force | Out-Null
+          New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
@@ -291,6 +292,12 @@ jobs:
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
+
+          # Generate shell completions from built binaries
+          foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
+            & "${ArchiveName}/bin/hew.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/hew.${shell}"
+            & "${ArchiveName}/bin/adze.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/adze.${shell}"
+          }
 
           # Licenses
           Copy-Item "LICENSE-MIT" "${ArchiveName}/"
@@ -513,10 +520,11 @@ jobs:
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
 
-            # Shell completions
-            cp completions/hew.bash completions/hew.zsh completions/hew.fish \
-               completions/adze.bash completions/adze.zsh completions/adze.fish \
-               "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+            # Generate shell completions from built binaries
+            for shell in bash zsh fish; do
+              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
+              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
+            done
 
             # Licenses and docs
             cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
@@ -687,7 +695,13 @@ jobs:
 
           cp "${MUSL_REL}/libhew.a" "${ARCHIVE_NAME}/lib/"
           cp -r std/. "${ARCHIVE_NAME}/std/"
-          cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+
+          # Generate shell completions from built binaries
+          for shell in bash zsh fish; do
+            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
+            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
+          done
+
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
           for b in hew adze hew-lsp; do

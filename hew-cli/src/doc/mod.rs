@@ -73,46 +73,14 @@ fn collect_hew_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>)
     clippy::too_many_lines,
     reason = "CLI entry point with straightforward sequential logic"
 )]
-pub fn cmd_doc(args: &[String]) {
-    let mut input_paths: Vec<String> = Vec::new();
-    let mut output_dir = String::from("./doc");
-    let mut open_after = false;
-    let mut format = String::from("html");
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--output-dir" | "-o" => {
-                i += 1;
-                if i < args.len() {
-                    output_dir.clone_from(&args[i]);
-                } else {
-                    eprintln!("Error: --output-dir requires an argument");
-                    std::process::exit(1);
-                }
-            }
-            "--format" | "-f" => {
-                i += 1;
-                if i < args.len() {
-                    format.clone_from(&args[i]);
-                    if !["html", "markdown", "md"].contains(&format.as_str()) {
-                        eprintln!("Error: --format must be 'html' or 'markdown'");
-                        std::process::exit(1);
-                    }
-                } else {
-                    eprintln!("Error: --format requires an argument (html, markdown)");
-                    std::process::exit(1);
-                }
-            }
-            "--open" => open_after = true,
-            arg if arg.starts_with('-') => {
-                eprintln!("Unknown option: {arg}");
-                std::process::exit(1);
-            }
-            _ => input_paths.push(args[i].clone()),
-        }
-        i += 1;
-    }
+pub fn cmd_doc(args: &crate::args::DocArgs) {
+    let input_paths: Vec<String> = args.input.iter().map(|p| p.display().to_string()).collect();
+    let output_dir = args.output_dir.display().to_string();
+    let open_after = args.open;
+    let use_markdown = matches!(
+        args.format,
+        crate::args::DocFormat::Markdown | crate::args::DocFormat::Md
+    );
 
     if input_paths.is_empty() {
         eprintln!(
@@ -189,8 +157,6 @@ pub fn cmd_doc(args: &[String]) {
         eprintln!("Error creating output directory: {e}");
         std::process::exit(1);
     }
-
-    let use_markdown = format == "markdown" || format == "md";
 
     if use_markdown {
         // Render Markdown

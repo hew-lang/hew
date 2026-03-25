@@ -31,12 +31,19 @@ class Hew < Formula
     (share/"hew/std").mkpath
     (share/"hew/std").install Dir["std/*"] if (buildpath/"std").exist?
 
-    bash_completion.install "completions/hew.bash" => "hew" if (buildpath/"completions/hew.bash").exist?
-    zsh_completion.install "completions/hew.zsh" => "_hew" if (buildpath/"completions/hew.zsh").exist?
-    fish_completion.install "completions/hew.fish" if (buildpath/"completions/hew.fish").exist?
-    bash_completion.install "completions/adze.bash" => "adze" if (buildpath/"completions/adze.bash").exist?
-    zsh_completion.install "completions/adze.zsh" => "_adze" if (buildpath/"completions/adze.zsh").exist?
-    fish_completion.install "completions/adze.fish" if (buildpath/"completions/adze.fish").exist?
+    # Generate shell completions from the installed binaries
+    output = Utils.safe_popen_read(bin/"hew", "completions", "bash")
+    (bash_completion/"hew").write output
+    output = Utils.safe_popen_read(bin/"hew", "completions", "zsh")
+    (zsh_completion/"_hew").write output
+    output = Utils.safe_popen_read(bin/"hew", "completions", "fish")
+    (fish_completion/"hew.fish").write output
+    output = Utils.safe_popen_read(bin/"adze", "completions", "bash")
+    (bash_completion/"adze").write output
+    output = Utils.safe_popen_read(bin/"adze", "completions", "zsh")
+    (zsh_completion/"_adze").write output
+    output = Utils.safe_popen_read(bin/"adze", "completions", "fish")
+    (fish_completion/"adze.fish").write output
   end
 
   def caveats

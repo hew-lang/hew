@@ -7,37 +7,15 @@
 
 use hew_parser::ast::{Item, MachineDecl};
 
-pub fn cmd_machine(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("Usage: hew machine <subcommand> <file.hew>");
-        eprintln!();
-        eprintln!("Subcommands:");
-        eprintln!("  diagram <file.hew>         Output Mermaid state diagram to stdout");
-        eprintln!("  diagram <file.hew> --dot   Output Graphviz DOT format");
-        eprintln!("  list <file.hew>            List machines with states and events");
-        std::process::exit(1);
-    }
-
-    match args[0].as_str() {
-        "diagram" => {
-            if args.len() < 2 {
-                eprintln!("Usage: hew machine diagram <file.hew> [--dot]");
-                std::process::exit(1);
-            }
-            let dot = args.iter().any(|a| a == "--dot");
-            cmd_diagram(&args[1], dot);
+pub fn cmd_machine(args: &crate::args::MachineCommand) {
+    match &args.command {
+        crate::args::MachineSubcommand::Diagram(a) => {
+            let path = a.input.display().to_string();
+            cmd_diagram(&path, a.dot);
         }
-        "list" => {
-            if args.len() < 2 {
-                eprintln!("Usage: hew machine list <file.hew>");
-                std::process::exit(1);
-            }
-            cmd_list(&args[1]);
-        }
-        other => {
-            eprintln!("Unknown machine subcommand: {other}");
-            eprintln!("Try: hew machine diagram <file.hew>");
-            std::process::exit(1);
+        crate::args::MachineSubcommand::List(a) => {
+            let path = a.input.display().to_string();
+            cmd_list(&path);
         }
     }
 }

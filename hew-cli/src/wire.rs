@@ -41,70 +41,23 @@ impl CompatibilityReport {
     }
 }
 
-pub fn cmd_wire(args: &[String]) {
-    if args.is_empty() {
-        print_wire_usage();
-        std::process::exit(1);
-    }
-
-    match args[0].as_str() {
-        "check" => cmd_wire_check(&args[1..]),
-        "help" | "--help" | "-h" => print_wire_usage(),
-        other => {
-            eprintln!("Unknown wire subcommand: {other}");
-            print_wire_usage();
-            std::process::exit(1);
-        }
-    }
-}
-
-fn cmd_wire_check(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("Error: no input file specified");
-        print_wire_usage();
-        std::process::exit(1);
-    }
-
-    let input = &args[0];
-    let mut against: Option<&str> = None;
-    let mut i = 1;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--against" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --against requires a schema path");
+pub fn cmd_wire(args: &crate::args::WireCommand) {
+    match &args.command {
+        crate::args::WireSubcommand::Check(check_args) => {
+            let input = check_args.input.display().to_string();
+            let against = check_args.against.display().to_string();
+            let report = match run_wire_check(&input, &against) {
+                Ok(report) => report,
+                Err(error) => {
+                    eprintln!("{error}");
                     std::process::exit(1);
                 }
-                against = Some(&args[i]);
-            }
-            other => {
-                eprintln!("Error: unexpected argument '{other}'");
-                print_wire_usage();
+            };
+            report.print();
+            if report.has_errors() {
                 std::process::exit(1);
             }
         }
-        i += 1;
-    }
-
-    let Some(against) = against else {
-        eprintln!("Error: missing required option --against <baseline.hew>");
-        print_wire_usage();
-        std::process::exit(1);
-    };
-
-    let report = match run_wire_check(input, against) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-
-    report.print();
-    if report.has_errors() {
-        std::process::exit(1);
     }
 }
 
@@ -427,13 +380,4 @@ fn type_expr_to_string(te: &TypeExpr) -> String {
         }
         _ => String::from("?"),
     }
-}
-
-fn print_wire_usage() {
-    eprintln!(
-        "\
-Usage:
-  hew wire check <file.hew> --against <baseline.hew>
-"
-    );
 }

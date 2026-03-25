@@ -12,7 +12,9 @@ fn hew_binary() -> PathBuf {
 }
 
 #[test]
-fn removed_werror_flag_is_rejected_by_build_style_commands() {
+fn werror_flag_is_accepted_as_noop_by_build_style_commands() {
+    // --Werror is accepted for spec compatibility but is a no-op.
+    // It should not cause an "unknown option" error.
     for command in ["build", "check", "run", "debug"] {
         let output = Command::new(hew_binary())
             .args([command, "--Werror", "placeholder.hew"])
@@ -20,15 +22,10 @@ fn removed_werror_flag_is_rejected_by_build_style_commands() {
             .output()
             .unwrap();
 
-        assert!(
-            !output.status.success(),
-            "{command} unexpectedly accepted removed --Werror flag",
-        );
-
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Unknown option: --Werror"),
-            "{command} stderr did not explain the rejected flag: {stderr}",
+            !stderr.contains("Unknown option: --Werror") && !stderr.contains("unexpected argument"),
+            "{command} rejected --Werror flag: {stderr}",
         );
     }
 }

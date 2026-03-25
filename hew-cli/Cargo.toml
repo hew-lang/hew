@@ -19,6 +19,8 @@ hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 hew-serialize = { path = "../hew-serialize" }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 pulldown-cmark = "0.13"
 rustyline = "17"
 tempfile = "3"

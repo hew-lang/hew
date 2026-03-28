@@ -318,20 +318,26 @@ pub unsafe extern "C" fn hew_ws_attach(
                     tungstenite::Message::Text(text) => {
                         let bytes = text.as_bytes();
                         let len = bytes.len();
-                        // Allocate a copy for the actor (it will free it).
-                        let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
-                        if !ptr.is_null() {
+                        // Allocate a NUL-terminated copy (Hew String = char*).
+                        let str_ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+                        if !str_ptr.is_null() {
                             unsafe {
-                                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len);
-                                *ptr.add(len) = 0; // NUL terminator
+                                std::ptr::copy_nonoverlapping(bytes.as_ptr(), str_ptr, len);
+                                *str_ptr.add(len) = 0; // NUL terminator
                             }
-                            // Deliver to actor mailbox.
+                            // Pack the string pointer into an 8-byte buffer.
+                            // The dispatch function reads arguments from the data
+                            // buffer as pointer-sized values. For a String param,
+                            // it reads one pointer (8 bytes) from the buffer.
+                            let mut arg_buf = [0u8; 8];
+                            let ptr_val = str_ptr as usize;
+                            arg_buf.copy_from_slice(&ptr_val.to_ne_bytes());
                             unsafe {
                                 hew_actor_send(
                                     actor_ptr as *mut std::ffi::c_void,
                                     on_message_type,
-                                    ptr.cast(),
-                                    len,
+                                    arg_buf.as_mut_ptr().cast(),
+                                    8, // sizeof(ptr)
                                 );
                             }
                         }

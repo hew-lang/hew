@@ -1,5 +1,15 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-25 completion recursion fix
+
+### 1. Completion walks need span-checked recursion through "transparent" AST nodes
+
+Local-scope collection in `hew-analysis/src/completions.rs` already handled block-like
+expressions, but it silently stopped at wrappers like `Stmt::Expression`, `Expr::Call`,
+and `Expr::MethodCall`. For completion engines, container nodes need a shared
+span-guarded descent helper so nested blocks become visible without leaking locals from
+siblings that do not cover the cursor.
+
 ## From the 2026-03-24 shutdown test isolation fix
 
 ### 1. Global runtime-phase tests must prove order independence, not just correctness in isolation
@@ -658,3 +668,12 @@ The profiler snapshot endpoints all needed the same comma-delimited array assemb
 ### 2. Refactors around manual JSON are a good time to close escaping gaps
 
 The cluster member snapshot already shared the array-building pattern, and moving it onto a helper made it straightforward to emit `addr` through a proper JSON string escaper. When JSON is hand-built, deduplication work is also a good audit point for correctness of quoted fields.
+
+## From the 2026-03-25 tail-call match fix
+
+### 1. Tail-position analysis needs context, not just AST shape
+
+`Block.trailing_expr` only represents a tail call when the block itself is in tail
+position. Reusing one block walker for both statement bodies and tail expressions
+silently misses optimizations in real tail positions and can also create false
+positives if trailing expressions are marked unconditionally.

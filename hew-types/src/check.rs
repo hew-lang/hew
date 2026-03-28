@@ -5053,9 +5053,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!(
-                            "cannot apply `{op:?}` to `{left_resolved}` and `{right_resolved}`"
-                        ),
+                        format!("cannot apply `{op}` to `{left_resolved}` and `{right_resolved}`"),
                     );
                     Ty::Error
                 }
@@ -5073,7 +5071,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "bitwise `{op:?}` requires compatible integer types; found `{left_resolved}` and `{right_resolved}`"
+                                "bitwise `{op}` requires compatible integer types; found `{left_resolved}` and `{right_resolved}`"
                             ),
                         );
                         Ty::Error
@@ -5090,7 +5088,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!("bitwise `{op:?}` requires integer operands, found `{left_resolved}` and `{right_resolved}`"),
+                        format!("bitwise `{op}` requires integer operands, found `{left_resolved}` and `{right_resolved}`"),
                     );
                     Ty::Error
                 }
@@ -5197,7 +5195,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot apply `{op:?}` to `{left}` and `{right}`"),
+                    format!("cannot apply `{op}` to `{left}` and `{right}`"),
                 );
                 Ty::Error
             }

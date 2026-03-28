@@ -167,6 +167,10 @@ static mut CURRENT_ACTOR: *mut HewActor = std::ptr::null_mut();
 /// Saved arena pointer during activation.
 static mut PREV_ARENA: *mut c_void = std::ptr::null_mut();
 
+/// Reply channel for the message currently being dispatched (WASM
+/// equivalent of the native thread-local `CURRENT_REPLY_CHANNEL`).
+static mut CURRENT_REPLY_CHANNEL: *mut c_void = std::ptr::null_mut();
+
 // ── Metrics counters (plain u64, no atomics needed) ─────────────────────
 
 static mut TASKS_SPAWNED: u64 = 0;
@@ -407,7 +411,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // come from a well-formed `HewMsgNode`.
                 unsafe {
                     let msg_ref = &*msg;
+                    CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
                     dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
+                    CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
                 }
 
                 msgs_processed += 1;
@@ -587,6 +593,16 @@ pub extern "C" fn hew_sched_metrics_global_queue_len() -> u64 {
             None => 0,
         }
     }
+}
+
+/// Get the reply channel for the currently-dispatched message (WASM).
+///
+/// Returns null if no reply channel was set (fire-and-forget send).
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
+    // SAFETY: Single-threaded on WASM; no concurrent access.
+    unsafe { CURRENT_REPLY_CHANNEL }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

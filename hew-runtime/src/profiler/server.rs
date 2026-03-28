@@ -6,8 +6,6 @@
 use crate::util::MutexExt;
 use std::convert::Infallible;
 use std::fmt::Write as _;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,7 +15,13 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 
 use crate::profiler::allocator;
 use crate::profiler::metrics::MetricsRing;
@@ -79,6 +83,7 @@ pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
     });
 }
 
+#[cfg(unix)]
 /// Start the profiling HTTP server on a unix domain socket, blocking the
 /// current thread.
 ///
@@ -132,6 +137,7 @@ fn build_runtime() -> Option<tokio::runtime::Runtime> {
 /// Listener abstraction over TCP and Unix sockets.
 enum Listener {
     Tcp(TcpListener),
+    #[cfg(unix)]
     Unix(UnixListener),
 }
 
@@ -154,6 +160,7 @@ async fn serve_loop(listener: Listener, ctx: Arc<ProfilerContext>) {
                     spawn_connection(io, ctx.clone());
                 }
             }
+            #[cfg(unix)]
             Listener::Unix(l) => {
                 let result = tokio::select! {
                     r = l.accept() => Some(r),

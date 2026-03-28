@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 /// Resolve the per-user discovery directory, creating it if needed.
 ///
 /// Returns `None` if no suitable directory can be created or validated.
+#[must_use]
 pub fn discovery_dir() -> Option<PathBuf> {
+    // SAFETY: getuid() has no preconditions and no side effects.
     let uid = unsafe { libc::getuid() };
 
     // Try $XDG_RUNTIME_DIR/hew-profilers/ first (Linux, per-user, mode 0700).
@@ -53,18 +55,24 @@ pub fn discovery_dir() -> Option<PathBuf> {
 }
 
 /// Socket path for the current process.
+#[must_use]
 pub fn socket_path(dir: &Path) -> PathBuf {
     let pid = std::process::id();
     dir.join(format!("{pid}.sock"))
 }
 
 /// Discovery file path for the current process.
+#[must_use]
 pub fn discovery_file_path(dir: &Path) -> PathBuf {
     let pid = std::process::id();
     dir.join(format!("{pid}.json"))
 }
 
 /// Write the discovery JSON file for the current process.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written or permissions cannot be set.
 pub fn write_discovery_file(dir: &Path, socket_path: &Path) -> io::Result<PathBuf> {
     let pid = std::process::id();
     let path = discovery_file_path(dir);
@@ -129,9 +137,8 @@ fn ensure_dir(dir: &Path, expected_uid: u32) -> bool {
 fn validate_dir(dir: &Path, expected_uid: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let meta = match fs::metadata(dir) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(meta) = fs::metadata(dir) else {
+        return false;
     };
 
     if !meta.is_dir() {

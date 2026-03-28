@@ -16,6 +16,7 @@
 
 pub mod actor_registry;
 pub mod allocator;
+#[cfg(unix)]
 pub mod discovery;
 pub mod metrics;
 pub mod pprof;
@@ -43,6 +44,7 @@ pub(super) static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// Discovery directory path, stored so shutdown can clean up the socket
 /// and discovery file.
+#[cfg(unix)]
 static PROFILER_DISCOVERY_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
 #[derive(Debug)]
@@ -58,6 +60,7 @@ enum ListenMode {
     /// Bind to a TCP address (e.g. `0.0.0.0:6060`).
     Tcp(String),
     /// Bind to a per-user unix domain socket with auto-discovery.
+    #[cfg(unix)]
     Unix,
 }
 
@@ -128,6 +131,7 @@ pub fn maybe_start_with_context(
         ListenMode::Tcp(bind_addr) => thread::Builder::new()
             .name("hew-pprof-server".into())
             .spawn(move || server::run_tcp(&bind_addr, ctx)),
+        #[cfg(unix)]
         ListenMode::Unix => {
             let Some(disc_dir) = discovery::discovery_dir() else {
                 eprintln!("[hew-pprof] could not resolve a safe discovery directory");
@@ -162,6 +166,7 @@ pub fn maybe_start_with_context(
     };
 
     // For unix mode, write the discovery file now that the thread is running.
+    #[cfg(unix)]
     if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().as_ref() {
         let sock_path = discovery::socket_path(disc_dir);
         if let Err(e) = discovery::write_discovery_file(disc_dir, &sock_path) {
@@ -181,7 +186,13 @@ pub fn maybe_start_with_context(
 /// Parse the `HEW_PPROF` env var into a listen mode.
 fn parse_listen_mode(val: &str) -> ListenMode {
     match val {
+        #[cfg(unix)]
         "auto" | "1" | "true" | "yes" => ListenMode::Unix,
+        #[cfg(not(unix))]
+        "auto" | "1" | "true" | "yes" => {
+            eprintln!("[hew-pprof] unix socket mode is not supported on this platform, use host:port");
+            return;
+        }
         addr if addr.starts_with(':') => ListenMode::Tcp(format!("0.0.0.0{addr}")),
         addr => ListenMode::Tcp(addr.to_owned()),
     }
@@ -276,6 +287,7 @@ pub(crate) fn shutdown() {
     }
 
     // Clean up unix socket and discovery file if we were in unix mode.
+    #[cfg(unix)]
     if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().take() {
         discovery::cleanup(&disc_dir);
     }

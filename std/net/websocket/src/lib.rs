@@ -301,16 +301,17 @@ pub unsafe extern "C" fn hew_ws_attach(
     on_close_type: i32,
 ) {
     if ws.is_null() || actor.is_null() {
+        eprintln!("[attach] null pointer: ws={} actor={}", ws.is_null(), actor.is_null());
         return;
     }
+    eprintln!("[attach] ws={:p} actor={:p} msg_type={} close_type={}", ws, actor, on_message_type, on_close_type);
     // Take ownership of the connection.
     let conn = unsafe { Box::from_raw(ws) };
 
-    // The actor pointer is safe to send across threads — the runtime
-    // guarantees actors outlive their connections (supervised lifecycle).
-    let actor_ptr = actor as usize; // store as usize for Send
+    let actor_ptr = actor as usize;
 
     std::thread::spawn(move || {
+        eprintln!("[attach-reader] thread started, reading...");
         let mut ws = conn;
         loop {
             match ws.ws.read() {
@@ -454,24 +455,29 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
         return std::ptr::null_mut();
     }
     let srv = unsafe { &*server };
-    let (stream, _addr) = match srv.listener.accept() {
-        Ok(pair) => pair,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    // tungstenite::accept performs the HTTP upgrade handshake on the raw stream.
-    match tungstenite::accept(stream) {
-        Ok(ws) => {
-            // Wrap the plain TcpStream in MaybeTlsStream::Plain so it fits
-            // the existing HewWsConn type (WebSocket<MaybeTlsStream<TcpStream>>).
-            let ws = ws.into_inner();
-            let ws = WebSocket::from_raw_socket(
-                MaybeTlsStream::Plain(ws),
-                tungstenite::protocol::Role::Server,
-                None,
-            );
-            Box::into_raw(Box::new(HewWsConn { ws }))
+    // Block until a valid WebSocket connection is established.
+    // Reject non-WebSocket TCP connections (failed handshakes) by retrying.
+    loop {
+        let (stream, _addr) = match srv.listener.accept() {
+            Ok(pair) => pair,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        // tungstenite::accept performs the HTTP upgrade handshake.
+        // If the client is not a WebSocket client, the handshake fails
+        // and we loop back to accept the next connection.
+        // Wrap in MaybeTlsStream::Plain BEFORE the handshake so
+        // tungstenite::accept produces WebSocket<MaybeTlsStream<TcpStream>>
+        // directly — no rewrap needed, preserving internal buffers.
+        let tls_stream = MaybeTlsStream::Plain(stream);
+        match tungstenite::accept(tls_stream) {
+            Ok(ws) => {
+                return Box::into_raw(Box::new(HewWsConn { ws }));
+            }
+            Err(_) => {
+                // Handshake failed (not a WebSocket client). Retry.
+                continue;
+            }
         }
-        Err(_) => std::ptr::null_mut(),
     }
 }
 

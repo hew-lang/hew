@@ -4074,7 +4074,14 @@ impl Checker {
                     Ty::Named { name, args } if name == "Task" && !args.is_empty() => {
                         args[0].clone()
                     }
-                    _ if inner_ty.as_actor_handle().is_some() => Ty::Unit,
+                    // `await close(actor)` or bare actor ref → Unit (actor termination).
+                    // But NOT for method calls that happen to return an ActorRef —
+                    // those should pass through the method's declared return type.
+                    _ if inner_ty.as_actor_handle().is_some()
+                        && !matches!(inner.0, Expr::MethodCall { .. }) =>
+                    {
+                        Ty::Unit
+                    }
                     _ => inner_ty,
                 }
             }
@@ -5053,9 +5060,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!(
-                            "cannot apply `{op:?}` to `{left_resolved}` and `{right_resolved}`"
-                        ),
+                        format!("cannot apply `{op}` to `{left_resolved}` and `{right_resolved}`"),
                     );
                     Ty::Error
                 }
@@ -5073,7 +5078,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "bitwise `{op:?}` requires compatible integer types; found `{left_resolved}` and `{right_resolved}`"
+                                "bitwise `{op}` requires compatible integer types; found `{left_resolved}` and `{right_resolved}`"
                             ),
                         );
                         Ty::Error
@@ -5090,7 +5095,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!("bitwise `{op:?}` requires integer operands, found `{left_resolved}` and `{right_resolved}`"),
+                        format!("bitwise `{op}` requires integer operands, found `{left_resolved}` and `{right_resolved}`"),
                     );
                     Ty::Error
                 }
@@ -5197,7 +5202,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot apply `{op:?}` to `{left}` and `{right}`"),
+                    format!("cannot apply `{op}` to `{left}` and `{right}`"),
                 );
                 Ty::Error
             }

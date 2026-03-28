@@ -1129,7 +1129,7 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
     // If variadic, we need to use LLVM-level variadic support
     // For now, create a regular extern declaration
     getOrCreateExternFunc(fn.name, funcType);
-    if (semanticResultType && mlir::isa<hew::VecType, hew::HashMapType>(semanticResultType)) {
+    if (semanticResultType && mlir::isa<hew::VecType, hew::HashMapType, hew::StringRefType>(semanticResultType)) {
       externSemanticReturnTypes[fn.name] = semanticResultType;
     } else {
       externSemanticReturnTypes.erase(fn.name);

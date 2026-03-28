@@ -915,7 +915,9 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::UnreachableCode
         | TypeErrorKind::DeadCode
         | TypeErrorKind::OrphanImpl
-        | TypeErrorKind::PlatformLimitation => DiagnosticSeverity::WARNING,
+        | TypeErrorKind::PlatformLimitation
+        | TypeErrorKind::Shadowing
+        | TypeErrorKind::NonExhaustiveMatch => DiagnosticSeverity::WARNING,
         _ => DiagnosticSeverity::ERROR,
     }
 }
@@ -3413,6 +3415,8 @@ impl Worker {
             TypeErrorKind::DeadCode,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
+            TypeErrorKind::Shadowing,
+            TypeErrorKind::NonExhaustiveMatch,
         ];
         for kind in &warning_kinds {
             assert_eq!(

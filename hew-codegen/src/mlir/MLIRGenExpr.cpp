@@ -2728,8 +2728,15 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         auto argVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!argVal)
           return true;
-        argVal = coerceType(argVal, elemType, location);
-        hew::VecRemoveOp::create(builder, location, vecValue, argVal);
+        // If the argument is an integer type, treat as index-based removal.
+        // Otherwise, treat as value-based removal (remove first occurrence).
+        if (argVal.getType().isIntOrIndex()) {
+          argVal = coerceType(argVal, i64Type, location);
+          hew::VecRemoveAtOp::create(builder, location, vecValue, argVal);
+        } else {
+          argVal = coerceType(argVal, elemType, location);
+          hew::VecRemoveOp::create(builder, location, vecValue, argVal);
+        }
       }
       resultOut = nullptr;
       return true;
@@ -4199,10 +4206,17 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (auto result = generateBuiltinMethodCall(mc, receiver, location))
     return *result;
 
-  // Determine struct type name from the receiver's MLIR type
+  // Determine type name from the receiver's MLIR type (struct or handle).
   auto receiverType = receiver.getType();
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
-  if (!structType || !structType.isIdentified()) {
+  std::string resolvedTypeName;
+  if (structType && structType.isIdentified()) {
+    resolvedTypeName = structType.getName().str();
+  } else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
+    // Handle types (json.Value, ws.Conn, etc.) can have trait impl methods
+    // registered under their handle kind name (e.g. "json.Value").
+    resolvedTypeName = handleTy.getHandleKind().str();
+  } else {
     emitError(location) << "method call on non-struct type"
                         << " (method='" << methodName << "'"
                         << ", receiver type: " << receiverType << ")";
@@ -4212,13 +4226,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // Machine step() — mutates the receiver variable in place.
   // The generated step function still returns the new machine value; the
   // call site stores it back into the receiver's mutable-variable slot.
-  if (methodName == "step") {
-    auto enumIt = enumTypes.find(structType.getName().str());
+  if (methodName == "step" && structType) {
+    auto enumIt = enumTypes.find(resolvedTypeName);
     if (enumIt != enumTypes.end()) {
-      std::string funcName = mangleName(currentModulePath, structType.getName().str(), "step");
+      std::string funcName = mangleName(currentModulePath, resolvedTypeName, "step");
       auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
       if (!callee)
-        callee = lookupImportedFunc(structType.getName(), "step");
+        callee = lookupImportedFunc(resolvedTypeName, "step");
       if (callee) {
         llvm::SmallVector<mlir::Value, 4> args;
         args.push_back(receiver);
@@ -4244,7 +4258,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
 
-  std::string funcName = mangleName(currentModulePath, structType.getName().str(), methodName);
+  std::string funcName = mangleName(currentModulePath, resolvedTypeName, methodName);
 
   llvm::SmallVector<mlir::Value, 4> args;
   args.push_back(receiver);
@@ -4260,10 +4274,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // This handles cross-module struct methods (e.g. bench.Suite.add defined
   // in std::bench but called from bench_basic).
   if (!callee)
-    callee = lookupImportedFunc(structType.getName(), methodName);
+    callee = lookupImportedFunc(resolvedTypeName, methodName);
   // Try specializing a generic impl method (e.g. impl<T> Box<T> { fn unwrap … }).
-  if (!callee) {
-    auto originIt = structTypeOrigin.find(structType.getName().str());
+  if (!callee && structType) {
+    auto originIt = structTypeOrigin.find(resolvedTypeName);
     if (originIt != structTypeOrigin.end()) {
       const auto &[baseName, typeArgs] = originIt->second;
       callee = specializeGenericImplMethod(baseName, typeArgs, methodName);
@@ -4271,7 +4285,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   }
   if (!callee) {
     emitError(location) << "undefined method '" << methodName << "' on type '"
-                        << structType.getName() << "'";
+                        << resolvedTypeName << "'";
     return nullptr;
   }
 

@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use hew_parser::ast::{Block, Expr, Item, Pattern, Span, Stmt, TypeBodyItem, TypeDeclKind};
+use hew_parser::ast::{
+    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDeclKind,
+};
 use hew_types::check::{FnSig, SpanKey};
 use hew_types::{Ty, TypeCheckOutput};
 
@@ -365,10 +367,17 @@ fn collect_locals_from_stmt(
         Stmt::Return(Some(val)) => {
             collect_locals_from_expr(&val.0, offset, locals);
         }
+        Stmt::Expression(expr) => {
+            collect_locals_from_spanned_expr(expr, offset, locals);
+        }
         _ => {}
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive AST match — splitting would obscure the traversal"
+)]
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
         Expr::Block(block)
@@ -416,6 +425,87 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         Expr::PostfixTry(inner) | Expr::Cast { expr: inner, .. } => {
             collect_locals_from_expr(&inner.0, offset, locals);
         }
+        Expr::Call { function, args, .. } => {
+            collect_locals_from_spanned_expr(function, offset, locals);
+            for arg in args {
+                collect_locals_from_spanned_expr(arg.expr(), offset, locals);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_locals_from_spanned_expr(receiver, offset, locals);
+            for arg in args {
+                collect_locals_from_spanned_expr(arg.expr(), offset, locals);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_locals_from_spanned_expr(left, offset, locals);
+            collect_locals_from_spanned_expr(right, offset, locals);
+        }
+        Expr::Unary { operand, .. } => {
+            collect_locals_from_spanned_expr(operand, offset, locals);
+        }
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+            for expr in exprs {
+                collect_locals_from_spanned_expr(expr, offset, locals);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            collect_locals_from_spanned_expr(value, offset, locals);
+            collect_locals_from_spanned_expr(count, offset, locals);
+        }
+        Expr::MapLiteral { entries } => {
+            for (key, value) in entries {
+                collect_locals_from_spanned_expr(key, offset, locals);
+                collect_locals_from_spanned_expr(value, offset, locals);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_locals_from_spanned_expr(value, offset, locals);
+            }
+        }
+        Expr::Send { target, message } => {
+            collect_locals_from_spanned_expr(target, offset, locals);
+            collect_locals_from_spanned_expr(message, offset, locals);
+        }
+        Expr::Spawn { target, args } => {
+            collect_locals_from_spanned_expr(target, offset, locals);
+            for (_, arg) in args {
+                collect_locals_from_spanned_expr(arg, offset, locals);
+            }
+        }
+        Expr::SpawnLambdaActor { body, .. } | Expr::Lambda { body, .. } => {
+            collect_locals_from_spanned_expr(body, offset, locals);
+        }
+        Expr::Timeout { expr, duration } => {
+            collect_locals_from_spanned_expr(expr, offset, locals);
+            collect_locals_from_spanned_expr(duration, offset, locals);
+        }
+        Expr::FieldAccess { object, .. } => {
+            collect_locals_from_spanned_expr(object, offset, locals);
+        }
+        Expr::Index { object, index } => {
+            collect_locals_from_spanned_expr(object, offset, locals);
+            collect_locals_from_spanned_expr(index, offset, locals);
+        }
+        Expr::Await(inner) | Expr::Yield(Some(inner)) => {
+            collect_locals_from_spanned_expr(inner, offset, locals);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_locals_from_spanned_expr(start, offset, locals);
+            }
+            if let Some(end) = end {
+                collect_locals_from_spanned_expr(end, offset, locals);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(expr) = part {
+                    collect_locals_from_spanned_expr(expr, offset, locals);
+                }
+            }
+        }
         Expr::Select { arms, timeout } => {
             for arm in arms {
                 if span_contains_offset(&arm.body.1, offset) {
@@ -430,6 +520,16 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             }
         }
         _ => {}
+    }
+}
+
+fn collect_locals_from_spanned_expr(
+    expr: &Spanned<Expr>,
+    offset: usize,
+    locals: &mut Vec<CompletionItem>,
+) {
+    if span_contains_offset(&expr.1, offset) {
+        collect_locals_from_expr(&expr.0, offset, locals);
     }
 }
 
@@ -617,5 +717,78 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
         Item::TypeAlias(ta) => Some((ta.name.clone(), CompletionKind::Type)),
         Item::Machine(m) => Some((m.name.clone(), CompletionKind::Type)),
         Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURSOR: &str = "/*cursor*/";
+
+    fn labels_at_cursor(source_with_cursor: &str) -> Vec<String> {
+        let offset = source_with_cursor
+            .find(CURSOR)
+            .expect("test source must contain cursor marker");
+        let source = source_with_cursor.replacen(CURSOR, "", 1);
+        let parse_result = hew_parser::parse(&source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+
+        complete(&source, &parse_result, None, offset)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    #[test]
+    fn completions_include_locals_inside_call_argument_blocks() {
+        let labels = labels_at_cursor(
+            r"fn example() {
+    foo({
+        let arg_local = 5;
+        /*cursor*/
+        arg_local
+    });
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "arg_local"));
+    }
+
+    #[test]
+    fn completions_do_not_leak_call_argument_block_locals_after_statement() {
+        let labels = labels_at_cursor(
+            r"fn example() {
+    foo({
+        let arg_local = 5;
+        arg_local
+    });
+    let outside = 1;
+    /*cursor*/
+    outside
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "outside"));
+        assert!(!labels.iter().any(|label| label == "arg_local"));
+    }
+
+    #[test]
+    fn completions_include_locals_inside_method_call_receivers() {
+        let labels = labels_at_cursor(
+            r"fn example() {
+    ({
+        let receiver_local = 5;
+        /*cursor*/
+        receiver_local
+    }).display();
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "receiver_local"));
     }
 }

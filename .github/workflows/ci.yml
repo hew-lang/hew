@@ -386,8 +386,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
+          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_PREFIX }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_PREFIX }}-
 
       - name: Run Rust workspace tests
         # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.

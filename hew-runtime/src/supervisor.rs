@@ -73,10 +73,9 @@ fn append_tree_row(json: &mut String, first: &mut bool, depth: u16, label: &str,
         json.push(',');
     }
     *first = false;
-    let _ = write!(
-        json,
-        r#"{{"depth":{depth},"label":"{label}","state":"{state}"}}"#,
-    );
+    let _ = write!(json, r#"{{"depth":{depth},"label":"#);
+    crate::util::push_json_string(json, label);
+    let _ = write!(json, r#","state":"{state}"}}"#);
 }
 
 #[cfg(feature = "profiler")]

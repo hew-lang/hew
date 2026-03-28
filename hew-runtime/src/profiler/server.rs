@@ -4,21 +4,31 @@
 //! responsive even when the scheduler is overloaded.
 
 use crate::util::MutexExt;
+use std::convert::Infallible;
 use std::fmt::Write as _;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tiny_http::{Header, Request, Response, Server, StatusCode};
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::net::{TcpListener, UnixListener};
 
 use crate::profiler::allocator;
 use crate::profiler::metrics::MetricsRing;
 use crate::profiler::pprof;
 
-// ── Dashboard assets (embedded at compile time) ─────────────────────────
+// ── Dashboard assets (embedded at compile time) ───────────────��─────────
 
 const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
 const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
 
-// ── Profiler context ────────────────────────────────────────────────────
+// ── Profiler context ────────────���───────────────────────────────────────
 
 /// Shared context passed to the profiler HTTP server thread.
 ///
@@ -41,85 +51,203 @@ unsafe impl Send for ProfilerContext {}
 // internal locking; no unsynchronized mutation is performed.
 unsafe impl Sync for ProfilerContext {}
 
-// ── Server ──────────────────────────────────────────────────────────────
+// ── Server ───────────────────────────────────────────────���──────────────
 
-/// Start the profiling HTTP server, blocking the current thread.
+/// Start the profiling HTTP server on a TCP socket, blocking the current
+/// thread.
 ///
-/// # Panics
-///
-/// Panics if `tiny_http::Server::http` fails to bind.
-pub fn run(bind_addr: &str, ctx: &ProfilerContext) {
-    let server = match Server::http(bind_addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[hew-pprof] failed to bind {bind_addr}: {e}");
-            return;
-        }
+/// Creates a single-threaded tokio runtime for the async hyper server.
+/// Checks `PROFILER_SHUTDOWN` periodically to exit cleanly.
+pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
+    let rt = match build_runtime() {
+        Some(rt) => rt,
+        None => return,
     };
 
-    eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
+    rt.block_on(async move {
+        let listener = match TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[hew-pprof] failed to bind {bind_addr}: {e}");
+                return;
+            }
+        };
 
-    for request in server.incoming_requests() {
-        // Check if shutdown was requested. Note: this only checks between requests,
-        // not while blocked on incoming_requests(). The server will fully exit
-        // when the node shuts down and the socket is closed.
+        eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
+
+        serve_loop(Listener::Tcp(listener), ctx).await;
+    });
+}
+
+/// Start the profiling HTTP server on a unix domain socket, blocking the
+/// current thread.
+///
+/// The socket file must not already exist (caller should clean up stale
+/// sockets before calling).
+pub fn run_unix(socket_path: &Path, ctx: Arc<ProfilerContext>) {
+    let rt = match build_runtime() {
+        Some(rt) => rt,
+        None => return,
+    };
+
+    rt.block_on(async move {
+        let listener = match UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "[hew-pprof] failed to bind unix socket {}: {e}",
+                    socket_path.display(),
+                );
+                return;
+            }
+        };
+
+        // Set socket to mode 0600 — only the owning user can connect.
+        if let Err(e) =
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        {
+            eprintln!("[hew-pprof] failed to set socket permissions: {e}",);
+            return;
+        }
+
+        eprintln!("[hew-pprof] listening on unix:{}", socket_path.display(),);
+
+        serve_loop(Listener::Unix(listener), ctx).await;
+    });
+}
+
+fn build_runtime() -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            eprintln!("[hew-pprof] failed to create tokio runtime: {e}");
+            None
+        }
+    }
+}
+
+/// Listener abstraction over TCP and Unix sockets.
+enum Listener {
+    Tcp(TcpListener),
+    Unix(UnixListener),
+}
+
+/// Accept loop that works with both TCP and Unix socket listeners.
+async fn serve_loop(listener: Listener, ctx: Arc<ProfilerContext>) {
+    loop {
         if super::PROFILER_SHUTDOWN.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
-        handle_request(request, ctx);
+
+        // Accept with a timeout so we can check the shutdown flag.
+        match &listener {
+            Listener::Tcp(l) => {
+                let result = tokio::select! {
+                    r = l.accept() => Some(r),
+                    () = tokio::time::sleep(Duration::from_millis(200)) => None,
+                };
+                if let Some(Ok((stream, _))) = result {
+                    let io = TokioIo::new(stream);
+                    spawn_connection(io, ctx.clone());
+                }
+            }
+            Listener::Unix(l) => {
+                let result = tokio::select! {
+                    r = l.accept() => Some(r),
+                    () = tokio::time::sleep(Duration::from_millis(200)) => None,
+                };
+                if let Some(Ok((stream, _))) = result {
+                    let io = TokioIo::new(stream);
+                    spawn_connection(io, ctx.clone());
+                }
+            }
+        }
     }
 }
 
-fn handle_request(req: Request, ctx: &ProfilerContext) {
-    let path = req.url().to_owned();
+/// Spawn a hyper HTTP/1.1 connection handler for an accepted stream.
+fn spawn_connection<I>(io: TokioIo<I>, ctx: Arc<ProfilerContext>)
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let service = service_fn(move |req| {
+            let ctx = ctx.clone();
+            async move { Ok::<_, Infallible>(handle_request(req, &ctx)) }
+        });
+        let _ = http1::Builder::new().serve_connection(io, service).await;
+    });
+}
 
-    match path.as_str() {
-        "/" => serve_text(req, DASHBOARD_HTML, "text/html; charset=utf-8"),
-        "/dashboard.js" => serve_text(req, DASHBOARD_JS, "application/javascript; charset=utf-8"),
-        "/api/metrics" => serve_current_metrics(req, &ctx.ring),
-        "/api/memory" => serve_memory(req),
-        "/api/actors" => serve_actors(req),
-        "/api/metrics/history" => serve_history(req, &ctx.ring),
-        "/api/cluster/members" => serve_cluster_members(req, ctx),
-        "/api/connections" => serve_connections(req, ctx),
-        "/api/routing/table" => serve_routing_table(req, ctx),
-        "/api/traces" => serve_traces(req),
-        "/api/supervisors" => serve_supervisors(req),
-        "/api/crashes" => serve_crashes(req),
-        "/debug/pprof/heap" => serve_pprof_heap(req),
-        "/debug/pprof/profile" => serve_flat_profile(req),
-        _ => serve_not_found(req),
+// ── Request routing ────────────────────────────────────���────────────────
+
+fn handle_request(
+    req: Request<hyper::body::Incoming>,
+    ctx: &ProfilerContext,
+) -> Response<Full<Bytes>> {
+    match req.uri().path() {
+        "/" => static_text_response(DASHBOARD_HTML, "text/html; charset=utf-8"),
+        "/dashboard.js" => {
+            static_text_response(DASHBOARD_JS, "application/javascript; charset=utf-8")
+        }
+        "/api/metrics" => serve_current_metrics(&ctx.ring),
+        "/api/memory" => serve_memory(),
+        "/api/actors" => serve_actors(),
+        "/api/metrics/history" => serve_history(&ctx.ring),
+        "/api/cluster/members" => serve_cluster_members(ctx),
+        "/api/connections" => serve_connections(ctx),
+        "/api/routing/table" => serve_routing_table(ctx),
+        "/api/traces" => serve_traces(),
+        "/api/supervisors" => serve_supervisors(),
+        "/api/crashes" => serve_crashes(),
+        "/debug/pprof/heap" => serve_pprof_heap(),
+        "/debug/pprof/profile" => serve_flat_profile(),
+        _ => not_found_response(),
     }
 }
 
-// ── Static assets ───────────────────────────────────────────────────────
+// ── Response helpers ────────────────��───────────────────────────────────
 
-fn serve_text(req: Request, body: &str, content_type: &str) {
-    let header = Header::from_bytes("Content-Type", content_type).expect("valid header");
-    let resp = Response::from_string(body)
-        .with_header(header)
-        .with_status_code(StatusCode(200));
-    let _ = req.respond(resp);
+/// Serve a `&'static str` without copying.
+fn static_text_response(body: &'static str, content_type: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .body(Full::new(Bytes::from_static(body.as_bytes())))
+        .expect("valid response")
 }
 
-fn serve_not_found(req: Request) {
-    let resp = Response::from_string("404 Not Found").with_status_code(StatusCode(404));
-    let _ = req.respond(resp);
+/// Serve an owned string as text.
+fn text_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid response")
+}
+
+fn json_response(body: String) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid response")
+}
+
+fn not_found_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Full::new(Bytes::from_static(b"404 Not Found")))
+        .expect("valid response")
 }
 
 // ── API endpoints ───────────────────────────────────────────────────────
 
-fn json_response(req: Request, body: &str) {
-    let header = Header::from_bytes("Content-Type", "application/json; charset=utf-8")
-        .expect("valid header");
-    let resp = Response::from_string(body)
-        .with_header(header)
-        .with_status_code(StatusCode(200));
-    let _ = req.respond(resp);
-}
-
 /// `GET /api/metrics` — current scheduler counters.
-fn serve_current_metrics(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
+fn serve_current_metrics(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
     let ring_guard = ring.lock_or_recover();
 
     let snap = crate::profiler::metrics::MetricsSnapshot::capture(ring_guard.epoch());
@@ -141,11 +269,11 @@ fn serve_current_metrics(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
         snap.bytes_live,
         snap.peak_bytes_live,
     );
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/memory` — current allocator stats.
-fn serve_memory(req: Request) {
+fn serve_memory() -> Response<Full<Bytes>> {
     let stats = allocator::snapshot();
     let json = format!(
         r#"{{"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{}}}"#,
@@ -156,11 +284,11 @@ fn serve_memory(req: Request) {
         stats.bytes_live,
         stats.peak_bytes_live,
     );
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/metrics/history` — time-series from ring buffer.
-fn serve_history(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
+fn serve_history(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
     let ring_guard = ring.lock_or_recover();
     let entries = ring_guard.read_all();
     drop(ring_guard);
@@ -191,30 +319,28 @@ fn serve_history(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
     }
     json.push(']');
 
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /debug/pprof/heap` — pprof-compatible heap profile (.pb.gz).
-fn serve_pprof_heap(req: Request) {
+fn serve_pprof_heap() -> Response<Full<Bytes>> {
     let data = pprof::generate_heap_profile();
-    let ct = Header::from_bytes("Content-Type", "application/octet-stream").expect("valid header");
-    let cd = Header::from_bytes("Content-Disposition", "attachment; filename=\"heap.pb.gz\"")
-        .expect("valid header");
-    let resp = Response::from_data(data)
-        .with_header(ct)
-        .with_header(cd)
-        .with_status_code(StatusCode(200));
-    let _ = req.respond(resp);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Disposition", "attachment; filename=\"heap.pb.gz\"")
+        .body(Full::new(Bytes::from(data)))
+        .expect("valid response")
 }
 
 /// `GET /debug/pprof/profile` — gprof-style flat profile (text).
-fn serve_flat_profile(req: Request) {
-    let text = pprof::generate_flat_profile();
-    serve_text(req, &text, "text/plain; charset=utf-8");
+fn serve_flat_profile() -> Response<Full<Bytes>> {
+    let body = pprof::generate_flat_profile();
+    text_response(body, "text/plain; charset=utf-8")
 }
 
 /// `GET /api/actors` — per-actor stats and mailbox depths.
-fn serve_actors(req: Request) {
+fn serve_actors() -> Response<Full<Bytes>> {
     let actors = crate::profiler::actor_registry::snapshot_all();
 
     let mut json = String::from("[");
@@ -236,64 +362,61 @@ fn serve_actors(req: Request) {
     }
     json.push(']');
 
-    json_response(req, &json);
+    json_response(json)
 }
 
 // ── Distributed runtime endpoints ───────────────────────────────────────
 
 /// `GET /api/cluster/members` — cluster membership snapshot.
-fn serve_cluster_members(req: Request, ctx: &ProfilerContext) {
+fn serve_cluster_members(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.cluster.is_null() {
-        json_response(req, "[]");
-        return;
+        return json_response("[]".to_owned());
     }
     // SAFETY: pointer is non-null and points to a valid HewCluster that
     // outlives the profiler thread. Internal access is mutex-protected.
     let cluster = unsafe { &*ctx.cluster };
     let json = crate::cluster::snapshot_members_json(cluster);
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/connections` — connection snapshot.
-fn serve_connections(req: Request, ctx: &ProfilerContext) {
+fn serve_connections(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.connmgr.is_null() {
-        json_response(req, "[]");
-        return;
+        return json_response("[]".to_owned());
     }
     // SAFETY: pointer is non-null and points to a valid HewConnMgr that
     // outlives the profiler thread. Internal access is mutex-protected.
     let mgr = unsafe { &*ctx.connmgr };
     let json = crate::connection::snapshot_connections_json(mgr);
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/routing/table` — routing table snapshot.
-fn serve_routing_table(req: Request, ctx: &ProfilerContext) {
+fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
     if ctx.routing.is_null() {
-        json_response(req, r#"{"local_node_id":0,"routes":[]}"#);
-        return;
+        return json_response(r#"{"local_node_id":0,"routes":[]}"#.to_owned());
     }
     // SAFETY: pointer is non-null and points to a valid HewRoutingTable
     // that outlives the profiler thread. Internal access is RwLock-protected.
     let table = unsafe { &*ctx.routing };
     let json = crate::routing::snapshot_routing_json(table);
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/traces` — drain trace events.
-fn serve_traces(req: Request) {
+fn serve_traces() -> Response<Full<Bytes>> {
     let json = crate::tracing::drain_events_json();
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/supervisors` — supervision tree rows.
-fn serve_supervisors(req: Request) {
+fn serve_supervisors() -> Response<Full<Bytes>> {
     let json = crate::supervisor::snapshot_tree_json();
-    json_response(req, &json);
+    json_response(json)
 }
 
 /// `GET /api/crashes` — recent crash log entries.
-fn serve_crashes(req: Request) {
+fn serve_crashes() -> Response<Full<Bytes>> {
     let json = crate::crash::snapshot_crashes_json();
-    json_response(req, &json);
+    json_response(json)
 }

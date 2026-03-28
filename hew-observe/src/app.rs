@@ -1,10 +1,14 @@
 //! Application state for the TUI observer.
 
+use std::path::Path;
+use std::time::{Duration, Instant};
+
 use crate::client::{
     ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
     CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry, RoutingSnapshot,
     SupervisorRow as ClientSupervisorRow, TraceEvent,
 };
+use crate::discovery;
 
 /// Active tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,23 +167,55 @@ pub struct App {
     pub demo_mode: bool,
     pub base_url: String,
 
+    /// When true, periodically re-scan the discovery directory and
+    /// reconnect if the current profiler is gone or a new one appears.
+    auto_discover: bool,
+    last_discovery_scan: Instant,
+
     prev_messages_sent: u64,
     prev_timestamp: f64,
 }
 
 impl App {
-    pub fn new(node_addrs: &[String], demo: bool) -> Self {
-        let cluster = if demo {
-            None
-        } else {
-            Some(ClusterClient::new(node_addrs))
-        };
-
+    /// Connect to profilers over TCP.
+    pub fn new_tcp(node_addrs: &[String]) -> Self {
         let base_url = node_addrs
             .first()
             .map_or_else(|| "localhost:6060".to_owned(), Clone::clone);
+        Self::build(Some(ClusterClient::new(node_addrs)), base_url, false, false)
+    }
 
-        let mut app = Self {
+    /// Connect to a profiler over a unix domain socket.
+    pub fn new_unix(socket_path: &Path, label: &str) -> Self {
+        let cluster = ClusterClient::from_unix(socket_path, label);
+        Self::build(Some(cluster), label.to_owned(), false, false)
+    }
+
+    /// Connect via auto-discovery (re-scans periodically).
+    pub fn new_discovered(socket_path: &Path, label: &str) -> Self {
+        let cluster = ClusterClient::from_unix(socket_path, label);
+        Self::build(Some(cluster), label.to_owned(), false, true)
+    }
+
+    /// Auto-discover mode with no initial connection.
+    pub fn new_waiting() -> Self {
+        Self::build(None, String::new(), false, true)
+    }
+
+    /// Demo mode with synthetic data.
+    pub fn new_demo() -> Self {
+        let mut app = Self::build(None, "demo".to_owned(), true, false);
+        app.load_demo_data();
+        app
+    }
+
+    fn build(
+        cluster: Option<ClusterClient>,
+        base_url: String,
+        demo: bool,
+        auto_discover: bool,
+    ) -> Self {
+        Self {
             active_tab: Tab::Overview,
             show_help: false,
             filter_active: false,
@@ -216,15 +252,11 @@ impl App {
             },
             demo_mode: demo,
             base_url,
+            auto_discover,
+            last_discovery_scan: Instant::now(),
             prev_messages_sent: 0,
             prev_timestamp: 0.0,
-        };
-
-        if demo {
-            app.load_demo_data();
         }
-
-        app
     }
 
     /// Clamp all selection indices to valid ranges so they never exceed
@@ -420,6 +452,11 @@ impl App {
             return;
         }
 
+        // In auto-discover mode, periodically re-scan for profilers.
+        if self.auto_discover {
+            self.try_rediscover();
+        }
+
         let Some(cluster) = &mut self.cluster else {
             return;
         };
@@ -555,6 +592,34 @@ impl App {
         }
 
         self.connection_status = cluster_status;
+    }
+
+    /// Re-scan the discovery directory and reconnect if needed.
+    ///
+    /// Scans every 3 seconds. When disconnected (or no cluster), picks
+    /// up a newly started profiler. When connected, does nothing — we
+    /// don't disrupt a live session.
+    fn try_rediscover(&mut self) {
+        const SCAN_INTERVAL: Duration = Duration::from_secs(3);
+
+        if self.last_discovery_scan.elapsed() < SCAN_INTERVAL {
+            return;
+        }
+        self.last_discovery_scan = Instant::now();
+
+        // Only reconnect when we have no connection.
+        let needs_connect =
+            self.cluster.is_none() || self.connection_status == ConnectionStatus::Disconnected;
+        if !needs_connect {
+            return;
+        }
+
+        let profilers = discovery::scan_profilers();
+        if let Some(p) = profilers.first() {
+            self.cluster = Some(ClusterClient::from_unix(&p.socket_path, &p.program));
+            self.base_url.clone_from(&p.program);
+            self.connection_status = ConnectionStatus::Connecting;
+        }
     }
 
     fn sort_actors(&mut self) {

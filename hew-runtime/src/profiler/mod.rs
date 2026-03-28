@@ -16,12 +16,12 @@
 
 pub mod actor_registry;
 pub mod allocator;
+pub mod discovery;
 pub mod metrics;
 pub mod pprof;
 mod server;
 
 use crate::util::MutexExt;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -39,11 +39,11 @@ pub use server::ProfilerContext;
 static PROFILER_STATE: Mutex<Option<ProfilerThreads>> = Mutex::new(None);
 
 /// Shutdown signal shared with profiler threads.
-static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+pub(super) static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// Resolved bind address of the running profiler server, used to send a
-/// shutdown request to unblock the `incoming_requests()` accept loop.
-static PROFILER_BIND_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
+/// Discovery directory path, stored so shutdown can clean up the socket
+/// and discovery file.
+static PROFILER_DISCOVERY_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
 #[derive(Debug)]
 struct ProfilerThreads {
@@ -51,6 +51,14 @@ struct ProfilerThreads {
     sampler_handle: JoinHandle<()>,
     /// HTTP server thread handle.
     server_handle: JoinHandle<()>,
+}
+
+/// How the profiler should listen for connections.
+enum ListenMode {
+    /// Bind to a TCP address (e.g. `0.0.0.0:6060`).
+    Tcp(String),
+    /// Bind to a per-user unix domain socket with auto-discovery.
+    Unix,
 }
 
 /// Check `HEW_PPROF` and start the profiler if set.
@@ -85,21 +93,16 @@ pub fn maybe_start_with_context(
     connmgr: *mut crate::connection::HewConnMgr,
     routing: *mut crate::routing::HewRoutingTable,
 ) {
-    let bind_addr = match std::env::var("HEW_PPROF") {
+    let env_val = match std::env::var("HEW_PPROF") {
         Ok(val) if !val.is_empty() => val,
         _ => return,
     };
     crate::tracing::hew_trace_enable(1);
 
+    let mode = parse_listen_mode(&env_val);
+
     // Clear any previous shutdown signal.
     PROFILER_SHUTDOWN.store(false, Ordering::Release);
-
-    // Normalize `:port` shorthand to `0.0.0.0:port`.
-    let bind_addr = if bind_addr.starts_with(':') {
-        format!("0.0.0.0{bind_addr}")
-    } else {
-        bind_addr
-    };
 
     let ring = Arc::new(Mutex::new(MetricsRing::new()));
 
@@ -113,27 +116,58 @@ pub fn maybe_start_with_context(
         return;
     };
 
-    let ctx = ProfilerContext {
+    let ctx = Arc::new(ProfilerContext {
         ring,
         cluster,
         connmgr,
         routing,
+    });
+
+    // HTTP server thread — TCP or Unix depending on mode.
+    let server_handle = match mode {
+        ListenMode::Tcp(bind_addr) => thread::Builder::new()
+            .name("hew-pprof-server".into())
+            .spawn(move || server::run_tcp(&bind_addr, ctx)),
+        ListenMode::Unix => {
+            let Some(disc_dir) = discovery::discovery_dir() else {
+                eprintln!("[hew-pprof] could not resolve a safe discovery directory");
+                PROFILER_SHUTDOWN.store(true, Ordering::Release);
+                let _ = sampler_handle.join();
+                return;
+            };
+
+            let sock_path = discovery::socket_path(&disc_dir);
+
+            // Remove stale socket from a previous crashed run.
+            let _ = std::fs::remove_file(&sock_path);
+
+            // Store discovery dir so shutdown() can clean up.
+            *PROFILER_DISCOVERY_DIR.lock_or_recover() = Some(disc_dir.clone());
+
+            thread::Builder::new()
+                .name("hew-pprof-server".into())
+                .spawn(move || {
+                    // Write discovery file after we're on the server thread
+                    // (the socket is created inside run_unix).
+                    server::run_unix(&sock_path, ctx);
+                })
+        }
     };
 
-    // HTTP server thread.
-    // Resolve the bind address to a concrete SocketAddr before spawning, so
-    // shutdown() can connect to it even for hostnames like "localhost:6060".
-    let resolved_addr = bind_addr.to_socket_addrs().ok().and_then(|mut a| a.next());
-    let Ok(server_handle) = thread::Builder::new()
-        .name("hew-pprof-server".into())
-        .spawn(move || server::run(&bind_addr, &ctx))
-    else {
+    let Ok(server_handle) = server_handle else {
         eprintln!("[hew-pprof] failed to spawn server thread");
-        // Signal sampler to stop and join it before returning.
         PROFILER_SHUTDOWN.store(true, Ordering::Release);
         let _ = sampler_handle.join();
         return;
     };
+
+    // For unix mode, write the discovery file now that the thread is running.
+    if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().as_ref() {
+        let sock_path = discovery::socket_path(disc_dir);
+        if let Err(e) = discovery::write_discovery_file(disc_dir, &sock_path) {
+            eprintln!("[hew-pprof] failed to write discovery file: {e}");
+        }
+    }
 
     // Store thread handles for shutdown.
     let threads = ProfilerThreads {
@@ -142,10 +176,15 @@ pub fn maybe_start_with_context(
     };
     let mut state_guard = PROFILER_STATE.lock_or_recover();
     *state_guard = Some(threads);
-    drop(state_guard);
+}
 
-    // Store resolved address so shutdown() can unblock the accept loop.
-    *PROFILER_BIND_ADDR.lock_or_recover() = resolved_addr;
+/// Parse the `HEW_PPROF` env var into a listen mode.
+fn parse_listen_mode(val: &str) -> ListenMode {
+    match val {
+        "auto" | "1" | "true" | "yes" => ListenMode::Unix,
+        addr if addr.starts_with(':') => ListenMode::Tcp(format!("0.0.0.0{addr}")),
+        addr => ListenMode::Tcp(addr.to_owned()),
+    }
 }
 
 /// Sampler loop: captures a snapshot every second.
@@ -223,20 +262,9 @@ pub fn maybe_write_on_exit() {
 ///
 /// Safe to call multiple times or when no profiler was started (no-op).
 pub(crate) fn shutdown() {
-    // Signal all threads to stop.
+    // Signal all threads to stop. The server's tokio accept loop checks
+    // this flag every 200ms via `tokio::select!` with a sleep timeout.
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
-
-    // Unblock the server's accept loop by sending a minimal HTTP request.
-    // A bare TCP connect is not enough — tiny_http only yields parsed
-    // Request objects, so we must send enough for a valid request line.
-    if let Some(addr) = PROFILER_BIND_ADDR.lock_or_recover().take() {
-        if let Ok(mut stream) =
-            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200))
-        {
-            use std::io::Write;
-            let _ = stream.write_all(b"GET / HTTP/1.0\r\n\r\n");
-        }
-    }
 
     // Take the thread handles and join them.
     let mut state_guard = PROFILER_STATE.lock_or_recover();
@@ -245,5 +273,10 @@ pub(crate) fn shutdown() {
 
         let _ = threads.server_handle.join();
         let _ = threads.sampler_handle.join();
+    }
+
+    // Clean up unix socket and discovery file if we were in unix mode.
+    if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().take() {
+        discovery::cleanup(&disc_dir);
     }
 }

@@ -15,7 +15,6 @@
 #![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
     reason = "FFI tests use deliberate casts between pointer and integer types"
 )]
 

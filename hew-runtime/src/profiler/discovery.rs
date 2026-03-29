@@ -173,8 +173,6 @@ fn validate_dir(dir: &Path, expected_uid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
-
     #[test]
     fn socket_path_contains_pid() {
         let dir = Path::new("/tmp/test-hew-profilers");
@@ -195,6 +193,7 @@ mod tests {
     fn ensure_dir_creates_with_correct_mode() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("hew-profilers");
+        // SAFETY: getuid() has no preconditions.
         let uid = unsafe { libc::getuid() };
 
         assert!(ensure_dir(&dir, uid));
@@ -208,6 +207,7 @@ mod tests {
     fn ensure_dir_reuses_existing_valid_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("hew-profilers");
+        // SAFETY: getuid() has no preconditions.
         let uid = unsafe { libc::getuid() };
 
         fs::create_dir_all(&dir).unwrap();
@@ -224,6 +224,7 @@ mod tests {
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
 
         // Use a UID that isn't ours.
+        // SAFETY: getuid() has no preconditions.
         let fake_uid = unsafe { libc::getuid() } + 1;
         assert!(!validate_dir(&dir, fake_uid));
     }
@@ -232,6 +233,7 @@ mod tests {
     fn validate_dir_rejects_permissive_mode() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("hew-profilers");
+        // SAFETY: getuid() has no preconditions.
         let uid = unsafe { libc::getuid() };
 
         fs::create_dir_all(&dir).unwrap();
@@ -273,6 +275,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("not-a-dir");
         fs::write(&path, b"").unwrap();
+        // SAFETY: getuid() has no preconditions.
         let uid = unsafe { libc::getuid() };
 
         assert!(!validate_dir(&path, uid));

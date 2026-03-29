@@ -506,7 +506,6 @@ mod platform {
             return -1;
         }
 
-        // SAFETY: kevent with valid kq, changelist, and no eventlist.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "changelist has at most 2 entries, fits in c_int"
@@ -515,6 +514,7 @@ mod platform {
             clippy::cast_possible_wrap,
             reason = "changelist has at most 2 entries, fits in c_int"
         )]
+        // SAFETY: kevent with valid kq, changelist, and no eventlist.
         let rc = unsafe {
             libc::kevent(
                 poller.kq,
@@ -571,7 +571,6 @@ mod platform {
             },
         ];
 
-        // SAFETY: kevent with valid kq and changelist.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
@@ -580,6 +579,7 @@ mod platform {
             clippy::cast_possible_wrap,
             reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
         )]
+        // SAFETY: kevent with valid kq and changelist.
         unsafe {
             libc::kevent(
                 poller.kq,

@@ -102,7 +102,9 @@ pub fn maybe_start_with_context(
     };
     crate::tracing::hew_trace_enable(1);
 
-    let mode = parse_listen_mode(&env_val);
+    let Some(mode) = parse_listen_mode(&env_val) else {
+        return;
+    };
 
     // Clear any previous shutdown signal.
     PROFILER_SHUTDOWN.store(false, Ordering::Release);
@@ -184,17 +186,23 @@ pub fn maybe_start_with_context(
 }
 
 /// Parse the `HEW_PPROF` env var into a listen mode.
-fn parse_listen_mode(val: &str) -> ListenMode {
+///
+/// Returns `None` on non-unix platforms when `auto`/`1` is requested.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "returns None on non-unix platforms for auto/1; all-Some on unix is correct"
+)]
+fn parse_listen_mode(val: &str) -> Option<ListenMode> {
     match val {
         #[cfg(unix)]
-        "auto" | "1" | "true" | "yes" => ListenMode::Unix,
+        "auto" | "1" | "true" | "yes" => Some(ListenMode::Unix),
         #[cfg(not(unix))]
         "auto" | "1" | "true" | "yes" => {
             eprintln!("[hew-pprof] unix socket mode is not supported on this platform, use host:port");
-            return;
+            None
         }
-        addr if addr.starts_with(':') => ListenMode::Tcp(format!("0.0.0.0{addr}")),
-        addr => ListenMode::Tcp(addr.to_owned()),
+        addr if addr.starts_with(':') => Some(ListenMode::Tcp(format!("0.0.0.0{addr}"))),
+        addr => Some(ListenMode::Tcp(addr.to_owned())),
     }
 }
 

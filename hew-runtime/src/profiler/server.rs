@@ -63,10 +63,7 @@ unsafe impl Sync for ProfilerContext {}
 /// Creates a single-threaded tokio runtime for the async hyper server.
 /// Checks `PROFILER_SHUTDOWN` periodically to exit cleanly.
 pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
-    let rt = match build_runtime() {
-        Some(rt) => rt,
-        None => return,
-    };
+    let Some(rt) = build_runtime() else { return };
 
     rt.block_on(async move {
         let listener = match TcpListener::bind(bind_addr).await {
@@ -90,10 +87,7 @@ pub fn run_tcp(bind_addr: &str, ctx: Arc<ProfilerContext>) {
 /// The socket file must not already exist (caller should clean up stale
 /// sockets before calling).
 pub fn run_unix(socket_path: &Path, ctx: Arc<ProfilerContext>) {
-    let rt = match build_runtime() {
-        Some(rt) => rt,
-        None => return,
-    };
+    let Some(rt) = build_runtime() else { return };
 
     rt.block_on(async move {
         let listener = match UnixListener::bind(socket_path) {
@@ -183,7 +177,7 @@ where
     tokio::spawn(async move {
         let service = service_fn(move |req| {
             let ctx = ctx.clone();
-            async move { Ok::<_, Infallible>(handle_request(req, &ctx)) }
+            async move { Ok::<_, Infallible>(handle_request(&req, &ctx)) }
         });
         let _ = http1::Builder::new().serve_connection(io, service).await;
     });
@@ -192,7 +186,7 @@ where
 // ── Request routing ────────────────────────────────────���────────────────
 
 fn handle_request(
-    req: Request<hyper::body::Incoming>,
+    req: &Request<hyper::body::Incoming>,
     ctx: &ProfilerContext,
 ) -> Response<Full<Bytes>> {
     match req.uri().path() {

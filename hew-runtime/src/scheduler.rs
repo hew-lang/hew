@@ -60,7 +60,7 @@ thread_local! {
 /// Called from codegen-emitted dispatch functions.
 #[no_mangle]
 pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
-    CURRENT_REPLY_CHANNEL.with(|c| c.get())
+    CURRENT_REPLY_CHANNEL.with(std::cell::Cell::get)
 }
 
 // ── Global scheduler instance ───────────────────────────────────────────

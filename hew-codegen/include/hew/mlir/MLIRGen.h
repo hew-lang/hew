@@ -527,6 +527,12 @@ private:
   std::string currentMachineEventVariant_;
   std::string currentMachineEventTypeName_;
 
+  // ── Type origin tracking ─────────────────────────────────────────
+  /// Maps type name → module path where the type was defined.
+  /// Used to mangle impl method names with the defining module, not the
+  /// importing module (prevents duplicate generation on import).
+  std::unordered_map<std::string, std::vector<std::string>> typeDefModulePath;
+
   // ── Struct type registry ──────────────────────────────────────────
   std::unordered_map<std::string, StructTypeInfo> structTypes;
 

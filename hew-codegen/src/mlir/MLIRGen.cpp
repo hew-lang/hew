@@ -2239,6 +2239,12 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         typeName = named->name;
       }
       if (!typeName.empty()) {
+        // Use the type's defining module for mangling (not the importing module).
+        auto savedModPath = currentModulePath;
+        if (typeDefModulePath.count(typeName)) {
+          currentModulePath = typeDefModulePath[typeName];
+        }
+
         // Set Self substitution for bare self parameter resolution
         typeParamSubstitutions["Self"] = typeName;
 
@@ -2280,6 +2286,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         }
 
         typeParamSubstitutions.erase("Self");
+        currentModulePath = savedModPath;
       }
     }
   });
@@ -2372,6 +2379,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
     if (typeName.empty())
       return;
+    // Use the type's defining module path for trait impl registration.
+    auto savedModPath2 = currentModulePath;
+    if (typeDefModulePath.count(typeName)) {
+      currentModulePath = typeDefModulePath[typeName];
+    }
     std::string traitName = impl->trait_bound ? impl->trait_bound->name : "";
     auto traitIt = traitRegistry.find(traitName);
     if (traitIt != traitRegistry.end()) {
@@ -2381,6 +2393,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
       registerTraitImpl(typeName, traitName, methodNames);
       // Shim functions are generated in generateImplDecl after method bodies exist
     }
+    currentModulePath = savedModPath2;
   });
 
   // Pass 1k0: Generate machine step() and state_name() functions.
@@ -2598,6 +2611,12 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
 void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
 
   const std::string &declName = decl.name;
+
+  // Track which module defined this type, so impl methods can be mangled
+  // with the defining module's path (not the importing module's path).
+  if (typeDefModulePath.find(declName) == typeDefModulePath.end()) {
+    typeDefModulePath[declName] = currentModulePath;
+  }
 
   // Wire structs use wireTypeToMLIR (not convertType) for field types.
   // They are pre-registered by preRegisterWireStructType() in pass 1b2.
@@ -3378,6 +3397,16 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
     return;
   }
 
+  // Use the module where the type was DEFINED for mangling, not the
+  // current (possibly importing) module. This prevents duplicate generation
+  // when an importing module re-processes the impl from an imported module.
+  // Temporarily swap currentModulePath so all internal calls (registerTraitImpl,
+  // generateTraitImplShims, etc.) use the correct path.
+  auto savedModulePath = currentModulePath;
+  if (typeDefModulePath.count(typeName)) {
+    currentModulePath = typeDefModulePath[typeName];
+  }
+
   // Set Self substitution so bare self parameters resolve to the target type
   typeParamSubstitutions["Self"] = typeName;
 
@@ -3416,6 +3445,7 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
   }
 
   typeParamSubstitutions.erase("Self");
+  currentModulePath = savedModulePath;
 }
 
 // ============================================================================
@@ -3778,9 +3808,15 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 
   // If a forward declaration exists (from pass 1.5), erase it — we'll
   // replace it with the full definition that includes a body.
+  // If a full definition already exists (e.g. imported module's impl was
+  // already generated), skip — don't create a duplicate.
   if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(funcName)) {
-    if (existing.isDeclaration())
+    if (existing.isDeclaration()) {
       existing.erase();
+    } else {
+      // Already generated (e.g. from the defining module) — skip.
+      return existing;
+    }
   }
 
   auto savedIP = builder.saveInsertionPoint();

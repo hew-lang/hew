@@ -15,6 +15,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 tungstenite = "0.29"
 libc = "0.2"
+hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

@@ -1,9 +1,10 @@
-//! WebSocket client for bidirectional communication.
+//! WebSocket client and server for bidirectional communication.
 //!
-//! Provides a blocking WebSocket client that can send and receive
-//! text messages over a persistent connection.
+//! Provides blocking WebSocket connections that can send and receive
+//! text messages. Both client and server connections use the same `Conn`
+//! type, so the send/receive API is identical in both directions.
 //!
-//! # Examples
+//! # Client example
 //!
 //! ```
 //! import std::net::websocket;
@@ -14,6 +15,21 @@
 //!     let msg = ws.recv();
 //!     msg.free();
 //!     ws.close();
+//! }
+//! ```
+//!
+//! # Server example
+//!
+//! ```
+//! import std::net::websocket;
+//!
+//! fn main() {
+//!     let server = websocket.listen("0.0.0.0:8080");
+//!     let conn = server.accept();
+//!     let msg = conn.recv();
+//!     conn.send_text("got it");
+//!     conn.close();
+//!     server.close();
 //! }
 //! ```
 
@@ -41,41 +57,119 @@ trait ConnMethods {
 
     /// Close the WebSocket connection.
     fn close(conn: Conn);
+
+    /// Attach this connection to an actor (Erlang-style active mode).
+    /// The runtime reads frames in a background thread and delivers
+    /// them as actor messages. Transfers ownership — the Conn handle
+    /// is consumed and must not be used for recv() after this call.
+    /// The actor can still call conn.send_text() for outbound messages.
+    ///
+    /// `handler` is the actor that will receive on_message and on_close.
+    /// `on_message_type` is the msg_type index for the on_message receive fn.
+    /// `on_close_type` is the msg_type index for the on_close receive fn.
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32);
 }
 
 impl ConnMethods for Conn {
-    /// Send a text message over the connection.
     fn send_text(conn: Conn, msg: String) -> i32 { unsafe { hew_ws_send_text(conn, msg) } }
-    /// Block until a message is received and return it.
     fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
-    /// Close the WebSocket connection.
     fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32) {
+        unsafe { hew_ws_attach(conn, handler, on_message_type, on_close_type) };
+    }
 }
 
 // ── Message methods ───────────────────────────────────────────────────
 
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
+    /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
+    fn msg_type(msg: Message) -> i32;
+    /// Extract the text content of a text message.
+    fn text(msg: Message) -> String;
     /// Release the message resources.
     fn free(msg: Message);
 }
 
 impl MessageMethods for Message {
+    fn msg_type(msg: Message) -> i32 { unsafe { hew_ws_message_type(msg) } }
+    fn text(msg: Message) -> String { unsafe { hew_ws_message_text(msg) } }
     /// Release the message resources.
     fn free(msg: Message) { unsafe { hew_ws_message_free(msg) }; }
 }
 
+// ── Server type ─────────────────────────────────────────────────────
+
+/// A WebSocket server listening for incoming connections.
+///
+/// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
+/// for the next client connection.
+type Server {}
+
+/// Methods available on a WebSocket `Server`.
+trait ServerMethods {
+    /// Accept the next WebSocket connection. Blocks until a client
+    /// connects and completes the handshake.
+    fn accept(server: Server) -> Conn;
+
+    /// Get the port the server is listening on.
+    fn port(server: Server) -> i32;
+
+    /// Close the server and stop listening.
+    fn close(server: Server);
+}
+
+impl ServerMethods for Server {
+    fn accept(server: Server) -> Conn { unsafe { hew_ws_server_accept(server) } }
+    fn port(server: Server) -> i32 { unsafe { hew_ws_server_port(server) } }
+    fn close(server: Server) { unsafe { hew_ws_server_close(server) }; }
+}
+
+// ── WebSocket Handler trait ──────────────────────────────────────────
+
+/// Trait for actors that handle WebSocket connections.
+///
+/// Implement this on an actor and call `conn.attach(actor)` to have
+/// the runtime deliver frames as actor messages. The actor never calls
+/// recv() — the runtime reads in a background thread.
+///
+/// # Example
+///
+/// ```
+/// actor Echo {
+///     let conn: Conn;
+///     receive fn on_message(text: String) {
+///         conn.send_text("echo: " + text);
+///     }
+///     receive fn on_close() {
+///         println("disconnected");
+///     }
+/// }
+/// ```
+trait WebSocketHandler {
+    /// Called when a text frame arrives from the client.
+    fn on_message(text: String);
+    /// Called when the connection closes or errors.
+    fn on_close();
+}
+
 // ── Module-level functions ────────────────────────────────────────────
 
-/// Open a WebSocket connection to the given URL.
+/// Open a WebSocket connection to the given URL (client).
+pub fn connect(url: String) -> Conn {
+    unsafe { hew_ws_connect(url) }
+}
+
+/// Start a WebSocket server listening on the given address.
 ///
 /// # Examples
 ///
 /// ```
-/// let ws = websocket.connect("ws://localhost:8080/ws");
+/// let server = websocket.listen("0.0.0.0:8080");
+/// let conn = server.accept();
 /// ```
-pub fn connect(url: String) -> Conn {
-    unsafe { hew_ws_connect(url) }
+pub fn listen(addr: String) -> Server {
+    unsafe { hew_ws_server_new(addr) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
@@ -85,5 +179,12 @@ extern "C" {
     fn hew_ws_send_text(ws: Conn, msg: String) -> i32;
     fn hew_ws_recv(ws: Conn) -> Message;
     fn hew_ws_close(ws: Conn);
+    fn hew_ws_message_type(msg: Message) -> i32;
+    fn hew_ws_message_text(msg: Message) -> String;
     fn hew_ws_message_free(msg: Message);
+    fn hew_ws_server_new(addr: String) -> Server;
+    fn hew_ws_server_port(server: Server) -> i32;
+    fn hew_ws_server_accept(server: Server) -> Conn;
+    fn hew_ws_server_close(server: Server);
+    fn hew_ws_attach(ws: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32);
 }

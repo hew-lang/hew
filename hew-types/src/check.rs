@@ -4074,7 +4074,14 @@ impl Checker {
                     Ty::Named { name, args } if name == "Task" && !args.is_empty() => {
                         args[0].clone()
                     }
-                    _ if inner_ty.as_actor_handle().is_some() => Ty::Unit,
+                    // `await close(actor)` or bare actor ref → Unit (actor termination).
+                    // But NOT for method calls that happen to return an ActorRef —
+                    // those should pass through the method's declared return type.
+                    _ if inner_ty.as_actor_handle().is_some()
+                        && !matches!(inner.0, Expr::MethodCall { .. }) =>
+                    {
+                        Ty::Unit
+                    }
                     _ => inner_ty,
                 }
             }

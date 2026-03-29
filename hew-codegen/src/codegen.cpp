@@ -516,6 +516,18 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
       rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
       result.push_back(rebuilt);
+    } else if (mlir::isa<hew::HandleType>(origType)) {
+      // Handle types are opaque pointers to Rust-owned state (WebSocket
+      // connections, HTTP servers, etc.). They cannot be cloned — ownership
+      // must transfer to the actor. We pass the pointer as-is and null out
+      // the original to prevent the spawning scope's Drop from freeing it.
+      result.push_back(convArg);
+      // Null out the source: find the alloca/variable backing this value
+      // and store null into it so the destructor becomes a no-op.
+      if (auto loadOp = convArg.getDefiningOp<mlir::LLVM::LoadOp>()) {
+        auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, convArg.getType());
+        mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, loadOp.getAddr());
+      }
     } else {
       result.push_back(convArg);
     }
@@ -2321,6 +2333,25 @@ struct VecRemoveOpLowering : public mlir::OpConversionPattern<hew::VecRemoveOp> 
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
     mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
                                mlir::ValueRange{adaptor.getVec(), val});
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+struct VecRemoveAtOpLowering : public mlir::OpConversionPattern<hew::VecRemoveAtOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult matchAndRewrite(hew::VecRemoveAtOp op, OpAdaptor adaptor,
+                                      mlir::ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
+    auto i64Type = rewriter.getI64Type();
+
+    std::string funcName = "hew_vec_remove_at";
+    auto funcType = rewriter.getFunctionType({ptrType, i64Type}, {});
+    getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -4137,6 +4168,7 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
   patterns.add<VecLenOpLowering>(typeConverter, &context);
   patterns.add<VecPopOpLowering>(typeConverter, &context);
   patterns.add<VecRemoveOpLowering>(typeConverter, &context);
+  patterns.add<VecRemoveAtOpLowering>(typeConverter, &context);
   patterns.add<VecIsEmptyOpLowering>(typeConverter, &context);
   patterns.add<VecClearOpLowering>(typeConverter, &context);
   patterns.add<VecFreeOpLowering>(typeConverter, &context);

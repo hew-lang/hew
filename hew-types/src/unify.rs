@@ -217,6 +217,17 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
         }
 
         // Named types with same name — unify type args.
+        // ActorRef<T> ↔ ActorRef: typed and untyped actor refs are compatible.
+        // Both are representationally identical (actor pointers). Allow
+        // passing ActorRef<T> where ActorRef is expected, and vice versa.
+        (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
+            if (an == "ActorRef" || an == "Actor")
+                && (bn == "ActorRef" || bn == "Actor")
+                && aa.len() != ba.len() =>
+        {
+            Ok(())
+        }
+
         // Also handles module-qualified names: "json.Value" matches "Value"
         (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
             if an == bn || names_match_qualified(an, bn) =>
@@ -466,6 +477,29 @@ mod tests {
         assert!(can_coerce(&Ty::Never, &Ty::I32));
         assert!(can_coerce(&Ty::I32, &Ty::I32));
         assert!(!can_coerce(&Ty::I32, &Ty::Bool));
+    }
+
+    #[test]
+    fn test_typed_actor_ref_unifies_with_untyped() {
+        let typed = Ty::actor_ref(Ty::Named {
+            name: "ClientHandler".to_string(),
+            args: vec![],
+        });
+        let untyped = Ty::Named {
+            name: "ActorRef".to_string(),
+            args: vec![],
+        };
+        // Both directions should work
+        let mut subst = Substitution::new();
+        assert!(
+            unify(&mut subst, &typed, &untyped).is_ok(),
+            "ActorRef<T> should unify with ActorRef"
+        );
+        let mut subst = Substitution::new();
+        assert!(
+            unify(&mut subst, &untyped, &typed).is_ok(),
+            "ActorRef should unify with ActorRef<T>"
+        );
     }
 
     #[test]

@@ -1,0 +1,219 @@
+# Pre-build LLVM+MLIR for platforms that build from source (Windows, FreeBSD).
+#
+# Populates the GitHub Actions cache with the same keys used by release.yml
+# and freebsd.yml. When the cache is warm, release builds restore in ~2 min
+# instead of building for 90-120 min.
+#
+# Runs weekly to keep caches warm (they expire after 7 days of inactivity),
+# and can be triggered manually when LLVM_VERSION changes.
+
+name: Pre-build LLVM+MLIR
+
+on:
+  schedule:
+    # Sunday 04:00 UTC — keeps caches warm before they expire
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force rebuild even if cache exists"
+        required: false
+        default: "false"
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/prebuild-llvm.yml"
+
+permissions:
+  contents: read
+  actions: write    # needed for cache save
+
+env:
+  # IMPORTANT: these must match release.yml and freebsd.yml exactly.
+  # When bumping LLVM, update the tag AND the cache keys in all three files.
+  LLVM_TAG: "llvmorg-22.1.0"
+  LLVM_CACHE_KEY_WIN: "llvm-mlir-22.1.0-win64-msvc-v1"
+  LLVM_CACHE_KEY_BSD: "llvm-mlir-22.1.0-freebsd15-amd64-v1"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Windows: MSVC + Ninja
+  # ─────────────────────────────────────────────────────────────────────
+  prebuild-windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      FORCE: "${{ inputs.force_rebuild }}"
+
+    steps:
+      - name: Check if cache already exists
+        id: check
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\llvm-22
+          key: ${{ env.LLVM_CACHE_KEY_WIN }}
+          lookup-only: true
+
+      - name: Skip if cache is warm
+        if: steps.check.outputs.cache-hit == 'true' && env.FORCE != 'true'
+        run: echo "Cache hit — skipping LLVM build"
+
+      - name: Setup MSVC
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build tools
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        run: choco install ninja cmake -y
+        shell: pwsh
+
+      - name: Clone LLVM (sparse)
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        shell: pwsh
+        env:
+          LLVM_BRANCH: ${{ env.LLVM_TAG }}
+        run: |
+          git clone --depth 1 --branch "$env:LLVM_BRANCH" `
+            --filter=blob:none --sparse `
+            https://github.com/llvm/llvm-project.git C:\llvm-src
+          Push-Location C:\llvm-src
+          git sparse-checkout set llvm mlir cmake third-party
+          Pop-Location
+
+      - name: Build LLVM+MLIR
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        shell: pwsh
+        run: |
+          cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
+            -DLLVM_ENABLE_PROJECTS="mlir" `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
+            -DLLVM_BUILD_TOOLS=ON `
+            -DLLVM_BUILD_UTILS=ON `
+            -DLLVM_INSTALL_UTILS=ON `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_DOCS=OFF `
+            -DLLVM_ENABLE_BINDINGS=OFF `
+            -DLLVM_ENABLE_ZLIB=OFF `
+            -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_ENABLE_DIA_SDK=OFF `
+            -DLLVM_ENABLE_ASSERTIONS=OFF `
+            -DLLVM_BUILD_LLVM_DYLIB=OFF `
+            -DLLVM_LINK_LLVM_DYLIB=OFF `
+            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
+            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
+            -DBUILD_SHARED_LIBS=OFF
+
+          cmake --build C:\llvm-build --config Release
+          cmake --install C:\llvm-build --config Release
+
+      - name: Report install size
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        shell: pwsh
+        run: |
+          $size = (Get-ChildItem -Recurse C:\llvm-22 | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Output "LLVM install size: $([math]::Round($size, 1)) MB"
+
+      - name: Clean up build dirs
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force C:\llvm-src
+          Remove-Item -Recurse -Force C:\llvm-build
+
+      - name: Save cache
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\llvm-22
+          key: ${{ env.LLVM_CACHE_KEY_WIN }}
+
+  # ─────────────────────────────────────────────────────────────────────
+  # FreeBSD: QEMU VM via vmactions
+  # ─────────────────────────────────────────────────────────────────────
+  prebuild-freebsd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      FORCE: "${{ inputs.force_rebuild }}"
+
+    steps:
+      - name: Check if cache already exists
+        id: check
+        uses: actions/cache/restore@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: ${{ env.LLVM_CACHE_KEY_BSD }}
+          lookup-only: true
+
+      - name: Skip if cache is warm
+        if: steps.check.outputs.cache-hit == 'true' && env.FORCE != 'true'
+        run: echo "Cache hit — skipping LLVM build"
+
+      - name: Build LLVM on FreeBSD
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        uses: vmactions/freebsd-vm@v1
+        env:
+          LLVM_BRANCH: ${{ env.LLVM_TAG }}
+        with:
+          release: "15.0"
+          mem: 8192
+          prepare: |
+            pkg install -y cmake ninja git
+
+          run: |
+            set -eux
+
+            LLVM_PREFIX=/usr/local/llvm22-src
+
+            echo "==> Building LLVM 22 from source"
+            git clone --depth 1 --branch "${LLVM_BRANCH}" \
+              --filter=blob:none --sparse \
+              https://github.com/llvm/llvm-project.git /tmp/llvm-src
+            (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
+
+            cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
+              -DLLVM_ENABLE_PROJECTS="mlir" \
+              -DLLVM_TARGETS_TO_BUILD="X86" \
+              -DLLVM_BUILD_TOOLS=ON \
+              -DLLVM_BUILD_UTILS=ON \
+              -DLLVM_INSTALL_UTILS=ON \
+              -DLLVM_INCLUDE_TESTS=OFF \
+              -DLLVM_INCLUDE_BENCHMARKS=OFF \
+              -DLLVM_INCLUDE_EXAMPLES=OFF \
+              -DLLVM_INCLUDE_DOCS=OFF \
+              -DLLVM_ENABLE_BINDINGS=OFF \
+              -DLLVM_ENABLE_ZLIB=ON \
+              -DLLVM_ENABLE_ZSTD=OFF \
+              -DLLVM_BUILD_LLVM_DYLIB=OFF \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
+              -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+
+            cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
+            cmake --install /tmp/llvm-build
+
+            # Create archive for caching
+            tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
+            zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
+            rm -f llvm-freebsd-install.tar
+
+            ls -lh llvm-freebsd-install.tar.zst
+
+            # Clean up
+            rm -rf /tmp/llvm-src /tmp/llvm-build
+
+      - name: Save cache
+        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: ${{ env.LLVM_CACHE_KEY_BSD }}

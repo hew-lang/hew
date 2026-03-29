@@ -14,7 +14,8 @@
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 //! - [`sched_try_wake`] — wake a parked worker thread.
 
-use std::ffi::c_int;
+use std::cell::Cell;
+use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -43,6 +44,24 @@ pub(crate) static STEALS_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MESSAGES_SENT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MESSAGES_RECEIVED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
+
+// ── Per-worker thread-locals ───────────────────────────────────────────
+
+thread_local! {
+    /// Reply channel for the message currently being dispatched.
+    /// Set before calling the actor's dispatch function, cleared after.
+    /// Read by codegen-emitted code via [`hew_get_reply_channel`].
+    static CURRENT_REPLY_CHANNEL: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Get the reply channel for the currently-dispatched message.
+///
+/// Returns null if no reply channel was set (fire-and-forget send).
+/// Called from codegen-emitted dispatch functions.
+#[no_mangle]
+pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
+    CURRENT_REPLY_CHANNEL.with(|c| c.get())
+}
 
 // ── Global scheduler instance ───────────────────────────────────────────
 
@@ -611,11 +630,23 @@ fn activate_actor(actor: *mut HewActor) {
                     a.reductions
                         .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
 
+                    // Make the reply channel available to the dispatch function
+                    // via hew_get_reply_channel().
+                    CURRENT_REPLY_CHANNEL.with(|c| c.set(msg_ref.reply_channel));
+
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
                     unsafe {
                         dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     }
+
+                    CURRENT_REPLY_CHANNEL.with(|c| c.set(std::ptr::null_mut()));
+
+                    // The dispatch function handled the reply channel (if any).
+                    // Clear it from the message node so hew_msg_node_free
+                    // doesn't send a duplicate reply.
+                    // SAFETY: msg is exclusively owned by this worker.
+                    unsafe { (*msg).reply_channel = std::ptr::null_mut() };
 
                     // Dispatch completed successfully — clear recovery point.
                     crate::signal::clear_dispatch_recovery();
@@ -658,6 +689,26 @@ fn activate_actor(actor: *mut HewActor) {
                         // notification.
                         unsafe { crate::arena::hew_arena_reset(actor_arena) };
                     }
+
+                    // If a reply channel was set, send an empty reply so the
+                    // waiting caller of hew_actor_ask is unblocked rather
+                    // than deadlocking.
+                    let crash_reply =
+                        CURRENT_REPLY_CHANNEL.with(|c| c.replace(std::ptr::null_mut()));
+                    if !crash_reply.is_null() {
+                        // SAFETY: crash_reply is a valid HewReplyChannel pointer.
+                        unsafe {
+                            crate::reply_channel::hew_reply(
+                                crash_reply.cast(),
+                                std::ptr::null_mut(),
+                                0,
+                            );
+                        }
+                    }
+                    // Clear the node's reply_channel so hew_msg_node_free
+                    // doesn't send a duplicate reply.
+                    // SAFETY: msg is exclusively owned by this worker.
+                    unsafe { (*msg).reply_channel = std::ptr::null_mut() };
 
                     // Free the message node. The dispatch didn't complete,
                     // but the node itself (allocated by mailbox_send) is

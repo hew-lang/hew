@@ -1407,6 +1407,19 @@ unsafe fn actor_send_result_internal(
     size: usize,
 ) -> i32 {
     // SAFETY: Caller guarantees `actor` is valid.
+    unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ptr::null_mut()) }
+}
+
+/// Like [`actor_send_result_internal`] but with an explicit reply channel
+/// that is set on the message node (for the ask pattern).
+unsafe fn actor_send_result_internal_reply(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+) -> i32 {
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Check for injected drop fault (testing only). Silently discard
@@ -1418,7 +1431,11 @@ unsafe fn actor_send_result_internal(
     let mb = a.mailbox.cast::<HewMailbox>();
 
     // SAFETY: Mailbox is valid for the actor's lifetime.
-    let result = unsafe { mailbox::hew_mailbox_send(mb, msg_type, data, size) };
+    let result = if reply_channel.is_null() {
+        unsafe { mailbox::hew_mailbox_send(mb, msg_type, data, size) }
+    } else {
+        unsafe { mailbox::hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) }
+    };
     if result != 0 {
         return result;
     }
@@ -1497,42 +1514,24 @@ pub unsafe extern "C" fn hew_actor_ask(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
-    let ptr_size = std::mem::size_of::<*mut c_void>();
-    let Some(total) = size.checked_add(ptr_size) else {
-        return std::ptr::null_mut();
-    };
-
     let ch = reply_channel::hew_reply_channel_new();
 
-    // Pack: [original_data | reply_channel_ptr]
-    // SAFETY: malloc for packed buffer.
-    let packed = unsafe { libc::malloc(total) };
-    if packed.is_null() {
-        // SAFETY: ch was created by hew_reply_channel_new.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
-    }
-    // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // SAFETY: unaligned, so write_unaligned is required.
-    unsafe {
-        if size > 0 && !data.is_null() {
-            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
-        }
-        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
-        ptr::write_unaligned(ch_slot, ch.cast());
-    }
-
-    // SAFETY: the actor now holds the sender-side reference until it replies.
+    // Retain a sender-side reference — the receiver will call hew_reply
+    // which releases one reference, and we release ours after waiting.
+    // SAFETY: ch was created by hew_reply_channel_new.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
-    // SAFETY: actor is valid, packed data is valid.
-    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
-    // SAFETY: packed was malloc'd above.
-    unsafe { libc::free(packed) };
+
+    // Send the message with the reply channel in the HewMsgNode field
+    // (not packed in the data buffer).
+    // SAFETY: actor is valid, data is valid for size bytes.
+    let send_result = unsafe {
+        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+    };
 
     if send_result != HewError::Ok as i32 {
-        // SAFETY: release the sender-side reference retained for the failed send.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // Release both references (sender + ours).
         // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }
@@ -1556,10 +1555,6 @@ pub unsafe extern "C" fn hew_actor_ask(
 /// Same requirements as [`hew_actor_ask`].
 ///
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ask_timeout(
     actor: *mut HewActor,
@@ -1568,41 +1563,19 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     size: usize,
     timeout_ms: i32,
 ) -> *mut c_void {
-    let ptr_size = std::mem::size_of::<*mut c_void>();
-    let Some(total) = size.checked_add(ptr_size) else {
-        return std::ptr::null_mut();
-    };
-
     let ch = reply_channel::hew_reply_channel_new();
-
-    // SAFETY: malloc for packed buffer.
-    let packed = unsafe { libc::malloc(total) };
-    if packed.is_null() {
-        // SAFETY: ch was created by hew_reply_channel_new.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
-    }
-    // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // SAFETY: unaligned, so write_unaligned is required.
-    unsafe {
-        if size > 0 && !data.is_null() {
-            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
-        }
-        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
-        ptr::write_unaligned(ch_slot, ch.cast());
-    }
 
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
-    // SAFETY: actor is valid, packed data is valid.
-    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
-    // SAFETY: packed was malloc'd above.
-    unsafe { libc::free(packed) };
+    // SAFETY: actor is valid, data is valid for size bytes.
+    let send_result = unsafe {
+        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+    };
 
     if send_result != HewError::Ok as i32 {
-        // SAFETY: release the sender-side reference retained for the failed send.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // Release both references (sender + ours).
         // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }
@@ -1642,10 +1615,6 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 /// instead of waiting on `ch`, because no reply will ever arrive in that case.
 ///
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ask_with_channel(
     actor: *mut HewActor,
@@ -1654,32 +1623,14 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     size: usize,
     ch: *mut HewReplyChannel,
 ) -> i32 {
-    let ptr_size = std::mem::size_of::<*mut c_void>();
-    let Some(total) = size.checked_add(ptr_size) else {
-        return HewError::ErrOom as i32;
-    };
-
-    // SAFETY: malloc for packed buffer.
-    let packed = unsafe { libc::malloc(total) };
-    if packed.is_null() {
-        return HewError::ErrOom as i32;
-    }
-    // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // SAFETY: unaligned, so write_unaligned is required.
-    unsafe {
-        if size > 0 && !data.is_null() {
-            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
-        }
-        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
-        ptr::write_unaligned(ch_slot, ch.cast());
-    }
-
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
-    // SAFETY: actor is valid, packed data is valid.
-    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
-    // SAFETY: packed was malloc'd above.
-    unsafe { libc::free(packed) };
+
+    // Send with reply channel in the msg node field.
+    // SAFETY: actor is valid, data is valid for size bytes.
+    let send_result = unsafe {
+        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+    };
 
     if send_result != HewError::Ok as i32 {
         // SAFETY: release the sender-side reference retained for the failed send.
@@ -1709,39 +1660,12 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
-    let ptr_size = std::mem::size_of::<*mut c_void>();
-    let Some(total) = size.checked_add(ptr_size) else {
-        return std::ptr::null_mut();
-    };
-
     let ch = reply_channel::hew_reply_channel_new();
-
-    // Pack: [original_data | reply_channel_ptr]
-    // SAFETY: malloc for packed buffer.
-    let packed = unsafe { libc::malloc(total) };
-    if packed.is_null() {
-        // SAFETY: ch was created by hew_reply_channel_new.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
-    }
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "write_unaligned on the next line handles misalignment"
-    )]
-    // SAFETY: copying data into packed buffer; write_unaligned handles the
-    // potentially-misaligned channel slot.
-    unsafe {
-        if size > 0 && !data.is_null() {
-            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
-        }
-        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
-        ptr::write_unaligned(ch_slot, ch.cast());
-    }
 
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
 
-    // Look up actor and send packed message.
+    // Look up actor and send with reply channel in the msg node field.
     let sent = {
         let guard = LIVE_ACTORS.lock_or_recover();
         guard.as_ref().is_some_and(|map| {
@@ -1750,9 +1674,10 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
                 if actor.is_null() {
                     return false;
                 }
-                // SAFETY: actor and packed data are valid while LIVE_ACTORS
-                // is locked.
-                let rc = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
+                // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
+                let rc = unsafe {
+                    actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+                };
                 rc == HewError::Ok as i32
             } else {
                 false
@@ -1760,13 +1685,10 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
         })
     };
 
-    // SAFETY: packed was malloc'd above.
-    unsafe { libc::free(packed) };
-
     if !sent {
-        // SAFETY: release the sender-side reference retained for the failed send.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // Release both references (sender + ours).
         // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }

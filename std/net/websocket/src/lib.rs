@@ -4,6 +4,10 @@
 //! All returned data pointers are allocated with `libc::malloc` so callers can
 //! free them with the corresponding free function.
 
+// Force-link the runtime so `hew_actor_send` and other FFI symbols are
+// available when this crate's tests run (and when linked into the final binary).
+extern crate hew_runtime;
+
 use std::ffi::CStr;
 use std::net::{TcpListener, TcpStream};
 use std::os::raw::c_char;

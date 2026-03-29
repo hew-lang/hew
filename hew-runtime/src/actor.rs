@@ -2190,45 +2190,29 @@ pub unsafe extern "C" fn hew_actor_ask(
 ) -> *mut c_void {
     use crate::reply_channel_wasm;
 
-    let ptr_size = std::mem::size_of::<*mut c_void>();
-    let Some(total) = size.checked_add(ptr_size) else {
-        return ptr::null_mut();
-    };
-
     let ch = reply_channel_wasm::hew_reply_channel_new();
-
-    // Pack: [original_data | reply_channel_ptr]
-    // SAFETY: malloc for packed buffer.
-    let packed = unsafe { libc::malloc(total) };
-    if packed.is_null() {
-        // SAFETY: ch was created by hew_reply_channel_new above.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
-    }
-    // SAFETY: packed is a total-byte malloc allocation; data is readable for size bytes when non-null.
-    // SAFETY: reply channel pointer slot may be unaligned, so write_unaligned is required.
-    unsafe {
-        if size > 0 && !data.is_null() {
-            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
-        }
-        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
-        ptr::write_unaligned(ch_slot, ch.cast());
-    }
 
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel_wasm::hew_reply_channel_retain(ch) };
-    // Send the packed message.
+
+    // Send with reply channel in the HewMsgNode field (not packed in data).
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
-    // SAFETY: a.mailbox is a valid mailbox pointer.
-    let send_result = unsafe { hew_mailbox_send(a.mailbox, msg_type, packed, total) };
-    // SAFETY: packed buffer ownership transferred to mailbox (deep-copied).
-    unsafe { libc::free(packed) };
+    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
+    let send_result = unsafe {
+        crate::mailbox_wasm::hew_mailbox_send_with_reply(
+            a.mailbox.cast(),
+            msg_type,
+            data,
+            size,
+            ch.cast(),
+        )
+    };
 
     if send_result != HewError::Ok as i32 {
-        // SAFETY: release the sender-side reference retained for the failed send.
+        // Release both references (sender + ours).
+        // SAFETY: ch was created by hew_reply_channel_new.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        // SAFETY: release the caller-side reference before returning failure.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         return ptr::null_mut();
     }

@@ -118,7 +118,10 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
         // dispatched (e.g. actor stopped with messages in the queue), send an
         // empty reply so the waiting caller of hew_actor_ask is unblocked.
         if !(*node).reply_channel.is_null() {
+            #[cfg(not(target_arch = "wasm32"))]
             crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            #[cfg(target_arch = "wasm32")]
+            crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
             (*node).reply_channel = ptr::null_mut();
         }
         libc::free((*node).data);

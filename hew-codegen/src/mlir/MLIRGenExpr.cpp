@@ -2728,15 +2728,10 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         auto argVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!argVal)
           return true;
-        // If the argument is an integer type, treat as index-based removal.
-        // Otherwise, treat as value-based removal (remove first occurrence).
-        if (argVal.getType().isIntOrIndex()) {
-          argVal = coerceType(argVal, i64Type, location);
-          hew::VecRemoveAtOp::create(builder, location, vecValue, argVal);
-        } else {
-          argVal = coerceType(argVal, elemType, location);
-          hew::VecRemoveOp::create(builder, location, vecValue, argVal);
-        }
+        // Always use value-based removal (remove first occurrence of value).
+        // For index-based removal, use remove_at().
+        argVal = coerceType(argVal, elemType, location);
+        hew::VecRemoveOp::create(builder, location, vecValue, argVal);
       }
       resultOut = nullptr;
       return true;

@@ -50,7 +50,7 @@ exclude = ["hew-parser/fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]
@@ -78,7 +78,7 @@ style = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
 allow_attributes_without_reason = "warn"
-# Rust 1.94 lints — allow until next sweep; tracked for v0.2.1
+# Rust 1.94 lints — allow until next sweep
 ref_as_ptr = "allow"
 decimal_bitwise_operands = "allow"
 

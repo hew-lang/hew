@@ -451,7 +451,9 @@ pub unsafe extern "C" fn hew_ws_server_port(server: *const HewWsServer) -> i32 {
 /// `server` must be a valid pointer returned by [`hew_ws_server_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut HewWsConn {
+    eprintln!("[accept] server={:p} null={}", server, server.is_null());
     if server.is_null() {
+        eprintln!("[accept] server is NULL, returning null");
         return std::ptr::null_mut();
     }
     let srv = unsafe { &*server };
@@ -471,7 +473,9 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
         let tls_stream = MaybeTlsStream::Plain(stream);
         match tungstenite::accept(tls_stream) {
             Ok(ws) => {
-                return Box::into_raw(Box::new(HewWsConn { ws }));
+                let ptr = Box::into_raw(Box::new(HewWsConn { ws }));
+                eprintln!("[accept] returning conn {:p}", ptr);
+                return ptr;
             }
             Err(_) => {
                 // Handshake failed (not a WebSocket client). Retry.

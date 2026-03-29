@@ -1000,6 +1000,10 @@ pub unsafe extern "C" fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void) {
 ///
 /// Aborts if `index >= len`.
 ///
+/// # Panics
+///
+/// Panics if `index` is out of bounds (`index >= len`).
+///
 /// # Safety
 ///
 /// `v` must be a valid pointer to a `HewVec`. The element size is taken
@@ -1008,6 +1012,8 @@ pub unsafe extern "C" fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void) {
 pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
     cabi_guard!(v.is_null());
     let idx = index as usize;
+    // SAFETY: Caller guarantees `v` is a valid HewVec pointer. We bounds-check
+    // `idx` before computing offsets and copying.
     unsafe {
         let len = (*v).len;
         assert!(

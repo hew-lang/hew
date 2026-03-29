@@ -216,6 +216,7 @@ pub unsafe extern "C" fn hew_ws_message_type(msg: *const HewWsMessage) -> i32 {
     if msg.is_null() {
         return -1;
     }
+    // SAFETY: Caller guarantees `msg` is a valid pointer returned by hew_ws_recv.
     (unsafe { &*msg }).msg_type
 }
 
@@ -232,15 +233,18 @@ pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut c
     if msg.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: Caller guarantees `msg` is a valid pointer returned by hew_ws_recv.
     let m = unsafe { &*msg };
     if m.data.is_null() || m.data_len == 0 {
         return std::ptr::null_mut();
     }
-    // Allocate len+1 for NUL terminator.
+    // SAFETY: Allocating data_len+1 bytes via malloc for the NUL-terminated copy.
     let ptr = unsafe { libc::malloc(m.data_len + 1) }.cast::<u8>();
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: m.data is valid for m.data_len bytes; ptr is freshly allocated with
+    // data_len+1 bytes. Both regions are non-overlapping.
     unsafe {
         std::ptr::copy_nonoverlapping(m.data, ptr, m.data_len);
         *ptr.add(m.data_len) = 0; // NUL terminator
@@ -281,8 +285,8 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
 /// - `ws`: the WebSocket connection (ownership transferred — the conn
 ///   is consumed and must not be used after this call)
 /// - `actor`: pointer to the target actor
-/// - `on_message_type`: msg_type index for text frame delivery
-/// - `on_close_type`: msg_type index for close/error notification
+/// - `on_message_type`: `msg_type` index for text frame delivery
+/// - `on_close_type`: `msg_type` index for close/error notification
 ///
 /// The reader thread calls `hew_actor_send(actor, on_message_type, text, len)`
 /// for each text frame, and `hew_actor_send(actor, on_close_type, null, 0)`
@@ -301,11 +305,18 @@ pub unsafe extern "C" fn hew_ws_attach(
     on_close_type: i32,
 ) {
     if ws.is_null() || actor.is_null() {
-        eprintln!("[attach] null pointer: ws={} actor={}", ws.is_null(), actor.is_null());
+        eprintln!(
+            "[attach] null pointer: ws={} actor={}",
+            ws.is_null(),
+            actor.is_null()
+        );
         return;
     }
-    eprintln!("[attach] ws={:p} actor={:p} msg_type={} close_type={}", ws, actor, on_message_type, on_close_type);
-    // Take ownership of the connection.
+    eprintln!(
+        "[attach] ws={ws:p} actor={actor:p} msg_type={on_message_type} close_type={on_close_type}"
+    );
+    // SAFETY: `ws` was allocated with Box::into_raw in hew_ws_connect/hew_ws_server_accept.
+    // Ownership is transferred here; ws must not be used after this call.
     let conn = unsafe { Box::from_raw(ws) };
 
     let actor_ptr = actor as usize;
@@ -314,14 +325,16 @@ pub unsafe extern "C" fn hew_ws_attach(
         eprintln!("[attach-reader] thread started, reading...");
         let mut ws = conn;
         loop {
-            match ws.ws.read() {
-                Ok(msg) => match msg {
+            if let Ok(msg) = ws.ws.read() {
+                match msg {
                     tungstenite::Message::Text(text) => {
                         let bytes = text.as_bytes();
                         let len = bytes.len();
-                        // Allocate a NUL-terminated copy (Hew String = char*).
+                        // SAFETY: Allocating len+1 bytes for NUL-terminated string copy.
                         let str_ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
                         if !str_ptr.is_null() {
+                            // SAFETY: str_ptr is freshly allocated with len+1 bytes;
+                            // bytes.as_ptr() is valid for len bytes. Non-overlapping.
                             unsafe {
                                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), str_ptr, len);
                                 *str_ptr.add(len) = 0; // NUL terminator
@@ -333,6 +346,8 @@ pub unsafe extern "C" fn hew_ws_attach(
                             let mut arg_buf = [0u8; 8];
                             let ptr_val = str_ptr as usize;
                             arg_buf.copy_from_slice(&ptr_val.to_ne_bytes());
+                            // SAFETY: actor_ptr is valid for the connection lifetime per caller contract.
+                            // arg_buf contains a pointer-sized value the dispatch function reads.
                             unsafe {
                                 hew_actor_send(
                                     actor_ptr as *mut std::ffi::c_void,
@@ -348,7 +363,7 @@ pub unsafe extern "C" fn hew_ws_attach(
                         let _ = ws.ws.send(tungstenite::Message::Pong(vec![].into()));
                     }
                     tungstenite::Message::Close(_) => {
-                        // Notify actor and exit.
+                        // SAFETY: actor_ptr is valid for the connection lifetime per caller contract.
                         unsafe {
                             hew_actor_send(
                                 actor_ptr as *mut std::ffi::c_void,
@@ -360,19 +375,18 @@ pub unsafe extern "C" fn hew_ws_attach(
                         break;
                     }
                     _ => {} // Ignore binary, pong, frame
-                },
-                Err(_) => {
-                    // Connection error — notify actor and exit.
-                    unsafe {
-                        hew_actor_send(
-                            actor_ptr as *mut std::ffi::c_void,
-                            on_close_type,
-                            std::ptr::null_mut(),
-                            0,
-                        );
-                    }
-                    break;
                 }
+            } else {
+                // SAFETY: actor_ptr is valid for the connection lifetime per caller contract.
+                unsafe {
+                    hew_actor_send(
+                        actor_ptr as *mut std::ffi::c_void,
+                        on_close_type,
+                        std::ptr::null_mut(),
+                        0,
+                    );
+                }
+                break;
             }
         }
         // Connection cleanup: drop ws (closes the socket).
@@ -412,6 +426,7 @@ pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsSer
     if addr.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: `addr` is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = (unsafe { CStr::from_ptr(addr) }).to_str() else {
         return std::ptr::null_mut();
     };
@@ -433,8 +448,9 @@ pub unsafe extern "C" fn hew_ws_server_port(server: *const HewWsServer) -> i32 {
     if server.is_null() {
         return -1;
     }
+    // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
     match (unsafe { &*server }).listener.local_addr() {
-        Ok(addr) => addr.port() as i32,
+        Ok(addr) => i32::from(addr.port()),
         Err(_) => -1,
     }
 }
@@ -456,13 +472,13 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
         eprintln!("[accept] server is NULL, returning null");
         return std::ptr::null_mut();
     }
+    // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
     let srv = unsafe { &*server };
     // Block until a valid WebSocket connection is established.
     // Reject non-WebSocket TCP connections (failed handshakes) by retrying.
     loop {
-        let (stream, _addr) = match srv.listener.accept() {
-            Ok(pair) => pair,
-            Err(_) => return std::ptr::null_mut(),
+        let Ok((stream, _addr)) = srv.listener.accept() else {
+            return std::ptr::null_mut();
         };
         // tungstenite::accept performs the HTTP upgrade handshake.
         // If the client is not a WebSocket client, the handshake fails
@@ -471,17 +487,12 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
         // tungstenite::accept produces WebSocket<MaybeTlsStream<TcpStream>>
         // directly — no rewrap needed, preserving internal buffers.
         let tls_stream = MaybeTlsStream::Plain(stream);
-        match tungstenite::accept(tls_stream) {
-            Ok(ws) => {
-                let ptr = Box::into_raw(Box::new(HewWsConn { ws }));
-                eprintln!("[accept] returning conn {:p}", ptr);
-                return ptr;
-            }
-            Err(_) => {
-                // Handshake failed (not a WebSocket client). Retry.
-                continue;
-            }
+        if let Ok(ws) = tungstenite::accept(tls_stream) {
+            let ptr = Box::into_raw(Box::new(HewWsConn { ws }));
+            eprintln!("[accept] returning conn {ptr:p}");
+            return ptr;
         }
+        // Handshake failed (not a WebSocket client). Retry.
     }
 }
 
@@ -494,6 +505,7 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_close(server: *mut HewWsServer) {
     if !server.is_null() {
+        // SAFETY: `server` was allocated with Box::into_raw in hew_ws_server_new.
         drop(unsafe { Box::from_raw(server) });
     }
 }
@@ -648,10 +660,11 @@ mod tests {
     /// Server listens, client connects, exchanges a message, closes.
     #[test]
     fn server_accept_and_echo() {
-        // Bind to port 0 for a random available port.
+        // SAFETY: Valid C string literal passed to FFI.
         let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
         assert!(!server.is_null(), "server should bind successfully");
 
+        // SAFETY: server is a valid pointer just returned above.
         let port = unsafe { hew_ws_server_port(server) };
         assert!(port > 0, "port should be positive");
 
@@ -667,15 +680,17 @@ mod tests {
             while ws.read().is_ok() {}
         });
 
-        // Accept one connection on the server side.
+        // SAFETY: server is a valid pointer returned by hew_ws_server_new.
         let conn = unsafe { hew_ws_server_accept(server) };
         assert!(!conn.is_null(), "accept should succeed");
 
-        // Receive the client's message.
+        // SAFETY: conn is a valid pointer returned by hew_ws_server_accept.
         let msg = unsafe { hew_ws_recv(conn) };
         assert!(!msg.is_null(), "recv should succeed");
+        // SAFETY: msg is non-null, just verified above.
         let msg_ref = unsafe { &*msg };
         assert_eq!(msg_ref.msg_type, 0, "should be a text message");
+        // SAFETY: msg_ref.data is valid for msg_ref.data_len bytes (from build_message).
         let text = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(msg_ref.data, msg_ref.data_len))
                 .expect("valid utf8")
@@ -684,11 +699,15 @@ mod tests {
 
         // Echo back.
         let echo = std::ffi::CString::new(format!("echo: {text}")).unwrap();
+        // SAFETY: conn is valid; echo is a valid CString.
         let rc = unsafe { hew_ws_send_text(conn, echo.as_ptr()) };
         assert_eq!(rc, 0, "send should succeed");
 
+        // SAFETY: msg was returned by hew_ws_recv and has not been freed.
         unsafe { hew_ws_message_free(msg) };
+        // SAFETY: conn was returned by hew_ws_server_accept and has not been closed.
         unsafe { hew_ws_close(conn) };
+        // SAFETY: server was returned by hew_ws_server_new and has not been closed.
         unsafe { hew_ws_server_close(server) };
 
         client_thread.join().expect("client thread should finish");
@@ -697,6 +716,7 @@ mod tests {
     /// Server with null addr returns null.
     #[test]
     fn server_null_addr_returns_null() {
+        // SAFETY: Passing null is explicitly handled by hew_ws_server_new.
         let server = unsafe { hew_ws_server_new(std::ptr::null()) };
         assert!(server.is_null());
     }
@@ -704,18 +724,21 @@ mod tests {
     /// Server port with null returns -1.
     #[test]
     fn server_port_null_returns_neg1() {
+        // SAFETY: Passing null is explicitly handled by hew_ws_server_port.
         assert_eq!(unsafe { hew_ws_server_port(std::ptr::null()) }, -1);
     }
 
     /// Server accept with null returns null.
     #[test]
     fn server_accept_null_returns_null() {
+        // SAFETY: Passing null is explicitly handled by hew_ws_server_accept.
         assert!(unsafe { hew_ws_server_accept(std::ptr::null_mut()) }.is_null());
     }
 
     /// Server close with null is a no-op.
     #[test]
     fn server_close_null_is_noop() {
+        // SAFETY: Passing null is explicitly handled by hew_ws_server_close.
         unsafe { hew_ws_server_close(std::ptr::null_mut()) };
     }
 }

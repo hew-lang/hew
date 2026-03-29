@@ -474,7 +474,10 @@ mod platform {
         let mut changelist: Vec<libc::kevent> = Vec::new();
 
         if events & HEW_IO_READ != 0 {
-            #[expect(clippy::cast_sign_loss, reason = "fd is a valid file descriptor from the OS, always non-negative")]
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "fd is a valid file descriptor from the OS, always non-negative"
+            )]
             changelist.push(libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_READ,
@@ -485,7 +488,10 @@ mod platform {
             });
         }
         if events & HEW_IO_WRITE != 0 {
-            #[expect(clippy::cast_sign_loss, reason = "fd is a valid file descriptor from the OS, always non-negative")]
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "fd is a valid file descriptor from the OS, always non-negative"
+            )]
             changelist.push(libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_WRITE,
@@ -501,8 +507,14 @@ mod platform {
         }
 
         // SAFETY: kevent with valid kq, changelist, and no eventlist.
-        #[expect(clippy::cast_possible_truncation, reason = "changelist has at most 2 entries, fits in c_int")]
-        #[expect(clippy::cast_possible_wrap, reason = "changelist has at most 2 entries, fits in c_int")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "changelist has at most 2 entries, fits in c_int"
+        )]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "changelist has at most 2 entries, fits in c_int"
+        )]
         let rc = unsafe {
             libc::kevent(
                 poller.kq,
@@ -536,7 +548,10 @@ mod platform {
 
         // Delete both read and write filters — ignore errors for filters that
         // were not registered (kevent returns -1 with ENOENT, which is benign).
-        #[expect(clippy::cast_sign_loss, reason = "fd is a valid file descriptor from the OS, always non-negative")]
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "fd is a valid file descriptor from the OS, always non-negative"
+        )]
         let changelist = [
             libc::kevent {
                 ident: fd as usize,
@@ -557,8 +572,14 @@ mod platform {
         ];
 
         // SAFETY: kevent with valid kq and changelist.
-        #[expect(clippy::cast_possible_truncation, reason = "changelist is a fixed-size array of 2 elements, fits in c_int")]
-        #[expect(clippy::cast_possible_wrap, reason = "changelist is a fixed-size array of 2 elements, fits in c_int")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
+        )]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
+        )]
         unsafe {
             libc::kevent(
                 poller.kq,
@@ -606,7 +627,10 @@ mod platform {
             &raw const ts
         };
 
-        #[expect(clippy::cast_possible_truncation, reason = "MAX_EVENTS is 64, fits in c_int")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "MAX_EVENTS is 64, fits in c_int"
+        )]
         #[expect(clippy::cast_possible_wrap, reason = "MAX_EVENTS is 64, fits in c_int")]
         let max_events_cint = MAX_EVENTS as c_int;
 

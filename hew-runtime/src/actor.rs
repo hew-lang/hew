@@ -1522,9 +1522,8 @@ pub unsafe extern "C" fn hew_actor_ask(
     // Send the message with the reply channel in the HewMsgNode field
     // (not packed in the data buffer).
     // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result = unsafe {
-        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-    };
+    let send_result =
+        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
 
     if send_result != HewError::Ok as i32 {
         // Release both references (sender + ours).
@@ -1567,9 +1566,8 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result = unsafe {
-        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-    };
+    let send_result =
+        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
 
     if send_result != HewError::Ok as i32 {
         // Release both references (sender + ours).
@@ -1628,9 +1626,8 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
 
     // Send with reply channel in the msg node field.
     // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result = unsafe {
-        actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-    };
+    let send_result =
+        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
 
     if send_result != HewError::Ok as i32 {
         // SAFETY: release the sender-side reference retained for the failed send.

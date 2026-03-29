@@ -198,7 +198,9 @@ fn parse_listen_mode(val: &str) -> Option<ListenMode> {
         "auto" | "1" | "true" | "yes" => Some(ListenMode::Unix),
         #[cfg(not(unix))]
         "auto" | "1" | "true" | "yes" => {
-            eprintln!("[hew-pprof] unix socket mode is not supported on this platform, use host:port");
+            eprintln!(
+                "[hew-pprof] unix socket mode is not supported on this platform, use host:port"
+            );
             None
         }
         addr if addr.starts_with(':') => Some(ListenMode::Tcp(format!("0.0.0.0{addr}"))),

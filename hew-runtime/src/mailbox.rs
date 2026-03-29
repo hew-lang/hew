@@ -118,11 +118,7 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
         // dispatched (e.g. actor stopped with messages in the queue), send an
         // empty reply so the waiting caller of hew_actor_ask is unblocked.
         if !(*node).reply_channel.is_null() {
-            crate::reply_channel::hew_reply(
-                (*node).reply_channel.cast(),
-                ptr::null_mut(),
-                0,
-            );
+            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
             (*node).reply_channel = ptr::null_mut();
         }
         libc::free((*node).data);
@@ -745,7 +741,8 @@ unsafe fn send_with_overflow(
                                 q = mb.not_full.wait_or_recover(q);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                            let node =
+                                unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
@@ -764,7 +761,8 @@ unsafe fn send_with_overflow(
                                 mb.count.fetch_sub(1, Ordering::Release);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                            let node =
+                                unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
@@ -787,7 +785,8 @@ unsafe fn send_with_overflow(
                             mb.count.fetch_sub(1, Ordering::Release);
                         }
                         // SAFETY: `data` validity guaranteed by caller.
-                        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                        let node =
+                            unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
@@ -795,7 +794,8 @@ unsafe fn send_with_overflow(
                     } else {
                         // hew_mailbox_try_push path: allocate first, then lock.
                         // SAFETY: `data` validity guaranteed by caller.
-                        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                        let node =
+                            unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }

@@ -212,7 +212,10 @@ const STALE_SPAN_MULTIPLIER: u64 = 10;
 
 fn exporter_loop(config: &OtelConfig) {
     let mut pending_begins: HashMap<u64, HewTraceEvent> = HashMap::new();
-    #[expect(clippy::cast_possible_truncation, reason = "flush_interval is seconds-scale; as_nanos fits in u64 for any realistic duration")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "flush_interval is seconds-scale; as_nanos fits in u64 for any realistic duration"
+    )]
     let stale_threshold_ns = config.flush_interval.as_nanos() as u64 * STALE_SPAN_MULTIPLIER;
 
     loop {
@@ -269,7 +272,10 @@ pub struct ReconstructedSpan {
 /// - Orphan `SPAN_END` (no matching `SPAN_BEGIN`) → silently dropped.
 /// - Lifecycle events (`SPAN_SPAWN`, `SPAN_CRASH`, `SPAN_STOP`, `SPAN_SEND`)
 ///   → zero-duration point spans.
-#[expect(clippy::implicit_hasher, reason = "internal function only called with default HashMap")]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal function only called with default HashMap"
+)]
 pub fn reconstruct_spans(
     events: Vec<HewTraceEvent>,
     pending_begins: &mut HashMap<u64, HewTraceEvent>,
@@ -315,7 +321,10 @@ pub fn reconstruct_spans(
 /// Removed entries are emitted as incomplete spans with `ok = false`.
 /// Call this after [`reconstruct_spans`] on each flush cycle to bound the
 /// size of `pending_begins`.
-#[expect(clippy::implicit_hasher, reason = "internal function only called with default HashMap")]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal function only called with default HashMap"
+)]
 pub fn flush_stale_begins(
     pending_begins: &mut HashMap<u64, HewTraceEvent>,
     age_threshold_ns: u64,
@@ -374,7 +383,7 @@ fn lifecycle_span(ev: &HewTraceEvent, name: &str) -> ReconstructedSpan {
 /// References:
 /// - <https://opentelemetry.io/docs/specs/otlp/#otlphttp>
 /// - <https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/trace/v1/trace.proto>
-#[must_use] 
+#[must_use]
 pub fn build_otlp_json(
     service_name: &str,
     spans: &[ReconstructedSpan],

@@ -1412,6 +1412,7 @@ unsafe fn actor_send_result_internal(
 
 /// Like [`actor_send_result_internal`] but with an explicit reply channel
 /// that is set on the message node (for the ask pattern).
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_result_internal_reply(
     actor: *mut HewActor,
     msg_type: i32,

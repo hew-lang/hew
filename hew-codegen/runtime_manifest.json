@@ -4524,6 +4524,11 @@
           "returns": "void"
         },
         {
+          "name": "hew_get_reply_channel",
+          "params": [],
+          "returns": "ptr"
+        },
+        {
           "name": "hew_reply_channel_free",
           "params": [
             {

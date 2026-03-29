@@ -1,11 +1,13 @@
 //! TUI actor observer for debugging Hew actor systems.
 //!
 //! Connects to a running Hew program's profiler HTTP endpoint
-//! (enabled via `HEW_PPROF=:port`) and displays live metrics,
-//! actor lists, supervision trees, and crash logs.
+//! (enabled via `HEW_PPROF=:port` or `HEW_PPROF=auto`) and displays
+//! live metrics, actor lists, supervision trees, and crash logs.
 
 mod app;
 mod client;
+#[cfg(unix)]
+mod discovery;
 mod theme;
 mod ui;
 
@@ -26,9 +28,17 @@ use ratatui::Terminal;
 #[derive(Parser, Debug)]
 #[command(name = "hew-observe", version, about)]
 struct Cli {
-    /// Address of the Hew profiler endpoint (host:port). Backward-compat single-node shorthand.
-    #[arg(long, default_value = "localhost:6060")]
-    addr: String,
+    /// Address of the Hew profiler endpoint (host:port).
+    #[arg(long)]
+    addr: Option<String>,
+
+    /// Connect to a specific process by PID (via unix socket discovery).
+    #[arg(long)]
+    pid: Option<u32>,
+
+    /// List discovered profiler processes and exit.
+    #[arg(long)]
+    list: bool,
 
     /// Additional node endpoints for multi-node observation (repeatable).
     #[arg(long = "node")]
@@ -43,21 +53,108 @@ struct Cli {
     demo: bool,
 }
 
+/// Resolve which profiler(s) to connect to, returning the App.
+fn connect(cli: &Cli) -> App {
+    if cli.demo {
+        return App::new_demo();
+    }
+
+    // Explicit --addr: TCP mode (backward compatible).
+    if let Some(addr) = &cli.addr {
+        let mut addrs = vec![addr.clone()];
+        for n in &cli.node {
+            if !addrs.contains(n) {
+                addrs.push(n.clone());
+            }
+        }
+        return App::new_tcp(&addrs);
+    }
+
+    // Unix socket discovery (--pid, auto-discover).
+    #[cfg(unix)]
+    {
+        // Explicit --pid: look up via discovery.
+        if let Some(pid) = cli.pid {
+            if let Some(profiler) = discovery::find_by_pid(pid) {
+                return App::new_unix(&profiler.socket_path, &profiler.program);
+            }
+            eprintln!("No profiler found for PID {pid}");
+            std::process::exit(1);
+        }
+
+        // Auto-discovery: scan for running profilers.
+        // The app will re-scan periodically if nothing is found yet.
+        let profilers = discovery::scan_profilers();
+        match profilers.len() {
+            0 => {
+                // No profilers yet — start in waiting mode, re-discover will
+                // pick one up when it appears.
+                App::new_waiting()
+            }
+            1 => {
+                let p = &profilers[0];
+                App::new_discovered(&p.socket_path, &p.program)
+            }
+            _ => {
+                eprintln!("Multiple profilers discovered — specify --pid:");
+                for p in &profilers {
+                    let uptime = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                        .saturating_sub(p.started);
+                    eprintln!("  --pid {}  {}  (up {}s)", p.pid, p.program, uptime,);
+                }
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Non-unix fallback: no discovery available, use TCP default.
+    #[cfg(not(unix))]
+    {
+        let _ = cli.pid; // suppress unused warning
+        eprintln!("No profilers discovered, falling back to localhost:6060");
+        App::new_tcp(&["localhost:6060".to_owned()])
+    }
+}
+
+#[cfg(unix)]
+fn list_profilers() {
+    let profilers = discovery::scan_profilers();
+    if profilers.is_empty() {
+        println!("No Hew profilers discovered.");
+        return;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    println!("{:<8} {:<20} {:<12} SOCKET", "PID", "PROGRAM", "UPTIME");
+    for p in &profilers {
+        let uptime = now.saturating_sub(p.started);
+        let uptime_str = if uptime >= 3600 {
+            format!("{}h {}m", uptime / 3600, (uptime % 3600) / 60)
+        } else if uptime >= 60 {
+            format!("{}m {}s", uptime / 60, uptime % 60)
+        } else {
+            format!("{uptime}s")
+        };
+        println!(
+            "{:<8} {:<20} {:<12} {}",
+            p.pid,
+            p.program,
+            uptime_str,
+            p.socket_path.display(),
+        );
+    }
+}
+
 fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let node_addrs = if cli.node.is_empty() {
-        vec![cli.addr.clone()]
-    } else {
-        let mut addrs = cli.node.clone();
-        // Include --addr if explicitly set and not already in --node list
-        if cli.addr != "localhost:6060" && !addrs.contains(&cli.addr) {
-            addrs.insert(0, cli.addr.clone());
-        }
-        addrs
-    };
-    let mut app = App::new(&node_addrs, cli.demo);
+    let mut app = connect(cli);
     let refresh = Duration::from_millis(cli.refresh_ms);
     let mut last_refresh = Instant::now()
         .checked_sub(refresh)
@@ -102,6 +199,14 @@ fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     let cli = Cli::parse();
+
+    if cli.list {
+        #[cfg(unix)]
+        list_profilers();
+        #[cfg(not(unix))]
+        println!("Discovery is not available on this platform. Use --addr host:port.");
+        return;
+    }
 
     enable_raw_mode().expect("failed to enable raw mode");
     io::stdout()

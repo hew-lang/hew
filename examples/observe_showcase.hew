@@ -1,0 +1,157 @@
+// observe_showcase.hew — Exemplar program for hew-observe
+//
+// Run with profiling enabled:
+//   HEW_PPROF=auto hew run examples/observe_showcase.hew
+//
+// Then in another terminal:
+//   hew-observe              # auto-discovers via unix socket
+//   hew-observe --list       # shows the running program
+//
+// Exercises the following hew-observe tabs:
+//   ① Overview    — scheduler counters, message rates, memory sparklines
+//   ② Actors      — multiple actor types with different profiles
+//   ⑤ Cluster     — node membership, connections, routing
+//   ⑥ Messages    — trace events: spawns and message sends
+//   ⑦ Timeline    — same events as a time-density view
+//
+// Note: Supervisors tab requires supervisor trees, which currently have
+// an init-time crash recovery bug in the runtime (#382). See
+// examples/supervisor_showcase.hew for the intended usage once fixed.
+
+// ── Actor types ─────────────────────────────────────────────────────
+
+// High-throughput counter — drives the msg/s rate and sparklines.
+actor Counter {
+    let name: i32;
+    let value: i32;
+
+    receive fn increment(amount: i32) -> i32 {
+        value = value + amount;
+        value
+    }
+
+    receive fn get() -> i32 {
+        value
+    }
+}
+
+// Slow worker that simulates processing delay. Messages queue up,
+// showing non-zero mailbox depth in the Actors tab.
+actor SlowProcessor {
+    let id: i32;
+    let processed: i32;
+
+    receive fn process(item: i32) {
+        processed = processed + 1;
+        sleep_ms(100);
+    }
+
+    receive fn stats() -> i32 {
+        processed
+    }
+}
+
+// Logger that stays mostly idle — low message count contrasts with
+// the high-throughput counters when sorting the Actors tab.
+actor Logger {
+    let entries: i32;
+
+    receive fn log(level: i32) {
+        entries = entries + 1;
+    }
+}
+
+// Accumulator with periodic resets — creates a sawtooth pattern
+// visible in the message rate sparkline.
+actor Accumulator {
+    let total: i32;
+
+    receive fn add(value: i32) {
+        total = total + value;
+    }
+
+    receive fn reset() {
+        total = 0;
+    }
+}
+
+// ── Main ────────────────────────────────────────────────────────────
+
+fn main() {
+    println("=== hew-observe showcase ===");
+    println("Run hew-observe in another terminal to inspect this program.");
+    println("");
+
+    // Start a distributed node — populates the Cluster tab with
+    // membership, connection, and routing data.
+    Node::start("127.0.0.1:19000");
+
+    // Spawn a variety of actors with different workload profiles.
+    let c1 = spawn Counter(name: 1, value: 0);
+    let c2 = spawn Counter(name: 2, value: 0);
+    let c3 = spawn Counter(name: 3, value: 0);
+    let slow1 = spawn SlowProcessor(id: 1, processed: 0);
+    let slow2 = spawn SlowProcessor(id: 2, processed: 0);
+    let logger = spawn Logger(entries: 0);
+    let acc = spawn Accumulator(total: 0);
+    sleep_ms(100);
+
+    // Register a named actor in the cluster registry.
+    Node::register("main_counter", c1);
+
+    println("7 actors spawned. Running workload for 60 seconds...");
+    println("Watch hew-observe tabs: Overview, Actors, Messages, Timeline");
+    println("");
+
+    // Run for 60 seconds — fills the 5-minute sparkline history and
+    // generates a visible timeline of message events.
+    var round: i32 = 0;
+    while round < 60 {
+        // ── High-frequency counter traffic ──
+        // ~300 messages per round across 3 counters.
+        var i: i32 = 0;
+        while i < 100 {
+            c1.increment(1);
+            c2.increment(2);
+            c3.increment(3);
+            i = i + 1;
+        }
+
+        // ── Slow processor traffic ──
+        // Each process() call sleeps 100ms, so these actors stay busy
+        // and accumulate mailbox depth visible in the Actors tab.
+        slow1.process(round);
+        slow1.process(round);
+        slow1.process(round);
+        slow2.process(round);
+        slow2.process(round);
+
+        // ── Accumulator traffic ──
+        // Moderate message rate with periodic resets every 10 rounds.
+        i = 0;
+        while i < 10 {
+            acc.add(round + i);
+            i = i + 1;
+        }
+        if round % 10 == 9 {
+            acc.reset();
+        }
+
+        // ── Sparse logger traffic ──
+        // One message per second — barely visible in the message rate.
+        logger.log(1);
+
+        // Wait 1 second between rounds. The profiler samples once per
+        // second, so each round produces one sparkline data point.
+        sleep_ms(1000);
+        round = round + 1;
+    }
+
+    // Print final stats.
+    let total = await c1.get() + await c2.get() + await c3.get();
+    println("");
+    println(f"Counter total: {total}");
+
+    Node::shutdown();
+    println("Showcase complete.");
+}

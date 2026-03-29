@@ -295,6 +295,59 @@ wasm_no_mangle! {
 }
 
 wasm_no_mangle! {
+    /// Send a message with an associated reply channel.
+    ///
+    /// Identical to [`hew_mailbox_send`] but sets the `reply_channel`
+    /// field on the message node for the ask pattern.
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as [`hew_mailbox_send`], plus `reply_channel`
+    /// must be a valid reply channel pointer (or null).
+    pub unsafe extern "C" fn hew_mailbox_send_with_reply(
+        mb: *mut HewMailboxWasm,
+        msg_type: i32,
+        data: *mut c_void,
+        size: usize,
+        reply_channel: *mut c_void,
+    ) -> i32 {
+        // SAFETY: Caller guarantees `mb` is valid.
+        let mb = unsafe { &mut *mb };
+
+        if mb.closed {
+            return HewError::ErrClosed as i32;
+        }
+
+        if mb.capacity > 0 && mb.count >= mb.capacity {
+            match mb.overflow {
+                HewOverflowPolicy::Block
+                | HewOverflowPolicy::DropNew
+                | HewOverflowPolicy::Fail => {
+                    return HewError::ErrMailboxFull as i32;
+                }
+                HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
+                    if let Some(old) = mb.user_queue.pop_front() {
+                        // SAFETY: node was allocated by msg_node_alloc.
+                        unsafe { msg_node_free(old) };
+                        mb.count -= 1;
+                    }
+                }
+            }
+        }
+
+        // SAFETY: `data` validity guaranteed by caller.
+        let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
+        // SAFETY: node was just allocated and is exclusively owned.
+        unsafe { (*node).reply_channel = reply_channel };
+        mb.user_queue.push_back(node);
+        mb.count += 1;
+        update_high_water_mark(mb);
+
+        HewError::Ok as i32
+    }
+}
+
+wasm_no_mangle! {
     /// Non-blocking send -- identical to [`hew_mailbox_send`] on WASM since
     /// there is no blocking distinction in a single-threaded runtime.
     ///

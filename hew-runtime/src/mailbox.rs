@@ -65,7 +65,12 @@ pub struct HewMsgNode {
 ///
 /// `data` must point to at least `data_size` readable bytes, or be null
 /// when `data_size` is 0.
-unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -> *mut HewMsgNode {
+unsafe fn msg_node_alloc(
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+    reply_channel: *mut c_void,
+) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = unsafe { libc::malloc(std::mem::size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
     if node.is_null() {
@@ -77,7 +82,7 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
-        (*node).reply_channel = ptr::null_mut();
+        (*node).reply_channel = reply_channel;
         (*node).trace_context = crate::tracing::current_context();
 
         // Deep-copy message data for actor isolation.
@@ -109,6 +114,16 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
+        // If a reply channel was set (ask pattern) but the message was never
+        // dispatched (e.g. actor stopped with messages in the queue), send an
+        // empty reply so the waiting caller of hew_actor_ask is unblocked.
+        if !(*node).reply_channel.is_null() {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            #[cfg(target_arch = "wasm32")]
+            crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            (*node).reply_channel = ptr::null_mut();
+        }
         libc::free((*node).data);
         libc::free(node.cast());
     }
@@ -639,6 +654,7 @@ unsafe fn send_with_overflow(
     data: *const c_void,
     data_size: usize,
     drop_old_alloc_under_lock: bool,
+    reply_channel: *mut c_void,
 ) -> SendOutcome {
     if mb.closed.load(Ordering::Acquire) {
         return SendOutcome::Closed;
@@ -665,7 +681,7 @@ unsafe fn send_with_overflow(
                         q = mb.not_full.wait_or_recover(q);
                     }
                     // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
@@ -728,7 +744,8 @@ unsafe fn send_with_overflow(
                                 q = mb.not_full.wait_or_recover(q);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                            let node =
+                                unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
@@ -747,7 +764,8 @@ unsafe fn send_with_overflow(
                                 mb.count.fetch_sub(1, Ordering::Release);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
-                            let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                            let node =
+                                unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
@@ -770,7 +788,8 @@ unsafe fn send_with_overflow(
                             mb.count.fetch_sub(1, Ordering::Release);
                         }
                         // SAFETY: `data` validity guaranteed by caller.
-                        let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                        let node =
+                            unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
@@ -778,7 +797,8 @@ unsafe fn send_with_overflow(
                     } else {
                         // hew_mailbox_try_push path: allocate first, then lock.
                         // SAFETY: `data` validity guaranteed by caller.
-                        let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                        let node =
+                            unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
@@ -801,7 +821,7 @@ unsafe fn send_with_overflow(
 
     // Fast path: no capacity issue (or unbounded).
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
     if node.is_null() {
         return SendOutcome::Oom;
     }
@@ -844,7 +864,40 @@ pub unsafe extern "C" fn hew_mailbox_send(
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, true) } {
+    match unsafe { send_with_overflow(mb, msg_type, data, size, true, ptr::null_mut()) } {
+        SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
+            HewError::Ok as i32
+        }
+        SendOutcome::Closed => HewError::ErrActorStopped as i32,
+        SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
+        SendOutcome::Oom => HewError::ErrOom as i32,
+    }
+}
+
+/// Send a message with an associated reply channel.
+///
+/// Identical to [`hew_mailbox_send`] but also sets the `reply_channel`
+/// field on the allocated message node so the receiver can reply via
+/// [`hew_get_reply_channel`](crate::scheduler::hew_get_reply_channel).
+///
+/// # Safety
+///
+/// - `mb` must be a valid mailbox pointer.
+/// - `data` must point to at least `size` readable bytes, or be null
+///   when `size` is 0.
+/// - `reply_channel` must be a valid reply channel pointer (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_send_with_reply(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+) -> i32 {
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &*mb };
+    // SAFETY: Caller guarantees `data` points to `size` readable bytes.
+    match unsafe { send_with_overflow(mb, msg_type, data, size, true, reply_channel) } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -881,7 +934,7 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
     }
 
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
     if node.is_null() {
         return HewError::ErrOom as i32;
     }
@@ -917,7 +970,7 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     let mb = unsafe { &*mb };
 
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
     if node.is_null() {
         set_last_error(format!(
             "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
@@ -958,7 +1011,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
     // SAFETY: Caller guarantees `mb` is valid.
     let mbr = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `data_size` readable bytes.
-    match unsafe { send_with_overflow(mbr, msg_type, data, data_size, false) } {
+    match unsafe { send_with_overflow(mbr, msg_type, data, data_size, false, ptr::null_mut()) } {
         SendOutcome::Enqueued => 0,
         SendOutcome::Dropped => 1,
         SendOutcome::DroppedOld => 2,

@@ -1430,10 +1430,11 @@ unsafe fn actor_send_result_internal_reply(
 
     let mb = a.mailbox.cast::<HewMailbox>();
 
-    // SAFETY: Mailbox is valid for the actor's lifetime.
     let result = if reply_channel.is_null() {
+        // SAFETY: Mailbox is valid for the actor's lifetime; data/size from caller.
         unsafe { mailbox::hew_mailbox_send(mb, msg_type, data, size) }
     } else {
+        // SAFETY: Mailbox is valid for the actor's lifetime; reply_channel is non-null and valid.
         unsafe { mailbox::hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) }
     };
     if result != 0 {
@@ -1503,10 +1504,6 @@ unsafe fn actor_send_internal(
 /// - `data` must point to at least `size` readable bytes, or be null.
 ///
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ask(
     actor: *mut HewActor,
@@ -1530,8 +1527,9 @@ pub unsafe extern "C" fn hew_actor_ask(
 
     if send_result != HewError::Ok as i32 {
         // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new.
+        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }
@@ -1574,8 +1572,9 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 
     if send_result != HewError::Ok as i32 {
         // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new.
+        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }
@@ -1687,8 +1686,9 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 
     if !sent {
         // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new.
+        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
     }

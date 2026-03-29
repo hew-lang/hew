@@ -62,10 +62,10 @@ const DEFAULT_BATCH_SIZE: usize = 512;
 /// OTLP/HTTP traces endpoint path.
 const OTLP_TRACES_PATH: &str = "/v1/traces";
 
-/// OTel instrumentation scope name.
+/// `OTel` instrumentation scope name.
 const SCOPE_NAME: &str = "hew.runtime";
 
-/// OTel instrumentation scope version.
+/// `OTel` instrumentation scope version.
 const SCOPE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── Configuration ──────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ fn binary_name() -> String {
 
 // ── Public entry point ─────────────────────────────────────────────────
 
-/// Start the OTel exporter if `HEW_OTEL_ENDPOINT` is set.
+/// Start the `OTel` exporter if `HEW_OTEL_ENDPOINT` is set.
 ///
 /// Called from `hew_sched_init` during scheduler startup.
 /// If the env var is absent, this is a complete no-op.
@@ -158,7 +158,7 @@ fn binary_name() -> String {
 /// `HEW_PPROF` and `HEW_OTEL_ENDPOINT` are set, both consumers drain the
 /// same shared `TRACE_EVENTS` ring buffer. This causes trace events to be
 /// split nondeterministically between the two consumers. A warning is emitted
-/// to stderr and the OTel exporter is **not** started; use one or the other.
+/// to stderr and the `OTel` exporter is **not** started; use one or the other.
 pub fn maybe_start() {
     let Some(config) = OtelConfig::from_env() else {
         return;
@@ -212,6 +212,7 @@ const STALE_SPAN_MULTIPLIER: u64 = 10;
 
 fn exporter_loop(config: &OtelConfig) {
     let mut pending_begins: HashMap<u64, HewTraceEvent> = HashMap::new();
+    #[expect(clippy::cast_possible_truncation, reason = "flush_interval is seconds-scale; as_nanos fits in u64 for any realistic duration")]
     let stale_threshold_ns = config.flush_interval.as_nanos() as u64 * STALE_SPAN_MULTIPLIER;
 
     loop {
@@ -244,7 +245,7 @@ pub struct ReconstructedSpan {
     pub span_id: u64,
     pub parent_span_id: u64,
     pub actor_id: u64,
-    /// OTel span kind (1 = INTERNAL).
+    /// `OTel` span kind (1 = INTERNAL).
     pub kind: u8,
     pub name: String,
     /// Monotonic start time in nanoseconds (from process epoch).
@@ -268,6 +269,7 @@ pub struct ReconstructedSpan {
 /// - Orphan `SPAN_END` (no matching `SPAN_BEGIN`) → silently dropped.
 /// - Lifecycle events (`SPAN_SPAWN`, `SPAN_CRASH`, `SPAN_STOP`, `SPAN_SEND`)
 ///   → zero-duration point spans.
+#[expect(clippy::implicit_hasher, reason = "internal function only called with default HashMap")]
 pub fn reconstruct_spans(
     events: Vec<HewTraceEvent>,
     pending_begins: &mut HashMap<u64, HewTraceEvent>,
@@ -313,6 +315,7 @@ pub fn reconstruct_spans(
 /// Removed entries are emitted as incomplete spans with `ok = false`.
 /// Call this after [`reconstruct_spans`] on each flush cycle to bound the
 /// size of `pending_begins`.
+#[expect(clippy::implicit_hasher, reason = "internal function only called with default HashMap")]
 pub fn flush_stale_begins(
     pending_begins: &mut HashMap<u64, HewTraceEvent>,
     age_threshold_ns: u64,
@@ -371,6 +374,7 @@ fn lifecycle_span(ev: &HewTraceEvent, name: &str) -> ReconstructedSpan {
 /// References:
 /// - <https://opentelemetry.io/docs/specs/otlp/#otlphttp>
 /// - <https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/trace/v1/trace.proto>
+#[must_use] 
 pub fn build_otlp_json(
     service_name: &str,
     spans: &[ReconstructedSpan],

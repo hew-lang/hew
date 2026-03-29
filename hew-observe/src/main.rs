@@ -6,6 +6,7 @@
 
 mod app;
 mod client;
+#[cfg(unix)]
 mod discovery;
 mod theme;
 mod ui;
@@ -69,42 +70,55 @@ fn connect(cli: &Cli) -> App {
         return App::new_tcp(&addrs);
     }
 
-    // Explicit --pid: look up via discovery.
-    if let Some(pid) = cli.pid {
-        if let Some(profiler) = discovery::find_by_pid(pid) {
-            return App::new_unix(&profiler.socket_path, &profiler.program);
-        }
-        eprintln!("No profiler found for PID {pid}");
-        std::process::exit(1);
-    }
-
-    // Auto-discovery: scan for running profilers.
-    // The app will re-scan periodically if nothing is found yet.
-    let profilers = discovery::scan_profilers();
-    match profilers.len() {
-        0 => {
-            // No profilers yet — start in waiting mode, re-discover will
-            // pick one up when it appears.
-            App::new_waiting()
-        }
-        1 => {
-            let p = &profilers[0];
-            App::new_discovered(&p.socket_path, &p.program)
-        }
-        _ => {
-            eprintln!("Multiple profilers discovered — specify --pid:");
-            for p in &profilers {
-                let uptime = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs())
-                    .saturating_sub(p.started);
-                eprintln!("  --pid {}  {}  (up {}s)", p.pid, p.program, uptime,);
+    // Unix socket discovery (--pid, auto-discover).
+    #[cfg(unix)]
+    {
+        // Explicit --pid: look up via discovery.
+        if let Some(pid) = cli.pid {
+            if let Some(profiler) = discovery::find_by_pid(pid) {
+                return App::new_unix(&profiler.socket_path, &profiler.program);
             }
+            eprintln!("No profiler found for PID {pid}");
             std::process::exit(1);
         }
+
+        // Auto-discovery: scan for running profilers.
+        // The app will re-scan periodically if nothing is found yet.
+        let profilers = discovery::scan_profilers();
+        match profilers.len() {
+            0 => {
+                // No profilers yet — start in waiting mode, re-discover will
+                // pick one up when it appears.
+                App::new_waiting()
+            }
+            1 => {
+                let p = &profilers[0];
+                App::new_discovered(&p.socket_path, &p.program)
+            }
+            _ => {
+                eprintln!("Multiple profilers discovered — specify --pid:");
+                for p in &profilers {
+                    let uptime = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                        .saturating_sub(p.started);
+                    eprintln!("  --pid {}  {}  (up {}s)", p.pid, p.program, uptime,);
+                }
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Non-unix fallback: no discovery available, use TCP default.
+    #[cfg(not(unix))]
+    {
+        let _ = cli.pid; // suppress unused warning
+        eprintln!("No profilers discovered, falling back to localhost:6060");
+        App::new_tcp(&["localhost:6060".to_owned()])
     }
 }
 
+#[cfg(unix)]
 fn list_profilers() {
     let profilers = discovery::scan_profilers();
     if profilers.is_empty() {
@@ -187,7 +201,10 @@ fn main() {
     let cli = Cli::parse();
 
     if cli.list {
+        #[cfg(unix)]
         list_profilers();
+        #[cfg(not(unix))]
+        println!("Discovery is not available on this platform. Use --addr host:port.");
         return;
     }
 

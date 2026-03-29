@@ -8,6 +8,7 @@ use crate::client::{
     CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry, RoutingSnapshot,
     SupervisorRow as ClientSupervisorRow, TraceEvent,
 };
+#[cfg(unix)]
 use crate::discovery;
 
 /// Active tab.
@@ -186,18 +187,21 @@ impl App {
     }
 
     /// Connect to a profiler over a unix domain socket.
+    #[cfg(unix)]
     pub fn new_unix(socket_path: &Path, label: &str) -> Self {
         let cluster = ClusterClient::from_unix(socket_path, label);
         Self::build(Some(cluster), label.to_owned(), false, false)
     }
 
     /// Connect via auto-discovery (re-scans periodically).
+    #[cfg(unix)]
     pub fn new_discovered(socket_path: &Path, label: &str) -> Self {
         let cluster = ClusterClient::from_unix(socket_path, label);
         Self::build(Some(cluster), label.to_owned(), false, true)
     }
 
     /// Auto-discover mode with no initial connection.
+    #[cfg(unix)]
     pub fn new_waiting() -> Self {
         Self::build(None, String::new(), false, true)
     }
@@ -453,6 +457,7 @@ impl App {
         }
 
         // In auto-discover mode, periodically re-scan for profilers.
+        #[cfg(unix)]
         if self.auto_discover {
             self.try_rediscover();
         }
@@ -594,6 +599,7 @@ impl App {
         self.connection_status = cluster_status;
     }
 
+    #[cfg(unix)]
     /// Re-scan the discovery directory and reconnect if needed.
     ///
     /// Scans every 3 seconds. When disconnected (or no cluster), picks

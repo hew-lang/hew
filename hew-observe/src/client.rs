@@ -1,6 +1,7 @@
 //! HTTP client for fetching runtime profiler data.
 
 use std::io::{BufRead, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -223,6 +224,7 @@ enum Transport {
         http: reqwest::blocking::Client,
     },
     /// Unix domain socket (for auto-discovered profilers).
+    #[cfg(unix)]
     Unix { socket_path: PathBuf },
 }
 
@@ -255,6 +257,7 @@ impl ProfilerClient {
     }
 
     /// Create a client that connects over a unix domain socket.
+    #[cfg(unix)]
     pub fn new_unix(socket_path: &Path) -> Self {
         Self {
             transport: Transport::Unix {
@@ -328,11 +331,13 @@ impl ProfilerClient {
                     None
                 }
             }
+            #[cfg(unix)]
             Transport::Unix { socket_path } => unix_get(socket_path, path),
         }
     }
 }
 
+#[cfg(unix)]
 /// Blocking HTTP/1.1 GET over a unix domain socket.
 ///
 /// Opens a fresh connection per request (profiler responses are small
@@ -423,6 +428,7 @@ impl ClusterClient {
     }
 
     /// Create a cluster client from a single unix domain socket.
+    #[cfg(unix)]
     pub fn from_unix(socket_path: &Path, label: &str) -> Self {
         let nodes = vec![NodeClient {
             client: ProfilerClient::new_unix(socket_path),

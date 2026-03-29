@@ -300,13 +300,19 @@ function(hew_emit_system_link_items)
     if("${_item}" MATCHES "z3")
       continue()
     endif()
-    if(HEW_STATIC_LINK AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    if(HEW_STATIC_LINK AND
+       (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE) AND
        ("${_item}" STREQUAL "-lz" OR "${_item}" STREQUAL "-lzstd"))
+      # On Linux and macOS static builds, zlib and zstd are linked as
+      # static archives directly — skip the dynamic -l flags from
+      # llvm-config --system-libs.
       continue()
     endif()
     if("${_item}" MATCHES "^-l(.+)$")
       set(_lib "${CMAKE_MATCH_1}")
-      if("${_lib}" STREQUAL "stdc++" OR "${_lib}" STREQUAL "c++")
+      if("${_lib}" STREQUAL "stdc++" OR "${_lib}" STREQUAL "c++"
+         OR "${_lib}" STREQUAL "c++abi")
+        # C++ runtime handled by hew_emit_cxx_runtime() or static linking.
         continue()
       endif()
       # On Linux static builds, system libs must be link-args (not
@@ -328,13 +334,18 @@ function(hew_emit_system_link_items)
 endfunction()
 
 function(hew_emit_cxx_runtime)
-  if(HEW_STATIC_LINK AND NOT MSVC AND NOT APPLE)
+  if(HEW_STATIC_LINK AND NOT MSVC)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
        (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
         CMAKE_SYSTEM_NAME STREQUAL "Linux"))
       # On Linux static builds, libstdc++.a is already included inside the
       # --start-group/--end-group archive block (see above) to resolve
       # circular dependencies with MLIR/LLVM and libatomic.  Skip here.
+      return()
+    endif()
+    if(APPLE)
+      # On macOS static builds, libc++.a is linked directly (see above).
+      # Do not add a dynamic link directive.
       return()
     endif()
   endif()
@@ -484,22 +495,50 @@ if(HEW_STATIC_LINK)
   separate_arguments(HEW_LLVM_SYSTEM_LIBS NATIVE_COMMAND "${HEW_LLVM_SYSTEM_LIBS_RAW}")
   hew_emit_system_link_items(${HEW_LLVM_SYSTEM_LIBS})
 
-  # macOS: Homebrew deps (zstd, zlib, xml2) may not be on the default search
-  # path.  Add /opt/homebrew/lib (Apple Silicon) or /usr/local/lib (Intel).
+  # macOS: statically link zstd and zlib from Homebrew so the release
+  # binary has no /opt/homebrew dynamic dependencies.  xml2 uses the
+  # system dylib (/usr/lib/libxml2.2.dylib) which ships with macOS.
   if(APPLE)
-    foreach(_hew_brew_lib "/opt/homebrew/lib" "/usr/local/lib")
-      if(IS_DIRECTORY "${_hew_brew_lib}")
-        hew_embedded_append("cargo:rustc-link-search=native=${_hew_brew_lib}")
+    set(_hew_brew_prefix "")
+    foreach(_candidate "/opt/homebrew" "/usr/local")
+      if(IS_DIRECTORY "${_candidate}/lib")
+        set(_hew_brew_prefix "${_candidate}")
+        break()
       endif()
     endforeach()
+    if(_hew_brew_prefix)
+      # Static zstd: link the .a file directly so no NEEDED entry is created.
+      if(EXISTS "${_hew_brew_prefix}/lib/libzstd.a")
+        hew_embedded_append("cargo:rustc-link-arg=${_hew_brew_prefix}/lib/libzstd.a")
+      else()
+        hew_embedded_append("cargo:rustc-link-search=native=${_hew_brew_prefix}/lib")
+        hew_embedded_append("cargo:rustc-link-lib=zstd")
+        message(WARNING "HEW_STATIC_LINK: libzstd.a not found at ${_hew_brew_prefix}/lib — zstd will be a dynamic dependency")
+      endif()
+      # zlib: prefer static .a if available, otherwise use system dylib.
+      # macOS ships /usr/lib/libz.1.dylib which is fine for distribution.
+      if(EXISTS "${_hew_brew_prefix}/lib/libz.a")
+        hew_embedded_append("cargo:rustc-link-arg=${_hew_brew_prefix}/lib/libz.a")
+      else()
+        hew_embedded_append("cargo:rustc-link-lib=z")
+      endif()
+    endif()
   endif()
 
-  # macOS: Homebrew LLVM libc++ search path and rpath
+  # macOS: statically link libc++ from Homebrew LLVM so the release binary
+  # does not depend on /opt/homebrew/opt/llvm/lib/c++/libc++.1.dylib.
+  # Also link libc++abi (system dylib) for exception base classes
+  # (std::logic_error, std::runtime_error, etc.) that libc++.a requires.
   if(APPLE)
     get_filename_component(_hew_llvm_libcxx_dir "${LLVM_LIBRARY_DIR}/c++" ABSOLUTE)
-    if(IS_DIRECTORY "${_hew_llvm_libcxx_dir}")
+    if(EXISTS "${_hew_llvm_libcxx_dir}/libc++.a")
+      hew_embedded_append("cargo:rustc-link-arg=${_hew_llvm_libcxx_dir}/libc++.a")
+      hew_embedded_append("cargo:rustc-link-lib=dylib=c++abi")
+    elseif(IS_DIRECTORY "${_hew_llvm_libcxx_dir}")
+      # Fallback: dynamic link with rpath (non-portable but functional).
       hew_embedded_append("cargo:rustc-link-search=native=${_hew_llvm_libcxx_dir}")
       hew_embedded_append("cargo:rustc-link-arg=-Wl,-rpath,${_hew_llvm_libcxx_dir}")
+      message(WARNING "HEW_STATIC_LINK: libc++.a not found — libc++ will be a dynamic dependency")
     endif()
   endif()
 else()

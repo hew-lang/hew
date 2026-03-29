@@ -169,7 +169,9 @@ fn configure_and_build(
                 }
             }
         }
-        if embed_static {
+        // Static builds link libc++.a directly via cmake — no rpath needed.
+        // Development builds use the shared libc++ from Homebrew LLVM.
+        if !embed_static {
             if let Some(prefix) = llvm_prefix {
                 let libcxx_dir = prefix.join("lib/c++");
                 if libcxx_dir.exists() {

@@ -2,11 +2,38 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-29
+
+### Added
+
+- **hew-observe unix socket discovery:** profiler binds to a per-user unix domain socket when `HEW_PPROF=auto`, with auto-discovery so `hew-observe` finds running programs without specifying ports (#380)
+- **hew-observe CLI modes:** `--list` prints discovered profilers, `--pid N` connects to a specific process, auto-reconnects when the observed program restarts (#380)
+- **WebSocket server support:** `websocket.listen(addr)` → `server.accept()` → `Conn` in std::net::websocket, with the same send/recv/close API as the client (#379)
+- **Observe showcase example:** `examples/observe_showcase.hew` exercises Overview, Actors, Cluster, Messages, and Timeline tabs (#380)
+
+### Fixed
+
+- **Reply channel convention rewrite:** route reply channels through `HewMsgNode.reply_channel` field instead of embedding in the data buffer, eliminating SIGSEGV when actors receive messages with arguments (#380, fixes #382)
+- **Duplicate trait impl generation:** track type-defining module so imported impls use the correct mangled names, preventing duplicate functions that executed as static constructors before `main()` (#386, fixes #384)
+- **Vec.remove() semantics:** `v.remove(value)` is always value-based removal; the new `VecRemoveAtOp` is reserved for index-based `remove_at()` (#379)
+- **hew-observe connection status:** only the metrics probe sets the connection indicator; secondary endpoint failures no longer poison it (#380)
+- **Supervisor label JSON escaping:** child names containing quotes or backslashes no longer produce malformed JSON in `/api/supervisors` (#380)
+- **Orphaned reply channels:** `hew_msg_node_free` sends an empty reply for undispatched ask messages so callers don't deadlock (#380)
+- **Crash recovery reply handling:** scheduler sends an empty reply when an actor crashes during an ask dispatch (#380)
+- **Silent analysis skips:** fix bugs where AST analysis passes silently skipped nodes (#377)
+- **Diagnostic quality:** use operator symbols in error messages, correct LSP severity levels (#378)
+- **Codegen type validation:** validate `convertType` results for generic types and thunk lookup (#372)
+- **Runtime aliasing violation:** eliminate aliasing violation in `hew_connmgr_add` (#371)
+
 ### Changed
 
-- Remove the unused export-metadata toolchain (`hew-stdlib-gen`,
-  `hew-export-macro`, `hew-export-types`, and the `export-meta` Cargo feature)
-  now that `hew-types` loads canonical stdlib `.hew` sources directly.
+- **Profiler server:** replace tiny_http with hyper 1.x on a single-threaded tokio runtime, enabling unix domain socket support and cleaner shutdown (#380)
+- **Pre-commit hook:** fix Bash 3.2 compatibility (macOS default) — clippy now runs on commit (#380)
+- **CLI:** migrate hew to clap derive with auto-generated shell completions (#373)
+- **Clippy clean:** resolve all clippy warnings across the workspace (`-D warnings` clean) (#380)
+- Remove the unused export-metadata toolchain (`hew-stdlib-gen`, `hew-export-macro`, `hew-export-types`, and the `export-meta` Cargo feature) now that `hew-types` loads canonical stdlib `.hew` sources directly
+- Quality consolidation: DRY deduplication, dead code removal, YAGNI cleanup (#374, #376)
+- Update workspace dependencies (#375)
 
 ## [0.2.1] - 2026-03-23
 

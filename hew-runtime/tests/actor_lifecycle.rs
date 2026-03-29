@@ -15,7 +15,6 @@
 #![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
     reason = "FFI tests use deliberate casts between pointer and integer types"
 )]
 
@@ -358,15 +357,15 @@ fn mailbox_try_recv_empty_returns_null() {
 
 /// Dispatch function that echoes the payload doubled via the reply channel.
 ///
-/// Protocol: the message data is `[i32 payload | *mut HewReplyChannel]`.
-/// The actor reads the payload, doubles it, and replies.
+/// The reply channel is retrieved from the scheduler's thread-local
+/// (set from `HewMsgNode.reply_channel` before dispatch).
 unsafe extern "C" fn echo_double_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
     data: *mut c_void,
     data_size: usize,
 ) {
-    if data.is_null() || data_size < size_of::<i32>() + size_of::<*mut c_void>() {
+    if data.is_null() || data_size < size_of::<i32>() {
         return;
     }
 
@@ -374,13 +373,8 @@ unsafe extern "C" fn echo_double_dispatch(
         // Read the original i32 payload.
         let payload = *(data.cast::<i32>());
 
-        // Read the reply channel pointer (packed after the i32).
-        let ch_slot = data
-            .cast::<u8>()
-            .add(size_of::<i32>())
-            .cast::<*mut c_void>();
-        let ch = ptr::read_unaligned(ch_slot);
-
+        // Get reply channel from scheduler thread-local.
+        let ch = hew_runtime::scheduler::hew_get_reply_channel();
         if ch.is_null() {
             return;
         }

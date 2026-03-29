@@ -391,12 +391,14 @@ mod platform {
     use std::collections::HashMap;
 
     /// Per-fd registration data.
+    #[derive(Debug)]
     struct FdEntry {
         actor: *mut HewActor,
         msg_type: c_int,
     }
 
     /// Kqueue-backed I/O poller.
+    #[derive(Debug)]
     pub struct HewIoPoller {
         kq: c_int,
         entries: HashMap<c_int, FdEntry>,
@@ -472,6 +474,10 @@ mod platform {
         let mut changelist: Vec<libc::kevent> = Vec::new();
 
         if events & HEW_IO_READ != 0 {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "fd is a valid file descriptor from the OS, always non-negative"
+            )]
             changelist.push(libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_READ,
@@ -479,10 +485,13 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
-                ..unsafe { std::mem::zeroed() }
             });
         }
         if events & HEW_IO_WRITE != 0 {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "fd is a valid file descriptor from the OS, always non-negative"
+            )]
             changelist.push(libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_WRITE,
@@ -490,7 +499,6 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
-                ..unsafe { std::mem::zeroed() }
             });
         }
 
@@ -498,6 +506,14 @@ mod platform {
             return -1;
         }
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "changelist has at most 2 entries, fits in c_int"
+        )]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "changelist has at most 2 entries, fits in c_int"
+        )]
         // SAFETY: kevent with valid kq, changelist, and no eventlist.
         let rc = unsafe {
             libc::kevent(
@@ -532,6 +548,10 @@ mod platform {
 
         // Delete both read and write filters — ignore errors for filters that
         // were not registered (kevent returns -1 with ENOENT, which is benign).
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "fd is a valid file descriptor from the OS, always non-negative"
+        )]
         let changelist = [
             libc::kevent {
                 ident: fd as usize,
@@ -540,7 +560,6 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
-                ..unsafe { std::mem::zeroed() }
             },
             libc::kevent {
                 ident: fd as usize,
@@ -549,10 +568,17 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
-                ..unsafe { std::mem::zeroed() }
             },
         ];
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
+        )]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "changelist is a fixed-size array of 2 elements, fits in c_int"
+        )]
         // SAFETY: kevent with valid kq and changelist.
         unsafe {
             libc::kevent(
@@ -585,7 +611,9 @@ mod platform {
 
         // SAFETY: `libc::kevent` is a C struct of integer and pointer fields;
         // an all-zeroes bit pattern is a valid representation.
-        let mut kq_events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+        let mut kq_events: [libc::kevent; MAX_EVENTS] =
+            // SAFETY: libc::kevent is a POD C struct; all-zero is valid.
+            unsafe { std::mem::zeroed() };
 
         // Build timeout: negative means block indefinitely (pass null).
         let ts;
@@ -593,11 +621,18 @@ mod platform {
             std::ptr::null()
         } else {
             ts = libc::timespec {
-                tv_sec: (timeout_ms / 1000) as libc::time_t,
-                tv_nsec: ((timeout_ms % 1000) as libc::c_long) * 1_000_000,
+                tv_sec: libc::time_t::from(timeout_ms / 1000),
+                tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
             };
-            &ts as *const libc::timespec
+            &raw const ts
         };
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "MAX_EVENTS is 64, fits in c_int"
+        )]
+        #[expect(clippy::cast_possible_wrap, reason = "MAX_EVENTS is 64, fits in c_int")]
+        let max_events_cint = MAX_EVENTS as c_int;
 
         // SAFETY: kevent with valid kq, no changelist, eventlist buffer.
         let n = unsafe {
@@ -606,7 +641,7 @@ mod platform {
                 std::ptr::null(),
                 0,
                 kq_events.as_mut_ptr(),
-                MAX_EVENTS as c_int,
+                max_events_cint,
                 timeout_ptr,
             )
         };
@@ -620,6 +655,10 @@ mod platform {
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "fd was stored as usize via ident; fits in c_int"
+            )]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "fd was stored as usize via ident; original value was a non-negative c_int"
             )]
             let fd = ev.ident as c_int;
             if let Some(entry) = poller.entries.get(&fd) {

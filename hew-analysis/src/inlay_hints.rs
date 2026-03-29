@@ -3,7 +3,7 @@
 //! Produces inlay hints (type annotations for unannotated `let`/`var` bindings
 //! and lambda return types) using byte offsets rather than LSP positions.
 
-use hew_parser::ast::{Block, Expr, Item, Span, Stmt, TypeBodyItem};
+use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
 use hew_types::check::SpanKey;
 use hew_types::TypeCheckOutput;
@@ -31,8 +31,15 @@ fn collect_inlay_hints_from_item(
     hints: &mut Vec<InlayHint>,
 ) {
     match item {
+        Item::Const(c) => collect_inlay_hints_from_expr(source, &c.value.0, tc, hints),
         Item::Function(f) => collect_inlay_hints_from_block(source, &f.body, tc, hints),
         Item::Actor(a) => {
+            if let Some(init) = &a.init {
+                collect_inlay_hints_from_block(source, &init.body, tc, hints);
+            }
+            if let Some(term) = &a.terminate {
+                collect_inlay_hints_from_block(source, &term.body, tc, hints);
+            }
             for recv in &a.receive_fns {
                 collect_inlay_hints_from_block(source, &recv.body, tc, hints);
             }
@@ -52,6 +59,30 @@ fn collect_inlay_hints_from_item(
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
             }
         }
+        Item::Trait(t) => {
+            for trait_item in &t.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(body) = &method.body {
+                        collect_inlay_hints_from_block(source, body, tc, hints);
+                    }
+                }
+            }
+        }
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    collect_inlay_hints_from_expr(source, &arg.0, tc, hints);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    collect_inlay_hints_from_expr(source, &guard.0, tc, hints);
+                }
+                collect_inlay_hints_from_expr(source, &transition.body.0, tc, hints);
+            }
+        }
         _ => {}
     }
 }
@@ -65,8 +96,15 @@ fn collect_inlay_hints_from_block(
     for (stmt, _span) in &block.stmts {
         collect_inlay_hints_from_stmt(source, stmt, tc, hints);
     }
+    if let Some(trailing) = &block.trailing_expr {
+        collect_inlay_hints_from_expr(source, &trailing.0, tc, hints);
+    }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive AST match — splitting would obscure the traversal"
+)]
 fn collect_inlay_hints_from_stmt(
     source: &str,
     stmt: &Stmt,
@@ -119,17 +157,30 @@ fn collect_inlay_hints_from_stmt(
                 collect_inlay_hints_from_expr(source, &value_expr.0, tc, hints);
             }
         }
-        Stmt::For { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::While { body, .. }
-        | Stmt::WhileLet { body, .. } => {
+        Stmt::Loop { body, .. } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_inlay_hints_from_expr(source, &condition.0, tc, hints);
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
+        Stmt::For { iterable, body, .. } => {
+            collect_inlay_hints_from_expr(source, &iterable.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Stmt::If {
+            condition,
             then_block,
             else_block,
             ..
         } => {
+            collect_inlay_hints_from_expr(source, &condition.0, tc, hints);
             collect_inlay_hints_from_block(source, then_block, tc, hints);
             if let Some(eb) = else_block {
                 if let Some(if_stmt) = &eb.if_stmt {
@@ -141,22 +192,36 @@ fn collect_inlay_hints_from_stmt(
             }
         }
         Stmt::IfLet {
-            body, else_body, ..
+            expr,
+            body,
+            else_body,
+            ..
         } => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
             if let Some(block) = else_body {
                 collect_inlay_hints_from_block(source, block, tc, hints);
             }
         }
-        Stmt::Match { arms, .. } => {
+        Stmt::Match { scrutinee, arms } => {
+            collect_inlay_hints_from_expr(source, &scrutinee.0, tc, hints);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_inlay_hints_from_expr(source, &guard.0, tc, hints);
+                }
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
         }
         Stmt::Defer(expr) => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
         }
-        Stmt::Assign { value, .. } => {
+        Stmt::Assign { target, value, .. } => {
+            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+        }
+        Stmt::Break {
+            value: Some(value), ..
+        } => {
             collect_inlay_hints_from_expr(source, &value.0, tc, hints);
         }
         Stmt::Return(Some(val)) => {
@@ -169,6 +234,10 @@ fn collect_inlay_hints_from_stmt(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "explicit recursion over all expression variants keeps traversal correct"
+)]
 fn collect_inlay_hints_from_expr(
     source: &str,
     expr: &Expr,
@@ -176,6 +245,13 @@ fn collect_inlay_hints_from_expr(
     hints: &mut Vec<InlayHint>,
 ) {
     match expr {
+        Expr::Binary { left, right, .. } => {
+            collect_inlay_hints_from_expr(source, &left.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &right.0, tc, hints);
+        }
+        Expr::Unary { operand, .. } => {
+            collect_inlay_hints_from_expr(source, &operand.0, tc, hints);
+        }
         Expr::Lambda {
             return_type, body, ..
         } => {
@@ -195,6 +271,9 @@ fn collect_inlay_hints_from_expr(
             }
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
+        Expr::SpawnLambdaActor { body, .. } => {
+            collect_inlay_hints_from_expr(source, &body.0, tc, hints);
+        }
         Expr::Block(block)
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
@@ -205,32 +284,133 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Expr::If {
+            condition,
             then_block,
             else_block,
             ..
         } => {
+            collect_inlay_hints_from_expr(source, &condition.0, tc, hints);
             collect_inlay_hints_from_expr(source, &then_block.0, tc, hints);
             if let Some(else_expr) = else_block {
                 collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
             }
         }
         Expr::IfLet {
-            body, else_body, ..
+            expr,
+            body,
+            else_body,
+            ..
         } => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
             if let Some(block) = else_body {
                 collect_inlay_hints_from_block(source, block, tc, hints);
             }
         }
-        Expr::Match { arms, .. } => {
+        Expr::Match { scrutinee, arms } => {
+            collect_inlay_hints_from_expr(source, &scrutinee.0, tc, hints);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_inlay_hints_from_expr(source, &guard.0, tc, hints);
+                }
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
         }
-        Expr::Cast { expr: inner, .. } => {
+        Expr::Call { function, args, .. } => {
+            collect_inlay_hints_from_expr(source, &function.0, tc, hints);
+            for arg in args {
+                let expr = arg.expr();
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_inlay_hints_from_expr(source, &receiver.0, tc, hints);
+            for arg in args {
+                let expr = arg.expr();
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
+        }
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+            for expr in exprs {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &count.0, tc, hints);
+        }
+        Expr::MapLiteral { entries } => {
+            for (key, value) in entries {
+                collect_inlay_hints_from_expr(source, &key.0, tc, hints);
+                collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+            }
+        }
+        Expr::Send { target, message } => {
+            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &message.0, tc, hints);
+        }
+        Expr::Spawn { target, args } => {
+            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
+            for (_, value) in args {
+                collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                collect_inlay_hints_from_expr(source, &arm.source.0, tc, hints);
+                collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
+            }
+            if let Some(timeout_clause) = timeout {
+                collect_inlay_hints_from_expr(source, &timeout_clause.duration.0, tc, hints);
+                collect_inlay_hints_from_expr(source, &timeout_clause.body.0, tc, hints);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
+        }
+        Expr::FieldAccess { object, .. } => {
+            collect_inlay_hints_from_expr(source, &object.0, tc, hints);
+        }
+        Expr::Index { object, index } => {
+            collect_inlay_hints_from_expr(source, &object.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &index.0, tc, hints);
+        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::PostfixTry(inner)
+        | Expr::Await(inner)
+        | Expr::Yield(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
         }
-        _ => {}
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_inlay_hints_from_expr(source, &start.0, tc, hints);
+            }
+            if let Some(end) = end {
+                collect_inlay_hints_from_expr(source, &end.0, tc, hints);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(expr) = part {
+                    collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+                }
+            }
+        }
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::Cooperate
+        | Expr::This
+        | Expr::ScopeCancel
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
+        | Expr::Yield(None) => {}
     }
 }
 
@@ -283,6 +463,14 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
         }
+    }
+
+    fn lambda_hint_labels(hints: &[InlayHint]) -> Vec<&str> {
+        hints
+            .iter()
+            .filter(|hint| hint.kind == InlayHintKind::Type && hint.label.starts_with("-> "))
+            .map(|hint| hint.label.as_str())
+            .collect()
     }
 
     #[test]
@@ -387,5 +575,112 @@ mod tests {
         } else {
             panic!("expected function item");
         }
+    }
+
+    #[test]
+    fn lambda_in_call_argument_gets_return_hint() {
+        let source = "fn main() { foo((x) => x + 1); }";
+        let pr = parse(source);
+
+        let lambda_body = match &pr.program.items[0].0 {
+            Item::Function(f) => match &f.body.stmts[0].0 {
+                Stmt::Expression((Expr::Call { args, .. }, _)) => match args.first() {
+                    Some(arg) => match &arg.expr().0 {
+                        Expr::Lambda { body, .. } => body,
+                        other => panic!("expected lambda argument, got {other:?}"),
+                    },
+                    None => panic!("expected call argument"),
+                },
+                other => panic!("expected call expression statement, got {other:?}"),
+            },
+            other => panic!("expected function item, got {other:?}"),
+        };
+
+        let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let lambda_hints = lambda_hint_labels(&hints);
+
+        assert_eq!(
+            lambda_hints,
+            vec!["-> i32 "],
+            "lambda nested in a call argument should get a return-type hint"
+        );
+    }
+
+    #[test]
+    fn lambda_in_trait_default_body_gets_return_hint() {
+        let source = "trait Mapper { fn map() { foo((x) => x + 1); } }";
+        let pr = parse(source);
+
+        let lambda_body = match &pr.program.items[0].0 {
+            Item::Trait(trait_decl) => match &trait_decl.items[0] {
+                TraitItem::Method(method) => match &method.body {
+                    Some(body) => match &body.stmts[0].0 {
+                        Stmt::Expression((Expr::Call { args, .. }, _)) => match args.first() {
+                            Some(arg) => match &arg.expr().0 {
+                                Expr::Lambda { body, .. } => body,
+                                other => panic!("expected lambda argument, got {other:?}"),
+                            },
+                            None => panic!("expected call argument"),
+                        },
+                        other => panic!("expected call expression statement, got {other:?}"),
+                    },
+                    None => panic!("expected default method body"),
+                },
+                TraitItem::AssociatedType { .. } => {
+                    panic!("expected trait method, got associated type")
+                }
+            },
+            other => panic!("expected trait item, got {other:?}"),
+        };
+
+        let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let lambda_hints = lambda_hint_labels(&hints);
+
+        assert_eq!(
+            lambda_hints,
+            vec!["-> i32 "],
+            "lambda inside a trait default method body should get a return-type hint"
+        );
+    }
+
+    #[test]
+    fn lambda_in_trailing_block_expression_gets_return_hint() {
+        let source = "fn main() { { foo((x) => x + 1) } }";
+        let pr = parse(source);
+
+        let lambda_body = match &pr.program.items[0].0 {
+            Item::Function(f) => match &f.body.trailing_expr {
+                Some(expr) => match &expr.0 {
+                    Expr::Block(block) => match &block.trailing_expr {
+                        Some(expr) => match &expr.0 {
+                            Expr::Call { args, .. } => match args.first() {
+                                Some(arg) => match &arg.expr().0 {
+                                    Expr::Lambda { body, .. } => body,
+                                    other => panic!("expected lambda argument, got {other:?}"),
+                                },
+                                None => panic!("expected call argument"),
+                            },
+                            other => panic!("expected call trailing expression, got {other:?}"),
+                        },
+                        None => panic!("expected call trailing expression"),
+                    },
+                    other => panic!("expected block trailing expression, got {other:?}"),
+                },
+                None => panic!("expected function trailing expression"),
+            },
+            other => panic!("expected function item, got {other:?}"),
+        };
+
+        let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let lambda_hints = lambda_hint_labels(&hints);
+
+        assert_eq!(
+            lambda_hints,
+            vec!["-> i32 "],
+            "lambda in a block trailing expression should get a return-type hint"
+        );
     }
 }

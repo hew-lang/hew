@@ -1,5 +1,24 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Completion recursion through expression containers (2026-03-25)
+
+### Goal
+
+Fix local-variable completion lookup when the cursor sits inside a block nested under
+an expression statement, such as a call argument or method-call receiver.
+
+### Decisions
+
+- Reproduced the bug against `hew-analysis/src/completions.rs` and confirmed the walk
+  stopped at `Stmt::Expression`, so nested block scopes inside expression statements
+  were never visited.
+- Added a span-checked helper for recursing through child expressions so pass-through
+  containers like calls, method calls, tuples, arrays, and string interpolations only
+  descend into the branch that actually covers the cursor.
+- Added focused completion tests for positive and negative scope behaviour: locals are
+  visible inside nested call/receiver blocks and do not leak after the expression
+  statement finishes.
+
 ## Phase 8: Parser super-trait helper extraction (2026-03-24)
 
 ### Goal
@@ -1349,3 +1368,22 @@ Remove repeated profiler snapshot JSON array assembly in the runtime without int
 - Added small `hew-runtime::util` helpers for writing JSON arrays and escaped string values directly into a `String`.
 - Reused that helper from routing, connection, and cluster snapshots because all three shared the same comma-delimited array pattern.
 - Kept each snapshot's per-record formatting local so the helper stays generic and does not hide field-specific logic.
+
+## Phase 11: Tail-call marking through match arms (2026-03-25)
+
+### Goal
+
+Catch the parser's missed tail-call optimization when a tail-position expression or
+nested return flows through a `match` arm.
+
+### Decisions
+
+- Read `hew-parser/src/ast.rs` first and confirmed `MatchArm.body` is always an
+  expression, so statement-form `match` arms need expression recursion rather than
+  a direct statement walk.
+- Reworked the tail-call pass around an explicit tail-position flag so block
+  trailing expressions are only marked when the enclosing block expression itself
+  is tail-position, avoiding false positives in ordinary statement bodies.
+- Extended the pass and its defer guard to recurse through `Stmt::Match`,
+  `Expr::Match`, and other expression containers so nested `return foo()` cases in
+  block-valued arms are handled consistently.

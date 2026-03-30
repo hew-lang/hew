@@ -6004,6 +6004,24 @@
           "returns": "ptr"
         },
         {
+          "name": "hew_supervisor_get_child_wait",
+          "params": [
+            {
+              "name": "sup",
+              "type": "ptr"
+            },
+            {
+              "name": "index",
+              "type": "i32"
+            },
+            {
+              "name": "timeout_ms",
+              "type": "i32"
+            }
+          ],
+          "returns": "ptr"
+        },
+        {
           "name": "hew_supervisor_child_count",
           "params": [
             {

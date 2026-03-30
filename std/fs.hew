@@ -4,17 +4,13 @@
 //!
 //! # Error Handling
 //!
-//! `IoError` is a structured error enum for file-system failures.
-//! Use it in your own code with `Result<T, IoError>` and the `?`
-//! operator for clean error propagation:
+//! `IoError` is the stable user-facing error enum for file-system failures.
+//! Use the `try_*` wrappers in this module with `Result<T, IoError>`
+//! and the `?` operator for clean error propagation:
 //!
 //! ```
 //! fn load_config(path: String) -> Result<String, IoError> {
-//!     if fs.exists(path) {
-//!         Ok(fs.read(path))
-//!     } else {
-//!         Err(IoError::NotFound(1))
-//!     }
+//!     fs.try_read(path)
 //! }
 //!
 //! fn main() {
@@ -29,6 +25,8 @@
 //!     }
 //! }
 //! ```
+
+import std::path;
 
 // ── Error type ───────────────────────────────────────────────────────
 
@@ -47,9 +45,66 @@ pub enum IoError {
     Other(int);
 }
 
+const IO_ERROR_OTHER: int = 1;
+const IO_ERROR_NOT_FOUND: int = 2;
+const IO_ERROR_PERMISSION_DENIED: int = 13;
+const IO_ERROR_ALREADY_EXISTS: int = 17;
+
+fn io_error_from_message(message: String) -> IoError {
+    if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
+    } else if message.contains("os error 13")
+        || message.contains("Permission denied")
+        || message.contains("permission denied")
+    {
+        IoError::PermissionDenied(IO_ERROR_PERMISSION_DENIED)
+    } else if message.contains("os error 17")
+        || message.contains("Already exists")
+        || message.contains("already exists")
+        || message.contains("File exists")
+        || message.contains("file exists")
+    {
+        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+    } else {
+        IoError::Other(IO_ERROR_OTHER)
+    }
+}
+
+fn missing_parent(target: String) -> bool {
+    let parent = path.dirname(target);
+    parent != "" && !exists(parent)
+}
+
+fn write_error(target: String) -> IoError {
+    if missing_parent(target) {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
+    } else {
+        IoError::Other(IO_ERROR_OTHER)
+    }
+}
+
+fn missing_path_error(target: String) -> IoError {
+    if exists(target) {
+        IoError::Other(IO_ERROR_OTHER)
+    } else {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
+    }
+}
+
+fn mkdir_error(target: String) -> IoError {
+    if exists(target) {
+        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+    } else if missing_parent(target) {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
+    } else {
+        IoError::Other(IO_ERROR_OTHER)
+    }
+}
+
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Panics if the file does not exist or cannot be read.
+/// Use `try_read` for a structured `Result<String, IoError>` surface.
 ///
 /// # Examples
 ///
@@ -60,18 +115,54 @@ pub fn read(path: String) -> String {
     unsafe { hew_file_read(path) }
 }
 
+/// Read the entire contents of a file as a UTF-8 string.
+///
+/// Returns `Err(IoError)` instead of panicking on open failures.
+pub fn try_read(file_path: String) -> Result<String, IoError> {
+    unsafe {
+        let file = hew_stream_from_file_read(file_path);
+        if hew_stream_is_valid(file) {
+            Ok(hew_stream_collect_string(file))
+        } else {
+            Err(io_error_from_message(hew_stream_last_error()))
+        }
+    }
+}
+
 /// Write a string to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
+/// Use `try_write` for a structured `Result<i32, IoError>` surface.
 pub fn write(path: String, content: String) -> i32 {
     unsafe { hew_file_write(path, content) }
+}
+
+/// Write a string to a file, creating or overwriting it.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_write(file_path: String, content: String) -> Result<i32, IoError> {
+    match unsafe { hew_file_write(file_path, content) } {
+        0 => Ok(0 as i32),
+        _ => Err(write_error(file_path)),
+    }
 }
 
 /// Append a string to the end of a file.
 ///
 /// Creates the file if it does not exist. Returns 0 on success.
+/// Use `try_append` for a structured `Result<i32, IoError>` surface.
 pub fn append(path: String, content: String) -> i32 {
     unsafe { hew_file_append(path, content) }
+}
+
+/// Append a string to the end of a file.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_append(file_path: String, content: String) -> Result<i32, IoError> {
+    match unsafe { hew_file_append(file_path, content) } {
+        0 => Ok(0 as i32),
+        _ => Err(write_error(file_path)),
+    }
 }
 
 /// Check whether a file exists at the given path.
@@ -90,6 +181,16 @@ pub fn exists(path: String) -> bool {
 /// Delete a file. Returns 0 on success.
 pub fn delete(path: String) -> i32 {
     unsafe { hew_file_delete(path) }
+}
+
+/// Delete a file.
+///
+/// Returns `Err(IoError::NotFound(_))` when the path is missing.
+pub fn try_delete(file_path: String) -> Result<i32, IoError> {
+    match unsafe { hew_file_delete(file_path) } {
+        0 => Ok(0 as i32),
+        _ => Err(missing_path_error(file_path)),
+    }
 }
 
 /// Returns the size of a file in bytes.
@@ -114,6 +215,7 @@ pub fn read_line() -> String {
 /// Read the raw bytes of a file into a `bytes` value.
 ///
 /// Returns an empty `bytes` buffer on error.
+/// Use `try_read_bytes` for a structured `Result<bytes, IoError>` surface.
 ///
 /// # Examples
 ///
@@ -125,11 +227,35 @@ pub fn read_bytes(path: String) -> bytes {
     unsafe { hew_file_read_bytes(path) }
 }
 
+/// Read the raw bytes of a file into a `bytes` value.
+///
+/// Returns `Err(IoError)` instead of an ambiguous empty buffer on failure.
+/// This currently routes through `try_read` plus `hew_string_to_bytes`, so it
+/// is best suited to UTF-8 / text-friendly content while still surfacing
+/// structured open/read errors.
+pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
+    match try_read(file_path) {
+        Ok(contents) => Ok(unsafe { hew_string_to_bytes(contents) }),
+        Err(err) => Err(err),
+    }
+}
+
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
+/// Use `try_write_bytes` for a structured `Result<i32, IoError>` surface.
 pub fn write_bytes(path: String, data: bytes) -> i32 {
     unsafe { hew_file_write_bytes(path, data) }
+}
+
+/// Write a `bytes` value to a file, creating or overwriting it.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_write_bytes(file_path: String, data: bytes) -> Result<i32, IoError> {
+    match unsafe { hew_file_write_bytes(file_path, data) } {
+        0 => Ok(0 as i32),
+        _ => Err(write_error(file_path)),
+    }
 }
 
 // ── Directory operations ──────────────────────────────────────────────
@@ -142,6 +268,14 @@ pub fn mkdir(path: String) -> i32 {
     unsafe { hew_fs_mkdir(path) }
 }
 
+/// Create a directory with structured `IoError` results.
+pub fn try_mkdir(dir_path: String) -> Result<i32, IoError> {
+    match unsafe { hew_fs_mkdir(dir_path) } {
+        0 => Ok(0 as i32),
+        _ => Err(mkdir_error(dir_path)),
+    }
+}
+
 /// Create a directory and all its parent components.
 ///
 /// Returns 0 on success, -1 on error.
@@ -149,10 +283,26 @@ pub fn mkdir_all(path: String) -> i32 {
     unsafe { hew_fs_mkdir_all(path) }
 }
 
+/// Create a directory and all its parent components.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_mkdir_all(dir_path: String) -> Result<i32, IoError> {
+    match unsafe { hew_fs_mkdir_all(dir_path) } {
+        0 => Ok(0 as i32),
+        _ => {
+            if exists(dir_path) {
+                Err(IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS))
+            } else {
+                Err(IoError::Other(IO_ERROR_OTHER))
+            }
+        },
+    }
+}
+
 /// List the entries in a directory.
 ///
 /// Returns a list of entry names (not full paths). Returns an empty list on
-/// error.
+/// error. Use `try_list_dir` when missing-path handling matters.
 ///
 /// # Examples
 ///
@@ -164,6 +314,19 @@ pub fn mkdir_all(path: String) -> i32 {
 /// ```
 pub fn list_dir(path: String) -> Vec<String> {
     unsafe { hew_fs_list_dir(path) }
+}
+
+/// List the entries in a directory.
+///
+/// Distinguishes missing and non-directory paths from a successful listing.
+pub fn try_list_dir(dir_path: String) -> Result<Vec<String>, IoError> {
+    if !exists(dir_path) {
+        return Err(IoError::NotFound(IO_ERROR_NOT_FOUND));
+    }
+    if !is_dir(dir_path) {
+        return Err(IoError::Other(IO_ERROR_OTHER));
+    }
+    Ok(unsafe { hew_fs_list_dir(dir_path) })
 }
 
 /// Rename or move a file or directory.
@@ -187,6 +350,8 @@ pub fn is_dir(path: String) -> bool {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 
+type FileReadStream {}
+
 extern "C" {
     fn hew_file_read(path: String) -> String;
     fn hew_file_write(path: String, content: String) -> i32;
@@ -203,4 +368,9 @@ extern "C" {
     fn hew_fs_rename(from: String, to: String) -> i32;
     fn hew_fs_copy(from: String, to: String) -> i32;
     fn hew_fs_is_dir(path: String) -> bool;
+    fn hew_stream_from_file_read(path: String) -> FileReadStream;
+    fn hew_stream_is_valid(stream: FileReadStream) -> bool;
+    fn hew_stream_last_error() -> String;
+    fn hew_stream_collect_string(stream: FileReadStream) -> String;
+    fn hew_string_to_bytes(s: String) -> bytes;
 }

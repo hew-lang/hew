@@ -88,7 +88,7 @@ The Hew standard library provides core types, data structures, networking, encod
 
 Each stdlib module consists of:
 
-- **`.hew` stub** -- Declares the public API (types, traits, functions) that Hew programs import
+- **`.hew` stub** -- Declares the public API (types, traits, functions) that Hew programs import, including Hew-native wrappers that can lift raw native status codes/messages into `Result` + enum surfaces like `IoError`
 - **Rust native crate** (`src/lib.rs`) -- Implements the module as `#[no_mangle] pub extern "C" fn` symbols linked into the final binary
 - **`hew.toml`** -- Package metadata for the module
 

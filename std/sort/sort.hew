@@ -18,26 +18,110 @@
 //! }
 //! ```
 
+// ── Helpers ───────────────────────────────────────────────────────────
+
+fn copy_ints(v: Vec<int>) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    for i in 0..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
+fn copy_strings(v: Vec<String>) -> Vec<String> {
+    let out: Vec<String> = Vec::new();
+    for i in 0..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
+fn swap_ints(v: Vec<int>, i: int, j: int) {
+    let tmp = v.get(i);
+    v.set(i, v.get(j));
+    v.set(j, tmp);
+}
+
+fn swap_strings(v: Vec<String>, i: int, j: int) {
+    let tmp = v.get(i);
+    v.set(i, v.get(j));
+    v.set(j, tmp);
+}
+
+fn sort_ints_in_place(v: Vec<int>) {
+    let n = v.len();
+    for i in 0..n {
+        var min_idx = i;
+        var j = i + 1;
+        while j < n {
+            if v.get(j) < v.get(min_idx) {
+                min_idx = j;
+            }
+            j = j + 1;
+        }
+        if min_idx != i {
+            swap_ints(v, i, min_idx);
+        }
+    }
+}
+
+fn sort_strings_in_place(v: Vec<String>) {
+    let n = v.len();
+    for i in 0..n {
+        var min_idx = i;
+        var j = i + 1;
+        while j < n {
+            if v.get(j) < v.get(min_idx) {
+                min_idx = j;
+            }
+            j = j + 1;
+        }
+        if min_idx != i {
+            swap_strings(v, i, min_idx);
+        }
+    }
+}
+
+fn reverse_in_place(v: Vec<int>) {
+    let n = v.len();
+    if n < 2 {
+        return;
+    }
+
+    var left = 0;
+    var right = n - 1;
+    while left < right {
+        swap_ints(v, left, right);
+        left = left + 1;
+        right = right - 1;
+    }
+}
+
 // ── Module-level functions ────────────────────────────────────────────
 
 /// Sort a vector of integers in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_ints(v: Vec<int>) -> Vec<int> {
-    unsafe { hew_sort_ints(v) }
+    let out = copy_ints(v);
+    sort_ints_in_place(out);
+    out
 }
 
 /// Sort a vector of strings in alphabetical order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_strings(v: Vec<String>) -> Vec<String> {
-    unsafe { hew_sort_strings(v) }
+    let out = copy_strings(v);
+    sort_strings_in_place(out);
+    out
 }
 
 /// Sort a vector of floats in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
+    // Keep float sorting on the Rust shim until Hew exposes a `total_cmp`-equivalent order.
     unsafe { hew_sort_floats(v) }
 }
 
@@ -45,14 +129,13 @@ pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
 ///
 /// Returns a new reversed vector; the original is unchanged.
 pub fn reverse(v: Vec<int>) -> Vec<int> {
-    unsafe { hew_sort_reverse(v) }
+    let out = copy_ints(v);
+    reverse_in_place(out);
+    out
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
-    fn hew_sort_ints(v: Vec<int>) -> Vec<int>;
-    fn hew_sort_strings(v: Vec<String>) -> Vec<String>;
     fn hew_sort_floats(v: Vec<f64>) -> Vec<f64>;
-    fn hew_sort_reverse(v: Vec<int>) -> Vec<int>;
 }

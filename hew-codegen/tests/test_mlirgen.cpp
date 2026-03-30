@@ -107,6 +107,15 @@ static int countSelectAddOps(mlir::Operation *op) {
   return count;
 }
 
+static int countResultfulIfOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](mlir::scf::IfOp ifOp) {
+    if (ifOp->getNumResults() > 0)
+      count++;
+  });
+  return count;
+}
+
 static bool allSelectAddsReturnI32(mlir::Operation *op) {
   bool ok = true;
   op->walk([&](hew::SelectAddOp add) {
@@ -602,6 +611,139 @@ fn main() -> int {
 
   if (!hasIf) {
     FAIL("expected scf.if operation");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-position if/match endings lower without scf.if results
+// ============================================================================
+static void test_statement_position_if_and_match_lower_without_results() {
+  TEST(statement_position_if_and_match_lower_without_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+enum Direction {
+    North;
+    South;
+}
+
+fn stmt_if(flag: bool) {
+    if flag {
+        if flag {
+            println(1);
+        } else {
+            println(2);
+        }
+    }
+}
+
+fn stmt_match(d: Direction) {
+    if true {
+        match d {
+            North => println(3),
+            South => println(4),
+        }
+    }
+}
+
+fn main() {
+    stmt_if(true);
+    stmt_match(North);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto stmtIf = lookupFuncBySuffix(module, "stmt_if");
+  auto stmtMatch = lookupFuncBySuffix(module, "stmt_match");
+  if (!stmtIf || !stmtMatch) {
+    FAIL("statement-position test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtIf) != 0) {
+    FAIL("statement-position if should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtMatch) != 0) {
+    FAIL("statement-position match should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Unannotated early-return tails lower final if/match as statements
+// ============================================================================
+static void test_unannotated_early_return_tail_if_match_lower_without_results() {
+  TEST(unannotated_early_return_tail_if_match_lower_without_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn unannotated_match_with_early_return(x: bool) {
+    if x {
+        return;
+    }
+    match x {
+        true => println(1),
+        false => println(2),
+    }
+}
+
+fn unannotated_if_with_early_return(x: bool) {
+    if x {
+        return;
+    }
+    if x {
+        println(3);
+    } else {
+        println(4);
+    }
+}
+
+fn main() {
+    unannotated_match_with_early_return(false);
+    unannotated_if_with_early_return(false);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto matchFn = lookupFuncBySuffix(module, "unannotated_match_with_early_return");
+  auto ifFn = lookupFuncBySuffix(module, "unannotated_if_with_early_return");
+  if (!matchFn || !ifFn) {
+    FAIL("unannotated early-return test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(matchFn) != 0) {
+    FAIL("unannotated early-return tail match should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(ifFn) != 0) {
+    FAIL("unannotated early-return tail if should not produce scf.if results");
     module.getOperation()->destroy();
     return;
   }
@@ -1548,6 +1690,8 @@ int main() {
   test_print();
   test_while_loop();
   test_if_else_expr();
+  test_statement_position_if_and_match_lower_without_results();
+  test_unannotated_early_return_tail_if_match_lower_without_results();
   test_arithmetic();
   test_comparisons();
   test_return_stmt();

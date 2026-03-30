@@ -146,10 +146,30 @@ pub struct HewMsgNode {
 // Resolved at link time: from mailbox_wasm.rs on WASM, from mailbox.rs
 // on native (tests).
 
+#[cfg(target_arch = "wasm32")]
 extern "C" {
     fn hew_mailbox_try_recv(mb: *mut c_void) -> *mut HewMsgNode;
     fn hew_mailbox_has_messages(mb: *mut c_void) -> i32;
     fn hew_msg_node_free(node: *mut HewMsgNode);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+unsafe fn hew_mailbox_try_recv(mb: *mut c_void) -> *mut HewMsgNode {
+    // SAFETY: Tests pass a mailbox allocated by mailbox_wasm with the same
+    // message-node layout as scheduler_wasm's local copy.
+    unsafe { crate::mailbox_wasm::hew_mailbox_try_recv(mb.cast()).cast() }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+unsafe fn hew_mailbox_has_messages(mb: *mut c_void) -> i32 {
+    // SAFETY: Tests pass a mailbox allocated by mailbox_wasm.
+    unsafe { crate::mailbox_wasm::hew_mailbox_has_messages(mb.cast()) }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+unsafe fn hew_msg_node_free(node: *mut HewMsgNode) {
+    // SAFETY: Tests pass message nodes allocated by mailbox_wasm.
+    unsafe { crate::mailbox_wasm::hew_msg_node_free(node.cast()) }
 }
 
 // ── Global state (single-threaded, no atomics needed) ───────────────────
@@ -432,7 +452,6 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
                     dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
-
                 }
 
                 // The dispatch function handled the reply channel (if any).
@@ -625,8 +644,9 @@ pub extern "C" fn hew_sched_metrics_global_queue_len() -> u64 {
 /// Get the reply channel for the currently-dispatched message (WASM).
 ///
 /// Returns null if no reply channel was set (fire-and-forget send).
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+#[must_use]
 pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
     // SAFETY: Single-threaded on WASM; no concurrent access.
     unsafe { CURRENT_REPLY_CHANNEL }
@@ -639,6 +659,8 @@ mod tests {
     use super::*;
     use std::ptr;
     use std::sync::Mutex;
+
+    use crate::internal::types::HewError;
 
     /// Serialize all tests in this module since they share `static mut`
     /// global state. Rust's test harness runs tests in parallel by
@@ -678,6 +700,143 @@ mod tests {
         }
     }
 
+    #[repr(C)]
+    struct AskDispatchState {
+        channel: *mut c_void,
+        msg_type: i32,
+        value: i32,
+    }
+
+    unsafe extern "C" fn reply_with_observed_channel(
+        state: *mut c_void,
+        msg_type: i32,
+        data: *mut c_void,
+        data_size: usize,
+    ) {
+        // SAFETY: tests initialize `state` to a valid AskDispatchState.
+        let state = unsafe { &mut *state.cast::<AskDispatchState>() };
+        state.channel = hew_get_reply_channel();
+        state.msg_type = msg_type;
+        if !data.is_null() && data_size >= std::mem::size_of::<i32>() {
+            // SAFETY: validated above.
+            state.value = unsafe { *data.cast::<i32>() };
+        }
+
+        if !state.channel.is_null() {
+            let mut reply_value = state.value * 2;
+            // SAFETY: reply channel comes from the in-flight message.
+            unsafe {
+                crate::reply_channel_wasm::hew_reply(
+                    state.channel.cast(),
+                    (&raw mut reply_value).cast(),
+                    std::mem::size_of::<i32>(),
+                );
+            }
+        }
+    }
+
+    static NOISY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
+    static REPLY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
+    static LATE_REPLY_SAW_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn noisy_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn reply_payload_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        data: *mut c_void,
+        data_size: usize,
+    ) {
+        REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+
+        let ch = hew_get_reply_channel();
+        assert!(
+            !ch.is_null(),
+            "WASM ask dispatch should expose a reply channel"
+        );
+
+        let mut reply_value = if !data.is_null() && data_size >= std::mem::size_of::<i32>() {
+            // SAFETY: validated above.
+            unsafe { *data.cast::<i32>() }
+        } else {
+            0
+        };
+
+        // SAFETY: ch is the active ask reply channel for this dispatch.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+    }
+
+    unsafe extern "C" fn reply_payload_observes_cancelled_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        data: *mut c_void,
+        data_size: usize,
+    ) {
+        REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+
+        let ch = hew_get_reply_channel();
+        assert!(
+            !ch.is_null(),
+            "WASM ask dispatch should expose a reply channel"
+        );
+        LATE_REPLY_SAW_CANCELLED.store(
+            // SAFETY: ch is the active ask reply channel for this dispatch.
+            unsafe { crate::reply_channel_wasm::test_cancelled(ch.cast()) },
+            Ordering::Relaxed,
+        );
+
+        let mut reply_value = if !data.is_null() && data_size >= std::mem::size_of::<i32>() {
+            // SAFETY: validated above.
+            unsafe { *data.cast::<i32>() }
+        } else {
+            0
+        };
+
+        // SAFETY: ch is the active ask reply channel for this dispatch.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+    }
+
+    fn reset_wasm_dispatch_counters() {
+        NOISY_DISPATCHES.store(0, Ordering::Relaxed);
+        REPLY_DISPATCHES.store(0, Ordering::Relaxed);
+        LATE_REPLY_SAW_CANCELLED.store(false, Ordering::Relaxed);
+    }
+
+    unsafe fn queue_wasm_message(actor: *mut HewActor, value: i32) {
+        let mut payload = value;
+        // SAFETY: actor is valid and the payload buffer is live for the call.
+        let rc = unsafe {
+            crate::mailbox_wasm::hew_mailbox_send(
+                (*actor).mailbox.cast(),
+                1,
+                (&raw mut payload).cast(),
+                std::mem::size_of::<i32>(),
+            )
+        };
+        assert_eq!(rc, HewError::Ok as i32);
+        // SAFETY: actor is a live cooperative WASM actor under test.
+        unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
+    }
+
     /// Reset all global state between tests.
     ///
     /// # Safety
@@ -696,6 +855,7 @@ mod tests {
             // scheduler-local CURRENT_ACTOR static.
             crate::actor::set_current_actor(ptr::null_mut());
             ptr::addr_of_mut!(PREV_ARENA).write(ptr::null_mut());
+            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(ptr::null_mut());
             ptr::addr_of_mut!(TASKS_SPAWNED).write(0);
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
@@ -1142,6 +1302,211 @@ mod tests {
     }
 
     #[test]
+    fn bounded_wasm_ask_does_not_drain_other_actors() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut noisy = stub_actor();
+        noisy.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        noisy.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        noisy
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        noisy.budget.store(1, Ordering::Relaxed);
+        let noisy_ptr: *mut HewActor = (&raw mut noisy).cast();
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        replier
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        // SAFETY: actors and their mailboxes are valid for the duration of the test.
+        unsafe {
+            queue_wasm_message(noisy_ptr, 1);
+            queue_wasm_message(noisy_ptr, 2);
+            queue_wasm_message(noisy_ptr, 3);
+        }
+
+        let ask_value = 77i32;
+        // SAFETY: actors and payload remain valid for the duration of the ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                replier_ptr.cast(),
+                1,
+                (&raw const ask_value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                None,
+            )
+        };
+
+        assert!(!reply.is_null(), "bounded ask should receive a reply");
+        // SAFETY: reply is an i32 payload allocated by hew_reply above.
+        unsafe {
+            assert_eq!(*reply.cast::<i32>(), ask_value);
+            libc::free(reply);
+        }
+
+        assert_eq!(NOISY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 1);
+        // SAFETY: noisy mailbox remains owned by this test.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(noisy.mailbox.cast()),
+                2
+            );
+        }
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        hew_sched_shutdown();
+        // SAFETY: mailboxes are no longer referenced after scheduler shutdown.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(noisy.mailbox.cast());
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+            reset_globals();
+        }
+    }
+
+    #[test]
+    fn bounded_wasm_ask_timeout_cancels_before_target_activation() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        replier
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        let ask_value = 23i32;
+        // SAFETY: actor and payload remain valid for the duration of the ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                replier_ptr.cast(),
+                1,
+                (&raw const ask_value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                Some(0),
+            )
+        };
+
+        assert!(
+            reply.is_null(),
+            "zero-timeout ask should cancel before the target actor runs"
+        );
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 0);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 1);
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            1,
+            "timeout should release only the caller-side ref until the queued message is handled"
+        );
+
+        // SAFETY: scheduler is initialized and the queued actor remains valid.
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(1) };
+        assert_eq!(remaining, 0);
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        hew_sched_shutdown();
+        // SAFETY: mailbox is no longer referenced after scheduler shutdown.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+            reset_globals();
+        }
+    }
+
+    #[test]
+    fn unbounded_wasm_ask_cancels_when_no_runnable_work_remains() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_observes_cancelled_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        replier
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        let ask_value = 41i32;
+        // SAFETY: actor and payload remain valid for the duration of the ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                replier_ptr.cast(),
+                1,
+                (&raw const ask_value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                None,
+            )
+        };
+
+        assert!(
+            reply.is_null(),
+            "unbounded ask should return null when no runnable work remains"
+        );
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 0);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            1,
+            "returning without a reply should leave only the queued sender-side ref"
+        );
+        assert!(
+            !LATE_REPLY_SAW_CANCELLED.load(Ordering::Relaxed),
+            "the deferred dispatch has not run yet"
+        );
+
+        replier
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        // SAFETY: actor remains valid for this test.
+        unsafe { crate::actor::wake_wasm_actor(replier_ptr.cast()) };
+
+        // SAFETY: scheduler is initialized and the queued actor remains valid.
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(1) };
+        assert_eq!(remaining, 0);
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert!(
+            LATE_REPLY_SAW_CANCELLED.load(Ordering::Relaxed),
+            "late repliers should observe the cancelled channel after ask returns null"
+        );
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        hew_sched_shutdown();
+        // SAFETY: mailbox is no longer referenced after scheduler shutdown.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+            reset_globals();
+        }
+    }
+
+    #[test]
     fn ask_with_channel_internal_enqueues_idle_actor_and_preserves_reply_channel() {
         let _guard = TEST_LOCK.lock().unwrap();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
@@ -1284,5 +1649,4 @@ mod tests {
 
         hew_sched_shutdown();
     }
-
 }

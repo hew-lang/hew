@@ -231,14 +231,8 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     if reply_channel.is_null() {
         return;
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    // SAFETY: `reply_channel` is a live native reply channel owned by the
-    // mailbox and we are retiring it with an empty reply.
-    unsafe {
-        crate::reply_channel::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
-    }
-    #[cfg(target_arch = "wasm32")]
+    // mailbox_wasm reply channels are always WASM-style channels — both in WASM
+    // production builds and in non-WASM test builds that exercise this module.
     // SAFETY: `reply_channel` is a live WASM reply channel owned by the mailbox
     // and we are retiring it with an empty reply.
     unsafe {

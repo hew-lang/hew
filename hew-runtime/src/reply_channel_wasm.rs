@@ -104,6 +104,19 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
     }
 }
 
+/// Whether a reply has already been deposited on the channel.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+pub(crate) unsafe fn reply_ready(ch: *mut WasmReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees `ch` is valid.
+    unsafe { (*ch).replied }
+}
+
 /// Read the reply value from the channel.
 ///
 /// Returns the reply pointer (caller must free with [`libc::free`]),
@@ -187,4 +200,13 @@ pub(crate) unsafe fn test_replied(ch: *mut WasmReplyChannel) -> bool {
     }
     // SAFETY: Test callers only pass live reply channels they own.
     unsafe { (*ch).replied }
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn test_cancelled(ch: *mut WasmReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: Test callers only pass live reply channels they own.
+    unsafe { (*ch).cancelled }
 }

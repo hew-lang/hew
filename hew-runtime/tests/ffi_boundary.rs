@@ -3230,15 +3230,16 @@ mod supervisor_escalation_tests {
     use std::ptr;
     use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
     use std::sync::Mutex;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use hew_runtime::actor::{hew_actor_send, hew_actor_trap};
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_add_child_supervisor,
         hew_supervisor_add_child_supervisor_with_init, hew_supervisor_get_child,
-        hew_supervisor_get_child_supervisor, hew_supervisor_is_running, hew_supervisor_new,
-        hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-        hew_supervisor_wait_restart, HewChildSpec, HewSupervisor,
+        hew_supervisor_get_child_supervisor, hew_supervisor_get_child_wait,
+        hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_set_restart_notify,
+        hew_supervisor_start, hew_supervisor_stop, hew_supervisor_wait_restart, HewChildSpec,
+        HewSupervisor,
     };
 
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -3397,6 +3398,82 @@ mod supervisor_escalation_tests {
             );
 
             hew_supervisor_stop(parent);
+        }
+    }
+
+    #[test]
+    fn get_child_wait_returns_restarted_child_without_explicit_notifier_setup() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_scheduler();
+
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
+            assert!(!sup.is_null());
+
+            let mut state: i32 = 0;
+            let spec = HewChildSpec {
+                name: ptr::null::<c_char>(),
+                init_state: (&raw mut state).cast(),
+                init_state_size: size_of::<i32>(),
+                dispatch: Some(noop_dispatch),
+                restart_policy: RESTART_PERMANENT,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            assert_eq!(hew_supervisor_start(sup), 0);
+
+            let child = hew_supervisor_get_child(sup, 0);
+            assert!(!child.is_null());
+            let first_id = (*child).id;
+
+            hew_actor_trap(child, 1);
+
+            let first_deadline = Instant::now() + Duration::from_secs(5);
+            let restarted_once = loop {
+                let current = hew_supervisor_get_child(sup, 0);
+                if !current.is_null() && (*current).id != first_id {
+                    break current;
+                }
+                assert!(
+                    Instant::now() < first_deadline,
+                    "first restart never completed"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let second_id = (*restarted_once).id;
+
+            hew_actor_trap(restarted_once, 1);
+
+            let pending_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let current = hew_supervisor_get_child(sup, 0);
+                if current.is_null() {
+                    break;
+                }
+                assert_eq!(
+                    (*current).id,
+                    second_id,
+                    "second crash should enter a null slot before delayed restart publishes"
+                );
+                assert!(
+                    Instant::now() < pending_deadline,
+                    "second crash never entered a waitable restart gap"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let restarted_twice = hew_supervisor_get_child_wait(sup, 0, 10_000);
+            assert!(!restarted_twice.is_null());
+            assert_ne!(
+                (*restarted_twice).id,
+                second_id,
+                "get_child_wait should publish the restarted child without wait_restart setup"
+            );
+
+            hew_supervisor_stop(sup);
         }
     }
 

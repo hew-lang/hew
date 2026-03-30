@@ -254,15 +254,18 @@ pub struct HewSupervisor {
     cancelled: AtomicBool,
     pending_restart_timers: AtomicUsize,
     self_actor: *mut HewActor,
+    /// Serializes public child-slot reads against restart-time replacement.
+    children_lock: Mutex<()>,
 
     /// Parent supervisor (set by `hew_supervisor_add_child_supervisor`).
     parent: *mut HewSupervisor,
     /// Index of this supervisor in parent's `child_supervisors` vec.
     index_in_parent: usize,
 
-    /// Optional condvar notified after each completed restart cycle.
-    /// The counter increments once per `restart_with_budget_and_strategy` call
-    /// (including when the budget is exhausted and the supervisor stops).
+    /// Restart notification shared by public wait helpers.
+    /// The counter increments once per completed restart cycle (including
+    /// budget exhaustion), and `hew_supervisor_set_restart_notify` resets it
+    /// for deterministic test sequencing.
     restart_notify: Option<Arc<(Mutex<usize>, Condvar)>>,
 }
 
@@ -621,6 +624,33 @@ fn notify_restart(sup: &HewSupervisor) {
     }
 }
 
+fn load_child_slot(sup: &HewSupervisor, index: usize) -> *mut HewActor {
+    let _guard = sup.children_lock.lock_or_recover();
+    sup.children.get(index).copied().unwrap_or(ptr::null_mut())
+}
+
+fn store_child_slot(sup: &mut HewSupervisor, index: usize, child: *mut HewActor) {
+    let _guard = sup.children_lock.lock_or_recover();
+    if let Some(slot) = sup.children.get_mut(index) {
+        *slot = child;
+    }
+}
+
+fn push_child_slot(sup: &mut HewSupervisor, child: *mut HewActor) {
+    let _guard = sup.children_lock.lock_or_recover();
+    sup.children.push(child);
+}
+
+fn take_child_slot(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
+    let _guard = sup.children_lock.lock_or_recover();
+    let Some(slot) = sup.children.get_mut(index) else {
+        return ptr::null_mut();
+    };
+    let child = *slot;
+    *slot = ptr::null_mut();
+    child
+}
+
 /// Stop this supervisor, notify waiters, and escalate to the parent if present.
 fn stop_and_maybe_escalate(sup: &mut HewSupervisor) {
     sup.running.store(0, Ordering::Release);
@@ -701,9 +731,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
 
     // Update existing slot (restarts). For initial spawns, the caller
     // pushes the returned pointer onto the children vec.
-    if index < sup.children.len() {
-        sup.children[index] = new_child;
-    }
+    store_child_slot(sup, index, new_child);
     new_child
 }
 
@@ -778,11 +806,14 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             // and would block the only worker running this dispatch).
             let mut deferred: Vec<DeferredFree> = Vec::new();
             for i in 0..sup.child_count {
-                if i != failed_index && !sup.children[i].is_null() {
+                if i != failed_index {
+                    let child = take_child_slot(sup, i);
+                    if child.is_null() {
+                        continue;
+                    }
                     // SAFETY: child pointer is valid.
-                    unsafe { actor::hew_actor_stop(sup.children[i]) };
-                    deferred.push(DeferredFree(sup.children[i]));
-                    sup.children[i] = ptr::null_mut();
+                    unsafe { actor::hew_actor_stop(child) };
+                    deferred.push(DeferredFree(child));
                 }
             }
             if !deferred.is_empty()
@@ -808,11 +839,11 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             // Deferred free as in ONE_FOR_ALL to avoid single-worker deadlock.
             let mut deferred: Vec<DeferredFree> = Vec::new();
             for i in (failed_index + 1)..sup.child_count {
-                if !sup.children[i].is_null() {
+                let child = take_child_slot(sup, i);
+                if !child.is_null() {
                     // SAFETY: child pointer is valid.
-                    unsafe { actor::hew_actor_stop(sup.children[i]) };
-                    deferred.push(DeferredFree(sup.children[i]));
-                    sup.children[i] = ptr::null_mut();
+                    unsafe { actor::hew_actor_stop(child) };
+                    deferred.push(DeferredFree(child));
                 }
             }
             if !deferred.is_empty()
@@ -899,17 +930,17 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
 
     // Check restart policy.
     if spec.restart_policy == RESTART_TEMPORARY {
-        sup.children[failed_index] = ptr::null_mut();
+        store_child_slot(sup, failed_index, ptr::null_mut());
         return;
     }
     if spec.restart_policy == RESTART_TRANSIENT && exit_state == HewActorState::Stopped as c_int {
-        sup.children[failed_index] = ptr::null_mut();
+        store_child_slot(sup, failed_index, ptr::null_mut());
         return;
     }
 
     // Check circuit breaker
     if !circuit_breaker_should_restart(spec) {
-        sup.children[failed_index] = ptr::null_mut();
+        store_child_slot(sup, failed_index, ptr::null_mut());
         return;
     }
 
@@ -1021,10 +1052,10 @@ unsafe extern "C" fn supervisor_dispatch(
             }
 
             // Free the old child.
-            if !sup.children[idx].is_null() {
+            let child = take_child_slot(sup, idx);
+            if !child.is_null() {
                 // SAFETY: child pointer is valid.
-                unsafe { actor::hew_actor_free(sup.children[idx]) };
-                sup.children[idx] = ptr::null_mut();
+                unsafe { actor::hew_actor_free(child) };
             }
 
             // SAFETY: sup is valid.
@@ -1097,7 +1128,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
         cancelled: AtomicBool::new(false),
         pending_restart_timers: AtomicUsize::new(0),
         self_actor: ptr::null_mut(),
-        restart_notify: None,
+        children_lock: Mutex::new(()),
+        restart_notify: Some(Arc::new((Mutex::new(0), Condvar::new()))),
     });
     Box::into_raw(sup)
 }
@@ -1174,7 +1206,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // Spawn the child actor.
     // SAFETY: spec is valid.
     let spawned = unsafe { restart_child_from_spec(s, i) };
-    s.children.push(spawned);
+    push_child_slot(s, spawned);
     s.child_count += 1;
     0
 }
@@ -1326,14 +1358,15 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
     }
     // Stop all children and wait for each to reach a terminal state.
     for i in 0..s.child_count {
-        if !s.children[i].is_null() {
+        let child = take_child_slot(&mut s, i);
+        if !child.is_null() {
             // SAFETY: child pointer is valid.
-            unsafe { actor::hew_actor_stop(s.children[i]) };
+            unsafe { actor::hew_actor_stop(child) };
             // Spin-wait until actor is no longer Running or Runnable.
             // SAFETY: child pointer is valid.
             unsafe {
                 loop {
-                    let state = (*s.children[i]).actor_state.load(Ordering::Acquire);
+                    let state = (*child).actor_state.load(Ordering::Acquire);
                     if state != HewActorState::Running as i32
                         && state != HewActorState::Runnable as i32
                     {
@@ -1341,9 +1374,8 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
                     }
                     std::thread::yield_now();
                 }
-                actor::hew_actor_free(s.children[i]);
+                actor::hew_actor_free(child);
             }
-            s.children[i] = ptr::null_mut();
         }
     }
 
@@ -1572,7 +1604,7 @@ pub unsafe extern "C" fn hew_supervisor_get_child(
     if i >= s.child_count {
         return ptr::null_mut();
     }
-    s.children[i]
+    load_child_slot(s, i)
 }
 
 /// Return the child actor pointer at `index`, waiting up to `timeout_ms`
@@ -1601,31 +1633,43 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
         return ptr::null_mut();
     }
 
+    let pair = match s.restart_notify {
+        Some(ref p) => Arc::clone(p),
+        None => return ptr::null_mut(),
+    };
+
     // Fast path: child is already available.
-    let child = s.children[i];
+    let child = load_child_slot(s, i);
     if !child.is_null() {
         return child;
     }
 
-    // Slow path: child is being restarted. Spin-wait with 1ms sleeps.
+    // Slow path: child is being restarted. Wait on the restart condvar
+    // instead of polling the slot without synchronization.
     #[expect(
         clippy::cast_sign_loss,
         reason = "timeout_ms is clamped to >= 0 by max(0)"
     )]
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+    let mut guard = pair.0.lock_or_recover();
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        let child = s.children[i];
+        let child = load_child_slot(s, i);
         if !child.is_null() {
             return child;
         }
-        if std::time::Instant::now() >= deadline {
+        // If the supervisor was cancelled, don't wait forever.
+        if s.cancelled.load(Ordering::Acquire) {
             return ptr::null_mut();
         }
-        // If the supervisor was cancelled, don't wait forever.
-        if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             return ptr::null_mut();
+        }
+        let (new_guard, wait_result) = pair.1.wait_timeout_or_recover(guard, remaining);
+        guard = new_guard;
+        if wait_result.timed_out() {
+            return load_child_slot(s, i);
         }
     }
 }
@@ -1815,7 +1859,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     } else {
         ptr::null_mut()
     };
-    s.children.push(spawned);
+    push_child_slot(s, spawned);
     s.child_count += 1;
 
     #[expect(
@@ -1927,11 +1971,12 @@ pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
 
 // ── Restart notification (deterministic testing) ────────────────────────────
 
-/// Install a restart notification condvar on this supervisor.
+/// Reset the restart notification counter on this supervisor.
 ///
-/// After installation, every completed restart cycle (including budget
-/// exhaustion) increments an internal counter and wakes any thread blocked
-/// in [`hew_supervisor_wait_restart`].
+/// Every completed restart cycle (including budget exhaustion) increments an
+/// internal counter and wakes any thread blocked in
+/// [`hew_supervisor_wait_restart`]. Resetting the counter lets tests wait for
+/// a fresh restart cycle window.
 ///
 /// # Safety
 ///
@@ -1941,7 +1986,12 @@ pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervis
     cabi_guard!(sup.is_null());
     // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
     let s = unsafe { &mut *sup };
-    s.restart_notify = Some(Arc::new((Mutex::new(0), Condvar::new())));
+    if let Some(ref pair) = s.restart_notify {
+        let mut count = pair.0.lock_or_recover();
+        *count = 0;
+    } else {
+        s.restart_notify = Some(Arc::new((Mutex::new(0), Condvar::new())));
+    }
 }
 
 /// Block until the supervisor's restart counter reaches at least `target`,
@@ -1952,8 +2002,7 @@ pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervis
 ///
 /// # Safety
 ///
-/// `sup` must be a valid pointer returned by [`hew_supervisor_new`] with a
-/// restart notifier installed via [`hew_supervisor_set_restart_notify`].
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_wait_restart(
     sup: *mut HewSupervisor,

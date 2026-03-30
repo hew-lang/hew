@@ -31,11 +31,11 @@ Define a network message format.
 
 ```bash
 # Hew
-hew build counter_service.hew -o counter && ./counter
+hew build examples/comparison/counter_service.hew -o counter && ./counter
 
 # Go
-go run counter_service.go
+go run examples/comparison/counter_service.go
 
 # Rust
-cargo run --example counter_service
+rustc --edition=2021 examples/comparison/counter_service.rs -o counter && ./counter
 ```

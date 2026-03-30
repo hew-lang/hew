@@ -22,7 +22,7 @@ hew run hello.hew
 # Start a new project
 adze init my_project
 cd my_project
-hew run src/main.hew
+hew run main.hew
 
 # Interactive REPL
 hew eval

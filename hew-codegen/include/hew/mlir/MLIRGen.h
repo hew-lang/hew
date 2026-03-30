@@ -17,6 +17,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/StringRef.h"
@@ -729,6 +730,7 @@ private:
   void emitDeferredCalls();
 
   // ── Drop tracking (RAII) ───────────────────────────────────────
+  using DropValueSet = llvm::DenseSet<mlir::Value>;
   struct DropEntry {
     std::string varName;
     std::string dropFuncName;
@@ -741,6 +743,9 @@ private:
     /// emitDropEntry loads from this instead of lookupVariable, which may
     /// fail after the declaring scope (e.g. match arm) has been popped.
     mlir::Value promotedSlot;
+    /// Stable identity for the binding this drop entry owns. Uses the
+    /// promoted slot when one exists, otherwise the original SSA value.
+    mlir::Value bindingIdentity;
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
@@ -753,9 +758,21 @@ private:
   // tracking doesn't work (variables declared in an unsafe block at depth 1
   // can appear in if/match arms at depth 2+).
   std::set<std::string> funcLevelReturnVarNames;
+  // Stable binding identities resolved from funcLevelDropExcludeVars as
+  // declarations are lowered. Used to exclude the exact returned binding
+  // even when the same variable name is shadowed elsewhere.
+  DropValueSet funcLevelDropExcludeValues;
+  // Names whose function-level return exclusions have been resolved to a
+  // stable binding identity.
+  std::set<std::string> funcLevelDropExcludeResolvedNames;
   // Variables referenced ONLY by explicit return statements (not trailing
   // expressions). Used for path-specific drops when returnSlotIsLazy.
   std::set<std::string> funcLevelEarlyReturnVarNames;
+  // Stable binding identities returned by explicit return statements.
+  DropValueSet funcLevelEarlyReturnExcludeValues;
+  // Names whose explicit-return exclusions have been resolved to a stable
+  // binding identity.
+  std::set<std::string> funcLevelEarlyReturnExcludeResolvedNames;
   // dropScopes.size() at the point where the current function body starts.
   size_t funcLevelDropScopeBase = 0;
   /// Pending parameter drops: populated before generateBlock, drained at
@@ -777,9 +794,15 @@ private:
   bool structHasOwnedFields(const std::string &name) const;
   void pushDropScope();
   void popDropScope();
+  mlir::Value resolveCurrentBindingIdentity(llvm::StringRef name);
+  void maybeRecordFunctionDropExclusion(const std::string &varName, mlir::Value bindingIdentity);
+  void resolveFunctionDropExclusionCandidates();
+  bool isFunctionDropExcluded(const DropEntry &entry, const DropValueSet &excludeValues) const;
+  void collectVisibleBindingIdentities(const ast::Expr &expr, DropValueSet &out,
+                                       std::set<std::string> *resolvedNames = nullptr);
   /// Emit drops for a scope, excluding variables that match the
-  /// funcLevelDropExcludeVars (by name+depth) or funcLevelReturnVarNames
-  /// (for RAII close entries).
+  /// resolved function-level exclusion identities (with a legacy name-based
+  /// fallback for entries that predate identity capture).
   void emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth);
   void registerDroppable(const std::string &varName, const std::string &dropFunc,
                          bool isUserDrop = false);
@@ -801,6 +824,7 @@ private:
   void emitAllDrops();
   void emitDropsExcept(const std::string &excludeVar);
   void emitDropsExcept(const std::set<std::string> &excludeVars);
+  void emitDropsExcept(const DropValueSet &excludeValues);
 
   void emitStringDrop(mlir::Value v);
   /// Returns true if `v` is a temporary string (heap-allocated, not from

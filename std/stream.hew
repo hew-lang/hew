@@ -30,6 +30,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// A readable stream handle, parameterised by element type.
 type Stream<T> {}
 
@@ -77,6 +79,8 @@ pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
 /// Open a file as a readable Stream<String>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be opened.
+/// Use `try_from_file` for a structured `Result<Stream<String>, fs.IoError>`.
+/// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
 ///
@@ -95,9 +99,44 @@ pub fn from_file(path: String) -> Result<Stream<String>, String> {
     }
 }
 
+fn io_error_from_message(message: String) -> IoError {
+    if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
+        IoError::NotFound(2)
+    } else if message.contains("os error 13")
+        || message.contains("Permission denied")
+        || message.contains("permission denied")
+    {
+        IoError::PermissionDenied(13)
+    } else if message.contains("os error 17")
+        || message.contains("Already exists")
+        || message.contains("already exists")
+        || message.contains("File exists")
+        || message.contains("file exists")
+    {
+        IoError::AlreadyExists(17)
+    } else {
+        IoError::Other(1)
+    }
+}
+
+/// Open a file as a readable `Stream<String>`.
+///
+/// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
+/// instead of a raw OS message string. Import `std::fs` when matching on the
+/// returned error value so you can use the existing unqualified
+/// `IoError::Variant(...)` constructor/pattern style.
+pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
+    match from_file(path) {
+        Ok(stream) => Ok(stream),
+        Err(message) => Err(io_error_from_message(message)),
+    }
+}
+
 /// Open a file as a writable Sink<String>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be created.
+/// Use `try_to_file` for a structured `Result<Sink<String>, fs.IoError>`.
+/// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
 ///
@@ -114,6 +153,19 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
         } else {
             Err(hew_stream_last_error())
         }
+    }
+}
+
+/// Open a file as a writable `Sink<String>`.
+///
+/// This preserves `to_file`'s runtime behaviour while returning `fs.IoError`
+/// instead of a raw OS message string. Import `std::fs` when matching on the
+/// returned error value so you can use the existing unqualified
+/// `IoError::Variant(...)` constructor/pattern style.
+pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
+    match to_file(path) {
+        Ok(sink) => Ok(sink),
+        Err(message) => Err(io_error_from_message(message)),
     }
 }
 

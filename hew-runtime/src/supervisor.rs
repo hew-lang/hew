@@ -1482,27 +1482,54 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
         return child;
     }
 
-    // Slow path: child is being restarted. Spin-wait with 1ms sleeps.
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "timeout_ms is clamped to >= 0 by max(0)"
-    )]
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        let child = s.children[i];
-        if !child.is_null() {
-            return child;
-        }
-        if std::time::Instant::now() >= deadline {
-            return ptr::null_mut();
-        }
-        // If the supervisor was cancelled, don't wait forever.
-        if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return ptr::null_mut();
+    // Slow path: child is being restarted. Wait on the restart condvar
+    // (set by notify_restart after the child is re-spawned) instead of
+    // spinning on a non-atomic read of children[i].
+    //
+    // If restart_notify is not set, enable it now so we can wait.
+    if s.restart_notify.is_none() {
+        // SAFETY: sup is valid per caller contract.
+        unsafe { hew_supervisor_set_restart_notify(sup) };
+    }
+
+    if let Some(ref pair) = s.restart_notify {
+        let guard = pair.0.lock_or_recover();
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "timeout_ms is clamped to >= 0 by max(0)"
+        )]
+        let timeout = std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+        let deadline = std::time::Instant::now() + timeout;
+
+        let mut guard = guard;
+        loop {
+            // Check if child is now available (under the mutex, so the
+            // write from restart_child_from_spec is visible after the
+            // condvar was signalled).
+            let child = s.children[i];
+            if !child.is_null() {
+                return child;
+            }
+            if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return ptr::null_mut();
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return ptr::null_mut();
+            }
+            // Wait for a restart notification or timeout.
+            let (new_guard, wait_result) = pair.1.wait_timeout_or_recover(guard, remaining);
+            guard = new_guard;
+            if wait_result.timed_out() {
+                // Final check after timeout.
+                let child = s.children[i];
+                return child; // null if still not available
+            }
         }
     }
+
+    // Fallback: no condvar available, return current value.
+    s.children[i]
 }
 
 /// Return the total number of children (actors + child supervisors).

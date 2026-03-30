@@ -207,7 +207,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       pendingDeclaredType.reset();
       return hew::HashMapNewOp::create(builder, currentLoc, hmType).getResult();
     }
-    return generateBlockExpr(blockExpr->block);
+    auto blockResult = generateBlockExpr(blockExpr->block);
+    if (!blockResult)
+      return nullptr;
+    return blockResult;
   }
   if (auto *cast = std::get_if<ast::ExprCast>(&expr.kind)) {
     auto location = currentLoc;
@@ -275,7 +278,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   }
 
   if (auto *ue = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
-    return generateBlock(ue->block);
+    auto unsafeResult = generateBlock(ue->block);
+    if (!unsafeResult)
+      return nullptr;
+    return unsafeResult;
   }
 
   if (auto *yield = std::get_if<ast::ExprYield>(&expr.kind)) {
@@ -1720,7 +1726,18 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
         if (!argVal)
           return nullptr;
-        auto optType = hew::OptionEnumType::get(&context, argVal.getType());
+        mlir::Type optType;
+        if (pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
+          optType = *pendingDeclaredType;
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+                 mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
+          optType = currentFunction.getResultTypes()[0];
+        if (!optType)
+          optType = hew::OptionEnumType::get(&context, argVal.getType());
+        if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
+            optionType && argVal.getType() != optionType.getInnerType()) {
+          argVal = coerceType(argVal, optionType.getInnerType(), location);
+        }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, optType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("Option"), mlir::ValueRange{argVal},
@@ -1740,10 +1757,15 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         mlir::Type resultType;
         if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1)
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+                 mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
         else {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
+        }
+        if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
+            resultEnumType && argVal.getType() != resultEnumType.getOkType()) {
+          argVal = coerceType(argVal, resultEnumType.getOkType(), location);
         }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
@@ -1764,10 +1786,15 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         mlir::Type resultType;
         if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1)
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+                 mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
         else {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
+        }
+        if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
+            resultEnumType && argVal.getType() != resultEnumType.getErrType()) {
+          argVal = coerceType(argVal, resultEnumType.getErrType(), location);
         }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
@@ -4814,8 +4841,11 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
         builder.restoreInsertionPoint(savedIP);
         mlir::memref::StoreOp::create(builder, location, cellPtr, rcAlloca);
 
-        DropEntry entry{rcName, "hew_rc_drop", false};
+        DropEntry entry;
+        entry.varName = rcName;
+        entry.dropFuncName = "hew_rc_drop";
         entry.promotedSlot = rcAlloca;
+        entry.bindingIdentity = rcAlloca;
         if (dropScopes.size() > funcLevelDropScopeBase)
           dropScopes[funcLevelDropScopeBase].push_back(std::move(entry));
       }
@@ -5028,10 +5058,19 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
   auto savedEarlyReturnVarNames = std::move(funcLevelEarlyReturnVarNames);
+  auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto savedEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
     // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
@@ -5136,6 +5175,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     // Build flat return-var name set for RAII exclusion
     for (const auto &[name, depth] : excludeVars)
       funcLevelReturnVarNames.insert(name);
+    resolveFunctionDropExclusionCandidates();
   }
 
   mlir::Value bodyVal = nullptr;
@@ -5155,6 +5195,11 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
   funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames);
+  funcLevelDropExcludeValues = std::move(savedExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(savedEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
@@ -5438,10 +5483,19 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
   auto savedEarlyReturnVarNames2 = std::move(funcLevelEarlyReturnVarNames);
+  auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto savedEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = dropScopes.size();
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
 
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
@@ -5478,6 +5532,11 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
   funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames2);
+  funcLevelDropExcludeValues = std::move(savedExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(savedEarlyReturnExcludeResolvedNames);
 
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;

@@ -822,6 +822,7 @@ add_wasm_file_test(structured_errors          e2e_structured_errors structured_e
 
 # Drop/memory (extended)
 add_wasm_file_test(drop_early_return          e2e_drop_scope       drop_early_return)
+add_wasm_file_test(drop_shadow_return         e2e_drop_scope       drop_shadow_return)
 add_wasm_file_test(drop_nested_struct         e2e_drop_trait       drop_nested_struct)
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)

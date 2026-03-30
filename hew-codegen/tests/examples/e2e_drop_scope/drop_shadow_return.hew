@@ -1,5 +1,5 @@
-// Regression test: shadowed variable in inner scope must still be dropped
-// even when an outer variable of the same name is in the return position.
+// Regression test: shadowed variables in return paths must use stable
+// binding identity, not just names, when excluding function-level drops.
 
 type Resource {
     id: int;
@@ -12,7 +12,7 @@ impl Drop for Resource {
     }
 }
 
-fn mk_outer() -> Resource {
+fn return_outer() -> Resource {
     let x = Resource { id: 1 };
     if true {
         let x = Resource { id: 2 };
@@ -23,10 +23,27 @@ fn mk_outer() -> Resource {
     x
 }
 
+fn return_inner() -> Resource {
+    let x = Resource { id: 10 };
+    if true {
+        let x = Resource { id: 20 };
+        println("early inner");
+        // Inner x (id:20) is returned and must NOT be dropped here.
+        // Outer x (id:10) stays in the function scope and must still drop.
+        return x;
+    }
+    x
+}
+
 fn main() -> int {
-    let result = mk_outer();
-    print("returned ");
-    println(result.id);
-    // result (id:1) should be dropped at end of main
+    let outer = return_outer();
+    print("outer ");
+    println(outer.id);
+
+    let inner = return_inner();
+    print("inner ");
+    println(inner.id);
+
+    // inner (id:20) then outer (id:1) should drop at end of main.
     return 0;
 }

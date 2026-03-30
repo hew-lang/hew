@@ -1,0 +1,5 @@
+import greeting;
+
+fn main() {
+    println(greeting.hello() + " " + greeting.target());
+}

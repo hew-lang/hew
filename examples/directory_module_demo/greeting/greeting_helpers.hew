@@ -1,0 +1,3 @@
+pub fn target() -> String {
+    "from a merged directory module!"
+}

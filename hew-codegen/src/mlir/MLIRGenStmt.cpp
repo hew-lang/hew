@@ -185,6 +185,8 @@ void MLIRGen::generateStmtsWithReturnGuards(
     if (val && returnSlot) {
       auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
       val = coerceType(val, slotType, location);
+      if (!val)
+        val = createDefaultValue(builder, location, slotType);
       mlir::memref::StoreOp::create(builder, location, val, returnSlot);
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
       mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);

@@ -24,12 +24,16 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <process.h>
 #define getpid _getpid
 #else
@@ -110,6 +114,62 @@ static bool allSelectAddsReturnI32(mlir::Operation *op) {
   return ok;
 }
 
+static std::string captureStderr(const std::function<void()> &fn) {
+  fflush(stderr);
+  auto capturePath = std::filesystem::current_path() /
+                     ("test_mlirgen_stderr_" + std::to_string(getpid()) + ".log");
+  FILE *capture = std::fopen(capturePath.string().c_str(), "wb");
+  if (!capture)
+    return {};
+
+#ifdef _WIN32
+  const int stderrFd = _fileno(stderr);
+  const int savedStderr = _dup(stderrFd);
+  if (savedStderr < 0) {
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+  if (_dup2(_fileno(capture), stderrFd) < 0) {
+    _close(savedStderr);
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+#else
+  const int stderrFd = fileno(stderr);
+  const int savedStderr = dup(stderrFd);
+  if (savedStderr < 0) {
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+  if (dup2(fileno(capture), stderrFd) < 0) {
+    close(savedStderr);
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+#endif
+
+  fn();
+  fflush(stderr);
+
+#ifdef _WIN32
+  _dup2(savedStderr, stderrFd);
+  _close(savedStderr);
+#else
+  dup2(savedStderr, stderrFd);
+  close(savedStderr);
+#endif
+  std::fclose(capture);
+
+  std::ifstream captured(capturePath, std::ios::binary);
+  std::string output((std::istreambuf_iterator<char>(captured)), {});
+  std::filesystem::remove(capturePath);
+  return output;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: find hew CLI binary (used as frontend for parsing)
 // ---------------------------------------------------------------------------
@@ -134,6 +194,61 @@ static std::string findHewCli() {
   }
   // Fall back to PATH
   return "hew";
+}
+
+static std::vector<uint8_t> hewToMsgpack(const std::string &source) {
+  std::string tmpPath = (std::filesystem::temp_directory_path() /
+                         ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
+                            .string();
+  {
+    std::ofstream tmp(tmpPath);
+    if (!tmp)
+      return {};
+    tmp << source;
+  }
+
+  std::string astPath = (std::filesystem::temp_directory_path() /
+                         ("test_mlirgen_" + std::to_string(getpid()) + ".msgpack"))
+                            .string();
+
+  static std::string hewCli = findHewCli();
+#ifdef _WIN32
+  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+                    "\" --emit-msgpack 2>NUL\"";
+#else
+  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+                    "\" --emit-msgpack 2>/dev/null";
+#endif
+  int rc = std::system(cmd.c_str());
+  std::filesystem::remove(tmpPath);
+
+  std::vector<uint8_t> astData;
+  if (rc == 0 && std::filesystem::exists(astPath)) {
+    std::ifstream astFile(astPath, std::ios::binary);
+    astData.assign(std::istreambuf_iterator<char>(astFile), {});
+  }
+
+  std::filesystem::remove(astPath);
+  return astData;
+}
+
+static int replaceMsgpackFixStr(std::vector<uint8_t> &data, const char *from, const char *to) {
+  const auto fromLen = std::strlen(from);
+  if (fromLen != std::strlen(to) || fromLen == 0 || fromLen > 31)
+    return 0;
+
+  const uint8_t tag = static_cast<uint8_t>(0xa0 | fromLen);
+  int replacements = 0;
+  for (size_t i = 0; i + 1 + fromLen <= data.size(); ++i) {
+    if (data[i] != tag)
+      continue;
+    if (std::memcmp(data.data() + i + 1, from, fromLen) != 0)
+      continue;
+    std::memcpy(data.data() + i + 1, to, fromLen);
+    ++replacements;
+    i += fromLen;
+  }
+  return replacements;
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1400,58 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Unsupported return coercion fails before verifier noise
+// ============================================================================
+static void test_unsupported_return_coercion_stops_before_verifier() {
+  TEST(unsupported_return_coercion_stops_before_verifier);
+
+  auto astData = hewToMsgpack(R"(
+fn main() -> int {
+    42
+}
+  )");
+  if (astData.empty()) {
+    FAIL("failed to produce msgpack AST");
+    return;
+  }
+  if (replaceMsgpackFixStr(astData, "int", "str") == 0) {
+    FAIL("failed to rewrite int return type in msgpack AST");
+    return;
+  }
+
+  hew::ast::Program program;
+  try {
+    program = hew::parseMsgpackAST(astData.data(), astData.size());
+  } catch (const std::exception &e) {
+    FAIL(e.what());
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for unsupported return coercion");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (stderrText.find("coerceType: no known conversion") == std::string::npos) {
+    FAIL("expected unsupported coercion diagnostic");
+    return;
+  }
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for unsupported coercion");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Select emits explicit send-failure cleanup and panic paths
 // ============================================================================
 static void test_select_emits_send_failure_cleanup() {
@@ -1451,6 +1618,7 @@ int main() {
   test_wire_enum_typedecl_preserves_variants();
   test_wire_enum_mixed_payload_match_positions();
   test_unresolved_generic_substitution_type_fails();
+  test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();
   test_join_emits_send_failure_cleanup();
 

@@ -743,7 +743,10 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     for (size_t i = 0; i < srcTuple.getElementTypes().size(); ++i) {
       auto elem = hew::TupleExtractOp::create(builder, location, srcTuple.getElementTypes()[i],
                                               value, builder.getI64IntegerAttr(i));
-      elements.push_back(coerceType(elem, dstTuple.getElementTypes()[i], location));
+      auto coercedElem = coerceType(elem, dstTuple.getElementTypes()[i], location);
+      if (!coercedElem)
+        return nullptr;
+      elements.push_back(coercedElem);
     }
     return hew::TupleCreateOp::create(builder, location, dstTuple, elements);
   }
@@ -968,6 +971,11 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
         if (dstHasReturn && srcHasReturn) {
           auto result = callOp.getResult(0);
           auto coerced = coerceType(result, llvmDstRet, location);
+          if (!coerced) {
+            thunkOp.erase();
+            builder.restoreInsertionPoint(savedIP);
+            return nullptr;
+          }
           mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coerced});
         } else {
           mlir::func::ReturnOp::create(builder, location);
@@ -1022,6 +1030,8 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
         auto elem = hew::ArrayExtractOp::create(builder, location, arrayType.getElementType(),
                                                 value, builder.getI64IntegerAttr(i));
         auto coerced = coerceType(elem, elemType, location);
+        if (!coerced)
+          return nullptr;
         hew::VecPushOp::create(builder, location, vec, coerced);
       }
       return vec;
@@ -1057,13 +1067,12 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
-  // Fallthrough: no explicit coercion found. Return the value with a warning
-  // rather than erroring, because the codegen has implicit coercion paths
-  // (e.g., string→int hashing, value→Option wrapping) that are not yet
-  // modelled as explicit coercions. These should be added over time.
+  // Fallthrough: no explicit coercion found. Fail closed so callers can stop
+  // materialising downstream IR from a mismatched SSA value.
+  ++errorCount_;
   emitError(location) << "coerceType: no known conversion from " << value.getType() << " to "
                       << targetType;
-  return value;
+  return nullptr;
 }
 
 // ============================================================================
@@ -3923,6 +3932,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
                          .getResult();
       if (slotVal.getType() != resultTypes[0])
         slotVal = coerceType(slotVal, resultTypes[0], location);
+      if (!slotVal)
+        slotVal = createDefaultValue(builder, location, resultTypes[0]);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       builder.setInsertionPointToStart(&selectOp.getElseRegion().front());
@@ -3930,12 +3941,16 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       if (!normalValue)
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
       normalValue = coerceType(normalValue, resultTypes[0], location);
+      if (!normalValue)
+        normalValue = createDefaultValue(builder, location, resultTypes[0]);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
       bodyValue = coerceType(bodyValue, resultTypes[0], location);
+      if (!bodyValue)
+        bodyValue = createDefaultValue(builder, location, resultTypes[0]);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
     } else {
       mlir::func::ReturnOp::create(builder, location);
@@ -4382,6 +4397,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
                          .getResult();
       if (slotVal.getType() != resultTypes[0])
         slotVal = coerceType(slotVal, resultTypes[0], location);
+      if (!slotVal)
+        slotVal = createDefaultValue(builder, location, resultTypes[0]);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       // Else (normal flow): yield body value
@@ -4391,6 +4408,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
       }
       normalValue = coerceType(normalValue, resultTypes[0], location);
+      if (!normalValue)
+        normalValue = createDefaultValue(builder, location, resultTypes[0]);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
@@ -4403,6 +4422,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       else
         emitAllDrops();
       auto coercedBody = coerceType(bodyValue, resultTypes[0], location);
+      if (!coercedBody)
+        coercedBody = createDefaultValue(builder, location, resultTypes[0]);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coercedBody});
     } else {
       emitAllDrops();

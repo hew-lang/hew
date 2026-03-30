@@ -1,0 +1,50 @@
+//! Tests for the std::net::url percent-encoding helpers.
+
+import std::net::url;
+import std::testing;
+
+#[test]
+fn test_encode_preserves_existing_ascii_behavior() {
+    testing.assert_eq_str(url.encode(""), "");
+    testing.assert_eq_str(url.encode("hello world"), "hello%20world");
+    testing.assert_eq_str(url.encode("a=1&b=2"), "a%3D1%26b%3D2");
+}
+
+#[test]
+fn test_encode_utf8_bytes_as_uppercase_hex() {
+    testing.assert_eq_str(url.encode("café"), "caf%C3%A9");
+}
+
+#[test]
+fn test_decode_preserves_existing_behavior() {
+    testing.assert_eq_str(url.decode("hello%20world"), "hello world");
+    testing.assert_eq_str(url.decode("bad%2Zseq"), "bad%2Zseq");
+    testing.assert_eq_str(url.decode("plus+sign"), "plus+sign");
+}
+
+#[test]
+fn test_decode_invalid_utf8_returns_empty_string() {
+    testing.assert_eq_str(url.decode("%FF%FE"), "");
+}
+
+#[test]
+fn test_decode_truncates_at_decoded_nul() {
+    testing.assert_eq_str(url.decode("%00"), "");
+    testing.assert_eq_str(url.decode("a%00b"), "a");
+}
+
+#[test]
+fn test_encode_query_skips_invalid_lines_and_uses_first_equals() {
+    testing.assert_eq_str(
+        url.encode_query("name=hello world\nskip-me\na=b=c"),
+        "name=hello%20world&a=b%3Dc"
+    );
+}
+
+#[test]
+fn test_encode_query_matches_existing_pair_encoding() {
+    testing.assert_eq_str(
+        url.encode_query("name=hello world\r\npage=1&2\nother=a+b"),
+        "name=hello%20world&page=1%262&other=a%2Bb"
+    );
+}

@@ -1,0 +1,119 @@
+//! Tests for the fs/stream structured wrapper surface.
+
+import std::fs;
+import std::stream;
+import std::testing;
+
+fn cleanup_file(file_path: String) {
+    if fs.exists(file_path) {
+        fs.delete(file_path);
+    }
+}
+
+#[test]
+fn test_try_read_missing_returns_not_found() {
+    let file_path = "tests/hew/_fs_stream_missing.txt";
+    cleanup_file(file_path);
+
+    match fs.try_read(file_path) {
+        Ok(_) => panic("expected missing file error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_try_write_read_size_and_delete_roundtrip() {
+    let file_path = "tests/hew/_fs_stream_roundtrip.txt";
+    cleanup_file(file_path);
+
+    match fs.try_write(file_path, "hello") {
+        Ok(_) => {},
+        Err(_) => panic("expected try_write to succeed"),
+    }
+
+    match fs.try_read(file_path) {
+        Ok(data) => testing.assert_eq_str(data, "hello"),
+        Err(_) => panic("expected try_read to succeed"),
+    }
+
+    testing.assert_true(fs.size(file_path) == 5);
+
+    match fs.try_delete(file_path) {
+        Ok(_) => {},
+        Err(_) => panic("expected try_delete to succeed"),
+    }
+}
+
+#[test]
+fn test_try_append_and_try_read_bytes() {
+    let file_path = "tests/hew/_fs_stream_bytes.txt";
+    cleanup_file(file_path);
+
+    match fs.try_write(file_path, "hello") {
+        Ok(_) => {},
+        Err(_) => panic("expected initial write to succeed"),
+    }
+
+    match fs.try_append(file_path, " world") {
+        Ok(_) => {},
+        Err(_) => panic("expected try_append to succeed"),
+    }
+
+    match fs.try_read_bytes(file_path) {
+        Ok(data) => testing.assert_true(data.len() == 11),
+        Err(_) => panic("expected try_read_bytes to succeed"),
+    }
+
+    cleanup_file(file_path);
+}
+
+#[test]
+fn test_try_list_dir_handles_success_and_missing_paths() {
+    match fs.try_list_dir("tests/hew") {
+        Ok(entries) => testing.assert_true(entries.len() > 0),
+        Err(_) => panic("expected tests/hew listing to succeed"),
+    }
+
+    match fs.try_list_dir("tests/hew/_fs_stream_missing_dir") {
+        Ok(_) => panic("expected missing directory error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_stream_try_from_file_and_try_to_file_use_ioerror() {
+    let missing_path = "tests/hew/_stream_missing.txt";
+    cleanup_file(missing_path);
+
+    match stream.try_from_file(missing_path) {
+        Ok(_) => panic("expected missing stream source"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+
+    let file_path = "tests/hew/_stream_roundtrip.txt";
+    cleanup_file(file_path);
+
+    match stream.try_to_file(file_path) {
+        Ok(sink) => {
+            sink.write("stream");
+            sink.close();
+        },
+        Err(_) => panic("expected try_to_file to succeed"),
+    }
+
+    match stream.try_from_file(file_path) {
+        Ok(file) => testing.assert_eq_str(file.collect(), "stream"),
+        Err(_) => panic("expected try_from_file to succeed"),
+    }
+
+    cleanup_file(file_path);
+}

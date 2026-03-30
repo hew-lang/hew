@@ -508,7 +508,16 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     // an owned param doesn't free it before the return.  Uses the same
     // funcLevelDropExcludeVars mechanism as normal functions.
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    auto prevFuncLevelDropExcludeValues = std::move(funcLevelDropExcludeValues);
+    auto prevFuncLevelDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+    auto prevFuncLevelEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+    auto prevFuncLevelEarlyReturnExcludeResolvedNames =
+        std::move(funcLevelEarlyReturnExcludeResolvedNames);
     funcLevelDropExcludeVars.clear();
+    funcLevelDropExcludeValues.clear();
+    funcLevelDropExcludeResolvedNames.clear();
+    funcLevelEarlyReturnExcludeValues.clear();
+    funcLevelEarlyReturnExcludeResolvedNames.clear();
     if (recv.body.trailing_expr) {
       if (auto *id = std::get_if<ast::ExprIdentifier>(
               &recv.body.trailing_expr->value.kind))
@@ -520,6 +529,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           funcLevelDropExcludeVars.insert({id->name, 0});
       }
     }
+    resolveFunctionDropExclusionCandidates();
 
     // Generate function body
     mlir::Value bodyValue = generateBlock(recv.body);
@@ -528,6 +538,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     // (excluding any trailing-expression variable via funcLevelDropExcludeVars)
     popDropScope();
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+    funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+    funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+    funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+    funcLevelEarlyReturnExcludeResolvedNames =
+        std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
 
     // Emit return
     if (!hasRealTerminator(builder.getInsertionBlock())) {

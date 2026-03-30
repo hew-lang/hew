@@ -787,8 +787,15 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
               auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
               mlir::memref::StoreOp::create(builder, location, elemVal, closeAlloca,
                                             mlir::ValueRange{});
-              if (!dropScopes.empty())
-                dropScopes.back().push_back({elemIdent->name, closeFn, false, closeAlloca});
+              if (!dropScopes.empty()) {
+                DropEntry entry;
+                entry.varName = elemIdent->name;
+                entry.dropFuncName = closeFn;
+                entry.closeAlloca = closeAlloca;
+                entry.bindingIdentity = resolveCurrentBindingIdentity(elemIdent->name);
+                maybeRecordFunctionDropExclusion(elemIdent->name, entry.bindingIdentity);
+                dropScopes.back().push_back(std::move(entry));
+              }
             }
           }
         }
@@ -908,8 +915,15 @@ void MLIRGen::registerDropsForVariable(
         auto allocaType = mlir::MemRefType::get({}, ptrType);
         auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
         mlir::memref::StoreOp::create(builder, location, value, closeAlloca, mlir::ValueRange{});
-        if (!dropScopes.empty())
-          dropScopes.back().push_back({varName, closeFn, false, closeAlloca});
+        if (!dropScopes.empty()) {
+          DropEntry entry;
+          entry.varName = varName;
+          entry.dropFuncName = closeFn;
+          entry.closeAlloca = closeAlloca;
+          entry.bindingIdentity = resolveCurrentBindingIdentity(varName);
+          maybeRecordFunctionDropExclusion(varName, entry.bindingIdentity);
+          dropScopes.back().push_back(std::move(entry));
+        }
       }
     }
   }
@@ -3089,6 +3103,8 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
       if (returnSlot) {
         auto val = generateExpression(stmt.value->value);
         if (val) {
+          collectVisibleBindingIdentities(stmt.value->value, funcLevelEarlyReturnExcludeValues,
+                                          &funcLevelEarlyReturnExcludeResolvedNames);
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
           val = coerceType(val, slotType, location);
           mlir::memref::StoreOp::create(builder, location, val, returnSlot);
@@ -3117,19 +3133,10 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
       if (val) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1)
           val = coerceType(val, currentFunction.getResultTypes()[0], location);
-        // Collect simple identifier references to exclude from drops (returning
-        // a variable directly means its storage must not be freed yet).
-        std::set<std::string> returnVarNames;
-        if (auto *id = std::get_if<ast::ExprIdentifier>(&stmt.value->value.kind)) {
-          returnVarNames.insert(id->name);
-        } else if (auto *si = std::get_if<ast::ExprStructInit>(&stmt.value->value.kind)) {
-          for (const auto &[fieldName, fieldVal] : si->fields) {
-            if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-              returnVarNames.insert(id->name);
-          }
-        }
-        if (!returnVarNames.empty())
-          emitDropsExcept(returnVarNames);
+        DropValueSet returnValues;
+        collectVisibleBindingIdentities(stmt.value->value, returnValues);
+        if (!returnValues.empty())
+          emitDropsExcept(returnValues);
         else
           emitAllDrops();
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{val});

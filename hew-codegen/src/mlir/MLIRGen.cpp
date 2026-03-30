@@ -3845,6 +3845,11 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   auto prevEarlyReturnFlag = earlyReturnFlag;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto prevFuncLevelDropExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto prevFuncLevelDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto prevFuncLevelEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto prevFuncLevelEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
   auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
   auto prevFnDefers = std::move(currentFnDefers);
@@ -3854,6 +3859,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   earlyReturnFlag = nullptr;
   channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   currentFnDefers.clear();
 
@@ -3913,6 +3922,11 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   earlyReturnFlag = prevEarlyReturnFlag;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+  funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
@@ -4006,6 +4020,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto prevEarlyReturnFlag = earlyReturnFlag;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto prevFuncLevelDropExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto prevFuncLevelDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto prevFuncLevelEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto prevFuncLevelEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
   auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
   auto prevFnDefers = std::move(currentFnDefers);
@@ -4015,6 +4034,10 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   earlyReturnFlag = nullptr;
   channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
   currentFnDefers.clear();
   uint32_t paramIdx = 0;
   for (const auto &param : fn.params) {
@@ -4054,9 +4077,9 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // Recursively collect identifiers from the return position of an
   // expression (including if/match/block branches) so their owning
   // variables are excluded from the function-level drop scope.
-  // Each entry stores (name, depth) where depth is the drop-scope nesting
-  // level relative to the function body.  This prevents a shadowed binding
-  // in an inner scope from being confused with the returned variable.
+  // Each candidate stores (name, depth) until lowering resolves it to a
+  // stable binding identity. The temporary depth tag lets us distinguish a
+  // returned outer binding from a shadowed inner binding with the same name.
   // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
   using ExcludeSet = std::set<std::pair<std::string, size_t>>;
   std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectExcludeVars;
@@ -4239,6 +4262,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   funcLevelReturnVarNames.clear();
   for (const auto &[name, depth] : funcLevelDropExcludeVars)
     funcLevelReturnVarNames.insert(name);
+  resolveFunctionDropExclusionCandidates();
 
   // Build a separate set of vars referenced ONLY by explicit return
   // statements. Used for path-specific drops when returnSlotIsLazy:
@@ -4313,42 +4337,6 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto *currentBlock = builder.getInsertionBlock();
   if (currentBlock &&
       (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
-
-    // Collect variable names referenced in the trailing/return expression
-    // to exclude from scope drops (ownership transfers to the return value).
-    std::set<std::string> trailingVarNames;
-    auto collectVarRefs = [](const ast::Expr &expr, std::set<std::string> &out) {
-      // Simple identifier
-      if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
-        out.insert(id->name);
-        return;
-      }
-      // Struct init: collect all field value identifiers
-      if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
-        for (const auto &[fieldName, fieldVal] : si->fields) {
-          if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-            out.insert(id->name);
-        }
-        return;
-      }
-      // Tuple: collect identifiers from each element
-      if (auto *te = std::get_if<ast::ExprTuple>(&expr.kind)) {
-        for (const auto &elem : te->elements) {
-          if (auto *id = std::get_if<ast::ExprIdentifier>(&elem->value.kind))
-            out.insert(id->name);
-        }
-        return;
-      }
-    };
-    if (fn.body.trailing_expr) {
-      collectVarRefs(fn.body.trailing_expr->value, trailingVarNames);
-    } else if (!fn.body.stmts.empty()) {
-      const auto &last = fn.body.stmts.back()->value;
-      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
-        collectVarRefs(exprStmt->expr.value, trailingVarNames);
-      }
-    }
-
     if (returnFlag && returnSlot && !resultTypes.empty()) {
       // Select between returnSlot (early return) and bodyValue (normal flow).
       // Drops were already emitted path-specifically in popDropScope.
@@ -4378,9 +4366,10 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       builder.setInsertionPointAfter(selectOp);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
-      // Emit drops before return (excluding the returned variables)
-      if (!trailingVarNames.empty())
-        emitDropsExcept(trailingVarNames);
+      // Emit drops before return, excluding the exact bindings whose
+      // ownership was transferred into the function result.
+      if (!funcLevelDropExcludeValues.empty())
+        emitDropsExcept(funcLevelDropExcludeValues);
       else
         emitAllDrops();
       auto coercedBody = coerceType(bodyValue, resultTypes[0], location);
@@ -4406,6 +4395,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   earlyReturnFlag = prevEarlyReturnFlag;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+  funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
@@ -4485,6 +4479,11 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto prevEarlyReturnFlag = earlyReturnFlag;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    auto prevFuncLevelDropExcludeValues = std::move(funcLevelDropExcludeValues);
+    auto prevFuncLevelDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+    auto prevFuncLevelEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+    auto prevFuncLevelEarlyReturnExcludeResolvedNames =
+        std::move(funcLevelEarlyReturnExcludeResolvedNames);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
     auto prevFnDefers = std::move(currentFnDefers);
@@ -4494,6 +4493,10 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     earlyReturnFlag = nullptr;
     channelIntOutValidAlloca = nullptr;
     funcLevelDropExcludeVars.clear();
+    funcLevelDropExcludeValues.clear();
+    funcLevelDropExcludeResolvedNames.clear();
+    funcLevelEarlyReturnExcludeValues.clear();
+    funcLevelEarlyReturnExcludeResolvedNames.clear();
     funcLevelDropScopeBase = dropScopes.size();
     currentFnDefers.clear();
 
@@ -4543,6 +4546,11 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     earlyReturnFlag = prevEarlyReturnFlag;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+    funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+    funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+    funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+    funcLevelEarlyReturnExcludeResolvedNames =
+        std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
     pendingFunctionParamDrops = std::move(prevPendingParamDrops);
     currentFnDefers = std::move(prevFnDefers);
@@ -4772,14 +4780,92 @@ void MLIRGen::pushDropScope() {
   dropScopes.emplace_back();
 }
 
+mlir::Value MLIRGen::resolveCurrentBindingIdentity(llvm::StringRef name) {
+  if (auto slot = getMutableVarSlot(name))
+    return slot;
+  return symbolTable.lookup(name);
+}
+
+void MLIRGen::maybeRecordFunctionDropExclusion(const std::string &varName,
+                                               mlir::Value bindingIdentity) {
+  if (!bindingIdentity || dropScopes.size() <= funcLevelDropScopeBase)
+    return;
+  size_t relDepth = dropScopes.size() - 1 - funcLevelDropScopeBase;
+  if (funcLevelDropExcludeVars.count({varName, relDepth})) {
+    funcLevelDropExcludeValues.insert(bindingIdentity);
+    funcLevelDropExcludeResolvedNames.insert(varName);
+  }
+}
+
+void MLIRGen::resolveFunctionDropExclusionCandidates() {
+  if (dropScopes.size() <= funcLevelDropScopeBase)
+    return;
+  for (size_t i = funcLevelDropScopeBase; i < dropScopes.size(); ++i) {
+    size_t relDepth = i - funcLevelDropScopeBase;
+    for (const auto &entry : dropScopes[i]) {
+      if (!entry.bindingIdentity)
+        continue;
+      if (funcLevelDropExcludeVars.count({entry.varName, relDepth})) {
+        funcLevelDropExcludeValues.insert(entry.bindingIdentity);
+        funcLevelDropExcludeResolvedNames.insert(entry.varName);
+      }
+    }
+  }
+}
+
+bool MLIRGen::isFunctionDropExcluded(const DropEntry &entry,
+                                     const DropValueSet &excludeValues) const {
+  return entry.bindingIdentity && excludeValues.count(entry.bindingIdentity) != 0;
+}
+
+void MLIRGen::collectVisibleBindingIdentities(const ast::Expr &expr, DropValueSet &out,
+                                              std::set<std::string> *resolvedNames) {
+  if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+    if (auto bindingIdentity = resolveCurrentBindingIdentity(id->name)) {
+      out.insert(bindingIdentity);
+      if (resolvedNames)
+        resolvedNames->insert(id->name);
+    }
+    return;
+  }
+  if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
+    for (const auto &[fieldName, fieldVal] : si->fields) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind)) {
+        if (auto bindingIdentity = resolveCurrentBindingIdentity(id->name)) {
+          out.insert(bindingIdentity);
+          if (resolvedNames)
+            resolvedNames->insert(id->name);
+        }
+      }
+    }
+    return;
+  }
+  if (auto *te = std::get_if<ast::ExprTuple>(&expr.kind)) {
+    for (const auto &elem : te->elements) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&elem->value.kind)) {
+        if (auto bindingIdentity = resolveCurrentBindingIdentity(id->name)) {
+          out.insert(bindingIdentity);
+          if (resolvedNames)
+            resolvedNames->insert(id->name);
+        }
+      }
+    }
+  }
+}
+
 void MLIRGen::emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth) {
   for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-    if (it->closeAlloca) {
-      if (!funcLevelReturnVarNames.count(it->varName))
-        emitDropEntry(*it);
-    } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-      emitDropEntry(*it);
+    if (isFunctionDropExcluded(*it, funcLevelDropExcludeValues))
+      continue;
+    if (!funcLevelDropExcludeResolvedNames.count(it->varName)) {
+      if (it->closeAlloca) {
+        if (funcLevelReturnVarNames.count(it->varName))
+          continue;
+      } else if (funcLevelDropExcludeVars.count({it->varName, relDepth})) {
+        continue;
+      }
     }
+    emitDropEntry(*it);
   }
 }
 
@@ -4791,9 +4877,9 @@ void MLIRGen::popDropScope() {
     auto *parentOp = block->getParentOp();
     bool isFuncLevel = mlir::isa<mlir::func::FuncOp>(parentOp);
 
-    // Scope depth relative to the current function body.  Used to match
-    // (name, depth) pairs in funcLevelDropExcludeVars so that a shadowed
-    // variable in an inner scope is not confused with the returned variable.
+    // Scope depth relative to the current function body. Legacy name-based
+    // fallback still uses this for entries that predate stable identity
+    // capture; resolved function-level exclusions key off bindingIdentity.
     size_t relDepth = (dropScopes.size() > funcLevelDropScopeBase)
                           ? dropScopes.size() - 1 - funcLevelDropScopeBase
                           : 0;
@@ -4819,19 +4905,28 @@ void MLIRGen::popDropScope() {
         // Then (early return): drop everything except return-expr vars.
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
         for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          if (!funcLevelEarlyReturnVarNames.count(it->varName))
-            emitDropEntry(*it);
+          if (isFunctionDropExcluded(*it, funcLevelEarlyReturnExcludeValues))
+            continue;
+          if (!funcLevelEarlyReturnExcludeResolvedNames.count(it->varName) &&
+              funcLevelEarlyReturnVarNames.count(it->varName))
+            continue;
+          emitDropEntry(*it);
         }
 
         // Else (normal flow): drop everything except trailing-expr vars.
         builder.setInsertionPointToStart(&guard.getElseRegion().front());
         for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          if (it->closeAlloca) {
-            if (!funcLevelReturnVarNames.count(it->varName))
-              emitDropEntry(*it);
-          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-            emitDropEntry(*it);
+          if (isFunctionDropExcluded(*it, funcLevelDropExcludeValues))
+            continue;
+          if (!funcLevelDropExcludeResolvedNames.count(it->varName)) {
+            if (it->closeAlloca) {
+              if (funcLevelReturnVarNames.count(it->varName))
+                continue;
+            } else if (funcLevelDropExcludeVars.count({it->varName, relDepth})) {
+              continue;
+            }
           }
+          emitDropEntry(*it);
         }
 
         builder.setInsertionPointAfter(guard);
@@ -4891,12 +4986,18 @@ void MLIRGen::popDropScope() {
 void MLIRGen::registerDroppable(const std::string &varName, const std::string &dropFunc,
                                 bool isUserDrop) {
   if (!dropScopes.empty()) {
-    DropEntry entry{varName, dropFunc, isUserDrop};
+    DropEntry entry;
+    entry.varName = varName;
+    entry.dropFuncName = dropFunc;
+    entry.isUserDrop = isUserDrop;
     // Capture the promoted alloca (if any) so the drop works even after
     // the declaring scope's MutableTableScopeT has been popped (e.g. when
     // a let-binding or materialized temp is inside a match arm whose
     // symbol table scope ends before function-level drops fire).
     entry.promotedSlot = getMutableVarSlot(varName);
+    entry.bindingIdentity =
+        entry.promotedSlot ? entry.promotedSlot : resolveCurrentBindingIdentity(varName);
+    maybeRecordFunctionDropExclusion(varName, entry.bindingIdentity);
     dropScopes.back().push_back(std::move(entry));
   }
 }
@@ -5369,8 +5470,12 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
   // drop is a no-op in the normal case and only fires when scope-exit
   // was skipped.
   if (dropScopes.size() > funcLevelDropScopeBase + 1) {
-    DropEntry funcEntry{tmpName.str(), info.dropFunc, info.isUserDrop};
+    DropEntry funcEntry;
+    funcEntry.varName = tmpName.str();
+    funcEntry.dropFuncName = info.dropFunc;
+    funcEntry.isUserDrop = info.isUserDrop;
     funcEntry.promotedSlot = alloca;
+    funcEntry.bindingIdentity = alloca;
     dropScopes[funcLevelDropScopeBase].push_back(std::move(funcEntry));
   }
 
@@ -5383,20 +5488,34 @@ void MLIRGen::emitDropsExcept(const std::string &excludeVar) {
   emitDropsExcept(excludeSet);
 }
 
+void MLIRGen::emitDropsExcept(const DropValueSet &excludeValues) {
+  auto *parentOp = builder.getInsertionBlock()->getParentOp();
+  if (!mlir::isa<mlir::func::FuncOp>(parentOp))
+    return;
+  for (size_t i = dropScopes.size(); i > funcLevelDropScopeBase; --i)
+    for (auto it = dropScopes[i - 1].rbegin(); it != dropScopes[i - 1].rend(); ++it)
+      if (!isFunctionDropExcluded(*it, excludeValues))
+        emitDropEntry(*it);
+}
+
 void MLIRGen::emitDropsExcept(const std::set<std::string> &excludeVars) {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
-  // NOTE: This uses name-based exclusion which can't handle shadowed variables
-  // correctly (lookupVariable resolves to the innermost binding, not the
-  // DropEntry's original alloca).  Fixing this properly requires storing the
-  // mlir::Value in DropEntry.  See deferred TODO.
-  //
+  DropValueSet excludeValues;
+  std::set<std::string> unresolvedNames;
+  for (const auto &name : excludeVars) {
+    if (auto bindingIdentity = resolveCurrentBindingIdentity(name))
+      excludeValues.insert(bindingIdentity);
+    else
+      unresolvedNames.insert(name);
+  }
   // Only iterate scopes from funcLevelDropScopeBase onwards to avoid
   // cross-function drops in nested function generation.
   for (size_t i = dropScopes.size(); i > funcLevelDropScopeBase; --i)
     for (auto it = dropScopes[i - 1].rbegin(); it != dropScopes[i - 1].rend(); ++it)
-      if (!excludeVars.count(it->varName))
+      if (!isFunctionDropExcluded(*it, excludeValues) &&
+          (!unresolvedNames.count(it->varName) || it->bindingIdentity))
         emitDropEntry(*it);
 }
 

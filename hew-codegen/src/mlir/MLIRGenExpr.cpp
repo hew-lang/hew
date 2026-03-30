@@ -4820,8 +4820,11 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
         builder.restoreInsertionPoint(savedIP);
         mlir::memref::StoreOp::create(builder, location, cellPtr, rcAlloca);
 
-        DropEntry entry{rcName, "hew_rc_drop", false};
+        DropEntry entry;
+        entry.varName = rcName;
+        entry.dropFuncName = "hew_rc_drop";
         entry.promotedSlot = rcAlloca;
+        entry.bindingIdentity = rcAlloca;
         if (dropScopes.size() > funcLevelDropScopeBase)
           dropScopes[funcLevelDropScopeBase].push_back(std::move(entry));
       }
@@ -5034,10 +5037,19 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
   auto savedEarlyReturnVarNames = std::move(funcLevelEarlyReturnVarNames);
+  auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto savedEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
     // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
@@ -5142,6 +5154,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     // Build flat return-var name set for RAII exclusion
     for (const auto &[name, depth] : excludeVars)
       funcLevelReturnVarNames.insert(name);
+    resolveFunctionDropExclusionCandidates();
   }
 
   mlir::Value bodyVal = nullptr;
@@ -5161,6 +5174,11 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
   funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames);
+  funcLevelDropExcludeValues = std::move(savedExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(savedEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
@@ -5444,10 +5462,19 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
   auto savedEarlyReturnVarNames2 = std::move(funcLevelEarlyReturnVarNames);
+  auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
+  auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+  auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+  auto savedEarlyReturnExcludeResolvedNames =
+      std::move(funcLevelEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = dropScopes.size();
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
+  funcLevelDropExcludeValues.clear();
+  funcLevelDropExcludeResolvedNames.clear();
+  funcLevelEarlyReturnExcludeValues.clear();
+  funcLevelEarlyReturnExcludeResolvedNames.clear();
 
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
@@ -5484,6 +5511,11 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
   funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames2);
+  funcLevelDropExcludeValues = std::move(savedExcludeValues);
+  funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
+  funcLevelEarlyReturnExcludeResolvedNames =
+      std::move(savedEarlyReturnExcludeResolvedNames);
 
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;

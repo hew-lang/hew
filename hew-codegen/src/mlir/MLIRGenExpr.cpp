@@ -5177,7 +5177,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   if (currentBlock &&
       (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
     if (returnType && bodyVal) {
-      bodyVal = coerceType(bodyVal, returnType, location);
+      bodyVal = coerceTypeForSink(bodyVal, returnType, location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyVal});
     } else if (returnType) {
       auto defVal = createDefaultValue(builder, location, returnType);

@@ -1,0 +1,14 @@
+// Negative test: actor receive return sinks must reject unsupported
+// function-ref -> int coercions instead of forwarding invalid SSA values.
+fn forty_two() -> int { 42 }
+
+actor Broken {
+    receive fn bad() -> int {
+        forty_two
+    }
+}
+
+fn main() {
+    let broken = spawn Broken();
+    await broken.bad();
+}

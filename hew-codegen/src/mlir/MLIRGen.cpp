@@ -918,6 +918,16 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   return nullptr;
 }
 
+mlir::Value MLIRGen::coerceTypeForSink(mlir::Value value, mlir::Type targetType,
+                                       mlir::Location location) {
+  auto coerced = coerceType(value, targetType, location);
+  if (coerced && coerced.getType() == targetType)
+    return coerced;
+
+  ++errorCount_;
+  return createDefaultValue(builder, location, targetType);
+}
+
 // ============================================================================
 // Symbol table operations
 // ============================================================================
@@ -3745,27 +3755,20 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
       auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
                          .getResult();
-      if (slotVal.getType() != resultTypes[0])
-        slotVal = coerceType(slotVal, resultTypes[0], location);
-      if (!slotVal)
-        slotVal = createDefaultValue(builder, location, resultTypes[0]);
+      slotVal = coerceTypeForSink(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       builder.setInsertionPointToStart(&selectOp.getElseRegion().front());
       mlir::Value normalValue = bodyValue;
       if (!normalValue)
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
-      normalValue = coerceType(normalValue, resultTypes[0], location);
-      if (!normalValue)
-        normalValue = createDefaultValue(builder, location, resultTypes[0]);
+      normalValue = coerceTypeForSink(normalValue, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
-      bodyValue = coerceType(bodyValue, resultTypes[0], location);
-      if (!bodyValue)
-        bodyValue = createDefaultValue(builder, location, resultTypes[0]);
+      bodyValue = coerceTypeForSink(bodyValue, resultTypes[0], location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
     } else {
       mlir::func::ReturnOp::create(builder, location);
@@ -4227,10 +4230,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
       auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
                          .getResult();
-      if (slotVal.getType() != resultTypes[0])
-        slotVal = coerceType(slotVal, resultTypes[0], location);
-      if (!slotVal)
-        slotVal = createDefaultValue(builder, location, resultTypes[0]);
+      slotVal = coerceTypeForSink(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       // Else (normal flow): yield body value
@@ -4239,9 +4239,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       if (!normalValue) {
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
       }
-      normalValue = coerceType(normalValue, resultTypes[0], location);
-      if (!normalValue)
-        normalValue = createDefaultValue(builder, location, resultTypes[0]);
+      normalValue = coerceTypeForSink(normalValue, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
@@ -4252,9 +4250,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         emitDropsExcept(trailingVarNames);
       else
         emitAllDrops();
-      auto coercedBody = coerceType(bodyValue, resultTypes[0], location);
-      if (!coercedBody)
-        coercedBody = createDefaultValue(builder, location, resultTypes[0]);
+      auto coercedBody = coerceTypeForSink(bodyValue, resultTypes[0], location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coercedBody});
     } else {
       emitAllDrops();

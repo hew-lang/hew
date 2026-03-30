@@ -184,9 +184,7 @@ void MLIRGen::generateStmtsWithReturnGuards(
     mlir::Value val = generateExpression(*trailingExpr);
     if (val && returnSlot) {
       auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-      val = coerceType(val, slotType, location);
-      if (!val)
-        val = createDefaultValue(builder, location, slotType);
+      val = coerceTypeForSink(val, slotType, location);
       mlir::memref::StoreOp::create(builder, location, val, returnSlot);
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
       mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
@@ -326,7 +324,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         auto val = generateIfStmtAsExpr(*ifNode);
         if (val && returnSlot) {
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
+          val = coerceTypeForSink(val, slotType, location);
           mlir::memref::StoreOp::create(builder, location, val, returnSlot);
           mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
         }
@@ -362,7 +360,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
                              : nullptr;
         if (val && returnSlot) {
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
+          val = coerceTypeForSink(val, slotType, location);
           mlir::memref::StoreOp::create(builder, location, val, returnSlot);
           mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
         }
@@ -3092,7 +3090,7 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
         auto val = generateExpression(stmt.value->value);
         if (val) {
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
+          val = coerceTypeForSink(val, slotType, location);
           mlir::memref::StoreOp::create(builder, location, val, returnSlot);
         }
       }
@@ -3118,7 +3116,7 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
       auto val = generateExpression(stmt.value->value);
       if (val) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1)
-          val = coerceType(val, currentFunction.getResultTypes()[0], location);
+          val = coerceTypeForSink(val, currentFunction.getResultTypes()[0], location);
         // Collect simple identifier references to exclude from drops (returning
         // a variable directly means its storage must not be freed yet).
         std::set<std::string> returnVarNames;

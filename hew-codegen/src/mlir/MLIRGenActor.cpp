@@ -532,7 +532,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     // Emit return
     if (!hasRealTerminator(builder.getInsertionBlock())) {
       if (!resultTypes.empty() && bodyValue) {
-        bodyValue = coerceType(bodyValue, resultTypes[0], location);
+        bodyValue = coerceTypeForSink(bodyValue, resultTypes[0], location);
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
       } else {
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});

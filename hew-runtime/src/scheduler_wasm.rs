@@ -1139,4 +1139,149 @@ mod tests {
         unsafe { hew_mailbox_free(mb_inner) };
         hew_sched_shutdown();
     }
+
+    #[test]
+    fn ask_with_channel_internal_enqueues_idle_actor_and_preserves_reply_channel() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut dispatch_state = AskDispatchState {
+            channel: ptr::null_mut(),
+            msg_type: 0,
+            value: 0,
+        };
+        let mut actor = stub_actor();
+        actor.state = (&raw mut dispatch_state).cast();
+        actor.dispatch = Some(reply_with_observed_channel);
+        // SAFETY: this test creates and exclusively owns the mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+        let value: i32 = 21;
+        // SAFETY: actor, channel, and payload are valid for the duration of the test.
+        let rc = unsafe {
+            crate::actor::ask_with_channel_wasm_internal(
+                actor_ptr.cast(),
+                7,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                ch.cast(),
+            )
+        };
+        assert_eq!(rc, HewError::Ok as i32);
+        assert_eq!(
+            // SAFETY: `ch` remains live for the duration of this test.
+            unsafe { crate::reply_channel_wasm::test_ref_count(ch) },
+            2,
+            "queued send must retain the caller-provided reply channel"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32
+        );
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(read_queue_len(), 1);
+        }
+
+        // SAFETY: mailbox belongs to this test, and the returned node is exclusively owned.
+        let msg = unsafe { crate::mailbox_wasm::hew_mailbox_try_recv(actor.mailbox.cast()) };
+        assert!(!msg.is_null());
+        // SAFETY: simulate the scheduler's reply-channel plumbing for a single message.
+        unsafe {
+            let dispatch = actor.dispatch.expect("test actor must have a dispatch");
+            let msg_ref = &*msg;
+            CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
+            dispatch(
+                actor.state,
+                msg_ref.msg_type,
+                msg_ref.data,
+                msg_ref.data_size,
+            );
+            CURRENT_REPLY_CHANNEL = ptr::null_mut();
+            (*msg).reply_channel = ptr::null_mut();
+            crate::mailbox_wasm::hew_msg_node_free(msg);
+        }
+
+        assert_eq!(
+            dispatch_state.channel,
+            ch.cast(),
+            "dispatch must observe the caller-provided reply channel"
+        );
+        assert_eq!(dispatch_state.msg_type, 7);
+        assert_eq!(dispatch_state.value, value);
+        assert_eq!(
+            // SAFETY: `ch` remains live until the explicit free below.
+            unsafe { crate::reply_channel_wasm::test_ref_count(ch) },
+            1,
+            "reply delivery must release the queued sender-side retain"
+        );
+
+        // SAFETY: reply_take returns a malloc'd pointer or null.
+        let reply = unsafe { crate::reply_channel_wasm::reply_take(ch) };
+        assert!(!reply.is_null());
+        // SAFETY: reply points to an i32 allocated by hew_reply above.
+        unsafe {
+            assert_eq!(*reply.cast::<i32>(), value * 2);
+            libc::free(reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+            reset_globals();
+        }
+    }
+
+    #[test]
+    fn ask_with_channel_internal_releases_retained_reply_ref_on_send_failure() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        // SAFETY: this test creates and exclusively owns the mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        // SAFETY: mailbox belongs to this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(actor.mailbox.cast()) };
+
+        let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+        // SAFETY: `ch` is a live reply channel allocated for this test.
+        assert_eq!(unsafe { crate::reply_channel_wasm::test_ref_count(ch) }, 1);
+
+        // SAFETY: actor and channel are valid; closed mailbox forces the failure path.
+        let rc = unsafe {
+            crate::actor::ask_with_channel_wasm_internal(
+                actor_ptr.cast(),
+                1,
+                ptr::null_mut(),
+                0,
+                ch.cast(),
+            )
+        };
+        assert_eq!(rc, HewError::ErrActorStopped as i32);
+        assert_eq!(
+            // SAFETY: `ch` is still live because the test retains ownership.
+            unsafe { crate::reply_channel_wasm::test_ref_count(ch) },
+            1,
+            "failed sends must release the queued sender-side retain"
+        );
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(read_queue_len(), 0);
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+        }
+
+        hew_sched_shutdown();
+    }
+
 }

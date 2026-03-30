@@ -2183,6 +2183,71 @@ pub unsafe extern "C" fn hew_actor_try_send(
     0
 }
 
+/// Shared WASM send-with-channel primitive for ask/select lowering.
+///
+/// # Safety
+///
+/// Same requirements as the native [`hew_actor_ask_with_channel`].
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn ask_with_channel_wasm_internal(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { crate::reply_channel_wasm::hew_reply_channel_retain(ch.cast()) };
+
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
+    let mut send_result = unsafe {
+        crate::mailbox_wasm::hew_mailbox_send_with_reply(a.mailbox.cast(), msg_type, data, size, ch)
+    };
+    if send_result == HewError::ErrClosed as i32 {
+        send_result = HewError::ErrActorStopped as i32;
+    }
+    if send_result != HewError::Ok as i32 {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { crate::reply_channel_wasm::hew_reply_channel_free(ch.cast()) };
+        return send_result;
+    }
+
+    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        a.idle_count.store(0, Ordering::Relaxed);
+        a.hibernating.store(0, Ordering::Relaxed);
+        // SAFETY: actor is valid.
+        unsafe { crate::scheduler_wasm::hew_wasm_sched_enqueue(actor.cast()) };
+    }
+
+    HewError::Ok as i32
+}
+
+/// Send a message with a caller-provided reply channel (WASM).
+///
+/// Mirrors the native send-with-channel contract for `select.add`: retain
+/// the caller-provided reply channel for the queued send, wake an idle actor,
+/// and return a status code without waiting for a reply.
+///
+/// # Safety
+///
+/// Same requirements as the native [`hew_actor_ask_with_channel`].
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_with_channel(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: same preconditions as ask_with_channel_wasm_internal.
+    unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch) }
+}
+
 /// Cooperative ask: send a request and run the scheduler until a reply
 /// arrives (WASM).
 ///
@@ -2201,37 +2266,15 @@ pub unsafe extern "C" fn hew_actor_ask(
 
     let ch = reply_channel_wasm::hew_reply_channel_new();
 
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { reply_channel_wasm::hew_reply_channel_retain(ch) };
-
-    // Send with reply channel in the HewMsgNode field (not packed in data).
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
-    let send_result = unsafe {
-        crate::mailbox_wasm::hew_mailbox_send_with_reply(
-            a.mailbox.cast(),
-            msg_type,
-            data,
-            size,
-            ch.cast(),
-        )
-    };
-
+    // SAFETY: ch is a live reply channel and `actor`/`data` follow the
+    // same preconditions as this exported ask API.
+    let send_result =
+        unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch.cast()) };
     if send_result != HewError::Ok as i32 {
-        // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new and the failed send
+        // already released the queued sender-side retain.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         return ptr::null_mut();
-    }
-
-    // Transition IDLE → RUNNABLE and enqueue.
-    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        // SAFETY: actor is valid.
-        unsafe { hew_wasm_sched_enqueue(actor.cast()) };
     }
 
     // Cooperatively process messages until the reply is deposited.

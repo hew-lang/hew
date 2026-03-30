@@ -885,6 +885,31 @@ mod tests {
     }
 
     #[test]
+    fn freeing_mailbox_releases_queued_reply_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
+            assert_eq!(
+                hew_mailbox_send_with_reply(mb, 7, ptr::null_mut(), 0, ch.cast()),
+                HewError::Ok as i32
+            );
+
+            hew_mailbox_free(mb);
+
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "draining queued messages must release the queued sender ref"
+            );
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
     fn bounded_overflow_drop_old() {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {

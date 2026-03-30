@@ -1,0 +1,18 @@
+actor Slow {
+    receive fn get() -> int {
+        1
+    }
+}
+
+fn fallback() -> int {
+    0
+}
+
+fn main() {
+    let slow = spawn Slow();
+    let result = select {
+        x from slow.get() => x,
+        after 1ms => fallback,
+    };
+    println(result);
+}

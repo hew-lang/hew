@@ -1722,10 +1722,6 @@ dependencies = [
 [[package]]
 name = "hew-std-math"
 version = "0.2.2"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
-]
 
 [[package]]
 name = "hew-std-misc-log"

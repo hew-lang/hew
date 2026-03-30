@@ -4,9 +4,10 @@
 //! floating-point functions (sqrt, pow, floor, ceil, round) plus
 //! common constants.
 //!
-//! All functions are compiled to MLIR/LLVM intrinsics by the codegen
-//! backend. The Rust FFI in `src/lib.rs` provides a fallback for
-//! linking contexts that bypass the MLIR math dialect.
+//! Integer helpers and constants are implemented directly in Hew.
+//! Floating-point functions are lowered to MLIR/LLVM math ops by the
+//! codegen backend. The Rust crate in `src/lib.rs` remains only as a
+//! workspace build placeholder.
 //!
 //! # Examples
 //!
@@ -74,7 +75,7 @@ pub fn sign(x: int) -> int {
 
 // ── Floating-point operations ─────────────────────────────────────────
 // Codegen emits MLIR math-dialect intrinsics for these. The bodies
-// below are pure-Hew fallbacks that satisfy the type-checker.
+// below are compile-time stubs that satisfy the type-checker.
 
 /// Return the absolute value of a float.
 pub fn abs_f(x: f64) -> f64 {

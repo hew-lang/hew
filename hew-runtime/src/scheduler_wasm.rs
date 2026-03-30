@@ -353,6 +353,10 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "reply_channel clear mirrors native scheduler"
+)]
 unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // SAFETY: Only valid actor pointers are ever enqueued by the runtime.
     let a = unsafe { &*actor };
@@ -415,6 +419,12 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
                 }
+
+                // The dispatch function handled the reply channel (if any).
+                // Clear it from the message node so msg_node_free doesn't
+                // send a duplicate reply.
+                // SAFETY: msg is exclusively owned by this scheduler tick.
+                unsafe { (*msg).reply_channel = std::ptr::null_mut() };
 
                 msgs_processed += 1;
                 a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);

@@ -221,7 +221,6 @@ struct ChildEvent {
 pub type SupervisorInitFn = unsafe extern "C" fn() -> *mut HewSupervisor;
 
 /// Specification for a child supervisor so the parent can restart it.
-#[expect(dead_code, reason = "reserved for parent-child supervisor restart")]
 #[derive(Debug)]
 struct SupervisorChildSpec {
     init_fn: SupervisorInitFn,
@@ -243,8 +242,9 @@ pub struct HewSupervisor {
 
     /// Child supervisors managed by this supervisor.
     child_supervisors: Vec<*mut HewSupervisor>,
-    /// Init specs for child supervisors (parallel to `child_supervisors` vec).
-    child_supervisor_specs: Vec<SupervisorChildSpec>,
+    /// Restart specs for child supervisors (parallel to `child_supervisors`).
+    /// Entries are `None` for child supervisors added without an init fn.
+    child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
 
     restart_times: [u64; MAX_RESTARTS_TRACK],
     restart_count: usize,
@@ -382,6 +382,13 @@ struct DeferredFree(*mut HewActor);
 // SAFETY: `HewActor` is `Send`; the pointer is exclusively owned by the
 // receiving thread after the supervisor nulls its copy.
 unsafe impl Send for DeferredFree {}
+
+/// Wrapper to stop an exhausted child supervisor off the scheduler thread.
+#[derive(Clone, Copy)]
+struct DeferredSupervisorStop(*mut HewSupervisor);
+// SAFETY: ownership is transferred to the background thread after the parent
+// replaces its slot with a fresh child supervisor.
+unsafe impl Send for DeferredSupervisorStop {}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -614,6 +621,41 @@ fn notify_restart(sup: &HewSupervisor) {
     }
 }
 
+/// Stop this supervisor, notify waiters, and escalate to the parent if present.
+fn stop_and_maybe_escalate(sup: &mut HewSupervisor) {
+    sup.running.store(0, Ordering::Release);
+    notify_restart(sup);
+    if !sup.parent.is_null() {
+        escalate_to_parent(sup);
+    }
+}
+
+fn stop_deferred_supervisor(deferred: DeferredSupervisorStop) {
+    // SAFETY: ownership was transferred to this background thread.
+    unsafe { hew_supervisor_stop(deferred.0) };
+}
+
+/// Stop a child supervisor without blocking the current scheduler worker.
+fn defer_stop_child_supervisor(child_sup: *mut HewSupervisor) {
+    if child_sup.is_null() {
+        return;
+    }
+
+    let child_addr = child_sup as usize;
+    if std::thread::Builder::new()
+        .name("deferred-sup-stop".into())
+        .spawn(move || {
+            stop_deferred_supervisor(DeferredSupervisorStop(child_addr as *mut HewSupervisor));
+        })
+        .is_err()
+    {
+        eprintln!(
+            "hew: warning: failed to spawn deferred supervisor-stop thread, cleaning up synchronously"
+        );
+        stop_deferred_supervisor(DeferredSupervisorStop(child_sup));
+    }
+}
+
 /// Restart a child from its spec, returning the new actor pointer.
 ///
 /// # Safety
@@ -665,6 +707,47 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
     new_child
 }
 
+/// Restart a child supervisor from its stored init fn, returning the new
+/// supervisor pointer.
+///
+/// # Safety
+///
+/// `sup` must be valid and `index` must be within `child_supervisors`.
+unsafe fn restart_child_supervisor_from_spec(
+    sup: &mut HewSupervisor,
+    index: usize,
+) -> *mut HewSupervisor {
+    let Some(spec) = sup
+        .child_supervisor_specs
+        .get(index)
+        .and_then(Option::as_ref)
+    else {
+        return ptr::null_mut();
+    };
+    let init_fn = spec.init_fn;
+    let old_child = sup.child_supervisors[index];
+
+    // SAFETY: `init_fn` was registered alongside this child supervisor.
+    let new_child = unsafe { init_fn() };
+    if new_child.is_null() {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: `new_child` and `sup` are valid pointers.
+    unsafe {
+        (*new_child).parent = std::ptr::from_mut::<HewSupervisor>(sup);
+        (*new_child).index_in_parent = index;
+        crate::shutdown::hew_shutdown_unregister_supervisor(new_child);
+    }
+    sup.child_supervisors[index] = new_child;
+
+    if !old_child.is_null() && old_child != new_child {
+        defer_stop_child_supervisor(old_child);
+    }
+
+    new_child
+}
+
 /// Restart children after checking the supervisor restart budget.
 ///
 /// # Safety
@@ -677,11 +760,7 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
 
     let recent = restart_within_window(sup);
     if recent >= sup.max_restarts {
-        sup.running.store(0, Ordering::Release);
-        notify_restart(sup);
-        if !sup.parent.is_null() {
-            escalate_to_parent(sup);
-        }
+        stop_and_maybe_escalate(sup);
         return;
     }
 
@@ -755,6 +834,47 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             }
         }
         _ => {}
+    }
+
+    notify_restart(sup);
+}
+
+/// Restart an exhausted child supervisor subtree after checking the parent's
+/// restart budget. Child-supervisor recovery is only available when the child
+/// was registered with an init fn.
+///
+/// # Safety
+///
+/// `sup` must be valid and `failed_index` must be within `child_supervisors`.
+unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_index: usize) {
+    if failed_index >= sup.child_supervisors.len() {
+        stop_and_maybe_escalate(sup);
+        return;
+    }
+
+    if sup
+        .child_supervisor_specs
+        .get(failed_index)
+        .and_then(Option::as_ref)
+        .is_none()
+    {
+        stop_and_maybe_escalate(sup);
+        return;
+    }
+
+    let recent = restart_within_window(sup);
+    if recent >= sup.max_restarts {
+        stop_and_maybe_escalate(sup);
+        return;
+    }
+
+    record_restart(sup);
+
+    // SAFETY: `failed_index` is validated above and `sup` is the live parent
+    // supervisor whose child-supervisor slot we are replacing.
+    if unsafe { restart_child_supervisor_from_spec(sup, failed_index) }.is_null() {
+        stop_and_maybe_escalate(sup);
+        return;
     }
 
     notify_restart(sup);
@@ -885,8 +1005,12 @@ unsafe extern "C" fn supervisor_dispatch(
 
             // child_index == -1 signals a child supervisor escalation.
             if event.child_index < 0 {
-                sup.running.store(0, Ordering::Release);
-                notify_restart(sup);
+                let Ok(idx) = usize::try_from(event.child_id) else {
+                    stop_and_maybe_escalate(sup);
+                    return;
+                };
+                // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
+                unsafe { restart_child_supervisor_with_budget(sup, idx) };
                 return;
             }
 
@@ -1200,7 +1324,6 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
             unsafe { hew_supervisor_stop(child_sup) };
         }
     }
-
     // Stop all children and wait for each to reach a terminal state.
     for i in 0..s.child_count {
         if !s.children[i].is_null() {
@@ -1286,7 +1409,6 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
             unsafe { free_supervisor_resources(*child_sup) };
         }
     }
-
     // Drop the Box — child spec Drop impls free names + init_state.
     // SAFETY: sup was allocated with Box::into_raw and is valid per caller contract.
     drop(unsafe { Box::from_raw(sup) });
@@ -1355,11 +1477,14 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor(
     }
     // SAFETY: caller guarantees parent is valid.
     let p = unsafe { &mut *parent };
+    let idx = p.child_supervisors.len();
     p.child_supervisors.push(child);
+    p.child_supervisor_specs.push(None);
     // Set parent back-pointer on the child supervisor.
     // SAFETY: caller guarantees child is valid.
     unsafe {
         (*child).parent = parent;
+        (*child).index_in_parent = idx;
         // Unregister from top-level list (was registered in
         // hew_supervisor_start when parent was still null).
         crate::shutdown::hew_shutdown_unregister_supervisor(child);
@@ -1391,7 +1516,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
     let idx = p.child_supervisors.len();
     p.child_supervisors.push(child);
     p.child_supervisor_specs
-        .push(SupervisorChildSpec { init_fn });
+        .push(Some(SupervisorChildSpec { init_fn }));
     // SAFETY: child and parent are valid pointers per caller contract.
     unsafe {
         (*child).parent = parent;
@@ -1482,54 +1607,27 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
         return child;
     }
 
-    // Slow path: child is being restarted. Wait on the restart condvar
-    // (set by notify_restart after the child is re-spawned) instead of
-    // spinning on a non-atomic read of children[i].
-    //
-    // If restart_notify is not set, enable it now so we can wait.
-    if s.restart_notify.is_none() {
-        // SAFETY: sup is valid per caller contract.
-        unsafe { hew_supervisor_set_restart_notify(sup) };
-    }
-
-    if let Some(ref pair) = s.restart_notify {
-        let guard = pair.0.lock_or_recover();
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "timeout_ms is clamped to >= 0 by max(0)"
-        )]
-        let timeout = std::time::Duration::from_millis(timeout_ms.max(0) as u64);
-        let deadline = std::time::Instant::now() + timeout;
-
-        let mut guard = guard;
-        loop {
-            // Check if child is now available (under the mutex, so the
-            // write from restart_child_from_spec is visible after the
-            // condvar was signalled).
-            let child = s.children[i];
-            if !child.is_null() {
-                return child;
-            }
-            if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                return ptr::null_mut();
-            }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return ptr::null_mut();
-            }
-            // Wait for a restart notification or timeout.
-            let (new_guard, wait_result) = pair.1.wait_timeout_or_recover(guard, remaining);
-            guard = new_guard;
-            if wait_result.timed_out() {
-                // Final check after timeout.
-                let child = s.children[i];
-                return child; // null if still not available
-            }
+    // Slow path: child is being restarted. Spin-wait with 1ms sleeps.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "timeout_ms is clamped to >= 0 by max(0)"
+    )]
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let child = s.children[i];
+        if !child.is_null() {
+            return child;
+        }
+        if std::time::Instant::now() >= deadline {
+            return ptr::null_mut();
+        }
+        // If the supervisor was cancelled, don't wait forever.
+        if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return ptr::null_mut();
         }
     }
-
-    // Fallback: no condvar available, return current value.
-    s.children[i]
 }
 
 /// Return the total number of children (actors + child supervisors).

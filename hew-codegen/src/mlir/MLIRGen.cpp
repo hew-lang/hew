@@ -1617,10 +1617,13 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                  mlir::ValueRange{supVal, idxVal})
           .getResult();
     }
+    // Wait up to 5 seconds for the child to be available during restarts.
+    auto timeoutVal = mlir::arith::ConstantIntOp::create(
+        builder, location, builder.getI32Type(), 5000);
     return hew::RuntimeCallOp::create(
                builder, location, mlir::TypeRange{ptrType},
-               mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child"),
-               mlir::ValueRange{supVal, idxVal})
+               mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child_wait"),
+               mlir::ValueRange{supVal, idxVal, timeoutVal})
         .getResult();
   }
 

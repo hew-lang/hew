@@ -1450,6 +1450,61 @@ pub unsafe extern "C" fn hew_supervisor_get_child(
     s.children[i]
 }
 
+/// Return the child actor pointer at `index`, waiting up to `timeout_ms`
+/// for the child to become available if it's currently being restarted.
+///
+/// Returns null if the child is still unavailable after the timeout, or if
+/// the supervisor has been cancelled.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_get_child_wait(
+    sup: *mut HewSupervisor,
+    index: c_int,
+    timeout_ms: i32,
+) -> *mut HewActor {
+    if sup.is_null() || index < 0 {
+        return ptr::null_mut();
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+    #[expect(clippy::cast_sign_loss, reason = "guarded by index >= 0 check above")]
+    let i = index as usize;
+    if i >= s.child_count {
+        return ptr::null_mut();
+    }
+
+    // Fast path: child is already available.
+    let child = s.children[i];
+    if !child.is_null() {
+        return child;
+    }
+
+    // Slow path: child is being restarted. Spin-wait with 1ms sleeps.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "timeout_ms is clamped to >= 0 by max(0)"
+    )]
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let child = s.children[i];
+        if !child.is_null() {
+            return child;
+        }
+        if std::time::Instant::now() >= deadline {
+            return ptr::null_mut();
+        }
+        // If the supervisor was cancelled, don't wait forever.
+        if s.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return ptr::null_mut();
+        }
+    }
+}
+
 /// Return the total number of children (actors + child supervisors).
 ///
 /// # Safety

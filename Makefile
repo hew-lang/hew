@@ -191,6 +191,18 @@ endif
 astgen:
 	cargo run -q -p hew-astgen -- $(ASTGEN_ARGS)
 
+# Clean the cmake build directory (forces full reconfigure).
+codegen-clean:
+	rm -rf hew-codegen/build
+
+# Clean, reconfigure, and rebuild the codegen test infrastructure.
+codegen-rebuild: codegen-clean codegen
+
+# Run a subset of codegen E2E tests by regex pattern.
+# Usage: make codegen-test PATTERN=supervisor
+codegen-test: codegen
+	cd hew-codegen/build && ctest --output-on-failure $(if $(PATTERN),-R "$(PATTERN)")
+
 codegen:
 ifeq ($(shell uname -s),Darwin)
 	cmake -B hew-codegen/build -G Ninja \

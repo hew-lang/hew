@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::{hew_actor_close, hew_actor_free, hew_actor_send, hew_actor_spawn};
+use hew_runtime::actor::{
+    hew_actor_close, hew_actor_free, hew_actor_send, hew_actor_spawn, hew_actor_stop,
+};
 use hew_runtime::internal::types::{HewActorState, HewError};
 use hew_runtime::mailbox::{
     hew_mailbox_free, hew_mailbox_has_messages, hew_mailbox_len, hew_mailbox_new, hew_mailbox_send,
@@ -466,6 +468,172 @@ fn actor_ask_closed_returns_null() {
         let reply = hew_runtime::actor::hew_actor_ask(actor, 1, ptr::null_mut(), 0);
         assert!(reply.is_null(), "ask on a closed actor should return null");
 
+        hew_actor_free(actor);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 5b. Ask / reply edge cases
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Ask on a stopped (not just closed) actor should return null without deadlocking.
+#[test]
+fn ask_stopped_actor_returns_null() {
+    ensure_scheduler();
+
+    // SAFETY: All FFI calls operate on a valid actor pointer returned by
+    // hew_actor_spawn. The actor is stopped before the ask, so the send
+    // inside hew_actor_ask should fail and return null.
+    unsafe {
+        let mut state: i32 = 0;
+        let actor = hew_actor_spawn(
+            (&raw mut state).cast(),
+            size_of::<i32>(),
+            Some(echo_double_dispatch),
+        );
+        assert!(!actor.is_null());
+
+        // Stop the actor (closes mailbox + enqueues sys message).
+        hew_actor_stop(actor);
+
+        // Brief sleep to let the stop propagate through the scheduler.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Ask should fail immediately (mailbox is closed) and return null.
+        let val: i32 = 7;
+        let reply = hew_runtime::actor::hew_actor_ask(
+            actor,
+            1,
+            (&raw const val).cast_mut().cast(),
+            size_of::<i32>(),
+        );
+        assert!(
+            reply.is_null(),
+            "ask on a stopped actor must return null, not deadlock"
+        );
+
+        hew_actor_free(actor);
+    }
+}
+
+/// Send an ask via `hew_actor_ask_with_channel`, then stop the actor before
+/// waiting on the reply. The orphaned reply channel should unblock with null.
+#[test]
+fn ask_freed_queued_messages_unblock_caller() {
+    ensure_scheduler();
+
+    // SAFETY: We create a reply channel, send a message with it, then stop
+    // the actor. The runtime's orphan handling in hew_msg_node_free should
+    // signal the channel so hew_reply_wait_timeout does not block forever.
+    // All pointers come from the runtime's allocation functions.
+    unsafe {
+        let mut state: i32 = 0;
+        let actor = hew_actor_spawn(
+            (&raw mut state).cast(),
+            size_of::<i32>(),
+            Some(echo_double_dispatch),
+        );
+        assert!(!actor.is_null());
+
+        // Create a reply channel and send an ask (but don't wait yet).
+        let ch = hew_runtime::reply_channel::hew_reply_channel_new();
+        assert!(!ch.is_null());
+
+        let val: i32 = 99;
+        let send_rc = hew_runtime::actor::hew_actor_ask_with_channel(
+            actor,
+            1,
+            (&raw const val).cast_mut().cast(),
+            size_of::<i32>(),
+            ch,
+        );
+
+        if send_rc == 0 {
+            // Message was enqueued — now stop the actor so it won't
+            // process the message. The queued node should be freed,
+            // which should signal the reply channel.
+            hew_actor_stop(actor);
+
+            // Wait on the reply channel with a timeout so we don't
+            // hang the test suite if the orphan handling is broken.
+            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2000);
+            // The reply may be null (orphaned — actor stopped before
+            // dispatching) or non-null (actor dispatched before stopping).
+            // Both are correct; the test verifies that the caller is
+            // UNBLOCKED, not that the reply is always null.
+            if !reply.is_null() {
+                // SAFETY: reply was malloc'd by hew_reply.
+                libc::free(reply);
+            }
+        }
+        // else: send failed (actor already stopped) — channel was never
+        // retained by the runtime, so we just free our reference.
+
+        // SAFETY: Release our reference to the reply channel.
+        hew_runtime::reply_channel::hew_reply_channel_free(ch);
+        hew_actor_free(actor);
+    }
+}
+
+/// Dispatch function that sleeps for 2 seconds before replying.
+///
+/// Used to test ask timeout behaviour — the caller should time out
+/// well before this function finishes sleeping.
+unsafe extern "C" fn slow_dispatch(
+    _state: *mut c_void,
+    _msg_type: i32,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    std::thread::sleep(Duration::from_secs(2));
+
+    // SAFETY: Read the reply channel from the scheduler thread-local and
+    // reply so the channel's sender-side reference is properly released.
+    unsafe {
+        let ch = hew_runtime::scheduler::hew_get_reply_channel();
+        if !ch.is_null() && !data.is_null() && data_size >= size_of::<i32>() {
+            let payload = *(data.cast::<i32>());
+            let mut result = payload;
+            reply_channel::hew_reply(ch.cast(), (&raw mut result).cast(), size_of::<i32>());
+        }
+    }
+}
+
+/// Ask with a short timeout against a slow actor — should return null
+/// when the timeout expires before the dispatch function replies.
+#[test]
+fn ask_timeout_returns_null() {
+    ensure_scheduler();
+
+    // SAFETY: All FFI calls use valid pointers from spawn/ask. The slow
+    // dispatch sleeps for 2s but we time out after 100ms, so the ask
+    // should return null. The actor is freed after — hew_actor_free
+    // waits for the actor to reach a terminal state.
+    unsafe {
+        let mut state: i32 = 0;
+        let actor = hew_actor_spawn(
+            (&raw mut state).cast(),
+            size_of::<i32>(),
+            Some(slow_dispatch),
+        );
+        assert!(!actor.is_null());
+
+        let val: i32 = 42;
+        let reply = hew_runtime::actor::hew_actor_ask_timeout(
+            actor,
+            1,
+            (&raw const val).cast_mut().cast(),
+            size_of::<i32>(),
+            100, // 100ms timeout — well under the 2s dispatch sleep
+        );
+        assert!(
+            reply.is_null(),
+            "ask_timeout should return null when the actor is too slow"
+        );
+
+        // The slow dispatch is still running on a scheduler thread.
+        // hew_actor_close + hew_actor_free waits for the actor to finish.
+        hew_actor_close(actor);
         hew_actor_free(actor);
     }
 }

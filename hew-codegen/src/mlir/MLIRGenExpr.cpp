@@ -408,10 +408,14 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                              mlir::ValueRange{operandVal, idxVal})
                       .getResult();
                 }
+                // Wait up to 5 seconds for the child to be available
+                // (handles restart windows where children[idx] is temporarily null).
+                auto timeoutVal = mlir::arith::ConstantIntOp::create(
+                    builder, location, builder.getI32Type(), 5000);
                 return hew::RuntimeCallOp::create(
                            builder, location, mlir::TypeRange{ptrType},
-                           mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child"),
-                           mlir::ValueRange{operandVal, idxVal})
+                           mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child_wait"),
+                           mlir::ValueRange{operandVal, idxVal, timeoutVal})
                     .getResult();
               }
             }

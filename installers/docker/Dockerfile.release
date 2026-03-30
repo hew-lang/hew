@@ -13,20 +13,32 @@
 ARG VERSION=0.0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Stage 0: Pre-built LLVM+MLIR for Alpine (musl)
+# ═════════════════════════════════════════════════════════════════════════════
+# Built by alpine-llvm.yml and pushed to GHCR. Contains /opt/llvm-22 with
+# static LLVM+MLIR libraries, cmake configs, and tools (including mlir-tblgen).
+# Alpine 3.21 does not ship llvm22/mlir22 packages, so we use this image.
+FROM ghcr.io/hew-lang/llvm-alpine:22 AS llvm
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Stage 1: Rust binaries + all std staticlibs (musl-static)
 # ═════════════════════════════════════════════════════════════════════════════
 FROM rust:alpine3.21 AS rust-builder
 
-# musl-dev: libc headers for static linking
-# cmake/ninja/samurai: build system for embedded C++ codegen
-# llvm22-dev/mlir22-dev/clang22-dev: LLVM/MLIR for the embedded codegen library
-RUN apk add --no-cache \
-    musl-dev cmake samurai \
-    llvm22-dev mlir22-dev clang22-dev
+# Copy pre-built LLVM+MLIR from the llvm stage
+COPY --from=llvm /opt/llvm-22 /opt/llvm-22
 
-ENV LLVM_PREFIX=/usr/lib/llvm22
-ENV CC=clang-22
-ENV CXX=clang++-22
+# musl-dev: libc headers for static linking
+# cmake/samurai: build system for embedded C++ codegen
+# clang: C/C++ compiler for the codegen library
+# zlib-static/zstd-static: compression libs for LLVM (static)
+RUN apk add --no-cache \
+    musl-dev cmake samurai clang \
+    zlib-dev zlib-static zstd-dev zstd-static
+
+ENV LLVM_PREFIX=/opt/llvm-22
+ENV CC=clang
+ENV CXX=clang++
 ENV HEW_EMBED_STATIC=1
 
 WORKDIR /src

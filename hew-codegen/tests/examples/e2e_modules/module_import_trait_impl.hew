@@ -1,19 +1,19 @@
-// Tests that importing multiple stdlib modules with trait impls
-// doesn't cause duplicate generation or mangling conflicts.
-// Regression test for #384.
+// Multiple stdlib imports with handle types — tests cross-module
+// method dispatch and trait impl generation don't cause duplicate
+// generation or mangling conflicts. Regression test for #384.
 import std::net::url;
 import std::text::regex;
 
 fn main() {
-    // Use url module (has Drop impl on Url handle type)
+    // Use url module (Url handle type)
     let u = url.parse("https://hew.sh");
     println(u.host());
 
-    // Use regex module (has Drop impl on Regex handle type)
+    // Use regex module (Regex handle type)
     let re = regex.new("[a-z]+");
     let found = re.is_match("hello");
     println(found);
 
-    // Both handle types are dropped here — two cross-module Drop impls
+    // Both handle types are dropped here — exercises cross-module cleanup
     println("done");
 }

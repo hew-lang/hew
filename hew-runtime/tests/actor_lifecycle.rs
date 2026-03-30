@@ -554,13 +554,21 @@ fn ask_freed_queued_messages_unblock_caller() {
             // which should signal the reply channel.
             hew_actor_stop(actor);
 
-            // Wait on the reply channel with a timeout so we don't
-            // hang the test suite if the orphan handling is broken.
-            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2000);
+            // Wait on the reply channel with a short timeout. If orphan
+            // handling is broken, this will block for the full timeout.
+            let start = std::time::Instant::now();
+            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 200);
+            let elapsed = start.elapsed();
+
             // The reply may be null (orphaned — actor stopped before
             // dispatching) or non-null (actor dispatched before stopping).
             // Both are correct; the test verifies that the caller is
-            // UNBLOCKED, not that the reply is always null.
+            // UNBLOCKED promptly, not that the reply is always null.
+            assert!(
+                elapsed.as_millis() < 200,
+                "reply channel should be unblocked promptly, took {}ms",
+                elapsed.as_millis()
+            );
             if !reply.is_null() {
                 // SAFETY: reply was malloc'd by hew_reply.
                 libc::free(reply);

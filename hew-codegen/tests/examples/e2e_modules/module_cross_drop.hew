@@ -1,6 +1,6 @@
-// Tests that handle types from imported stdlib modules are properly
-// dropped when they go out of scope. The Drop impl is defined in the
-// stdlib module, not in the importing module.
+// Tests cross-module method dispatch on stdlib handle types.
+// The Url handle type is defined in std::net::url and methods are
+// called from the importing module.
 import std::net::url;
 
 fn main() {
@@ -8,6 +8,6 @@ fn main() {
     println(u.scheme());
     println(u.host());
     println(u.path());
-    // u is dropped here — exercises cross-module Drop impl
+    // u is dropped here — exercises cross-module handle cleanup
     println("done");
 }

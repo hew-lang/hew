@@ -2281,13 +2281,12 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         }
 
         if remaining == 0 {
-            if timeout_ms.is_some() {
-                // No runnable work remains, so the cooperative caller cannot
-                // make further progress before returning control to the host.
-                // Treat this the same as a timeout/cancellation.
-                // SAFETY: ch remains live until the caller-side reference is released below.
-                unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
-            }
+            // No runnable work remains, so the cooperative caller cannot make
+            // further progress before returning control to the host. Cancel
+            // the channel for both bounded and unbounded asks so any later
+            // replier or queued-message cleanup skips allocating reply data.
+            // SAFETY: ch remains live until the caller-side reference is released below.
+            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference before returning without a reply.
             unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
             return ptr::null_mut();

@@ -719,6 +719,7 @@ mod tests {
 
     static NOISY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
     static REPLY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
+    static LATE_REPLY_SAW_CANCELLED: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "C" fn noisy_dispatch(
         _state: *mut c_void,
@@ -760,9 +761,46 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn reply_payload_observes_cancelled_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        data: *mut c_void,
+        data_size: usize,
+    ) {
+        REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        assert!(
+            !ch.is_null(),
+            "WASM ask dispatch should expose a reply channel"
+        );
+        LATE_REPLY_SAW_CANCELLED.store(
+            // SAFETY: ch is the active ask reply channel for this dispatch.
+            unsafe { crate::reply_channel_wasm::test_cancelled(ch.cast()) },
+            Ordering::Relaxed,
+        );
+
+        let mut reply_value = if !data.is_null() && data_size >= std::mem::size_of::<i32>() {
+            // SAFETY: validated above.
+            unsafe { *data.cast::<i32>() }
+        } else {
+            0
+        };
+
+        // SAFETY: ch is the active ask reply channel for this dispatch.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+    }
+
     fn reset_wasm_dispatch_counters() {
         NOISY_DISPATCHES.store(0, Ordering::Relaxed);
         REPLY_DISPATCHES.store(0, Ordering::Relaxed);
+        LATE_REPLY_SAW_CANCELLED.store(false, Ordering::Relaxed);
     }
 
     unsafe fn queue_wasm_message(actor: *mut HewActor, value: i32) {
@@ -1193,6 +1231,78 @@ mod tests {
         let remaining = unsafe { crate::bridge::hew_wasm_tick(1) };
         assert_eq!(remaining, 0);
         assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        hew_sched_shutdown();
+        // SAFETY: mailbox is no longer referenced after scheduler shutdown.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+            reset_globals();
+        }
+    }
+
+    #[test]
+    fn unbounded_wasm_ask_cancels_when_no_runnable_work_remains() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_observes_cancelled_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        replier
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        let ask_value = 41i32;
+        // SAFETY: actor and payload remain valid for the duration of the ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                replier_ptr.cast(),
+                1,
+                (&raw const ask_value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                None,
+            )
+        };
+
+        assert!(
+            reply.is_null(),
+            "unbounded ask should return null when no runnable work remains"
+        );
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 0);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            1,
+            "returning without a reply should leave only the queued sender-side ref"
+        );
+        assert!(
+            !LATE_REPLY_SAW_CANCELLED.load(Ordering::Relaxed),
+            "the deferred dispatch has not run yet"
+        );
+
+        replier
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        // SAFETY: actor remains valid for this test.
+        unsafe { crate::actor::wake_wasm_actor(replier_ptr.cast()) };
+
+        // SAFETY: scheduler is initialized and the queued actor remains valid.
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(1) };
+        assert_eq!(remaining, 0);
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 1);
+        assert!(
+            LATE_REPLY_SAW_CANCELLED.load(Ordering::Relaxed),
+            "late repliers should observe the cancelled channel after ask returns null"
+        );
         assert_eq!(hew_sched_metrics_global_queue_len(), 0);
         assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
 

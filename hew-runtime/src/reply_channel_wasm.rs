@@ -201,3 +201,12 @@ pub(crate) unsafe fn test_replied(ch: *mut WasmReplyChannel) -> bool {
     // SAFETY: Test callers only pass live reply channels they own.
     unsafe { (*ch).replied }
 }
+
+#[cfg(test)]
+pub(crate) unsafe fn test_cancelled(ch: *mut WasmReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: Test callers only pass live reply channels they own.
+    unsafe { (*ch).cancelled }
+}

@@ -3940,7 +3940,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // null-after-move tracking to avoid double-frees when a param is consumed
   // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
-  mlir::Value bodyValue = generateBlock(*method.body);
+  mlir::Value bodyValue =
+      generateBlock(*method.body, /*statementPosition=*/resultTypes.empty());
 
   auto *currentBlock = builder.getInsertionBlock();
   if (currentBlock &&
@@ -4380,8 +4381,21 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     ensureReturnSlot(location);
   }
 
-  // Generate the function body
-  mlir::Value bodyValue = generateBlock(fn.body);
+  // Generate the function body. Functions with an explicit unit/void return
+  // type (or implicit main) discard the block result. For unannotated functions
+  // that already contain nested explicit returns, keep final statement-position
+  // if/match lowering on the statement path rather than forcing a value path
+  // with no established function result type.
+  bool finalStmtNeedsStatementLowering = false;
+  if (!fn.return_type && hasNestedReturn && !fn.body.trailing_expr && !fn.body.stmts.empty()) {
+    const auto &lastStmt = fn.body.stmts.back()->value;
+    finalStmtNeedsStatementLowering =
+        std::holds_alternative<ast::StmtIf>(lastStmt.kind) ||
+        std::holds_alternative<ast::StmtMatch>(lastStmt.kind);
+  }
+  bool bodyResultDiscarded = isImplicitMainReturn || (fn.return_type && resultTypes.empty()) ||
+                             finalStmtNeedsStatementLowering;
+  mlir::Value bodyValue = generateBlock(fn.body, /*statementPosition=*/bodyResultDiscarded);
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
@@ -4590,7 +4604,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
     // Generate the function body naturally — loops, conditionals all work
-    generateBlock(fn.body);
+    generateBlock(fn.body, /*statementPosition=*/true);
 
     // Ensure terminator
     auto *currentBlock = builder.getInsertionBlock();

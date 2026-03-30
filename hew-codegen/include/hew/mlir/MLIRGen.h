@@ -261,7 +261,9 @@ private:
   // ── Block lowering ───────────────────────────────────────────────
   /// Generates all statements in a block and returns the block's trailing
   /// expression value (or nullptr if the block has no trailing expression).
-  mlir::Value generateBlock(const ast::Block &block);
+  /// When statementPosition is true, final if/match statements are lowered as
+  /// plain statements instead of implicit block results.
+  mlir::Value generateBlock(const ast::Block &block, bool statementPosition = false);
 
   // ── Match ────────────────────────────────────────────────────────
   void generateMatchStmt(const ast::StmtMatch &stmt);

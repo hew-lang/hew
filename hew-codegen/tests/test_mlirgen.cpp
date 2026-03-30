@@ -29,6 +29,7 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -103,6 +104,15 @@ static int countPanicOps(mlir::Operation *op) {
 static int countSelectAddOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::SelectAddOp) { count++; });
+  return count;
+}
+
+static int countResultfulIfOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](mlir::scf::IfOp ifOp) {
+    if (ifOp->getNumResults() > 0)
+      count++;
+  });
   return count;
 }
 
@@ -660,6 +670,139 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Statement-position if/match endings lower without scf.if results
+// ============================================================================
+static void test_statement_position_if_and_match_lower_without_results() {
+  TEST(statement_position_if_and_match_lower_without_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+enum Direction {
+    North;
+    South;
+}
+
+fn stmt_if(flag: bool) {
+    if flag {
+        if flag {
+            println(1);
+        } else {
+            println(2);
+        }
+    }
+}
+
+fn stmt_match(d: Direction) {
+    if true {
+        match d {
+            North => println(3),
+            South => println(4),
+        }
+    }
+}
+
+fn main() {
+    stmt_if(true);
+    stmt_match(North);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto stmtIf = lookupFuncBySuffix(module, "stmt_if");
+  auto stmtMatch = lookupFuncBySuffix(module, "stmt_match");
+  if (!stmtIf || !stmtMatch) {
+    FAIL("statement-position test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtIf) != 0) {
+    FAIL("statement-position if should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtMatch) != 0) {
+    FAIL("statement-position match should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Unannotated early-return tails lower final if/match as statements
+// ============================================================================
+static void test_unannotated_early_return_tail_if_match_lower_without_results() {
+  TEST(unannotated_early_return_tail_if_match_lower_without_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn unannotated_match_with_early_return(x: bool) {
+    if x {
+        return;
+    }
+    match x {
+        true => println(1),
+        false => println(2),
+    }
+}
+
+fn unannotated_if_with_early_return(x: bool) {
+    if x {
+        return;
+    }
+    if x {
+        println(3);
+    } else {
+        println(4);
+    }
+}
+
+fn main() {
+    unannotated_match_with_early_return(false);
+    unannotated_if_with_early_return(false);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto matchFn = lookupFuncBySuffix(module, "unannotated_match_with_early_return");
+  auto ifFn = lookupFuncBySuffix(module, "unannotated_if_with_early_return");
+  if (!matchFn || !ifFn) {
+    FAIL("unannotated early-return test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(matchFn) != 0) {
+    FAIL("unannotated early-return tail match should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(ifFn) != 0) {
+    FAIL("unannotated early-return tail if should not produce scf.if results");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -985,6 +1128,83 @@ fn main() -> int {
   }
   if (greet.getResultTypes().size() != 0) {
     FAIL("greet should have no result types");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Trailing void if/match use statement lowering
+// ============================================================================
+static void test_void_trailing_if_match_stmt_lowering() {
+  TEST(void_trailing_if_match_stmt_lowering);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+enum Choice {
+    Left;
+    Right;
+}
+
+fn emitIf(flag: bool) -> () {
+    if flag {
+        println(1);
+    } else {
+        println(2);
+    }
+}
+
+fn emitMatch(choice: Choice) -> () {
+    match choice {
+        Left => println(3),
+        Right => println(4),
+    }
+}
+
+fn main() -> int {
+    emitIf(true);
+    emitMatch(Left);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto emitIf = lookupFuncBySuffix(module, "F6emitIf");
+  auto emitMatch = lookupFuncBySuffix(module, "F9emitMatch");
+  if (!emitIf || !emitMatch) {
+    FAIL("void helper function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto allIfOpsAreStatementLowered = [](mlir::Operation *op) {
+    int ifCount = 0;
+    bool ok = true;
+    op->walk([&](mlir::scf::IfOp ifOp) {
+      ++ifCount;
+      ok = ok && ifOp->getNumResults() == 0;
+    });
+    return std::pair<int, bool>{ifCount, ok};
+  };
+
+  auto [emitIfCount, emitIfOk] = allIfOpsAreStatementLowered(emitIf);
+  auto [emitMatchCount, emitMatchOk] = allIfOpsAreStatementLowered(emitMatch);
+
+  if (emitIfCount == 0 || emitMatchCount == 0) {
+    FAIL("expected scf.if operations in void helper lowering");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!emitIfOk || !emitMatchOk) {
+    FAIL("void trailing if/match should lower through no-result statement paths");
     module.getOperation()->destroy();
     return;
   }
@@ -1603,6 +1823,8 @@ int main() {
   test_print();
   test_while_loop();
   test_if_else_expr();
+  test_statement_position_if_and_match_lower_without_results();
+  test_unannotated_early_return_tail_if_match_lower_without_results();
   test_arithmetic();
   test_comparisons();
   test_return_stmt();
@@ -1611,6 +1833,7 @@ int main() {
   test_compound_assignment();
   test_function_calls();
   test_void_function();
+  test_void_trailing_if_match_stmt_lowering();
   test_result_constructors_without_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

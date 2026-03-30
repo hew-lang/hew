@@ -2091,6 +2091,15 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         // SAFETY: Trusted FFI constructor for an unbounded mailbox.
         unsafe { hew_mailbox_new() }
     };
+    let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
+    // SAFETY: mailbox is a valid WASM mailbox pointer created above.
+    unsafe {
+        crate::mailbox_wasm::hew_mailbox_set_coalesce_config(
+            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
+            opts.coalesce_key_fn,
+            coalesce_fallback,
+        );
+    }
 
     let budget = if opts.budget > 0 {
         opts.budget

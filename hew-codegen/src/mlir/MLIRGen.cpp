@@ -2327,7 +2327,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
       return;
     if (impl->trait_bound && impl->trait_bound->name == "Drop") {
       if (auto *named = std::get_if<ast::TypeNamed>(&impl->target_type.value.kind)) {
-        userDropFuncs[named->name] = mangleName(currentModulePath, named->name, "drop");
+        // Use the type's defining module for mangling (not the importing module).
+        const auto &dropModPath = typeDefModulePath.count(named->name)
+                                      ? typeDefModulePath[named->name]
+                                      : currentModulePath;
+        userDropFuncs[named->name] = mangleName(dropModPath, named->name, "drop");
       }
     }
   });

@@ -1,0 +1,12 @@
+// Tests behaviour when two flat imports define the same pub fn name.
+// With flat imports, the second definition should shadow the first
+// (or cause a redefinition error). This test documents the current behaviour.
+import "same_name_lib_a.hew";
+import "same_name_lib_b.hew";
+
+fn main() {
+    // Both libs define greet(). Since imports are flat, this calls
+    // whichever definition the codegen registered last.
+    let msg = greet();
+    println(msg);
+}

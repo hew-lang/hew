@@ -1,0 +1,10 @@
+import "trans_mid.hew";
+
+fn main() {
+    let x = mid_fn();
+    println(x);
+    // If imports are transitive, base_fn() would also be visible here.
+    // If they are NOT transitive, this next line would fail to compile.
+    let y = base_fn();
+    println(y);
+}

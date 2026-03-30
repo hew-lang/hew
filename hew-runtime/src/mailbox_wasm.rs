@@ -110,6 +110,16 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
     }
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
+        // If a reply channel was set (ask pattern) but the message was never
+        // dispatched (e.g. actor stopped with messages in the queue), send an
+        // empty reply so the waiting caller of hew_actor_ask is unblocked.
+        if !(*node).reply_channel.is_null() {
+            #[cfg(target_arch = "wasm32")]
+            crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            (*node).reply_channel = ptr::null_mut();
+        }
         libc::free((*node).data);
         libc::free(node.cast());
     }

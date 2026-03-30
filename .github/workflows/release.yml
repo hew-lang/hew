@@ -635,24 +635,25 @@ jobs:
         with:
           targets: ${{ matrix.rust_musl_target }}
 
-      - name: Install musl cross-compiler and LLVM/MLIR
+      # Use the pre-built LLVM+MLIR from the Alpine Docker image (musl-based).
+      # Ubuntu's glibc LLVM causes linker errors when targeting musl.
+      - name: Pull pre-built LLVM+MLIR for Alpine (musl)
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          docker pull ghcr.io/hew-lang/llvm-alpine:22
+          container_id=$(docker create ghcr.io/hew-lang/llvm-alpine:22)
+          sudo docker cp "${container_id}:/opt/llvm-22" /opt/llvm-22
+          docker rm "${container_id}"
+
+      - name: Install musl cross-compiler and build tools
+        run: |
           sudo apt-get update && sudo apt-get install -y \
-            musl-tools cmake ninja-build \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
-            clang-${{ env.LLVM_VERSION }}
+            musl-tools cmake ninja-build clang
 
       - name: Configure LLVM toolchain (musl)
         run: |
-          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "LLVM_PREFIX=/opt/llvm-22" >> "$GITHUB_ENV"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Cache Rust artifacts (musl)
         uses: actions/cache@v4

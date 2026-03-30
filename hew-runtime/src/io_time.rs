@@ -485,6 +485,9 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                // FreeBSD 15+ kevent has an extra `ext: [u64; 4]` field.
+                #[cfg(target_os = "freebsd")]
+                ext: [0; 4],
             });
         }
         if events & HEW_IO_WRITE != 0 {
@@ -499,6 +502,9 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                // FreeBSD 15+ kevent has an extra `ext: [u64; 4]` field.
+                #[cfg(target_os = "freebsd")]
+                ext: [0; 4],
             });
         }
 
@@ -560,6 +566,8 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                #[cfg(target_os = "freebsd")]
+                ext: [0; 4],
             },
             libc::kevent {
                 ident: fd as usize,
@@ -568,6 +576,8 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                #[cfg(target_os = "freebsd")]
+                ext: [0; 4],
             },
         ];
 

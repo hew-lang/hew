@@ -576,13 +576,13 @@ fn enrich_program_ast(
 }
 
 /// **Stage 6 — Codegen metadata.** Build handle type metadata for C++ codegen
-/// and compute debug information (source path + line map) when building with
-/// `--debug`.
+/// and preserve source metadata (source path + line map) for diagnostics in
+/// all builds. `--debug` still controls DWARF emission and optimization level.
 fn build_codegen_metadata(
     module_registry: &hew_types::module_registry::ModuleRegistry,
     input: &str,
     source: &str,
-    options: &CompileOptions,
+    _options: &CompileOptions,
 ) -> CodegenMetadata {
     let handle_types = module_registry.all_handle_types();
     let handle_type_repr: std::collections::HashMap<String, String> = handle_types
@@ -596,13 +596,10 @@ fn build_codegen_metadata(
         })
         .collect();
 
-    let (abs_source_path, line_map) = if options.debug {
-        let path = std::fs::canonicalize(input)
-            .map_or_else(|_| input.to_string(), |p| p.display().to_string());
-        (Some(path), Some(line_map_from_source(source)))
-    } else {
-        (None, None)
-    };
+    let path = std::fs::canonicalize(input)
+        .map_or_else(|_| input.to_string(), |p| p.display().to_string());
+    let abs_source_path = Some(path);
+    let line_map = Some(line_map_from_source(source));
 
     CodegenMetadata {
         handle_types,

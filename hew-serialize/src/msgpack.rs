@@ -44,8 +44,8 @@ pub struct ExprTypeEntry {
 /// - `"handle_types"`
 /// - `"handle_type_repr"`
 /// - `"module_graph"` when module graph data is available
-/// - `"source_path"` when debug source paths are available
-/// - `"line_map"` when debug line mapping data is available
+/// - `"source_path"` when source path metadata is available
+/// - `"line_map"` when line mapping metadata is available
 #[derive(Debug, Serialize)]
 struct TypedProgram<'a, ModuleGraphRepr> {
     /// Schema version — always serialized first so the C++ reader can
@@ -64,12 +64,14 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     handle_type_repr: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     module_graph: Option<ModuleGraphRepr>,
-    /// Absolute path to the source .hew file (for DWARF debug info).
+    /// Absolute path to the source .hew file.
+    /// Used for codegen diagnostics and, when enabled, DWARF debug info.
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<&'a str>,
     /// Byte offset of the start of each line in the source file.
     /// `line_map`[0] = offset of line 1, `line_map`[1] = offset of line 2, etc.
-    /// Used by codegen to convert byte-offset spans to line:column for DWARF.
+    /// Used by codegen to convert byte-offset spans to line:column for
+    /// diagnostics and DWARF.
     #[serde(skip_serializing_if = "Option::is_none")]
     line_map: Option<&'a [usize]>,
 }

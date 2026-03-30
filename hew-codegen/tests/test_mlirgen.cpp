@@ -29,6 +29,7 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -944,6 +945,83 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Trailing void if/match use statement lowering
+// ============================================================================
+static void test_void_trailing_if_match_stmt_lowering() {
+  TEST(void_trailing_if_match_stmt_lowering);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+enum Choice {
+    Left;
+    Right;
+}
+
+fn emitIf(flag: bool) -> () {
+    if flag {
+        println(1);
+    } else {
+        println(2);
+    }
+}
+
+fn emitMatch(choice: Choice) -> () {
+    match choice {
+        Left => println(3),
+        Right => println(4),
+    }
+}
+
+fn main() -> int {
+    emitIf(true);
+    emitMatch(Left);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto emitIf = lookupFuncBySuffix(module, "F6emitIf");
+  auto emitMatch = lookupFuncBySuffix(module, "F9emitMatch");
+  if (!emitIf || !emitMatch) {
+    FAIL("void helper function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto allIfOpsAreStatementLowered = [](mlir::Operation *op) {
+    int ifCount = 0;
+    bool ok = true;
+    op->walk([&](mlir::scf::IfOp ifOp) {
+      ++ifCount;
+      ok = ok && ifOp->getNumResults() == 0;
+    });
+    return std::pair<int, bool>{ifCount, ok};
+  };
+
+  auto [emitIfCount, emitIfOk] = allIfOpsAreStatementLowered(emitIf);
+  auto [emitMatchCount, emitMatchOk] = allIfOpsAreStatementLowered(emitMatch);
+
+  if (emitIfCount == 0 || emitMatchCount == 0) {
+    FAIL("expected scf.if operations in void helper lowering");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!emitIfOk || !emitMatchOk) {
+    FAIL("void trailing if/match should lower through no-result statement paths");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Builtin Result constructors omit explicit payload_positions
 // ============================================================================
 static void test_result_constructors_without_payload_positions() {
@@ -1478,6 +1556,7 @@ int main() {
   test_compound_assignment();
   test_function_calls();
   test_void_function();
+  test_void_trailing_if_match_stmt_lowering();
   test_result_constructors_without_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

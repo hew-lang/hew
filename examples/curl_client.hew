@@ -103,7 +103,7 @@ fn main() {
     // Connect
     let addr = f"{host}:{port}";
     println(f"  Connecting to {addr}...");
-    let conn = net.connect(addr);
+    let conn = net.connect_timeout(addr, 10, 0);
     // Build and send HTTP request
     let req_str = f"GET {path} HTTP/1.0
 Host: {host}

@@ -32,7 +32,7 @@ fn main() {
         name = os.args(2);
     }
     let addr = f"127.0.0.1:{port}";
-    let conn = net.connect(addr);
+    let conn = net.connect_timeout(addr, 5, 0);
     println("=== Hew TCP Chat Client ===");
     println(f"Connected to {addr}");
     println("Type messages and press Enter. Type /quit to exit.");

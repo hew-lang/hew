@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use hew_parser::ast::{
-    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeExpr,
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeDeclKind, TypeExpr,
 };
 use hew_parser::parse;
 
@@ -113,15 +113,15 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     info.functions.push((func.name.clone(), params, ret));
                 }
             }
-            // Only types WITHOUT struct fields are opaque handles.
-            // Types with fields (e.g. Version { maj: i32; ... }) are real
-            // structs, not opaque pointers.
+            // Only fieldless structs are opaque handles.
+            // Enums (including fieldless enums) are real value types and must
+            // not be lowered as handles when imported from stdlib Hew modules.
             Item::TypeDecl(td) => {
                 let has_fields = td
                     .body
                     .iter()
                     .any(|b| matches!(b, TypeBodyItem::Field { .. }));
-                if !has_fields {
+                if td.kind == TypeDeclKind::Struct && !has_fields {
                     let qualified = format!("{module_short}.{}", td.name);
                     info.handle_types.push(qualified);
                 }
@@ -664,6 +664,17 @@ mod tests {
         assert!(
             !info.handle_types.contains(&"semver.Version".to_string()),
             "Version with struct fields should not be a handle type, got: {:?}",
+            info.handle_types
+        );
+    }
+
+    #[test]
+    fn enum_types_not_in_handle_types() {
+        let info = load_module("std::fs", &test_root()).unwrap();
+
+        assert!(
+            !info.handle_types.contains(&"fs.IoError".to_string()),
+            "fs.IoError enum should not be a handle type, got: {:?}",
             info.handle_types
         );
     }

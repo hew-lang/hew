@@ -86,10 +86,16 @@ The Hew standard library provides core types, data structures, networking, encod
 
 ## Architecture
 
-Each stdlib module consists of:
+Each stdlib module includes:
 
-- **`.hew` stub** -- Declares the public API (types, traits, functions) that Hew programs import
-- **Rust native crate** (`src/lib.rs`) -- Implements the module as `#[no_mangle] pub extern "C" fn` symbols linked into the final binary
+- **`.hew` surface** -- Declares the public API (types, traits, functions) that Hew programs import, including Hew-native wrappers that can lift raw native status codes/messages into `Result` and enum surfaces like `IoError`
 - **`hew.toml`** -- Package metadata for the module
+- **Rust crate** (`src/lib.rs`, when present) -- Either exports native `#[no_mangle] pub extern "C" fn` symbols or remains as a placeholder static library to keep the workspace and `hew-lib` build graph intact
 
-The compiler resolves `import std::*` paths against the `HEW_STD` directory and links the corresponding native static libraries at compile time.
+Implementation strategy varies by module:
+
+- Some modules are implemented entirely in Hew, with the Rust crate retained only as a build placeholder
+- Some modules, such as `std::math`, expose a Hew surface that codegen lowers directly to compiler intrinsics/MLIR ops, again leaving the Rust crate as a placeholder
+- Modules that need native capabilities still use their Rust crates for the final linked implementation
+
+The compiler resolves `import std::*` paths against the `HEW_STD` directory and links any corresponding native static libraries required by the build graph at compile time, whether they provide runtime FFI symbols or act only as placeholders.

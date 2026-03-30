@@ -110,14 +110,8 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
     }
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
-        // If a reply channel was set (ask pattern) but the message was never
-        // dispatched (e.g. actor stopped with messages in the queue), send an
-        // empty reply so the waiting caller of hew_actor_ask is unblocked.
         if !(*node).reply_channel.is_null() {
-            #[cfg(target_arch = "wasm32")]
             crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
             (*node).reply_channel = ptr::null_mut();
         }
         libc::free((*node).data);
@@ -706,6 +700,31 @@ mod tests {
             msg_node_free(node);
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn freeing_mailbox_releases_queued_reply_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
+            assert_eq!(
+                hew_mailbox_send_with_reply(mb, 7, ptr::null_mut(), 0, ch.cast()),
+                HewError::Ok as i32
+            );
+
+            hew_mailbox_free(mb);
+
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "draining queued messages must release the queued sender ref"
+            );
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
         }
     }
 

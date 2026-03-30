@@ -69,8 +69,32 @@ fn main() {
     println(option.is_none_str(none_s));
     println(option.unwrap_str(some_s));
     println(option.unwrap_or_str(none_s, "default"));
+    let excited_s = option.map_str(some_s, (s: String) => s + "!");
+    match excited_s {
+        Some(v) => println(v),
+        None => println("FAIL"),
+    }
+    let mapped_none_s = option.map_str(none_s, (s: String) => s + "!");
+    match mapped_none_s {
+        Some(_) => println("FAIL"),
+        None => println("none"),
+    }
     println(option.contains_str(some_s, "hello"));
     println(option.contains_str(some_s, "world"));
+
+    // ── Float variants ──────────────────────────────────────────
+    let some_f = Some(1.5);
+    let none_f: Option<f64> = None;
+
+    println(option.is_some_f64(some_f));
+    println(option.is_none_f64(none_f));
+    println(option.unwrap_or_f64(none_f, -1.0) == -1.0);
+    let doubled_f = option.map_f64(some_f, (x: f64) => x * 2.0);
+    println(option.contains_f64(doubled_f, 3.0));
+    println(option.contains_f64(doubled_f, 4.0));
+    let mapped_none_f = option.map_f64(none_f, (x: f64) => x * 2.0);
+    println(option.is_none_f64(mapped_none_f));
+    println(option.contains_f64(none_f, 3.0));
 
     println("=== Done ===");
 }

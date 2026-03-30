@@ -56,6 +56,22 @@ fn test_unwrap_or_int_none() {
     testing.assert_eq(option.unwrap_or_int(x, -1), -1);
 }
 
+// ── Map ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_map_int_some() {
+    let x = Some(21);
+    let mapped = option.map_int(x, (v: int) => v * 2);
+    testing.assert_eq(option.unwrap_int(mapped), 42);
+}
+
+#[test]
+fn test_map_int_none() {
+    let x: Option<int> = None;
+    let mapped = option.map_int(x, (v: int) => v * 2);
+    testing.assert_true(option.is_none_int(mapped));
+}
+
 // ── Contains ───────────────────────────────────────────────────────────
 
 #[test]
@@ -103,6 +119,20 @@ fn test_unwrap_or_str_none() {
 }
 
 #[test]
+fn test_map_str_some() {
+    let x = Some("hello");
+    let mapped = option.map_str(x, (s: String) => s + "!");
+    testing.assert_eq_str(option.unwrap_str(mapped), "hello!");
+}
+
+#[test]
+fn test_map_str_none() {
+    let x: Option<String> = None;
+    let mapped = option.map_str(x, (s: String) => s + "!");
+    testing.assert_true(option.is_none_str(mapped));
+}
+
+#[test]
 fn test_contains_str_match() {
     let x = Some("hello");
     testing.assert_true(option.contains_str(x, "hello"));
@@ -127,4 +157,62 @@ fn test_unwrap_str_some() {
 fn test_unwrap_str_none_panics() {
     let x: Option<String> = None;
     option.unwrap_str(x);
+}
+
+// ── Float variants ─────────────────────────────────────────────────────
+
+#[test]
+fn test_is_some_f64_with_value() {
+    let x = Some(3.5);
+    testing.assert_true(option.is_some_f64(x));
+}
+
+#[test]
+fn test_is_none_f64_with_none() {
+    let x: Option<f64> = None;
+    testing.assert_true(option.is_none_f64(x));
+}
+
+#[test]
+fn test_unwrap_or_f64_some() {
+    let x = Some(3.5);
+    testing.assert_true(option.unwrap_or_f64(x, 0.0) == 3.5);
+}
+
+#[test]
+fn test_unwrap_or_f64_none() {
+    let x: Option<f64> = None;
+    testing.assert_true(option.unwrap_or_f64(x, -1.5) == -1.5);
+}
+
+#[test]
+fn test_map_f64_some() {
+    let x = Some(1.5);
+    let mapped = option.map_f64(x, (v: f64) => v * 2.0);
+    testing.assert_true(option.unwrap_or_f64(mapped, 0.0) == 3.0);
+}
+
+#[test]
+fn test_map_f64_none() {
+    let x: Option<f64> = None;
+    let mapped = option.map_f64(x, (v: f64) => v * 2.0);
+    testing.assert_true(option.is_none_f64(mapped));
+}
+
+#[test]
+fn test_contains_f64_match() {
+    let x = Some(3.5);
+    testing.assert_true(option.contains_f64(x, 3.5));
+}
+
+#[test]
+fn test_contains_f64_no_match() {
+    let x = Some(3.5);
+    testing.assert_false(option.contains_f64(x, 2.5));
+}
+
+#[test]
+fn test_contains_f64_none() {
+    let x: Option<f64> = None;
+    testing.assert_false(option.contains_f64(x, 3.5));
 }

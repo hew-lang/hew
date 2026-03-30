@@ -273,6 +273,7 @@ add_e2e_reject_test(bounds_not_satisfied e2e_negative bounds_not_satisfied "does
 add_e2e_reject_test(shadowing_same_scope  e2e_negative shadowing_same_scope  "already defined in this scope")
 add_e2e_reject_test(shadowing_actor_field e2e_negative shadowing_actor_field "shadows a binding in an outer scope")
 add_e2e_reject_test(channel_unsupported_type e2e_negative channel_unsupported_type "is not supported")
+add_e2e_reject_test(extern_infer_param e2e_negative extern_infer_param "cannot resolve parameter type in extern function")
 add_e2e_reject_test(stream_int_reject    e2e_negative stream_int_reject    "Stream<T> is currently only implemented for String and bytes")
 add_e2e_reject_test(stream_named_type    e2e_negative stream_named_type    "Stream<T> is currently only implemented for String and bytes")
 add_e2e_reject_test(stream_bytes_lines_reject e2e_negative stream_bytes_lines_reject "lines()` is only supported on `Stream<String>`")

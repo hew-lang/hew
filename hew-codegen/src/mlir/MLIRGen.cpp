@@ -231,7 +231,9 @@ std::string MLIRGen::resolveTypeAlias(const std::string &name) const {
   return name;
 }
 
-mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
+mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
+                               std::optional<mlir::Location> errorLoc) {
+  auto diagLoc = errorLoc.value_or(currentLoc);
   if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
     // Resolve type parameter substitutions (generics monomorphization) by
     // replacing the name and falling through to the main resolution logic.
@@ -247,7 +249,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     // Check for type aliases
     auto alias = typeAliases.find(name);
     if (alias != typeAliases.end()) {
-      return convertType(*alias->second);
+      return convertType(*alias->second, errorLoc);
     }
     if (name == "i8")
       return builder.getIntegerType(8);
@@ -274,11 +276,11 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       return builder.getI1Type();
     if (name == "Range") {
       if (!named->type_args || named->type_args->empty()) {
-        emitError(builder.getUnknownLoc()) << "Range type requires a type argument";
+        emitError(diagLoc) << "Range type requires a type argument";
         return mlir::NoneType::get(&context);
       }
       auto elemType = convertTypeOrError(
-          (*named->type_args)[0].value, "cannot resolve element type for Range");
+          (*named->type_args)[0].value, "cannot resolve element type for Range", errorLoc);
       if (!elemType)
         return nullptr;
       return hew::HewTupleType::get(&context, {elemType, elemType});
@@ -296,12 +298,12 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     if (name == "Vec") {
       if (!(named->type_args && !named->type_args->empty())) {
         ++errorCount_;
-        emitError(currentLoc)
+        emitError(diagLoc)
             << "cannot determine element type for Vec; add explicit type annotation";
         return nullptr;
       }
       auto elemType = convertTypeOrError(
-          (*named->type_args)[0].value, "cannot resolve element type for Vec");
+          (*named->type_args)[0].value, "cannot resolve element type for Vec", errorLoc);
       if (!elemType)
         return nullptr;
       return hew::VecType::get(&context, elemType);
@@ -310,16 +312,16 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     if (name == "HashMap") {
       if (!(named->type_args && named->type_args->size() >= 2)) {
         ++errorCount_;
-        emitError(currentLoc)
+        emitError(diagLoc)
             << "cannot determine key/value types for HashMap; add explicit type annotation";
         return nullptr;
       }
       auto keyType = convertTypeOrError(
-          (*named->type_args)[0].value, "cannot resolve key type for HashMap");
+          (*named->type_args)[0].value, "cannot resolve key type for HashMap", errorLoc);
       if (!keyType)
         return nullptr;
       auto valType = convertTypeOrError(
-          (*named->type_args)[1].value, "cannot resolve value type for HashMap");
+          (*named->type_args)[1].value, "cannot resolve value type for HashMap", errorLoc);
       if (!valType)
         return nullptr;
       return hew::HashMapType::get(&context, keyType, valType);
@@ -328,7 +330,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     if (name == "HashSet") {
       if (!(named->type_args && !named->type_args->empty())) {
         ++errorCount_;
-        emitError(currentLoc)
+        emitError(diagLoc)
             << "cannot determine element type for HashSet; add explicit type annotation";
         return nullptr;
       }
@@ -448,11 +450,11 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     // Unresolved type: emit an error and force codegen failure.
     ++errorCount_;
     if (fromSubstitution) {
-      emitError(builder.getUnknownLoc())
+      emitError(diagLoc)
           << "unresolved type substitution '" << name << "' for type parameter '" << named->name
           << "' — no builtin, struct, enum, or actor with this name is defined";
     } else {
-      emitError(builder.getUnknownLoc())
+      emitError(diagLoc)
           << "unresolved type '" << name
           << "' — no struct, enum, or actor with this name is defined";
     }
@@ -464,7 +466,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       return mlir::NoneType::get(&context); // unit type
     llvm::SmallVector<mlir::Type, 4> elemTypes;
     for (const auto &elem : tuple->elements) {
-      auto elemType = convertTypeOrError(elem.value, "cannot resolve element type in tuple");
+      auto elemType =
+          convertTypeOrError(elem.value, "cannot resolve element type in tuple", errorLoc);
       if (!elemType)
         return mlir::NoneType::get(&context);
       elemTypes.push_back(elemType);
@@ -474,8 +477,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 
   // Array types
   if (auto *array = std::get_if<ast::TypeArray>(&type.kind)) {
-    auto elemType =
-        convertTypeOrError(array->element->value, "cannot resolve element type in array");
+    auto elemType = convertTypeOrError(array->element->value,
+                                       "cannot resolve element type in array", errorLoc);
     if (!elemType)
       return mlir::NoneType::get(&context);
     return hew::HewArrayType::get(&context, elemType, array->size);
@@ -484,7 +487,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
   // Option<T> → !hew.option<T>
   if (auto *option = std::get_if<ast::TypeOption>(&type.kind)) {
     auto innerType =
-        convertTypeOrError(option->inner->value, "cannot resolve inner type for Option");
+        convertTypeOrError(option->inner->value, "cannot resolve inner type for Option", errorLoc);
     if (!innerType)
       return mlir::NoneType::get(&context);
     return hew::OptionEnumType::get(&context, innerType);
@@ -492,10 +495,12 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 
   // Result<T, E> → !hew.result<T, E>
   if (auto *result = std::get_if<ast::TypeResult>(&type.kind)) {
-    auto okType = convertTypeOrError(result->ok->value, "cannot resolve ok type for Result");
-    auto errType =
-        okType ? convertTypeOrError(result->err->value, "cannot resolve err type for Result")
-               : nullptr;
+    auto okType =
+        convertTypeOrError(result->ok->value, "cannot resolve ok type for Result", errorLoc);
+    auto errType = okType
+                       ? convertTypeOrError(result->err->value,
+                                            "cannot resolve err type for Result", errorLoc)
+                       : nullptr;
     if (!okType || !errType)
       return mlir::NoneType::get(&context);
     return hew::ResultEnumType::get(&context, okType, errType);
@@ -507,14 +512,14 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
   if (auto *function = std::get_if<ast::TypeFunction>(&type.kind)) {
     llvm::SmallVector<mlir::Type, 4> paramTypes;
     for (const auto &pt : function->params) {
-      auto paramType =
-          convertTypeOrError(pt.value, "cannot resolve parameter type in function type");
+      auto paramType = convertTypeOrError(pt.value, "cannot resolve parameter type in function type",
+                                          errorLoc);
       if (!paramType)
         return mlir::NoneType::get(&context);
       paramTypes.push_back(paramType);
     }
     // Use NoneType as sentinel for void return (no return type)
-    mlir::Type retType = function->return_type ? convertType(function->return_type->value)
+    mlir::Type retType = function->return_type ? convertType(function->return_type->value, errorLoc)
                                                : mlir::NoneType::get(&context);
     return hew::ClosureType::get(&context, paramTypes, retType);
   }
@@ -526,7 +531,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
   }
 
   ++errorCount_;
-  emitError(builder.getUnknownLoc())
+  emitError(diagLoc)
       << "unsupported type expression in MLIR codegen (kind index " << type.kind.index() << ")";
   return mlir::NoneType::get(&context);
 }
@@ -535,11 +540,13 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 // Type conversion with validation
 // ============================================================================
 
-mlir::Type MLIRGen::convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context) {
-  auto result = convertType(type);
+mlir::Type MLIRGen::convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context,
+                                       std::optional<mlir::Location> errorLoc) {
+  auto diagLoc = errorLoc.value_or(currentLoc);
+  auto result = convertType(type, errorLoc);
   if (!isValidType(result)) {
     ++errorCount_;
-    emitError(currentLoc) << context;
+    emitError(diagLoc) << context;
     return nullptr;
   }
   return result;
@@ -1094,7 +1101,12 @@ mlir::func::FuncOp MLIRGen::getOrCreateExternFunc(llvm::StringRef name, mlir::Fu
 // Extern block generation
 // ============================================================================
 
-void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
+void MLIRGen::generateExternBlock(const ast::ExternBlock &block,
+                                  std::optional<mlir::Location> fallbackLoc) {
+  auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+    return type.span.end > type.span.start ? loc(type.span) : fallbackLoc.value_or(currentLoc);
+  };
+
   for (const auto &fn : block.functions) {
     llvm::SmallVector<mlir::Type, 4> paramTypes;
     bool externOk = true;
@@ -1102,8 +1114,9 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
       // Extern "C" functions always use LLVM-level types — convert any
       // Hew dialect types (handles, strings, vecs, …) to !llvm.ptr so
       // that the type conversion framework doesn't have to chase them.
-      auto paramType =
-          convertTypeOrError(param.ty.value, "cannot resolve parameter type in extern function");
+      auto paramType = convertTypeOrError(param.ty.value,
+                                          "cannot resolve parameter type in extern function",
+                                          typeLoc(param.ty));
       if (!paramType) {
         externOk = false;
         break;
@@ -1117,7 +1130,8 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
     mlir::Type semanticResultType = nullptr;
     if (fn.return_type) {
       semanticResultType = convertTypeOrError(fn.return_type->value,
-                                              "cannot resolve return type in extern function");
+                                              "cannot resolve return type in extern function",
+                                              typeLoc(*fn.return_type));
       if (!semanticResultType)
         continue;
       resultType = toLLVMStorageType(semanticResultType);
@@ -2231,7 +2245,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
-      registerFunctionSignature(*fn);
+      registerFunctionSignature(*fn, "", loc(spannedItem.span));
     } else if (auto *impl = std::get_if<ast::ImplDecl>(&item.kind)) {
       // Skip generic impl blocks — they are deferred for specialization.
       if (impl->type_params && !impl->type_params->empty())
@@ -2253,7 +2267,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
 
         for (const auto &method : impl->methods) {
           std::string mangledMethod = mangleName(currentModulePath, typeName, method.name);
-          registerFunctionSignature(method, mangledMethod);
+          registerFunctionSignature(method, mangledMethod, loc(spannedItem.span));
         }
 
         // Pre-register default trait methods not overridden in this impl
@@ -2269,19 +2283,22 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
               // Build a forward declaration for the default method
               std::string mangledName = mangleName(currentModulePath, typeName, tm->name);
               if (!module.lookupSymbol<mlir::func::FuncOp>(mangledName)) {
+                auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+                  return type.span.end > type.span.start ? loc(type.span) : loc(spannedItem.span);
+                };
                 llvm::SmallVector<mlir::Type, 4> paramTypes;
                 for (const auto &p : tm->params)
-                  paramTypes.push_back(convertType(p.ty.value));
+                  paramTypes.push_back(convertType(p.ty.value, typeLoc(p.ty)));
                 llvm::SmallVector<mlir::Type, 1> resultTypes;
                 if (tm->return_type) {
-                  auto retTy = convertType(tm->return_type->value);
+                  auto retTy = convertType(tm->return_type->value, typeLoc(*tm->return_type));
                   if (!llvm::isa<mlir::NoneType>(retTy))
                     resultTypes.push_back(retTy);
                 }
                 auto funcType = builder.getFunctionType(paramTypes, resultTypes);
                 auto savedIP = builder.saveInsertionPoint();
                 builder.setInsertionPointToEnd(module.getBody());
-                mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), mangledName, funcType);
+                mlir::func::FuncOp::create(builder, loc(spannedItem.span), mangledName, funcType);
                 builder.restoreInsertionPoint(savedIP);
               }
             }
@@ -2299,7 +2316,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *ad = std::get_if<ast::ActorDecl>(&item.kind)) {
-      registerActorDecl(*ad);
+      registerActorDecl(*ad, loc(spannedItem.span));
     }
   });
 
@@ -2367,7 +2384,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *eb = std::get_if<ast::ExternBlock>(&item.kind)) {
-      generateExternBlock(*eb);
+      generateExternBlock(*eb, loc(spannedItem.span));
     }
   });
 
@@ -2445,7 +2462,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     } else if (fn->is_generator) {
       generateGeneratorFunction(*fn);
     } else {
-      generateFunction(*fn);
+      generateFunction(*fn, "", loc(spannedItem.span));
     }
   });
 
@@ -2471,7 +2488,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         std::holds_alternative<ast::WireDecl>(item.kind) ||
         std::holds_alternative<ast::MachineDecl>(item.kind))
       return; // already handled in pass 1
-    generateItem(item);
+    generateItem(item, loc(spannedItem.span));
   });
 
   // If actors were used, inject hew_sched_init/shutdown into main
@@ -2523,7 +2540,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
 // Item generation
 // ============================================================================
 
-void MLIRGen::generateItem(const ast::Item &item) {
+void MLIRGen::generateItem(const ast::Item &item, std::optional<mlir::Location> fallbackLoc) {
   if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
     if (fn->type_params && !fn->type_params->empty()) {
       // Generic function: store for later specialization, don't generate yet
@@ -2531,7 +2548,7 @@ void MLIRGen::generateItem(const ast::Item &item) {
     } else if (fn->is_generator) {
       generateGeneratorFunction(*fn);
     } else {
-      generateFunction(*fn);
+      generateFunction(*fn, "", fallbackLoc);
     }
   } else if (auto *cd = std::get_if<ast::ConstDecl>(&item.kind)) {
     // Store for inline generation when referenced
@@ -2539,7 +2556,7 @@ void MLIRGen::generateItem(const ast::Item &item) {
   } else if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
     registerTypeDecl(*td);
   } else if (auto *id = std::get_if<ast::ImplDecl>(&item.kind)) {
-    generateImplDecl(*id);
+    generateImplDecl(*id, fallbackLoc);
   } else if (auto *eb = std::get_if<ast::ExternBlock>(&item.kind)) {
     generateExternBlock(*eb);
   } else if (auto *ad = std::get_if<ast::ActorDecl>(&item.kind)) {
@@ -2563,7 +2580,8 @@ void MLIRGen::generateItem(const ast::Item &item) {
 // Function signature pre-registration (for order-independent resolution)
 // ============================================================================
 
-void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride) {
+void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride,
+                                        std::optional<mlir::Location> fallbackLoc) {
   // Skip generic functions — they're specialized on demand
   if (fn.type_params && !fn.type_params->empty())
     return;
@@ -2588,21 +2606,24 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
     return;
 
   // Build the function type from parameter and return type annotations
+  auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+    return type.span.end > type.span.start ? loc(type.span) : fallbackLoc.value_or(currentLoc);
+  };
   llvm::SmallVector<mlir::Type, 4> paramTypes;
   for (const auto &param : fn.params) {
-    paramTypes.push_back(convertType(param.ty.value));
+    paramTypes.push_back(convertType(param.ty.value, typeLoc(param.ty)));
   }
 
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   if (fn.return_type) {
-    auto retTy = convertType(fn.return_type->value);
+    auto retTy = convertType(fn.return_type->value, typeLoc(*fn.return_type));
     if (!llvm::isa<mlir::NoneType>(retTy)) {
       resultTypes.push_back(retTy);
     }
   }
 
   auto funcType = builder.getFunctionType(paramTypes, resultTypes);
-  auto location = builder.getUnknownLoc();
+  auto location = fallbackLoc.value_or(builder.getUnknownLoc());
 
   // Create a declaration (no body) at module scope
   auto savedIP = builder.saveInsertionPoint();
@@ -3385,7 +3406,8 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
 // Impl declaration generation
 // ============================================================================
 
-void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
+void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
+                               std::optional<mlir::Location> fallbackLoc) {
   // Get the target type name
   std::string typeName;
   if (auto *named = std::get_if<ast::TypeNamed>(&decl.target_type.value.kind)) {
@@ -3421,7 +3443,7 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
   std::set<std::string> overriddenMethods;
   for (const auto &method : decl.methods) {
     std::string mangledMethod = mangleName(currentModulePath, typeName, method.name);
-    generateFunction(method, mangledMethod);
+    generateFunction(method, mangledMethod, fallbackLoc);
     overriddenMethods.insert(method.name);
   }
 
@@ -3432,7 +3454,7 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
     for (const auto *tm : traitIt->second.methods) {
       if (tm->body && overriddenMethods.find(tm->name) == overriddenMethods.end()) {
         std::string mangledDefault = mangleName(currentModulePath, typeName, tm->name);
-        generateTraitDefaultMethod(*tm, typeName, mangledDefault);
+        generateTraitDefaultMethod(*tm, typeName, mangledDefault, fallbackLoc);
       }
     }
   }
@@ -3653,26 +3675,30 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
 
 void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
                                          const std::string &targetTypeName,
-                                         const std::string &mangledName) {
+                                         const std::string &mangledName,
+                                         std::optional<mlir::Location> fallbackLoc) {
   if (!method.body)
     return;
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
 
+  auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+    return type.span.end > type.span.start ? loc(type.span) : fallbackLoc.value_or(currentLoc);
+  };
   llvm::SmallVector<mlir::Type, 4> paramTypes;
   for (const auto &param : method.params) {
-    paramTypes.push_back(convertType(param.ty.value));
+    paramTypes.push_back(convertType(param.ty.value, typeLoc(param.ty)));
   }
 
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   if (method.return_type) {
-    auto retTy = convertType(method.return_type->value);
+    auto retTy = convertType(method.return_type->value, typeLoc(*method.return_type));
     if (!llvm::isa<mlir::NoneType>(retTy))
       resultTypes.push_back(retTy);
   }
 
   auto funcType = builder.getFunctionType(paramTypes, resultTypes);
-  auto location = currentLoc;
+  auto location = fallbackLoc.value_or(currentLoc);
 
   // Erase forward declaration if one was created in pass 1d
   if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(mangledName)) {
@@ -3775,28 +3801,32 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
 // ============================================================================
 
 mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
-                                             const std::string &nameOverride) {
+                                             const std::string &nameOverride,
+                                             std::optional<mlir::Location> fallbackLoc) {
   // Create symbol table scopes for this function
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
 
   // Determine parameter types
+  auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+    return type.span.end > type.span.start ? loc(type.span) : fallbackLoc.value_or(currentLoc);
+  };
   llvm::SmallVector<mlir::Type, 4> paramTypes;
   for (const auto &param : fn.params) {
-    paramTypes.push_back(convertType(param.ty.value));
+    paramTypes.push_back(convertType(param.ty.value, typeLoc(param.ty)));
   }
 
   // Determine return type
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   if (fn.return_type) {
-    auto retTy = convertType(fn.return_type->value);
+    auto retTy = convertType(fn.return_type->value, typeLoc(*fn.return_type));
     // Don't add NoneType to results (unit return = no results)
     if (!llvm::isa<mlir::NoneType>(retTy)) {
       resultTypes.push_back(retTy);
     }
   }
 
-  auto location = currentLoc;
+  auto location = fallbackLoc.value_or(currentLoc);
 
   // Create the function at module scope.
   // When nameOverride is provided, the caller has already mangled the name.

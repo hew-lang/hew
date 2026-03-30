@@ -40,9 +40,13 @@ using namespace mlir;
 // Actor registration (phase 1): struct types, field tracking, registry entry
 // ============================================================================
 
-void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
+void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
+                                std::optional<mlir::Location> fallbackLoc) {
   hasActors = true;
   const std::string &actorName = decl.name;
+  auto typeLoc = [&](const ast::Spanned<ast::TypeExpr> &type) {
+    return type.span.end > type.span.start ? loc(type.span) : fallbackLoc.value_or(currentLoc);
+  };
 
   // De-duplicate: imported actors may be registered via both forEachItem
   // (module graph iteration) and flatten_import_items (top-level promotion).
@@ -54,7 +58,8 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   std::vector<mlir::Type> fieldHewTypes; // Hew MLIR types before toLLVMStorageType
   for (const auto &field : decl.fields) {
     auto hewType = convertTypeOrError(field.ty.value,
-                                      "cannot resolve type for actor field '" + field.name + "'");
+                                      "cannot resolve type for actor field '" + field.name + "'",
+                                      typeLoc(field.ty));
     if (!hewType)
       return;
     fieldHewTypes.push_back(hewType);
@@ -70,8 +75,10 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   std::vector<std::string> initParamNames;
   if (decl.init) {
     for (const auto &param : decl.init->params) {
-      auto hewType = convertTypeOrError(param.ty.value, "cannot resolve type for init parameter '" +
-                                                            param.name + "'");
+      auto hewType = convertTypeOrError(param.ty.value,
+                                        "cannot resolve type for init parameter '" + param.name +
+                                            "'",
+                                        typeLoc(param.ty));
       if (!hewType)
         return;
       initParamNames.push_back(param.name);
@@ -189,8 +196,10 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
     recvInfo.periodicIntervalNs = recv.periodic_interval_ns;
 
     for (const auto &param : recv.params) {
-      auto ty = convertTypeOrError(param.ty.value, "cannot resolve type for receive parameter '" +
-                                                       param.name + "'");
+      auto ty = convertTypeOrError(param.ty.value,
+                                   "cannot resolve type for receive parameter '" + param.name +
+                                       "'",
+                                   typeLoc(param.ty));
       if (!ty)
         return;
       recvInfo.paramNames.push_back(param.name);
@@ -199,7 +208,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
 
     if (recv.is_generator && recv.return_type) {
       // Generator return type: wrap YieldType → { i8 has_value, YieldType value }
-      auto yieldType = convertType(recv.return_type->value);
+      auto yieldType = convertType(recv.return_type->value, typeLoc(*recv.return_type));
       if (!llvm::isa<mlir::NoneType>(yieldType)) {
         auto wrapperType = mlir::LLVM::LLVMStructType::getLiteral(&context, {i8Type, yieldType});
         recvInfo.returnType = wrapperType;
@@ -213,7 +222,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
         continue;
       }
     } else if (recv.return_type) {
-      auto retTy = convertType(recv.return_type->value);
+      auto retTy = convertType(recv.return_type->value, typeLoc(*recv.return_type));
       if (!llvm::isa<mlir::NoneType>(retTy))
         recvInfo.returnType = retTy;
     }

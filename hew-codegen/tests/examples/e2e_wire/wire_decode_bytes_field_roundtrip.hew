@@ -1,0 +1,18 @@
+// Test: wire encode/decode roundtrip preserves bytes fields
+#[wire]
+struct Packet {
+    payload: bytes,
+}
+
+fn main() {
+    let p = Packet { payload: bytes::from([0, 255, 65]) };
+    let buf: bytes = p.encode();
+    let p2 = Packet.decode(buf);
+    let roundtrip: bytes = p2.encode();
+    println(roundtrip.len());
+    println(roundtrip.get(0));
+    println(roundtrip.get(1));
+    println(roundtrip.get(2));
+    println(roundtrip.get(3));
+    println(roundtrip.get(4));
+}

@@ -1067,6 +1067,19 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
+  // T → Option<T>: explicitly materialize Some(value) before the fail-closed
+  // fallback. Timeout/select lowering still exercises this real coercion path.
+  if (auto dstOption = mlir::dyn_cast<hew::OptionEnumType>(targetType)) {
+    auto payload = coerceType(value, dstOption.getInnerType(), location, isUnsigned);
+    if (payload && payload.getType() == dstOption.getInnerType()) {
+      return hew::EnumConstructOp::create(
+          builder, location, dstOption, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+          mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+    }
+    if (!payload)
+      return nullptr;
+  }
+
   // Fallthrough: no explicit coercion found. Fail closed so callers can stop
   // materialising downstream IR from a mismatched SSA value.
   ++errorCount_;
@@ -1081,7 +1094,8 @@ mlir::Value MLIRGen::coerceTypeForSink(mlir::Value value, mlir::Type targetType,
   if (coerced && coerced.getType() == targetType)
     return coerced;
 
-  ++errorCount_;
+  if (coerced)
+    ++errorCount_;
   return createDefaultValue(builder, location, targetType);
 }
 

@@ -38,6 +38,18 @@
 using namespace hew;
 using namespace mlir;
 
+namespace {
+
+bool isInferredType(const ast::Spanned<ast::TypeExpr> &typeExpr) {
+  return typeExpr.span.start == 0 && typeExpr.span.end == 0;
+}
+
+bool usesTimeoutPlaceholder(const std::optional<ast::Spanned<ast::Expr>> &expr) {
+  return expr && std::holds_alternative<ast::ExprTimeout>(expr->value.kind);
+}
+
+} // namespace
+
 // ============================================================================
 // Shared helpers
 // ============================================================================
@@ -584,7 +596,10 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   // Type coercion: if declared type doesn't match value type, try to coerce
   if (stmt.ty) {
     auto declaredType = convertType(stmt.ty->value);
-    if (isValidType(declaredType))
+    // Timeout lowering still evaluates the inner expression directly while the
+    // enriched AST annotates `| after` results as inferred Option<T>.
+    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    if (isValidType(declaredType) && !skipInferredTimeoutCoercion)
       value = coerceType(value, declaredType, location);
   }
 
@@ -833,7 +848,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.ty) {
     varType = convertType(stmt.ty->value);
-    if (isValidType(varType) && initValue)
+    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion)
       initValue = coerceType(initValue, varType, location);
   }
 

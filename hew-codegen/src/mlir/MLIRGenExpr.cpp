@@ -5878,7 +5878,8 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     if (coerced && coerced.getType() == selectResultType)
       return coerced;
 
-    ++errorCount_;
+    if (coerced)
+      ++errorCount_;
     return createDefaultValue(builder, location, selectResultType);
   };
 

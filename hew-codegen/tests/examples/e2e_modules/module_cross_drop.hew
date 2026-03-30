@@ -1,0 +1,13 @@
+// Tests that handle types from imported stdlib modules are properly
+// dropped when they go out of scope. The Drop impl is defined in the
+// stdlib module, not in the importing module.
+import std::net::url;
+
+fn main() {
+    let u = url.parse("https://hew.sh/docs");
+    println(u.scheme());
+    println(u.host());
+    println(u.path());
+    // u is dropped here — exercises cross-module Drop impl
+    println("done");
+}

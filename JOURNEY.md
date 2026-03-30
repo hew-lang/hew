@@ -1,5 +1,19 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Module System Reliability (2026-03-29)
+
+### Analysis
+
+Traced the full import pipeline (parser → CLI resolver → module graph → flattening → typechecker → codegen). The architecture has a fundamental design pattern that causes bugs: imported module items are processed by EVERY codegen pass, and each pass must independently handle cross-module mangling. Missing the swap in any pass creates name mismatches.
+
+PR #386 fixed the most visible instance (`generateImplDecl` and Pass 1d/1j), but Pass 1f (Drop impl pre-registration) was missed. The pre-registration at line 2330 stores `mangleName(currentModulePath, ...)` while the actual generation at line 3444 stores `mangleName(typeDefModulePath, ...)`, creating a mismatch in `userDropFuncs`.
+
+### Approach
+
+Fix all remaining `currentModulePath` uses that process cross-module items. Then write E2E tests for import edge cases (cross-module Drop impls, diamond imports, same-name types in different modules) to prevent regressions.
+
+---
+
 ## Phase 8: Completion recursion through expression containers (2026-03-25)
 
 ### Goal

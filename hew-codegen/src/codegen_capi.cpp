@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 
@@ -66,6 +67,37 @@ std::string asString(const char *value) { return value ? value : ""; }
 
 } // namespace
 
+namespace hew::codegen_detail {
+
+std::string formatEmitMlirVerificationFailure(mlir::ModuleOp module) {
+  std::string diagnostics;
+  {
+    llvm::raw_string_ostream diagnosticsStream(diagnostics);
+    mlir::ScopedDiagnosticHandler handler(module->getContext(), [&](mlir::Diagnostic &diag) {
+      diag.print(diagnosticsStream);
+      diagnosticsStream << '\n';
+      return mlir::success();
+    });
+
+    if (mlir::succeeded(mlir::verify(module)))
+      return {};
+
+    diagnosticsStream.flush();
+  }
+
+  std::string message;
+  llvm::raw_string_ostream messageStream(message);
+  messageStream << "module verification failed while emitting MLIR\n";
+  if (!diagnostics.empty())
+    messageStream << diagnostics;
+  messageStream << "MLIR module dump:\n";
+  module->print(messageStream);
+  messageStream.flush();
+  return message;
+}
+
+} // namespace hew::codegen_detail
+
 extern "C" {
 
 int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
@@ -102,9 +134,11 @@ int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
     }
 
     if (options->mode == HEW_CODEGEN_EMIT_MLIR) {
-      if (mlir::failed(mlir::verify(module))) {
+      if (std::string verifierFailure =
+              hew::codegen_detail::formatEmitMlirVerificationFailure(module);
+          !verifierFailure.empty()) {
         module->destroy();
-        setLastError("module verification failed");
+        setLastError(std::move(verifierFailure));
         return 1;
       }
 

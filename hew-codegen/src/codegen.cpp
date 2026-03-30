@@ -3861,6 +3861,12 @@ static mlir::LogicalResult failOnUnreconciledCasts(mlir::ModuleOp module, llvm::
   return mlir::failure();
 }
 
+static void dumpModuleAtFailure(mlir::ModuleOp module, llvm::StringRef stage) {
+  llvm::errs() << "MLIR module dump (" << stage << "):\n";
+  module.print(llvm::errs());
+  llvm::errs() << '\n';
+}
+
 // ============================================================================
 // WASM target validation
 // ============================================================================
@@ -4939,7 +4945,7 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
   // Verify module before any lowering — catches malformed IR from MLIRGen
   if (mlir::failed(mlir::verify(module))) {
     llvm::errs() << "Error: module verification failed before lowering\n";
-    module.dump();
+    dumpModuleAtFailure(module, "before lowering");
     return nullptr;
   }
 
@@ -4965,7 +4971,7 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
   // Verify after hew lowering
   if (mlir::failed(mlir::verify(module))) {
     llvm::errs() << "Error: module verification failed after Hew lowering\n";
-    module.dump();
+    dumpModuleAtFailure(module, "after Hew lowering");
     return nullptr;
   }
 
@@ -4978,14 +4984,14 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
   // Fail fast at the translation boundary if cast reconciliation missed
   // any unrealized conversion cast.
   if (mlir::failed(failOnUnreconciledCasts(module, "after reconcile pass"))) {
-    module.dump();
+    dumpModuleAtFailure(module, "after reconcile pass");
     return nullptr;
   }
 
   // Verify after full lowering
   if (mlir::failed(mlir::verify(module))) {
     llvm::errs() << "Error: module verification failed after LLVM lowering\n";
-    module.dump();
+    dumpModuleAtFailure(module, "after LLVM lowering");
     return nullptr;
   }
 
@@ -4997,6 +5003,7 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
   auto llvmModule = mlir::translateModuleToLLVMIR(module, llvmContext);
   if (!llvmModule) {
     llvm::errs() << "Error: MLIR to LLVM IR translation failed\n";
+    dumpModuleAtFailure(module, "before LLVM IR translation");
     return nullptr;
   }
 

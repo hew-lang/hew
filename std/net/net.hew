@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+import std::string;
+
 /// A TCP listener bound to an address, waiting for connections.
 ///
 /// Created by `net.listen(addr)`. Returns a negative value (as i32)
@@ -72,10 +74,12 @@ trait ConnectionMethods {
 
     /// Set the read timeout in milliseconds.
     ///
-    /// Pass 0 to disable the timeout.
+    /// Pass a negative value to clear the timeout.
     fn set_read_timeout(conn: Connection, ms: i32) -> i32;
 
     /// Set the write timeout in milliseconds.
+    ///
+    /// Pass a negative value to clear the timeout.
     fn set_write_timeout(conn: Connection, ms: i32) -> i32;
 }
 
@@ -128,7 +132,21 @@ pub fn connect(addr: String) -> Connection {
 ///
 /// `timeout_sec` and `timeout_usec` specify the deadline.
 pub fn connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection {
-    unsafe { hew_tcp_connect_timeout(addr, timeout_sec, timeout_usec) }
+    let colon = addr.find(":");
+    var host = addr;
+    var port: i32 = 0;
+    if colon >= 0 {
+        if colon == 0 {
+            host = "127.0.0.1";
+        } else {
+            host = addr.slice(0, colon);
+        }
+        port = string.to_int(addr.slice(colon + 1, addr.len()));
+    }
+    let millis_per_second: i32 = 1000;
+    let micros_per_millisecond: i32 = 1000;
+    let timeout_ms = timeout_sec * millis_per_second + (timeout_usec / micros_per_millisecond);
+    unsafe { hew_tcp_connect_timeout(host, port, timeout_ms) }
 }
 
 /// Broadcast a message to all connections except the sender.
@@ -144,7 +162,7 @@ extern "C" {
     fn hew_tcp_listen(addr: String) -> Listener;
     fn hew_tcp_accept(listener: Listener) -> Connection;
     fn hew_tcp_connect(addr: String) -> Connection;
-    fn hew_tcp_connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection;
+    fn hew_tcp_connect_timeout(host: String, port: i32, timeout_ms: i32) -> Connection;
     fn hew_tcp_read(conn: Connection) -> bytes;
     fn hew_tcp_write(conn: Connection, data: bytes);
     fn hew_bytes_to_string(data: bytes) -> String;

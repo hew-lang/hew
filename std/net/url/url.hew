@@ -16,6 +16,8 @@
 //! }
 //! ```
 
+import std::string;
+
 /// A parsed URL.
 ///
 /// Created by `url.parse(s)`. Must be freed with `free()` when
@@ -100,7 +102,22 @@ pub fn parse(s: String) -> Url {
 /// let encoded = url.encode("hello world");  // "hello%20world"
 /// ```
 pub fn encode(s: String) -> String {
-    unsafe { hew_url_encode(s) }
+    encode_impl(s)
+}
+
+fn encode_impl(s: String) -> String {
+    var out = "";
+
+    for i in 0..s.len() {
+        let ch = string_char_at(s, i);
+        if is_unreserved_char(ch) {
+            out = out + s.slice(i, i + 1);
+        } else {
+            out = out + percent_encode_byte(ch);
+        }
+    }
+
+    out
 }
 
 /// Decode a percent-encoded string.
@@ -115,7 +132,153 @@ pub fn encode(s: String) -> String {
 /// let decoded = url.decode("hello%20world");  // "hello world"
 /// ```
 pub fn decode(s: String) -> String {
-    unsafe { hew_url_decode(s) }
+    decode_impl(s)
+}
+
+fn decode_impl(s: String) -> String {
+    var out = "";
+    var pending: bytes = bytes::new();
+    var literal_start = 0;
+    var i = 0;
+
+    var scan_remaining = 0;
+    var scan_min = 128;
+    var scan_max = 191;
+    var scan_i = 0;
+    while scan_i < s.len() {
+        let scan_ch = string_char_at(s, scan_i);
+        var scan_hi = -1 as i32;
+        var scan_lo = -1 as i32;
+        if scan_i + 1 < s.len() {
+            scan_hi = hex_char_to_nibble(string_char_at(s, scan_i + 1));
+        }
+        if scan_i + 2 < s.len() {
+            scan_lo = hex_char_to_nibble(string_char_at(s, scan_i + 2));
+        }
+
+        if scan_ch == '%' && scan_hi >= 0 && scan_lo >= 0 {
+            let scan_b = scan_hi * 16 + scan_lo;
+            if scan_remaining == 0 {
+                if scan_b <= 127 {
+                    // ASCII byte
+                } else if scan_b >= 194 && scan_b <= 223 {
+                    scan_remaining = 1;
+                } else if scan_b == 224 {
+                    scan_remaining = 2;
+                    scan_min = 160;
+                    scan_max = 191;
+                } else if scan_b >= 225 && scan_b <= 236 {
+                    scan_remaining = 2;
+                } else if scan_b == 237 {
+                    scan_remaining = 2;
+                    scan_min = 128;
+                    scan_max = 159;
+                } else if scan_b >= 238 && scan_b <= 239 {
+                    scan_remaining = 2;
+                } else if scan_b == 240 {
+                    scan_remaining = 3;
+                    scan_min = 144;
+                    scan_max = 191;
+                } else if scan_b >= 241 && scan_b <= 243 {
+                    scan_remaining = 3;
+                } else if scan_b == 244 {
+                    scan_remaining = 3;
+                    scan_min = 128;
+                    scan_max = 143;
+                } else {
+                    return "";
+                }
+            } else {
+                if scan_b < scan_min || scan_b > scan_max {
+                    return "";
+                }
+                scan_remaining = scan_remaining - 1;
+                scan_min = 128;
+                scan_max = 191;
+            }
+
+            scan_i = scan_i + 3;
+            continue;
+        }
+
+        if scan_remaining != 0 {
+            return "";
+        }
+
+        scan_i = scan_i + 1;
+    }
+
+    if scan_remaining != 0 {
+        return "";
+    }
+
+    while i < s.len() {
+        let ch = string_char_at(s, i);
+        var hi = -1 as i32;
+        var lo = -1 as i32;
+        if i + 1 < s.len() {
+            hi = hex_char_to_nibble(string_char_at(s, i + 1));
+        }
+        if i + 2 < s.len() {
+            lo = hex_char_to_nibble(string_char_at(s, i + 2));
+        }
+
+        if ch == '%' && hi >= 0 && lo >= 0 {
+            if pending.len() == 0 && literal_start < i {
+                out = out + s.slice(literal_start, i);
+            }
+
+            pending.push(hi * 16 + lo);
+            i = i + 3;
+            literal_start = i;
+            continue;
+        }
+
+        if pending.len() > 0 {
+            let visible_len = prefix_len_before_nul(pending);
+            if visible_len < pending.len() as i32 {
+                if visible_len == 0 {
+                    return out;
+                }
+
+                let visible: bytes = bytes::new();
+                for j in 0..visible_len {
+                    visible.push(pending.get(j));
+                }
+                return out + visible.to_string();
+            }
+
+            out = out + pending.to_string();
+            pending = bytes::new();
+            literal_start = i;
+        }
+
+        i = i + 1;
+    }
+
+    if pending.len() > 0 {
+        let visible_len = prefix_len_before_nul(pending);
+        if visible_len < pending.len() as i32 {
+            if visible_len == 0 {
+                return out;
+            }
+
+            let visible: bytes = bytes::new();
+            for j in 0..visible_len {
+                visible.push(pending.get(j));
+            }
+            return out + visible.to_string();
+        }
+
+        out = out + pending.to_string();
+        return out;
+    }
+
+    if literal_start < s.len() {
+        out = out + s.slice(literal_start, s.len());
+    }
+
+    out
 }
 
 /// Build a percent-encoded query string from a newline-separated list of
@@ -133,7 +296,276 @@ pub fn decode(s: String) -> String {
 /// // "name=hello%20world&page=1"
 /// ```
 pub fn encode_query(params: String) -> String {
-    unsafe { hew_url_encode_query(params) }
+    encode_query_impl(params)
+}
+
+fn encode_query_impl(params: String) -> String {
+    let encoded: Vec<String> = Vec::new();
+    let lines = string.lines(params);
+
+    for i in 0..lines.len() {
+        let line = lines.get(i);
+        let eq = line.find("=");
+        if eq >= 0 {
+            let key = line.slice(0, eq);
+            let value = line.slice(eq + 1, line.len());
+            encoded.push(encode(key) + "=" + encode(value));
+        }
+    }
+
+    string.join(encoded, "&")
+}
+
+fn is_unreserved_char(ch: char) -> bool {
+    (ch >= 'A' && ch <= 'Z')
+        || (ch >= 'a' && ch <= 'z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '-'
+        || ch == '.'
+        || ch == '_'
+        || ch == '~'
+}
+
+fn byte_char(code: i32) -> char {
+    string_char_at(string.from_char(code), 0)
+}
+
+fn percent_encode_byte(ch: char) -> String {
+    let ascii = percent_encode_ascii_byte(ch);
+    if ascii != "" {
+        return ascii;
+    }
+    percent_encode_high_byte(ch)
+}
+
+fn percent_encode_ascii_byte(ch: char) -> String {
+    var encoded = "";
+    if ch == '\0' { encoded = "%00"; }
+    else if ch == byte_char(1) { encoded = "%01"; }
+    else if ch == byte_char(2) { encoded = "%02"; }
+    else if ch == byte_char(3) { encoded = "%03"; }
+    else if ch == byte_char(4) { encoded = "%04"; }
+    else if ch == byte_char(5) { encoded = "%05"; }
+    else if ch == byte_char(6) { encoded = "%06"; }
+    else if ch == byte_char(7) { encoded = "%07"; }
+    else if ch == byte_char(8) { encoded = "%08"; }
+    else if ch == byte_char(9) { encoded = "%09"; }
+    else if ch == byte_char(10) { encoded = "%0A"; }
+    else if ch == byte_char(11) { encoded = "%0B"; }
+    else if ch == byte_char(12) { encoded = "%0C"; }
+    else if ch == byte_char(13) { encoded = "%0D"; }
+    else if ch == byte_char(14) { encoded = "%0E"; }
+    else if ch == byte_char(15) { encoded = "%0F"; }
+    else if ch == byte_char(16) { encoded = "%10"; }
+    else if ch == byte_char(17) { encoded = "%11"; }
+    else if ch == byte_char(18) { encoded = "%12"; }
+    else if ch == byte_char(19) { encoded = "%13"; }
+    else if ch == byte_char(20) { encoded = "%14"; }
+    else if ch == byte_char(21) { encoded = "%15"; }
+    else if ch == byte_char(22) { encoded = "%16"; }
+    else if ch == byte_char(23) { encoded = "%17"; }
+    else if ch == byte_char(24) { encoded = "%18"; }
+    else if ch == byte_char(25) { encoded = "%19"; }
+    else if ch == byte_char(26) { encoded = "%1A"; }
+    else if ch == byte_char(27) { encoded = "%1B"; }
+    else if ch == byte_char(28) { encoded = "%1C"; }
+    else if ch == byte_char(29) { encoded = "%1D"; }
+    else if ch == byte_char(30) { encoded = "%1E"; }
+    else if ch == byte_char(31) { encoded = "%1F"; }
+    else if ch == byte_char(127) { encoded = "%7F"; }
+    else if ch == byte_char(128) { encoded = "%80"; }
+    else if ch == byte_char(129) { encoded = "%81"; }
+    else if ch == byte_char(130) { encoded = "%82"; }
+    else if ch == byte_char(131) { encoded = "%83"; }
+    else if ch == byte_char(132) { encoded = "%84"; }
+    else if ch == byte_char(133) { encoded = "%85"; }
+    else if ch == byte_char(134) { encoded = "%86"; }
+    else if ch == byte_char(135) { encoded = "%87"; }
+    else if ch == byte_char(136) { encoded = "%88"; }
+    else if ch == byte_char(137) { encoded = "%89"; }
+    else if ch == byte_char(138) { encoded = "%8A"; }
+    else if ch == byte_char(139) { encoded = "%8B"; }
+    else if ch == byte_char(140) { encoded = "%8C"; }
+    else if ch == byte_char(141) { encoded = "%8D"; }
+    else if ch == byte_char(142) { encoded = "%8E"; }
+    else if ch == byte_char(143) { encoded = "%8F"; }
+    else if ch == byte_char(144) { encoded = "%90"; }
+    else if ch == byte_char(145) { encoded = "%91"; }
+    else if ch == byte_char(146) { encoded = "%92"; }
+    else if ch == byte_char(147) { encoded = "%93"; }
+    else if ch == byte_char(148) { encoded = "%94"; }
+    else if ch == byte_char(149) { encoded = "%95"; }
+    else if ch == byte_char(150) { encoded = "%96"; }
+    else if ch == byte_char(151) { encoded = "%97"; }
+    else if ch == byte_char(152) { encoded = "%98"; }
+    else if ch == byte_char(153) { encoded = "%99"; }
+    else if ch == byte_char(154) { encoded = "%9A"; }
+    else if ch == byte_char(155) { encoded = "%9B"; }
+    else if ch == byte_char(156) { encoded = "%9C"; }
+    else if ch == byte_char(157) { encoded = "%9D"; }
+    else if ch == byte_char(158) { encoded = "%9E"; }
+    else if ch == byte_char(159) { encoded = "%9F"; }
+    else if ch == ' ' { encoded = "%20"; }
+    else if ch == '!' { encoded = "%21"; }
+    else if ch == '"' { encoded = "%22"; }
+    else if ch == '#' { encoded = "%23"; }
+    else if ch == '$' { encoded = "%24"; }
+    else if ch == '%' { encoded = "%25"; }
+    else if ch == '&' { encoded = "%26"; }
+    else if ch == '\'' { encoded = "%27"; }
+    else if ch == '(' { encoded = "%28"; }
+    else if ch == ')' { encoded = "%29"; }
+    else if ch == '*' { encoded = "%2A"; }
+    else if ch == '+' { encoded = "%2B"; }
+    else if ch == ',' { encoded = "%2C"; }
+    else if ch == '/' { encoded = "%2F"; }
+    else if ch == ':' { encoded = "%3A"; }
+    else if ch == ';' { encoded = "%3B"; }
+    else if ch == '<' { encoded = "%3C"; }
+    else if ch == '=' { encoded = "%3D"; }
+    else if ch == '>' { encoded = "%3E"; }
+    else if ch == '?' { encoded = "%3F"; }
+    else if ch == '@' { encoded = "%40"; }
+    else if ch == '[' { encoded = "%5B"; }
+    else if ch == '\\' { encoded = "%5C"; }
+    else if ch == ']' { encoded = "%5D"; }
+    else if ch == '^' { encoded = "%5E"; }
+    else if ch == '`' { encoded = "%60"; }
+    else if ch == '{' { encoded = "%7B"; }
+    else if ch == '|' { encoded = "%7C"; }
+    else if ch == '}' { encoded = "%7D"; }
+    encoded
+}
+
+fn percent_encode_high_byte(ch: char) -> String {
+    match ch {
+        ' ' => "%A0",
+        '¡' => "%A1",
+        '¢' => "%A2",
+        '£' => "%A3",
+        '¤' => "%A4",
+        '¥' => "%A5",
+        '¦' => "%A6",
+        '§' => "%A7",
+        '¨' => "%A8",
+        '©' => "%A9",
+        'ª' => "%AA",
+        '«' => "%AB",
+        '¬' => "%AC",
+        '­' => "%AD",
+        '®' => "%AE",
+        '¯' => "%AF",
+        '°' => "%B0",
+        '±' => "%B1",
+        '²' => "%B2",
+        '³' => "%B3",
+        '´' => "%B4",
+        'µ' => "%B5",
+        '¶' => "%B6",
+        '·' => "%B7",
+        '¸' => "%B8",
+        '¹' => "%B9",
+        'º' => "%BA",
+        '»' => "%BB",
+        '¼' => "%BC",
+        '½' => "%BD",
+        '¾' => "%BE",
+        '¿' => "%BF",
+        'À' => "%C0",
+        'Á' => "%C1",
+        'Â' => "%C2",
+        'Ã' => "%C3",
+        'Ä' => "%C4",
+        'Å' => "%C5",
+        'Æ' => "%C6",
+        'Ç' => "%C7",
+        'È' => "%C8",
+        'É' => "%C9",
+        'Ê' => "%CA",
+        'Ë' => "%CB",
+        'Ì' => "%CC",
+        'Í' => "%CD",
+        'Î' => "%CE",
+        'Ï' => "%CF",
+        'Ð' => "%D0",
+        'Ñ' => "%D1",
+        'Ò' => "%D2",
+        'Ó' => "%D3",
+        'Ô' => "%D4",
+        'Õ' => "%D5",
+        'Ö' => "%D6",
+        '×' => "%D7",
+        'Ø' => "%D8",
+        'Ù' => "%D9",
+        'Ú' => "%DA",
+        'Û' => "%DB",
+        'Ü' => "%DC",
+        'Ý' => "%DD",
+        'Þ' => "%DE",
+        'ß' => "%DF",
+        'à' => "%E0",
+        'á' => "%E1",
+        'â' => "%E2",
+        'ã' => "%E3",
+        'ä' => "%E4",
+        'å' => "%E5",
+        'æ' => "%E6",
+        'ç' => "%E7",
+        'è' => "%E8",
+        'é' => "%E9",
+        'ê' => "%EA",
+        'ë' => "%EB",
+        'ì' => "%EC",
+        'í' => "%ED",
+        'î' => "%EE",
+        'ï' => "%EF",
+        'ð' => "%F0",
+        'ñ' => "%F1",
+        'ò' => "%F2",
+        'ó' => "%F3",
+        'ô' => "%F4",
+        'õ' => "%F5",
+        'ö' => "%F6",
+        '÷' => "%F7",
+        'ø' => "%F8",
+        'ù' => "%F9",
+        'ú' => "%FA",
+        'û' => "%FB",
+        'ü' => "%FC",
+        'ý' => "%FD",
+        'þ' => "%FE",
+        'ÿ' => "%FF",
+        _ => "",
+    }
+}
+
+fn hex_char_to_nibble(ch: char) -> i32 {
+    if ch == '0' { 0 as i32 }
+    else if ch == '1' { 1 as i32 }
+    else if ch == '2' { 2 as i32 }
+    else if ch == '3' { 3 as i32 }
+    else if ch == '4' { 4 as i32 }
+    else if ch == '5' { 5 as i32 }
+    else if ch == '6' { 6 as i32 }
+    else if ch == '7' { 7 as i32 }
+    else if ch == '8' { 8 as i32 }
+    else if ch == '9' { 9 as i32 }
+    else if ch == 'a' || ch == 'A' { 10 as i32 }
+    else if ch == 'b' || ch == 'B' { 11 as i32 }
+    else if ch == 'c' || ch == 'C' { 12 as i32 }
+    else if ch == 'd' || ch == 'D' { 13 as i32 }
+    else if ch == 'e' || ch == 'E' { 14 as i32 }
+    else if ch == 'f' || ch == 'F' { 15 as i32 }
+    else { -1 as i32 }
+}
+
+fn prefix_len_before_nul(data: bytes) -> i32 {
+    for i in 0..data.len() {
+        if data.get(i) == 0 {
+            return i as i32;
+        }
+    }
+    data.len() as i32
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
@@ -149,7 +581,4 @@ extern "C" {
     fn hew_url_to_string(url: Url) -> String;
     fn hew_url_join(base: Url, path: String) -> Url;
     fn hew_url_free(url: Url);
-    fn hew_url_encode(s: String) -> String;
-    fn hew_url_decode(s: String) -> String;
-    fn hew_url_encode_query(params: String) -> String;
 }

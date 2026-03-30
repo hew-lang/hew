@@ -16,9 +16,22 @@ import std::fs;
 import std::os;
 
 extern "C" {
-    fn hew_string_to_bytes(s: String) -> bytes;
-    fn hew_bytes_to_string(data: bytes) -> String;
-    fn hew_vec_len(v: bytes) -> i32;
+    fn hew_bytes_to_string(data: Vec<i32>) -> String;
+    fn hew_vec_len(v: Vec<i32>) -> i32;
+    fn hew_string_char_at(s: String, index: i32) -> i32;
+    fn hew_tcp_read(conn: Connection) -> Vec<i32>;
+    fn hew_tcp_write(conn: Connection, data: Vec<i32>);
+}
+
+fn write_text(conn: Connection, text: String) {
+    let data: Vec<i32> = Vec::new();
+    var i: i32 = 0;
+    let n = text.len();
+    while i < n {
+        data.push(unsafe { hew_string_char_at(text, i) });
+        i = i + 1;
+    }
+    unsafe { hew_tcp_write(conn, data) };
 }
 
 // Parse host and path from an http:// URL.
@@ -103,17 +116,20 @@ fn main() {
     // Connect
     let addr = f"{host}:{port}";
     println(f"  Connecting to {addr}...");
-    let conn = net.connect_timeout(addr, 10, 0);
+    let connect_timeout_sec: i32 = 5;
+    let connect_timeout_usec: i32 = 0;
+    let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
+    let read_timeout_result = conn.set_read_timeout(-1);
+    if read_timeout_result < 0 {
+        let err = f"  Error: failed to connect to {addr} within {connect_timeout_sec}s";
+        panic(err);
+    }
     // Build and send HTTP request
-    let req_str = f"GET {path} HTTP/1.0
-Host: {host}
-User-Agent: hew-curl/1.0
-Accept: */*
-Connection: close
-
-";
-    let req_bytes = unsafe { hew_string_to_bytes(req_str) };
-    conn.write(req_bytes);
+    write_text(conn, "GET ");
+    write_text(conn, path);
+    write_text(conn, " HTTP/1.0\r\nHost: ");
+    write_text(conn, host);
+    write_text(conn, "\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     println("  Request sent");
     println("");
 
@@ -122,11 +138,11 @@ Connection: close
         print(f"  Progress: {bytes_so_far} bytes received");
     };
     // Read response in chunks
-    var total_bytes = 0;
+    var total_bytes: i32 = 0;
     var full_response: String = "";
     var reading = true;
     while reading {
-        let chunk_bytes = conn.read();
+        let chunk_bytes = unsafe { hew_tcp_read(conn) };
         let chunk_len = unsafe { hew_vec_len(chunk_bytes) };
         if chunk_len == 0 {
             reading = false;

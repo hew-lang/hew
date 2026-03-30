@@ -657,9 +657,9 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                        mlir::ValueRange{bufPtr})
                 .getResult();
         auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-        auto stringOk =
-            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
-                                        decodedStr, nullPtr);
+        auto stringOk = mlir::LLVM::ICmpOp::create(builder, location,
+                                                   mlir::LLVM::ICmpPredicate::ne, decodedStr,
+                                                   nullPtr);
         auto stringIf = mlir::scf::IfOp::create(builder, location, ptrType, stringOk,
                                                 /*withElseRegion=*/true);
 

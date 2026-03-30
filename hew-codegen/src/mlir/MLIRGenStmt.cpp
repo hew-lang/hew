@@ -402,25 +402,26 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
     // When a block ends with `if ... { ... } else { ... }` and the enclosing
     // function returns a value, generate it as an if-expression.
     if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+      if (!currentFunction || currentFunction.getResultTypes().size() != 1) {
+        generateIfStmt(*ifStmt);
+        return nullptr;
+      }
       return generateIfStmtAsExpr(*ifStmt);
     }
 
     // Case 3: Match statement as a value-producing block ending
     if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+      if (!currentFunction || currentFunction.getResultTypes().size() != 1) {
+        generateMatchStmt(*matchNode);
+        return nullptr;
+      }
       auto location = loc(lastStmt.span);
       auto scrutinee = generateExpression(matchNode->scrutinee.value);
       if (!scrutinee)
         return nullptr;
       scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
                                              &matchNode->arms);
-      mlir::Type resultType;
-      if (currentFunction && currentFunction.getResultTypes().size() == 1) {
-        resultType = currentFunction.getResultTypes()[0];
-      } else {
-        // Statement-position match: result is discarded, type is irrelevant.
-        // TODO: generate statement-position match without value-producing path.
-        resultType = builder.getI32Type();
-      }
+      auto resultType = currentFunction.getResultTypes()[0];
       return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
     }
 

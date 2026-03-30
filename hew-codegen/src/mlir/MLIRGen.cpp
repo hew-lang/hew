@@ -50,6 +50,155 @@ using namespace mlir;
 // Helpers
 // ============================================================================
 
+static ast::Spanned<ast::TypeExpr> cloneSpannedTypeExpr(const ast::Spanned<ast::TypeExpr> &type);
+
+static std::unique_ptr<ast::Spanned<ast::TypeExpr>>
+cloneTypeExprPtr(const std::unique_ptr<ast::Spanned<ast::TypeExpr>> &type) {
+  if (!type)
+    return nullptr;
+  return std::make_unique<ast::Spanned<ast::TypeExpr>>(cloneSpannedTypeExpr(*type));
+}
+
+static std::vector<ast::Spanned<ast::TypeExpr>>
+cloneTypeExprList(const std::vector<ast::Spanned<ast::TypeExpr>> &types) {
+  std::vector<ast::Spanned<ast::TypeExpr>> cloned;
+  cloned.reserve(types.size());
+  for (const auto &type : types)
+    cloned.push_back(cloneSpannedTypeExpr(type));
+  return cloned;
+}
+
+static std::optional<std::vector<ast::Spanned<ast::TypeExpr>>>
+cloneOptionalTypeExprList(const std::optional<std::vector<ast::Spanned<ast::TypeExpr>>> &types) {
+  if (!types)
+    return std::nullopt;
+  return cloneTypeExprList(*types);
+}
+
+static ast::TraitBound cloneTraitBound(const ast::TraitBound &bound) {
+  ast::TraitBound cloned;
+  cloned.name = bound.name;
+  cloned.type_args = cloneOptionalTypeExprList(bound.type_args);
+  return cloned;
+}
+
+static ast::TypeExpr cloneTypeExpr(const ast::TypeExpr &type) {
+  ast::TypeExpr cloned;
+
+  if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
+    ast::TypeNamed namedClone;
+    namedClone.name = named->name;
+    namedClone.type_args = cloneOptionalTypeExprList(named->type_args);
+    cloned.kind = std::move(namedClone);
+    return cloned;
+  }
+
+  if (auto *result = std::get_if<ast::TypeResult>(&type.kind)) {
+    ast::TypeResult resultClone;
+    resultClone.ok = cloneTypeExprPtr(result->ok);
+    resultClone.err = cloneTypeExprPtr(result->err);
+    cloned.kind = std::move(resultClone);
+    return cloned;
+  }
+
+  if (auto *opt = std::get_if<ast::TypeOption>(&type.kind)) {
+    ast::TypeOption optionClone;
+    optionClone.inner = cloneTypeExprPtr(opt->inner);
+    cloned.kind = std::move(optionClone);
+    return cloned;
+  }
+
+  if (auto *tuple = std::get_if<ast::TypeTuple>(&type.kind)) {
+    ast::TypeTuple tupleClone;
+    tupleClone.elements = cloneTypeExprList(tuple->elements);
+    cloned.kind = std::move(tupleClone);
+    return cloned;
+  }
+
+  if (auto *array = std::get_if<ast::TypeArray>(&type.kind)) {
+    ast::TypeArray arrayClone;
+    arrayClone.element = cloneTypeExprPtr(array->element);
+    arrayClone.size = array->size;
+    cloned.kind = std::move(arrayClone);
+    return cloned;
+  }
+
+  if (auto *slice = std::get_if<ast::TypeSlice>(&type.kind)) {
+    ast::TypeSlice sliceClone;
+    sliceClone.inner = cloneTypeExprPtr(slice->inner);
+    cloned.kind = std::move(sliceClone);
+    return cloned;
+  }
+
+  if (auto *fn = std::get_if<ast::TypeFunction>(&type.kind)) {
+    ast::TypeFunction fnClone;
+    fnClone.params = cloneTypeExprList(fn->params);
+    fnClone.return_type = cloneTypeExprPtr(fn->return_type);
+    cloned.kind = std::move(fnClone);
+    return cloned;
+  }
+
+  if (auto *ptr = std::get_if<ast::TypePointer>(&type.kind)) {
+    ast::TypePointer ptrClone;
+    ptrClone.is_mutable = ptr->is_mutable;
+    ptrClone.pointee = cloneTypeExprPtr(ptr->pointee);
+    cloned.kind = std::move(ptrClone);
+    return cloned;
+  }
+
+  if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&type.kind)) {
+    ast::TypeTraitObject traitClone;
+    traitClone.bounds.reserve(traitObj->bounds.size());
+    for (const auto &bound : traitObj->bounds)
+      traitClone.bounds.push_back(cloneTraitBound(bound));
+    cloned.kind = std::move(traitClone);
+    return cloned;
+  }
+
+  if (std::holds_alternative<ast::TypeInfer>(type.kind)) {
+    cloned.kind = ast::TypeInfer{};
+    return cloned;
+  }
+
+  llvm_unreachable("unhandled TypeExpr alternative");
+}
+
+static ast::Spanned<ast::TypeExpr> cloneSpannedTypeExpr(const ast::Spanned<ast::TypeExpr> &type) {
+  return {cloneTypeExpr(type.value), type.span};
+}
+
+static ast::VariantDecl cloneVariantDecl(const ast::VariantDecl &variant) {
+  ast::VariantDecl cloned;
+  cloned.name = variant.name;
+
+  if (std::holds_alternative<ast::VariantDecl::VariantUnit>(variant.kind)) {
+    cloned.kind = ast::VariantDecl::VariantUnit{};
+    return cloned;
+  }
+
+  if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&variant.kind)) {
+    ast::VariantDecl::VariantTuple tupleClone;
+    tupleClone.fields = cloneTypeExprList(tuple->fields);
+    cloned.kind = std::move(tupleClone);
+    return cloned;
+  }
+
+  if (auto *strct = std::get_if<ast::VariantDecl::VariantStruct>(&variant.kind)) {
+    ast::VariantDecl::VariantStruct structClone;
+    structClone.fields.reserve(strct->fields.size());
+    for (const auto &field : strct->fields) {
+      ast::VariantDecl::VariantStructField clonedField;
+      clonedField.name = field.name;
+      clonedField.ty = cloneSpannedTypeExpr(field.ty);
+      structClone.fields.push_back(std::move(clonedField));
+    }
+    cloned.kind = std::move(structClone);
+    return cloned;
+  }
+
+  llvm_unreachable("unhandled VariantDecl alternative");
+}
+
 /// Convert a TypeDecl with wire metadata into a WireDecl for the existing
 /// codegen pipeline. This is temporary until the wire codegen is refactored
 /// to work directly with TypeDecl.
@@ -89,9 +238,10 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
     wd.fields.push_back(std::move(wf));
   }
 
-  // Note: variants are not copied here since VariantDecl contains non-copyable
-  // types. Wire enums coming through TypeDecl should still work via the
-  // WireDecl path for now. Only struct wire types are converted.
+  for (const auto &bodyItem : td.body) {
+    if (auto *variant = std::get_if<ast::TypeBodyVariant>(&bodyItem.kind))
+      wd.variants.push_back(cloneVariantDecl(variant->variant));
+  }
 
   wd.json_case = wm.json_case;
   wd.yaml_case = wm.yaml_case;

@@ -137,21 +137,20 @@ static std::string findHewCli() {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: parse source -> TypedProgram msgpack (via hew CLI) -> MLIR module.
-// Writes source to temp files, invokes `hew build --emit-msgpack -o`, then
+// Helper: parse source -> TypedProgram msgpack (via hew CLI).
+// Writes source to a temp file, invokes `hew build --emit-msgpack -o`, then
 // deserializes the msgpack payload with the production reader.
 // ---------------------------------------------------------------------------
-static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &source,
-                                   bool dumpIR = false) {
+static bool loadProgramFromSource(const std::string &source, hew::ast::Program &program) {
   // Write source to a temp file
   std::string tmpPath = (std::filesystem::temp_directory_path() /
                          ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
-                            .string();
+                             .string();
   {
     std::ofstream tmp(tmpPath);
     if (!tmp) {
       printf("  Failed to write temp file %s\n", tmpPath.c_str());
-      return {};
+      return false;
     }
     tmp << source;
   }
@@ -178,32 +177,22 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
 
     if (rc != 0) {
       printf("  hew CLI failed (exit %d)\n", rc);
-      return {};
+      return false;
     }
 
     if (astData.empty()) {
       printf("  hew CLI produced no output\n");
-      return {};
+      return false;
     }
 
-    hew::ast::Program program;
     try {
       program = hew::parseMsgpackAST(astData.data(), astData.size());
     } catch (const std::exception &e) {
       printf("  Failed to parse msgpack AST: %s\n", e.what());
-      return {};
+      return false;
     }
 
-    hew::MLIRGen mlirGen(ctx);
-    auto module = mlirGen.generate(program);
-
-    if (module && dumpIR) {
-      printf("\n--- MLIR ---\n");
-      module.dump();
-      printf("--- End ---\n");
-    }
-
-    return module;
+    return true;
   }
 
   if (rc != 0) {
@@ -212,6 +201,67 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
     printf("  hew CLI produced no msgpack file\n");
   }
   std::filesystem::remove(astPath);
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: lower a TypedProgram to MLIR.
+// ---------------------------------------------------------------------------
+static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const hew::ast::Program &program,
+                                   bool dumpIR = false) {
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+
+  if (module && dumpIR) {
+    printf("\n--- MLIR ---\n");
+    module.dump();
+    printf("--- End ---\n");
+  }
+
+  return module;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: parse source -> TypedProgram msgpack (via hew CLI) -> MLIR module.
+// ---------------------------------------------------------------------------
+static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &source,
+                                   bool dumpIR = false) {
+  hew::ast::Program program;
+  if (!loadProgramFromSource(source, program))
+    return {};
+  return generateMLIR(ctx, program, dumpIR);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: simulate the frontend's TypeDecl-based wire-enum path in MLIRGen.
+// ---------------------------------------------------------------------------
+static bool desugarWireEnumToTypeDecl(hew::ast::Program &program, const std::string &enumName) {
+  for (auto &item : program.items) {
+    auto *wireDecl = std::get_if<hew::ast::WireDecl>(&item.value.kind);
+    if (!wireDecl || wireDecl->kind != hew::ast::WireDeclKind::Enum || wireDecl->name != enumName)
+      continue;
+
+    hew::ast::TypeDecl typeDecl;
+    typeDecl.visibility = wireDecl->visibility;
+    typeDecl.kind = hew::ast::TypeDeclKind::Enum;
+    typeDecl.name = wireDecl->name;
+    typeDecl.body.reserve(wireDecl->variants.size());
+    for (auto &variant : wireDecl->variants)
+      typeDecl.body.push_back(hew::ast::TypeBodyItem{
+          hew::ast::TypeBodyVariant{std::move(variant)},
+      });
+
+    hew::ast::WireMetadata metadata;
+    metadata.json_case = wireDecl->json_case;
+    metadata.yaml_case = wireDecl->yaml_case;
+    metadata.version = wireDecl->version;
+    metadata.min_version = wireDecl->min_version;
+    typeDecl.wire = std::move(metadata);
+
+    item.value.kind = std::move(typeDecl);
+    return true;
+  }
+
   return {};
 }
 
@@ -1063,6 +1113,89 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: TypeDecl-based wire enum preserves variant payload metadata
+// ============================================================================
+static void test_wire_enum_typedecl_preserves_variants() {
+  TEST(wire_enum_typedecl_preserves_variants);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+wire enum Mixed {
+    Int(int);
+    Big(i64);
+    Text(String);
+    Unit;
+}
+
+fn main() -> int {
+    let _a = Int(7);
+    let _b = Big(7000000000);
+    let _c = Text("hello");
+    let _d = Unit;
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  if (!desugarWireEnumToTypeDecl(program, "Mixed")) {
+    FAIL("failed to desugar wire enum into TypeDecl");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, program);
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  bool sawVariant[4] = {false, false, false, false};
+  bool badPayloadPos = false;
+
+  module.walk([&](hew::EnumConstructOp op) {
+    if (op.getEnumName() != "Mixed")
+      return;
+
+    auto variantIdx = op.getVariantIndex();
+    if (variantIdx >= 4)
+      return;
+    sawVariant[variantIdx] = true;
+
+    auto positions = op.getPayloadPositions();
+    if (variantIdx == 1) {
+      if (!positions || positions->size() != 1 ||
+          mlir::cast<mlir::IntegerAttr>((*positions)[0]).getInt() != 2) {
+        badPayloadPos = true;
+      }
+    } else if (variantIdx == 2) {
+      if (!positions || positions->size() != 1 ||
+          mlir::cast<mlir::IntegerAttr>((*positions)[0]).getInt() != 3) {
+        badPayloadPos = true;
+      }
+    }
+  });
+
+  if (!sawVariant[0] || !sawVariant[1] || !sawVariant[2] || !sawVariant[3]) {
+    FAIL("missing TypeDecl-based Mixed enum variant constructions");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (badPayloadPos) {
+    FAIL("TypeDecl-based Mixed wire enum payload positions are incorrect");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Mixed-payload wire enum match extracts payloads from per-variant slots
 // ============================================================================
 static void test_wire_enum_mixed_payload_match_positions() {
@@ -1315,6 +1448,7 @@ int main() {
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();
   test_wire_enum_mixed_payload_layout();
+  test_wire_enum_typedecl_preserves_variants();
   test_wire_enum_mixed_payload_match_positions();
   test_unresolved_generic_substitution_type_fails();
   test_select_emits_send_failure_cleanup();

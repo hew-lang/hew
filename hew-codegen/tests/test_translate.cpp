@@ -50,10 +50,13 @@
 #include <cassert>
 #include <csignal>
 #include <cstdio>
+#include <functional>
 
 #ifdef _WIN32
 #include <atomic>
 #include <chrono>
+#include <fcntl.h>
+#include <io.h>
 #include <thread>
 #else
 #include <unistd.h>
@@ -142,6 +145,56 @@ static bool hasUnrealizedConversionCast(mlir::Operation *op) {
   bool found = false;
   op->walk([&](mlir::UnrealizedConversionCastOp) { found = true; });
   return found;
+}
+
+static std::string captureStderr(const std::function<void()> &fn) {
+#ifdef _WIN32
+  int pipeFds[2];
+  if (_pipe(pipeFds, 4096, _O_BINARY) != 0)
+    return {};
+
+  int savedStderr = _dup(_fileno(stderr));
+  _dup2(pipeFds[1], _fileno(stderr));
+  _close(pipeFds[1]);
+
+  fn();
+  fflush(stderr);
+  llvm::errs().flush();
+
+  _dup2(savedStderr, _fileno(stderr));
+  _close(savedStderr);
+
+  std::string output;
+  char buffer[4096];
+  int bytesRead = 0;
+  while ((bytesRead = _read(pipeFds[0], buffer, sizeof(buffer))) > 0)
+    output.append(buffer, bytesRead);
+  _close(pipeFds[0]);
+  return output;
+#else
+  int pipeFds[2];
+  if (pipe(pipeFds) != 0)
+    return {};
+
+  int savedStderr = dup(STDERR_FILENO);
+  dup2(pipeFds[1], STDERR_FILENO);
+  close(pipeFds[1]);
+
+  fn();
+  fflush(stderr);
+  llvm::errs().flush();
+
+  dup2(savedStderr, STDERR_FILENO);
+  close(savedStderr);
+
+  std::string output;
+  char buffer[4096];
+  ssize_t bytesRead = 0;
+  while ((bytesRead = read(pipeFds[0], buffer, sizeof(buffer))) > 0)
+    output.append(buffer, static_cast<size_t>(bytesRead));
+  close(pipeFds[0]);
+  return output;
+#endif
 }
 
 //=== Test 0a: Minimal empty function translate ===
@@ -534,9 +587,24 @@ static bool test4_reject_unreconciled_cast() {
 
   hew::Codegen codegen(context);
   llvm::LLVMContext llvmContext;
-  auto llvmModule = codegen.lowerToLLVMIR(module, llvmContext);
+  std::unique_ptr<llvm::Module> llvmModule;
+  std::string stderrOutput =
+      captureStderr([&] { llvmModule = codegen.lowerToLLVMIR(module, llvmContext); });
   if (llvmModule) {
     fprintf(stderr, "  FAILED: expected lowerToLLVMIR to reject unreconciled casts\n");
+    return false;
+  }
+  if (stderrOutput.find("unreconciled unrealized_conversion_cast remained after reconcile pass") ==
+      std::string::npos) {
+    fprintf(stderr, "  FAILED: expected unreconciled-cast diagnostic in stderr\n");
+    return false;
+  }
+  if (stderrOutput.find("MLIR module dump (after reconcile pass):") == std::string::npos) {
+    fprintf(stderr, "  FAILED: expected module dump header for reconcile failure\n");
+    return false;
+  }
+  if (stderrOutput.find("builtin.unrealized_conversion_cast") == std::string::npos) {
+    fprintf(stderr, "  FAILED: expected unreconciled cast in dumped module\n");
     return false;
   }
 

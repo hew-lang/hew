@@ -1,0 +1,8 @@
+// Regression: lambda body return sink should reject uncoercible function refs.
+
+fn forty_two() -> int { 42 }
+
+fn main() {
+    let bad = () -> int => forty_two;
+    bad();
+}

@@ -7,6 +7,11 @@
 
 use std::ffi::c_void;
 use std::ptr;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 
 /// One-shot reply channel for the WASM ask pattern.
 ///
@@ -36,6 +41,8 @@ pub struct WasmReplyChannel {
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 #[must_use]
 pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
+    #[cfg(test)]
+    ACTIVE_CHANNELS.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(Box::new(WasmReplyChannel {
         refs: 1,
         value: ptr::null_mut(),
@@ -76,6 +83,10 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
+        debug_assert!(
+            !(*ch).replied,
+            "WASM reply channels must not be replied to more than once"
+        );
         if (*ch).cancelled {
             hew_reply_channel_free(ch);
             return;
@@ -133,6 +144,8 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
         if !(*ch).value.is_null() {
             libc::free((*ch).value);
         }
+        #[cfg(test)]
+        ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
         drop(Box::from_raw(ch));
     }
 }
@@ -154,10 +167,24 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut WasmReplyChannel) {
 }
 
 #[cfg(test)]
+pub(crate) fn active_channel_count() -> usize {
+    ACTIVE_CHANNELS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
 pub(crate) unsafe fn test_ref_count(ch: *mut WasmReplyChannel) -> usize {
     if ch.is_null() {
         return 0;
     }
     // SAFETY: Test callers only pass live reply channels they own.
     unsafe { (*ch).refs }
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn test_replied(ch: *mut WasmReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: Test callers only pass live reply channels they own.
+    unsafe { (*ch).replied }
 }

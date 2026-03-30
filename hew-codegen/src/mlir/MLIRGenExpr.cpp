@@ -3383,12 +3383,10 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!idx)
       return mlir::Value{};
     idx = coerceType(idx, i32Type, location);
-    auto charCode =
-        hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("char_at"),
-                                    receiver, mlir::ValueRange{idx});
-    auto conv = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context),
-                                        charCode.getResult());
-    return conv.getResult();
+    return hew::StringMethodOp::create(builder, location, i32Type,
+                                       builder.getStringAttr("char_at"), receiver,
+                                       mlir::ValueRange{idx})
+        .getResult();
   }
   if (method == "split") {
     auto sep = generateExpression(ast::callArgExpr(mc.args[0]).value);

@@ -110,6 +110,9 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
     }
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
+        // If a reply channel was set (ask pattern) but the message was never
+        // replied to, deposit an empty reply so the waiting side observes the
+        // orphaned ask and releases the sender-side reference.
         if !(*node).reply_channel.is_null() {
             crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
             (*node).reply_channel = ptr::null_mut();
@@ -571,6 +574,53 @@ mod tests {
             msg_node_free(node);
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn closing_and_freeing_mailbox_completes_orphaned_ask_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively; the
+        // queued ask simulates an actor being stopped/closed before dispatch.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            let val: i32 = 42;
+            let rc = hew_mailbox_send_with_reply(
+                mb,
+                7,
+                (&raw const val).cast_mut().cast(),
+                size_of::<i32>(),
+                ch.cast(),
+            );
+            assert_eq!(rc, HewError::Ok as i32);
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 1);
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
+            assert!(!crate::reply_channel_wasm::test_replied(ch));
+
+            hew_mailbox_close(mb);
+            hew_mailbox_free(mb);
+
+            assert!(
+                crate::reply_channel_wasm::test_replied(ch),
+                "draining a closed mailbox should signal orphaned ask waiters"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "draining a closed mailbox should release the sender-side ask reference"
+            );
+
+            let reply = crate::reply_channel_wasm::reply_take(ch);
+            assert!(
+                reply.is_null(),
+                "orphaned asks should resolve as null replies"
+            );
+
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
         }
     }
 

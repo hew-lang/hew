@@ -1653,6 +1653,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_vec_hwvec_to_u8_roundtrip() {
         // SAFETY: FFI calls use valid data slices and vec pointers.
@@ -1665,6 +1666,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_vec_hwvec_to_u8_empty() {
         // SAFETY: Empty slice is valid input to u8_to_hwvec.
@@ -1676,6 +1678,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_vec_hwvec_to_u8_null() {
         // SAFETY: Null is explicitly handled by hwvec_to_u8.

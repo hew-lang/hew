@@ -2514,3 +2514,100 @@ mod tests {
         assert!(!err.is_null(), "hew_last_error should be set after OOM");
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    unsafe extern "C" fn self_stop_without_reply_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        hew_actor_self_stop();
+    }
+
+    unsafe extern "C" fn reply_once_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        let mut value: i32 = 21;
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                size_of::<i32>(),
+            );
+        }
+    }
+
+    #[test]
+    fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(self_stop_without_reply_dispatch));
+            assert!(!actor.is_null());
+
+            let reply = hew_actor_ask(actor, 1, ptr::null_mut(), 0);
+            assert!(
+                reply.is_null(),
+                "ask should resolve as null when the actor stops before replying"
+            );
+            assert_eq!(
+                (&*actor).actor_state.load(Ordering::Relaxed),
+                HewActorState::Stopped as i32
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "ask cleanup should release the sender-side WASM reply-channel ref"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    #[test]
+    fn ask_successful_reply_returns_value_without_duplicate_cleanup() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(reply_once_dispatch));
+            assert!(!actor.is_null());
+
+            let reply = hew_actor_ask(actor, 1, ptr::null_mut(), 0);
+            assert!(!reply.is_null(), "happy-path ask should return a reply");
+            assert_eq!(*reply.cast::<i32>(), 21);
+            libc::free(reply);
+
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "successful asks should leave no live WASM reply channels"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+}

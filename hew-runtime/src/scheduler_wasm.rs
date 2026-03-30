@@ -418,6 +418,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
                     dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
+                    // The dispatch function handled the reply channel (if any).
+                    // Clear it from the message node so hew_msg_node_free
+                    // doesn't send a duplicate reply.
                     (*msg).reply_channel = std::ptr::null_mut();
                 }
 

@@ -207,7 +207,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       pendingDeclaredType.reset();
       return hew::HashMapNewOp::create(builder, currentLoc, hmType).getResult();
     }
-    return generateBlockExpr(blockExpr->block);
+    auto blockResult = generateBlockExpr(blockExpr->block);
+    if (!blockResult)
+      return nullptr;
+    return blockResult;
   }
   if (auto *cast = std::get_if<ast::ExprCast>(&expr.kind)) {
     auto location = currentLoc;
@@ -275,7 +278,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   }
 
   if (auto *ue = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
-    return generateBlock(ue->block);
+    auto unsafeResult = generateBlock(ue->block);
+    if (!unsafeResult)
+      return nullptr;
+    return unsafeResult;
   }
 
   if (auto *yield = std::get_if<ast::ExprYield>(&expr.kind)) {

@@ -554,20 +554,29 @@ fn ask_freed_queued_messages_unblock_caller() {
             // which should signal the reply channel.
             hew_actor_stop(actor);
 
-            // Wait on the reply channel with a timeout so we don't
-            // hang the test suite if the orphan handling is broken.
-            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2000);
+            // Wait on the reply channel with a short timeout. If orphan
+            // handling is broken, this will block for the full timeout.
+            let start = std::time::Instant::now();
+            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 200);
+            let elapsed = start.elapsed();
+
             // The reply may be null (orphaned — actor stopped before
             // dispatching) or non-null (actor dispatched before stopping).
             // Both are correct; the test verifies that the caller is
-            // UNBLOCKED, not that the reply is always null.
+            // UNBLOCKED promptly, not that the reply is always null.
+            assert!(
+                elapsed.as_millis() < 200,
+                "reply channel should be unblocked promptly, took {}ms",
+                elapsed.as_millis()
+            );
             if !reply.is_null() {
                 // SAFETY: reply was malloc'd by hew_reply.
                 libc::free(reply);
             }
         }
-        // else: send failed (actor already stopped) — channel was never
-        // retained by the runtime, so we just free our reference.
+        // else: send failed — hew_actor_ask_with_channel retained then
+        // released its reference, so refs is back to 1 (our initial
+        // reference from hew_reply_channel_new).
 
         // SAFETY: Release our reference to the reply channel.
         hew_runtime::reply_channel::hew_reply_channel_free(ch);
@@ -575,17 +584,19 @@ fn ask_freed_queued_messages_unblock_caller() {
     }
 }
 
-/// Dispatch function that sleeps for 2 seconds before replying.
+/// Dispatch function that sleeps for 500ms before replying.
 ///
 /// Used to test ask timeout behaviour — the caller should time out
-/// well before this function finishes sleeping.
+/// well before this function finishes sleeping. The sleep must be
+/// well under `hew_actor_free`'s 2s deadline so the actor can be
+/// freed after the test.
 unsafe extern "C" fn slow_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
     data: *mut c_void,
     data_size: usize,
 ) {
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_millis(500));
 
     // SAFETY: Read the reply channel from the scheduler thread-local and
     // reply so the channel's sender-side reference is properly released.
@@ -606,9 +617,9 @@ fn ask_timeout_returns_null() {
     ensure_scheduler();
 
     // SAFETY: All FFI calls use valid pointers from spawn/ask. The slow
-    // dispatch sleeps for 2s but we time out after 100ms, so the ask
+    // dispatch sleeps for 500ms but we time out after 100ms, so the ask
     // should return null. The actor is freed after — hew_actor_free
-    // waits for the actor to reach a terminal state.
+    // waits for the actor to reach a terminal state (2s deadline).
     unsafe {
         let mut state: i32 = 0;
         let actor = hew_actor_spawn(
@@ -624,7 +635,7 @@ fn ask_timeout_returns_null() {
             1,
             (&raw const val).cast_mut().cast(),
             size_of::<i32>(),
-            100, // 100ms timeout — well under the 2s dispatch sleep
+            100, // 100ms timeout — well under the 500ms dispatch sleep
         );
         assert!(
             reply.is_null(),

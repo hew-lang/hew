@@ -1417,12 +1417,15 @@ static void test_string_concat_identity_canonicalization() {
   config.setMaxIterations(10);
   (void)mlir::applyPatternsGreedily(func, std::move(patterns), config);
 
-  // The concat should be eliminated — no StringConcatOp remaining
+  // The concat must NOT be eliminated — removing it aliases the
+  // materialized temporary, causing double-free when the result is
+  // also bound to a variable.  The runtime hew_string_concat handles
+  // empty strings correctly (always allocates a fresh buffer).
   int concatCount = 0;
   func.walk([&](hew::StringConcatOp) { concatCount++; });
 
-  if (concatCount != 0) {
-    FAIL("concat(x, \"\") should be eliminated by canonicalizer");
+  if (concatCount != 1) {
+    FAIL("concat(x, \"\") must be preserved (identity elimination removed to prevent double-free)");
     module->destroy();
     return;
   }
@@ -1432,7 +1435,7 @@ static void test_string_concat_identity_canonicalization() {
 }
 
 //===----------------------------------------------------------------------===//
-// Test: StringConcatOp identity elimination — LHS empty
+// Test: StringConcatOp identity NOT eliminated — LHS empty
 //===----------------------------------------------------------------------===//
 
 static void test_string_concat_identity_lhs_empty() {
@@ -1477,11 +1480,12 @@ static void test_string_concat_identity_lhs_empty() {
   config.setMaxIterations(10);
   (void)mlir::applyPatternsGreedily(func, std::move(patterns), config);
 
+  // Must NOT be eliminated — same double-free reasoning as RHS-empty case.
   int concatCount = 0;
   func.walk([&](hew::StringConcatOp) { concatCount++; });
 
-  if (concatCount != 0) {
-    FAIL("concat(\"\", x) should be eliminated by canonicalizer");
+  if (concatCount != 1) {
+    FAIL("concat(\"\", x) must be preserved (identity elimination removed to prevent double-free)");
     module->destroy();
     return;
   }

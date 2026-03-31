@@ -1737,6 +1737,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
             optionType && argVal.getType() != optionType.getInnerType()) {
           argVal = coerceType(argVal, optionType.getInnerType(), location);
+          if (!argVal)
+            return nullptr;
         }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, optType, static_cast<uint32_t>(variantIndex),
@@ -1766,6 +1768,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
             resultEnumType && argVal.getType() != resultEnumType.getOkType()) {
           argVal = coerceType(argVal, resultEnumType.getOkType(), location);
+          if (!argVal)
+            return nullptr;
         }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
@@ -1795,6 +1799,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
             resultEnumType && argVal.getType() != resultEnumType.getErrType()) {
           argVal = coerceType(argVal, resultEnumType.getErrType(), location);
+          if (!argVal)
+            return nullptr;
         }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
@@ -1821,8 +1827,11 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
             auto argVal = generateExpression(ast::callArgExpr(call.args[i]).value);
             if (!argVal)
               return nullptr;
-            if (vi && i < vi->payloadTypes.size() && argVal.getType() != vi->payloadTypes[i])
+            if (vi && i < vi->payloadTypes.size() && argVal.getType() != vi->payloadTypes[i]) {
               argVal = coerceType(argVal, vi->payloadTypes[i], location);
+              if (!argVal)
+                return nullptr;
+            }
             payloads.push_back(argVal);
           }
 

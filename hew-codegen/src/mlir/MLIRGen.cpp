@@ -820,8 +820,10 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       }
       if (funcName.empty()) {
         // Not a named function reference — cannot generate a thunk.
-        // Fall through to return the value unchanged.
-        return value;
+        ++errorCount_;
+        emitError(location) << "coerceType: cannot wrap non-function-reference value in a "
+                               "closure thunk (expected func.constant)";
+        return nullptr;
       }
       std::string thunkName = "__thunk_" + funcName;
 
@@ -858,7 +860,7 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
                               << "' not found in module";
           thunkOp.erase();
           builder.restoreInsertionPoint(savedIP);
-          return value; // return original value unchanged
+          return nullptr;
         }
         auto callOp = mlir::func::CallOp::create(builder, location, realFunc, forwardArgs);
         if (callOp.getNumResults() > 0)

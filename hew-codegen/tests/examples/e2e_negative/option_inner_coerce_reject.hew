@@ -1,0 +1,12 @@
+// Regression: Some(x) with an uncoercible inner value must emit a proper
+// diagnostic and return nullptr instead of forwarding a null SSA value into
+// EnumConstructOp.  Before the fix the null was silently passed through,
+// crashing the MLIR verifier or producing invalid IR.
+fn forty_two() -> int { 42 }
+
+fn main() {
+    // forty_two has type fn() -> int, not int.
+    // coerceType(fn_value, int, …) has no known conversion,
+    // returns nullptr, and the guarded path must propagate that failure.
+    let _x: Option<int> = Some(forty_two);
+}

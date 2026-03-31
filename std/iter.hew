@@ -427,6 +427,9 @@ pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
 pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
     let out: Vec<int> = Vec::new();
     var start = n;
+    if n < 0 {
+        start = 0;
+    }
     if n > v.len() {
         start = v.len();
     }
@@ -492,6 +495,9 @@ pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
 pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
     let out: Vec<String> = Vec::new();
     var start = n;
+    if n < 0 {
+        start = 0;
+    }
     if n > v.len() {
         start = v.len();
     }
@@ -557,6 +563,9 @@ pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
 pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
     var start = n;
+    if n < 0 {
+        start = 0;
+    }
     if n > v.len() {
         start = v.len();
     }

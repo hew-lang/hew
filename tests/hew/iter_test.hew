@@ -542,3 +542,35 @@ fn test_product_f64_single_element() {
     v.push(3.5);
     testing.assert_true(iter.product_f64(v) == 3.5);
 }
+
+// ── skip_* negative-n regression tests ────────────────────────────────────
+// Regression: skip_int/skip_str/skip_f64 with n < 0 previously aborted with
+// Vec index out of bounds. The fix clamps negative n to 0, returning the
+// full vector.
+
+#[test]
+fn test_skip_int_negative_n_returns_all() {
+    let v: Vec<int> = Vec::new();
+    v.push(1); v.push(2); v.push(3);
+    let result = iter.skip_int(v, -1);
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq(result.get(0), 1);
+}
+
+#[test]
+fn test_skip_str_negative_n_returns_all() {
+    let v: Vec<String> = Vec::new();
+    v.push("a"); v.push("b");
+    let result = iter.skip_str(v, -5);
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq_str(result.get(0), "a");
+}
+
+#[test]
+fn test_skip_f64_negative_n_returns_all() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.0); v.push(2.0); v.push(3.0);
+    let result = iter.skip_f64(v, -99);
+    testing.assert_eq(result.len(), 3);
+    testing.assert_true(result.get(0) == 1.0);
+}

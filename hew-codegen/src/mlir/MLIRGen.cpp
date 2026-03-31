@@ -2397,6 +2397,20 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
   });
 
+  // Pre-pass 1b2: Collect all wire struct names so preRegisterWireStructType
+  // can tell struct-type field references apart from primitive type aliases
+  // (e.g. "int", "uint") that wireTypeToMLIR maps via its default i32 fallback.
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
+      if (td->wire.has_value())
+        allWireStructNames_.insert(td->name);
+    } else if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
+      if (wd->kind == ast::WireDeclKind::Struct)
+        allWireStructNames_.insert(wd->name);
+    }
+  });
+
   // Pass 1b2: Pre-register wire struct types with wire-aware field types.
   // This must happen before pass 1e (actor registration) so that actors with
   // wire-typed receive parameters can resolve the struct type. Uses

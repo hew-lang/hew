@@ -1,0 +1,29 @@
+// Test: nested wire struct field encode/decode roundtrip
+#[wire]
+struct Inner {
+    x: i32,
+    y: i32,
+}
+
+#[wire]
+struct Outer {
+    label: String,
+    point: Inner,
+    count: i32,
+}
+
+fn main() {
+    let inner = Inner { x: 10, y: 20 };
+    let outer = Outer { label: "test", point: inner, count: 42 };
+
+    // Binary roundtrip: encode → decode
+    let buf = outer.encode();
+    let decoded = Outer.decode(buf);
+
+    // Verify scalar field
+    println(decoded.count);
+
+    // Verify nested struct fields via JSON
+    let j = decoded.to_json();
+    println(j);
+}

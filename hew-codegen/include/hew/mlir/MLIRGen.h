@@ -596,6 +596,11 @@ private:
     std::string decodeName; // mangled decode wrapper function name
   };
   std::unordered_map<std::string, WireWrapperNames> wireStructNames;
+  /// All declared wire struct names — populated before pass 1b2 so that
+  /// preRegisterWireStructType can distinguish nested struct field references
+  /// from primitive type aliases (e.g. "int", "uint") that wireTypeToMLIR
+  /// handles via its default i32 fallback.
+  std::unordered_set<std::string> allWireStructNames_;
 
   // ── Actor type registry ───────────────────────────────────────────
   std::unordered_map<std::string, ActorInfo> actorRegistry;

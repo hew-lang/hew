@@ -517,4 +517,165 @@ mod tests {
         let result = unsafe { hew_select_first(ptr::null_mut(), 0, 10) };
         assert_eq!(result, -1);
     }
+
+    // ── Concurrency stress tests (TSAN targets) ──────────────────────────
+    //
+    // These tests run the cancel / late-reply / select-cancel races that are
+    // hardest to catch with single-threaded unit tests.  They are the primary
+    // targets for the nightly TSan CI job; they also run under ASan to guard
+    // against use-after-free in the same paths.
+
+    /// Cancel racing an in-flight reply across threads.
+    ///
+    /// Pattern: waiter cancels immediately after creating the channel while
+    /// the sender concurrently calls `hew_reply`.  The ref-count must prevent
+    /// use-after-free; the acquire/release barrier on `cancelled` must be
+    /// correctly ordered so TSAN can verify no data race on `value` or `refs`.
+    #[test]
+    fn threaded_cancel_races_late_reply() {
+        const ITERS: usize = 500;
+        for _ in 0..ITERS {
+            // SAFETY: ch is valid; ref counts are managed explicitly below.
+            unsafe {
+                let ch = hew_reply_channel_new();
+                hew_reply_channel_retain(ch); // sender's reference
+
+                let ch_usize = ch as usize;
+                let sender = std::thread::spawn(move || {
+                    let ch = ch_usize as *mut HewReplyChannel;
+                    let v = 42_i32;
+                    // SAFETY: ch is valid until hew_reply drops the sender ref.
+                    hew_reply(
+                        ch,
+                        (&raw const v).cast_mut().cast(),
+                        std::mem::size_of::<i32>(),
+                    );
+                });
+
+                // Waiter: cancel immediately then release the waiter's ref.
+                // The sender sees `cancelled=true` and takes the cleanup path.
+                hew_reply_channel_cancel(ch);
+                hew_reply_channel_free(ch);
+                sender.join().unwrap();
+            }
+        }
+    }
+
+    /// `hew_select_first` cancel + concurrent late replies.
+    ///
+    /// Three channels race; whichever fires first is consumed via
+    /// `hew_select_first`.  The two losing channels are cancelled while their
+    /// sender threads may still be in flight, exercising the cancelled-path
+    /// inside `hew_reply`.  TSAN checks that cancellation and the sender's
+    /// check of the `cancelled` flag are properly release/acquire-ordered.
+    #[test]
+    fn threaded_select_cancel_with_late_replies() {
+        const ARMS: usize = 3;
+        const ITERS: usize = 200;
+        for _ in 0..ITERS {
+            // SAFETY: channel lifetimes are managed through ref counts;
+            // all sender threads join before the next iteration.
+            unsafe {
+                let mut chs: [*mut HewReplyChannel; ARMS] = [ptr::null_mut(); ARMS];
+                for ch in &mut chs {
+                    *ch = hew_reply_channel_new();
+                    hew_reply_channel_retain(*ch); // sender's reference
+                }
+
+                let mut senders = Vec::with_capacity(ARMS);
+                for (i, &ch) in chs.iter().enumerate() {
+                    let ch_usize = ch as usize;
+                    senders.push(std::thread::spawn(move || {
+                        let ch = ch_usize as *mut HewReplyChannel;
+                        let v = i32::try_from(i).expect("ARMS fits in i32");
+                        // SAFETY: ch valid until hew_reply frees the sender ref.
+                        hew_reply(
+                            ch,
+                            (&raw const v).cast_mut().cast(),
+                            std::mem::size_of::<i32>(),
+                        );
+                    }));
+                }
+
+                // Block until one channel fires (indefinite timeout = -1).
+                let winner = hew_select_first(
+                    chs.as_mut_ptr(),
+                    i32::try_from(ARMS).expect("ARMS fits in i32"),
+                    -1,
+                );
+                assert!(winner >= 0 && winner < i32::try_from(ARMS).expect("ARMS fits in i32"));
+                let winner = usize::try_from(winner).expect("winner is non-negative");
+
+                // Consume the winning value.
+                let val = hew_reply_wait(chs[winner]);
+                if !val.is_null() {
+                    libc::free(val);
+                }
+                hew_reply_channel_free(chs[winner]);
+
+                // Cancel and release the losers. Their senders observe
+                // `cancelled=true` and free the channel themselves.
+                for (i, &ch) in chs.iter().enumerate() {
+                    if i != winner {
+                        hew_reply_channel_cancel(ch);
+                        hew_reply_channel_free(ch);
+                    }
+                }
+
+                for s in senders {
+                    s.join().unwrap();
+                }
+            }
+        }
+    }
+
+    /// High-concurrency parallel ask-reply roundtrips.
+    ///
+    /// Multiple independent pairs run simultaneously to stress the condvar
+    /// slow-path in `hew_reply_wait` and the ref-counting paths under
+    /// concurrent load.  TSAN checks ordering across the `ready` flag.
+    #[test]
+    fn threaded_parallel_roundtrips() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 64;
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for r in 0..ROUNDS {
+                        // SAFETY: each channel is created, used, and destroyed
+                        // entirely within this block; no aliasing across rounds.
+                        unsafe {
+                            let ch = hew_reply_channel_new();
+                            hew_reply_channel_retain(ch); // sender's reference
+                            let ch_usize = ch as usize;
+                            let expected =
+                                i32::try_from(t * ROUNDS + r).expect("index fits in i32");
+
+                            let sender = std::thread::spawn(move || {
+                                let ch = ch_usize as *mut HewReplyChannel;
+                                // SAFETY: ch valid until hew_reply frees sender ref.
+                                hew_reply(
+                                    ch,
+                                    (&raw const expected).cast_mut().cast(),
+                                    std::mem::size_of::<i32>(),
+                                );
+                            });
+
+                            let result = hew_reply_wait(ch).cast::<i32>();
+                            assert!(!result.is_null());
+                            assert_eq!(*result, expected);
+                            libc::free(result.cast());
+                            hew_reply_channel_free(ch);
+                            sender.join().unwrap();
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
 }

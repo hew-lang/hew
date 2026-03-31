@@ -123,3 +123,45 @@ jobs:
           # Nightly Rust supports ASan for this target; UBSan coverage is provided
           # by the C++ sanitizer job above.
           cargo +nightly test --target x86_64-unknown-linux-gnu -p hew-runtime --lib
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rust runtime TSan — data-race detection for the actor runtime
+  #
+  # Scope: core concurrency primitives (reply-channel, mailbox, scheduler).
+  # Optional features (tokio, quinn, profiler) are excluded to avoid async-
+  # runtime instrumentation noise and keep the job focused and fast.
+  # ─────────────────────────────────────────────────────────────────────────
+  rust-runtime-tsan:
+    name: Rust runtime TSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/sanitizer-runtime-tsan/
+          key: runtime-tsan-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: runtime-tsan-${{ runner.os }}-
+
+      - name: Run hew-runtime TSan tests
+        env:
+          CARGO_TARGET_DIR: target/sanitizer-runtime-tsan
+          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes
+          # halt_on_error=1 surfaces races immediately rather than summarising
+          # them at process exit, which makes CI output easier to triage.
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          # --no-default-features excludes the tokio/quinn/profiler optional
+          # features; the core runtime concurrency primitives (reply-channel,
+          # mailbox, scheduler) are exercised by the lib tests without them.
+          cargo +nightly test \
+            --target x86_64-unknown-linux-gnu \
+            -p hew-runtime \
+            --no-default-features \
+            --lib

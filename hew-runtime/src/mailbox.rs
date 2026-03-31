@@ -1515,8 +1515,8 @@ mod tests {
     #[test]
     fn drain_and_free_unblocks_reply_waiter() {
         use crate::reply_channel::{
-            hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain,
-            hew_reply_wait_timeout, hew_select_first,
+            hew_reply_channel_free, hew_reply_channel_is_ready_for_test, hew_reply_channel_new,
+            hew_reply_channel_retain, hew_reply_wait_timeout,
         };
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1561,8 +1561,7 @@ mod tests {
                 // this closure.
                 let ch_ptr = ch_addr as *mut crate::reply_channel::HewReplyChannel;
                 let val = hew_reply_wait_timeout(ch_ptr, 1_000);
-                let mut channels = [ch_ptr];
-                let observed_reply = hew_select_first(channels.as_mut_ptr(), 1, 0) == 0;
+                let observed_reply = hew_reply_channel_is_ready_for_test(ch_ptr);
                 // hew_msg_node_free sends an empty reply (null, 0), so val
                 // must be null.
                 let got_null = val.is_null();

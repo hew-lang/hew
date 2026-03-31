@@ -100,6 +100,27 @@ static bool isVarintType(const std::string &ty) {
          ty == "i16" || ty == "i32" || ty == "i64";
 }
 
+/// Check if a wire type name is a primitive scalar wire type.
+/// Type names that are NOT primitives are treated as nested wire struct
+/// references and require a struct-type lookup via structTypes.
+static bool isWirePrimitiveType(const std::string &ty) {
+  return ty == "bool" || ty == "i8" || ty == "u8" || ty == "i16" || ty == "u16" ||
+         ty == "i32" || ty == "u32" || ty == "i64" || ty == "u64" ||
+         ty == "f32" || ty == "f64" || ty == "String" || ty == "bytes";
+}
+
+/// Resolve the MLIR type for a wire field, falling back to a struct lookup
+/// for non-primitive type names (i.e. nested wire struct references).
+static mlir::Type resolveWireFieldType(mlir::OpBuilder &builder, const std::string &ty,
+                                       const std::unordered_map<std::string, StructTypeInfo> &st) {
+  if (!isWirePrimitiveType(ty)) {
+    auto it = st.find(ty);
+    if (it != st.end())
+      return it->second.mlirType;
+  }
+  return wireTypeToMLIR(builder, ty);
+}
+
 // ============================================================================
 // JSON / YAML helpers
 // ============================================================================
@@ -202,7 +223,14 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
   unsigned fieldIdx = 0;
   for (const auto &field : decl.fields) {
-    auto mlirTy = wireTypeToMLIR(builder, field.ty);
+    mlir::Type mlirTy;
+    if (allWireStructNames_.count(field.ty)) {
+      // Nested wire struct reference: use getIdentified so forward references
+      // work — the body will be set when that struct is processed.
+      mlirTy = mlir::LLVM::LLVMStructType::getIdentified(&context, field.ty);
+    } else {
+      mlirTy = wireTypeToMLIR(builder, field.ty);
+    }
     fieldTypes.push_back(mlirTy);
     // Preserve Hew-level semantic type for owned-field detection.
     // wireTypeToMLIR maps String/bytes to !llvm.ptr, losing type info.
@@ -332,7 +360,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   const auto &declName = decl.name;
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
   for (const auto &field : decl.fields) {
-    fieldTypes.push_back(wireTypeToMLIR(builder, field.ty));
+    fieldTypes.push_back(resolveWireFieldType(builder, field.ty, structTypes));
   }
   if (structTypes.find(declName) == structTypes.end()) {
     StructTypeInfo info;
@@ -452,6 +480,35 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                    mlir::SymbolRefAttr::get(&context, funcName),
                                    mlir::ValueRange{bufPtr, tagVal, valI64});
+      } else if (!isWirePrimitiveType(field.ty) && structTypes.count(field.ty)) {
+        // Nested wire struct: call T_encode(sub_fields...) → inner buf, then
+        // embed the resulting bytes as a length-prefixed bytes field.
+        const auto &innerInfo = structTypes.at(field.ty);
+        llvm::SmallVector<mlir::Value, 8> innerArgs;
+        for (unsigned j = 0; j < innerInfo.fields.size(); ++j)
+          innerArgs.push_back(
+              mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal, j));
+        auto innerEncFn =
+            module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_encode");
+        auto innerBuf =
+            mlir::func::CallOp::create(builder, location, innerEncFn, innerArgs).getResult(0);
+        auto innerData =
+            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                       mlir::SymbolRefAttr::get(&context, "hew_wire_buf_data"),
+                                       mlir::ValueRange{innerBuf})
+                .getResult();
+        auto innerLen =
+            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{nativeSizeType},
+                                       mlir::SymbolRefAttr::get(&context, "hew_wire_buf_len"),
+                                       mlir::ValueRange{innerBuf})
+                .getResult();
+        hew::RuntimeCallOp::create(
+            builder, location, mlir::TypeRange{i32Type},
+            mlir::SymbolRefAttr::get(&context, "hew_wire_encode_field_bytes"),
+            mlir::ValueRange{bufPtr, tagVal, innerData, innerLen});
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, "hew_wire_buf_destroy"),
+                                   mlir::ValueRange{innerBuf});
       }
       ++encIdx;
     }
@@ -508,6 +565,9 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       else if (fty == builder.getF64Type())
         defaultVal =
             mlir::arith::ConstantOp::create(builder, location, builder.getF64FloatAttr(0.0));
+      else if (mlir::isa<mlir::LLVM::LLVMStructType>(fty))
+        // Nested wire struct: use an all-zeros struct as the default value.
+        defaultVal = mlir::LLVM::ZeroOp::create(builder, location, fty);
       else
         defaultVal = createIntConstant(builder, location, fty, 0);
       mlir::LLVM::StoreOp::create(builder, location, defaultVal, slot);
@@ -673,6 +733,21 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
         builder.setInsertionPointAfter(stringIf);
         decoded = stringIf.getResult(0);
+      } else if (!isWirePrimitiveType(field.ty) && structTypes.count(field.ty)) {
+        // Nested wire struct: decode the bytes payload and call T_decode(data_ptr, len).
+        // T_decode creates its own internal stack buffer, so we pass the raw data pointer
+        // directly rather than wrapping it in another HewWireBuf.
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                   mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
+                                   mlir::ValueRange{bufPtr, scratchPtr, scratchLen});
+        auto innerDataPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, scratchPtr);
+        auto innerLen =
+            mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
+        auto innerDecFn =
+            module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_decode");
+        decoded = mlir::func::CallOp::create(builder, location, innerDecFn,
+                                             mlir::ValueRange{innerDataPtr, innerLen})
+                      .getResult(0);
       } else {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                    mlir::SymbolRefAttr::get(&context, "hew_wire_decode_varint"),
@@ -772,7 +847,7 @@ void MLIRGen::generateWireToSerial(
 
   llvm::SmallVector<mlir::Type, 8> paramTypes;
   for (const auto &field : decl.fields)
-    paramTypes.push_back(wireTypeToMLIR(builder, field.ty));
+    paramTypes.push_back(resolveWireFieldType(builder, field.ty, structTypes));
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
@@ -806,7 +881,33 @@ void MLIRGen::generateWireToSerial(
     mlir::Value fv = entry->getArgument(idx++);
 
     auto jkind = jsonKindOf(field.ty);
-    if (jkind == WireJsonKind::Bool) {
+    if (!isWirePrimitiveType(field.ty) && structTypes.count(field.ty)) {
+      // Nested wire struct: serialize via T_to_{format}(sub_fields...) → string,
+      // parse that string back to a node, then embed it as a child object.
+      const auto &innerInfo = structTypes.at(field.ty);
+      llvm::SmallVector<mlir::Value, 8> innerArgs;
+      for (unsigned j = 0; j < innerInfo.fields.size(); ++j)
+        innerArgs.push_back(mlir::LLVM::ExtractValueOp::create(builder, location, fv, j));
+      auto innerSerFn =
+          module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_to_" + format.str());
+      auto innerStr =
+          mlir::func::CallOp::create(builder, location, innerSerFn, innerArgs).getResult(0);
+      std::string rtParseFn = "hew_" + format.str() + "_parse";
+      std::string rtStrFreeFn = "hew_" + format.str() + "_string_free";
+      std::string rtSetObjFn = "hew_" + format.str() + "_object_set";
+      auto innerVal =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                     mlir::SymbolRefAttr::get(&context, rtParseFn),
+                                     mlir::ValueRange{innerStr})
+              .getResult();
+      // object_set takes ownership of innerVal; do not free separately.
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetObjFn),
+                                 mlir::ValueRange{objPtr, keyPtr, innerVal});
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtStrFreeFn),
+                                 mlir::ValueRange{innerStr});
+    } else if (jkind == WireJsonKind::Bool) {
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetBool),
                                  mlir::ValueRange{objPtr, keyPtr, fv});
@@ -908,7 +1009,24 @@ void MLIRGen::generateWireFromSerial(
 
     mlir::Value decoded;
     auto jkind = jsonKindOf(field.ty);
-    if (jkind == WireJsonKind::Bool) {
+    if (!isWirePrimitiveType(field.ty) && structTypes.count(field.ty)) {
+      // Nested wire struct: stringify the child JSON node, then call T_from_{format}.
+      std::string rtStringifyFn = "hew_" + format.str() + "_stringify";
+      std::string rtStrFreeFn = "hew_" + format.str() + "_string_free";
+      auto innerStr =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                     mlir::SymbolRefAttr::get(&context, rtStringifyFn),
+                                     mlir::ValueRange{fieldJval})
+              .getResult();
+      auto innerDecFn =
+          module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_from_" + format.str());
+      decoded =
+          mlir::func::CallOp::create(builder, location, innerDecFn, mlir::ValueRange{innerStr})
+              .getResult(0);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtStrFreeFn),
+                                 mlir::ValueRange{innerStr});
+    } else if (jkind == WireJsonKind::Bool) {
       decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                            mlir::SymbolRefAttr::get(&context, rtGetBool),
                                            mlir::ValueRange{fieldJval})
@@ -986,7 +1104,7 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
   // Collect field types for extraction
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
   for (const auto &field : decl.fields)
-    fieldTypes.push_back(wireTypeToMLIR(builder, field.ty));
+    fieldTypes.push_back(resolveWireFieldType(builder, field.ty, structTypes));
 
   // Helper: generate an instance method wrapper that takes a struct,
   // extracts fields, and calls the old-style per-field function.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317  # functions are called dynamically via validate_"$platform"
+# shellcheck disable=SC2317,SC2329  # functions are called dynamically via validate_"$platform"
 # pre-release-validate.sh — Local pre-release validation for the Hew compiler.
 #
 # Validates that the release build works on all supported platforms BEFORE
@@ -16,6 +16,11 @@
 #   - SSH access to platform hosts (see PLATFORM_HOSTS below)
 #   - rsync available locally and on remote hosts
 #   - Each host must have Rust, LLVM 22, cmake, ninja installed
+#   - timeout (Linux) or gtimeout (macOS/coreutils) for bounded execution
+#
+# Timeout overrides (seconds):
+#   HEW_TIMEOUT_SSH_CHECK, HEW_TIMEOUT_SYNC, HEW_TIMEOUT_LOCAL_BUILD,
+#   HEW_TIMEOUT_REMOTE_BUILD, HEW_TIMEOUT_SMOKE, HEW_TIMEOUT_TEST
 
 set -euo pipefail
 
@@ -57,6 +62,36 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 RESET='\033[0m'
+
+# ── Timeout defaults ─────────────────────────────────────────────────────────
+
+SSH_CHECK_TIMEOUT="${HEW_TIMEOUT_SSH_CHECK:-15}"
+SYNC_TIMEOUT="${HEW_TIMEOUT_SYNC:-300}"
+LOCAL_BUILD_TIMEOUT="${HEW_TIMEOUT_LOCAL_BUILD:-1800}"
+REMOTE_BUILD_TIMEOUT="${HEW_TIMEOUT_REMOTE_BUILD:-1800}"
+SMOKE_TIMEOUT="${HEW_TIMEOUT_SMOKE:-120}"
+TEST_TIMEOUT="${HEW_TIMEOUT_TEST:-900}"
+
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN=gtimeout
+else
+    echo "error: timeout or gtimeout is required for bounded execution" >&2
+    exit 1
+fi
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    "$TIMEOUT_BIN" --kill-after=5 "$seconds" "$@"
+    local status=$?
+    # 124 = soft timeout; 137 = SIGKILL from --kill-after fired
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+        echo "FATAL: timed out after ${seconds}s: $*" >&2
+    fi
+    return "$status"
+}
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
@@ -112,8 +147,8 @@ validate_linux() {
         set -e
         echo "==> Step 1: Static-link release build"
         # This is the exact build that the release CI does
-        HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
-        cargo build -p hew-lib --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" env HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --release 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
         target/release/hew --version
@@ -127,10 +162,10 @@ validate_linux() {
         write_smoke_test "$smoke_file"
         local smoke_bin
         smoke_bin=$(mktemp)
-        target/release/hew "$smoke_file" -o "$smoke_bin"
+        run_with_timeout "${SMOKE_TIMEOUT}" target/release/hew "$smoke_file" -o "$smoke_bin"
         chmod +x "$smoke_bin"
         local output
-        output=$("$smoke_bin")
+        output=$(run_with_timeout "${SMOKE_TIMEOUT}" "$smoke_bin")
         rm -f "$smoke_file" "$smoke_bin"
 
         if echo "$output" | grep -q "Hello from Hew"; then
@@ -141,8 +176,8 @@ validate_linux() {
         fi
 
         echo "==> Step 4: Run test suite (informational — failures here don't block release)"
-        cargo test -p hew-runtime --quiet 2>&1 | tail -3 || true
-        make test-codegen 2>&1 | tail -5 || true
+        run_with_timeout "${TEST_TIMEOUT}" bash -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3' || true
+        run_with_timeout "${TEST_TIMEOUT}" bash -lc 'make test-codegen 2>&1 | tail -5' || true
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd target/release/hew 2>/dev/null | grep -qi 'llvm\|mlir'; then
@@ -167,7 +202,7 @@ validate_macos() {
         skip "macos" "MACOS_HOST not configured"
         return 0
     fi
-    if ! ssh -o ConnectTimeout=5 "${MACOS_HOST}" true 2>/dev/null; then
+    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${MACOS_HOST}" true 2>/dev/null; then
         skip "macos" "${MACOS_HOST} unreachable"
         return 0
     fi
@@ -175,13 +210,13 @@ validate_macos() {
     if (
         set -e
         echo "==> Syncing source to ${MACOS_HOST}"
-        rsync -az --delete \
+        run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${MACOS_HOST}:~/hew-pre-release/"
 
         echo "==> Building on macOS"
-        ssh "${MACOS_HOST}" bash -lc "'
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${MACOS_HOST}" bash -lc "'
             set -eux
             cd ~/hew-pre-release
 
@@ -219,7 +254,7 @@ validate_freebsd() {
         skip "freebsd" "FREEBSD_PROJECT_DIR not configured"
         return 0
     fi
-    if ! ssh -o ConnectTimeout=5 "${FREEBSD_HOST}" true 2>/dev/null; then
+    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${FREEBSD_HOST}" true 2>/dev/null; then
         skip "freebsd" "${FREEBSD_HOST} unreachable"
         return 0
     fi
@@ -227,21 +262,21 @@ validate_freebsd() {
     if (
         set -e
         echo "==> Syncing source to FreeBSD"
-        if rsync -az --delete \
+        if run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${FREEBSD_HOST}:${FREEBSD_PROJECT_DIR}/"; then
             echo "==> Synced via rsync"
         else
             echo "==> rsync failed, falling back to git pull on remote"
-            ssh "${FREEBSD_HOST}" bash -lc "'cd ${FREEBSD_PROJECT_DIR} && git pull --rebase origin main'" || {
+            run_with_timeout "${SYNC_TIMEOUT}" ssh "${FREEBSD_HOST}" bash -lc "'cd ${FREEBSD_PROJECT_DIR} && git pull --rebase origin main'" || {
                 echo "FATAL: Could not sync source to FreeBSD (rsync and git pull both failed)"
                 exit 1
             }
         fi
 
         echo "==> Building on FreeBSD"
-        ssh "${FREEBSD_HOST}" bash -lc "'
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${FREEBSD_HOST}" bash -lc "'
             set -eux
             cd ${FREEBSD_PROJECT_DIR}
 
@@ -288,7 +323,7 @@ validate_windows() {
         skip "windows" "WINDOWS_PROJECT_DIR not configured"
         return 0
     fi
-    if ! ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
+    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
         skip "windows" "${WINDOWS_HOST} unreachable"
         return 0
     fi
@@ -297,15 +332,15 @@ validate_windows() {
         set -e
         echo "==> Syncing source to Windows"
         # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
-        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
+        run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
         echo "==> Building on Windows"
         # shellcheck disable=SC2029
-        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
 
         echo "==> Smoke test on Windows"
         # shellcheck disable=SC2029
-        ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && target\\release\\hew.exe --version && target\\release\\adze.exe --version && target\\release\\hew-lsp.exe --version"
+        run_with_timeout "${SMOKE_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && target\\release\\hew.exe --version && target\\release\\adze.exe --version && target\\release\\hew-lsp.exe --version"
     ) > "$log" 2>&1; then
         pass "windows"
     else

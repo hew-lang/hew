@@ -88,18 +88,31 @@ static std::string encodeFunc(const std::string &ty) {
 }
 
 /// Check if a wire type is a signed integer needing zigzag encoding.
+/// Covers i8/i16/i32/i64 and their wire-level aliases: int/Int map to i64 in
+/// the type checker; isize is treated as i64 by the codegen (wireTypeToMLIR).
 static bool needsZigzag(const std::string &ty) {
-  return ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64";
+  return ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64" ||
+         ty == "int" || ty == "Int" || ty == "isize";
 }
 
+/// Check if a wire type is an unsigned integer (zero-extend when widening to
+/// i64 for JSON integer output).
+/// byte → u8, char → unicode codepoint (always non-negative), uint/usize → u64.
 static bool isUnsignedWireType(const std::string &ty) {
-  return ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64";
+  return ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" ||
+         ty == "uint" || ty == "usize" || ty == "byte" || ty == "char";
 }
 
-/// Check if a wire type uses a varint encoding.
+/// Check if a wire type uses varint encoding (as opposed to fixed-width or
+/// length-delimited).  Covers all integer primitives and their wire aliases.
+/// duration is encoded as a nanosecond i64 varint (always non-negative in
+/// practice, so no zigzag).
 static bool isVarintType(const std::string &ty) {
   return ty == "bool" || ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "i8" ||
-         ty == "i16" || ty == "i32" || ty == "i64";
+         ty == "i16" || ty == "i32" || ty == "i64" ||
+         ty == "int" || ty == "Int" || ty == "isize" ||
+         ty == "uint" || ty == "usize" ||
+         ty == "byte" || ty == "char" || ty == "duration";
 }
 
 /// Check if a wire type name is a primitive scalar wire type.

@@ -1,0 +1,20 @@
+// Test: negative values of signed alias types (int, Int) survive a binary
+// wire encode → decode round-trip unchanged.
+//
+// Before the predicate fix, `int` and `Int` were absent from needsZigzag so
+// the encode path zero-extended them instead of zigzag-encoding.  A value
+// of -1 would be written as the large unsigned varint 0xFFFFFFFFFFFFFFFF and
+// decoded back as a large positive i64 instead of -1.
+#[wire]
+struct Signed {
+    a: int @1;
+    b: Int @2;
+}
+
+fn main() {
+    let s = Signed { a: -1, b: -100 };
+    let buf = s.encode();
+    let s2 = Signed.decode(buf);
+    println(s2.a);
+    println(s2.b);
+}

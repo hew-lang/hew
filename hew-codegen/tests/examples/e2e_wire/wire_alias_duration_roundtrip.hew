@@ -1,0 +1,16 @@
+// Test: duration alias type round-trips correctly through binary wire encoding.
+//
+// Before the predicate fix, `duration` was absent from isVarintType so the
+// encode path fell through and silently skipped the field.  After a
+// decode, the field would always read back as 0 instead of its encoded value.
+#[wire]
+struct Timed {
+    ns: duration @1;
+}
+
+fn main() {
+    let t = Timed { ns: 5s };
+    let buf = t.encode();
+    let t2 = Timed.decode(buf);
+    println(t2.ns);
+}

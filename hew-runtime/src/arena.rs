@@ -1,8 +1,38 @@
 //! Per-actor arena bump allocator for the Hew actor runtime.
 //!
-//! This provides fast allocation during actor dispatch and clean bulk-free on crash.
-//! Uses memory-mapped chunks that grow as needed, with bump allocation within chunks.
-//! Thread-local arena tracking enables transparent malloc/free redirection during dispatch.
+//! # Lifecycle contract
+//!
+//! ```text
+//! hew_arena_new()
+//!   └─► hew_arena_set_current(arena)   ← install as thread-local; alloc/free now redirect here
+//!         │
+//!         │  [actor dispatch runs]
+//!         │    hew_arena_malloc(n)   → bump-allocates from the arena
+//!         │    hew_arena_free(ptr)   → **no-op** (bulk-free is cheaper than per-pointer tracking)
+//!         │
+//!       hew_arena_set_current(null)   ← uninstall; alloc/free revert to libc
+//!         │
+//!         ├── hew_arena_reset(arena)  → cursor back to zero, chunks *retained* (fast reuse)
+//!         │     └─► hew_arena_set_current(arena) … repeat for next dispatch
+//!         │
+//!         └── hew_arena_free_all(arena) → munmap/VirtualFree every chunk; pointer invalid
+//! ```
+//!
+//! **When no arena is active** (`CURRENT_ARENA` is null) `hew_arena_malloc` delegates to
+//! `libc::malloc` and `hew_arena_free` delegates to `libc::free`, so the C ABI pair is
+//! always safe to call regardless of whether an arena is installed.
+//!
+//! # Chunk growth
+//!
+//! Chunks are allocated via `mmap` (Unix) / `VirtualAlloc` (Windows) and grow geometrically
+//! (doubling) up to `max_chunk_size`.  The OS guarantees page-aligned base pointers, which
+//! satisfies any practical Rust/C alignment requirement (≤ 4096 bytes).
+//!
+//! # Alignment invariant
+//!
+//! Every `alloc` call rounds the current cursor up to the requested alignment using the
+//! standard power-of-two mask: `(cursor + align - 1) & !(align - 1)`.
+//! **`align` must be a power of two** — a `debug_assert!` guards this in debug builds.
 
 use std::cell::Cell;
 use std::os::raw::c_void;
@@ -109,13 +139,19 @@ impl ActorArena {
 
     /// Allocate memory with the specified size and alignment.
     ///
-    /// Returns null pointer if allocation fails.
+    /// `align` must be a power of two (asserted in debug builds).
+    /// Returns a null pointer if allocation fails (OOM) or if `size` is zero.
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+        debug_assert!(
+            align.is_power_of_two(),
+            "align must be a power of two, got {align}"
+        );
+
         if size == 0 {
             return ptr::null_mut();
         }
 
-        // Align the cursor
+        // Round cursor up to the required alignment.
         let aligned_cursor = (self.cursor + align - 1) & !(align - 1);
         let end_offset = aligned_cursor + size;
 
@@ -147,21 +183,33 @@ impl ActorArena {
         self.chunks.push(new_chunk);
         self.current_chunk = self.chunks.len() - 1;
 
-        // Allocate from the new chunk
-        let aligned_cursor = (align - 1) & !(align - 1); // Start of chunk, aligned
+        // Allocate from the new chunk starting at offset 0.
+        // The OS guarantees page-aligned base pointers (mmap / VirtualAlloc return
+        // memory aligned to at least the system page size, typically 4096 bytes).
+        // For any power-of-two alignment ≤ page size, rounding 0 up is still 0.
+        let aligned_cursor = 0_usize;
         self.cursor = aligned_cursor + size;
 
         // SAFETY: aligned_cursor is within new chunk bounds
         unsafe { self.chunks[self.current_chunk].base.add(aligned_cursor) }
     }
 
-    /// Reset the arena for reuse, keeping memory allocated.
+    /// Reset the arena for reuse after a completed dispatch cycle.
+    ///
+    /// The cursor returns to zero and `current_chunk` rewinds to the first chunk.
+    /// All previously allocated chunks are **retained** so subsequent allocations reuse
+    /// the already-mapped virtual memory.  Any pointers into the arena that were live
+    /// before this call are invalidated — do not access them afterwards.
     pub fn reset(&mut self) {
         self.current_chunk = 0;
         self.cursor = 0;
     }
 
     /// Free all chunks and destroy the arena.
+    ///
+    /// Every mapped chunk is returned to the OS via `munmap` / `VirtualFree`.  The
+    /// `ActorArena` value is consumed; any raw pointer to this arena (e.g. one previously
+    /// passed to `set_current_arena`) becomes invalid after this call.
     pub fn free_all(self) {
         // chunks will be dropped, calling ArenaChunk::drop which calls free()
     }
@@ -233,9 +281,17 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
 
 /// Free memory - no-op during arena dispatch, forwards to libc free otherwise.
 ///
+/// # Contract
+///
+/// - **Arena active**: this is intentionally a no-op.  Memory is reclaimed in bulk via
+///   `hew_arena_reset` or `hew_arena_free_all`.  Callers must not mix arena-allocated
+///   pointers with direct `free()` calls.
+/// - **No arena active**: delegates to `libc::free`.  The pointer must have been obtained
+///   from a matching `hew_arena_malloc` call (or `malloc`) when no arena was installed.
+///
 /// # Safety
 ///
-/// ptr must be a valid pointer returned by `hew_arena_malloc` or `malloc()`.
+/// `ptr` must be a valid pointer returned by `hew_arena_malloc` or `malloc()`, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
     let arena_ptr = get_current_arena();

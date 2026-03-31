@@ -3228,18 +3228,28 @@ mod rest_for_one_tests {
 mod supervisor_escalation_tests {
     use std::ffi::{c_char, c_void};
     use std::ptr;
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
-    use hew_runtime::actor::hew_actor_trap;
+    use hew_runtime::actor::{hew_actor_send, hew_actor_trap};
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_add_child_supervisor,
-        hew_supervisor_get_child, hew_supervisor_is_running, hew_supervisor_new,
-        hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-        hew_supervisor_wait_restart, HewChildSpec,
+        hew_supervisor_add_child_supervisor_with_init, hew_supervisor_get_child,
+        hew_supervisor_get_child_supervisor, hew_supervisor_get_child_wait,
+        hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_set_restart_notify,
+        hew_supervisor_start, hew_supervisor_stop, hew_supervisor_wait_restart, HewChildSpec,
+        HewSupervisor,
     };
 
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static NESTED_INIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static NESTED_DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
+    static SIBLING_DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
@@ -3247,6 +3257,57 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
     ) {
+    }
+
+    unsafe extern "C" fn counting_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        NESTED_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn sibling_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        SIBLING_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn nested_child_supervisor_init() -> *mut HewSupervisor {
+        NESTED_INIT_CALLS.fetch_add(1, Ordering::SeqCst);
+
+        let child = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 60) };
+        if child.is_null() {
+            return ptr::null_mut();
+        }
+
+        unsafe { hew_supervisor_set_restart_notify(child) };
+
+        let mut state: i32 = 0;
+        let spec = HewChildSpec {
+            name: ptr::null::<c_char>(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+        };
+
+        if unsafe { hew_supervisor_add_child_spec(child, &raw const spec) } != 0 {
+            unsafe { hew_supervisor_stop(child) };
+            return ptr::null_mut();
+        }
+        if unsafe { hew_supervisor_start(child) } != 0 {
+            unsafe { hew_supervisor_stop(child) };
+            return ptr::null_mut();
+        }
+
+        child
     }
 
     static SCHED_INIT: std::sync::Once = std::sync::Once::new();
@@ -3259,6 +3320,9 @@ mod supervisor_escalation_tests {
 
     #[test]
     fn exhausted_child_supervisor_escalates_to_parent() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_scheduler();
 
         unsafe {
@@ -3331,6 +3395,245 @@ mod supervisor_escalation_tests {
                 hew_supervisor_is_running(parent),
                 0,
                 "parent supervisor should stop after child escalation",
+            );
+
+            hew_supervisor_stop(parent);
+        }
+    }
+
+    #[test]
+    fn get_child_wait_returns_restarted_child_without_explicit_notifier_setup() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_scheduler();
+
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
+            assert!(!sup.is_null());
+
+            let mut state: i32 = 0;
+            let spec = HewChildSpec {
+                name: ptr::null::<c_char>(),
+                init_state: (&raw mut state).cast(),
+                init_state_size: size_of::<i32>(),
+                dispatch: Some(noop_dispatch),
+                restart_policy: RESTART_PERMANENT,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            assert_eq!(hew_supervisor_start(sup), 0);
+
+            let child = hew_supervisor_get_child(sup, 0);
+            assert!(!child.is_null());
+            let first_id = (*child).id;
+
+            hew_actor_trap(child, 1);
+
+            let first_deadline = Instant::now() + Duration::from_secs(5);
+            let restarted_once = loop {
+                let current = hew_supervisor_get_child(sup, 0);
+                if !current.is_null() && (*current).id != first_id {
+                    break current;
+                }
+                assert!(
+                    Instant::now() < first_deadline,
+                    "first restart never completed"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let second_id = (*restarted_once).id;
+
+            hew_actor_trap(restarted_once, 1);
+
+            let pending_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let current = hew_supervisor_get_child(sup, 0);
+                if current.is_null() {
+                    break;
+                }
+                assert_eq!(
+                    (*current).id,
+                    second_id,
+                    "second crash should enter a null slot before delayed restart publishes"
+                );
+                assert!(
+                    Instant::now() < pending_deadline,
+                    "second crash never entered a waitable restart gap"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let restarted_twice = hew_supervisor_get_child_wait(sup, 0, 10_000);
+            assert!(!restarted_twice.is_null());
+            assert_ne!(
+                (*restarted_twice).id,
+                second_id,
+                "get_child_wait should publish the restarted child without wait_restart setup"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "FFI recovery scenario exercises the full nested subtree restart flow"
+    )]
+    fn child_supervisor_recovery_recreates_nested_subtree() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_scheduler();
+        NESTED_INIT_CALLS.store(0, Ordering::SeqCst);
+        NESTED_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+        SIBLING_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+
+        unsafe {
+            let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
+            assert!(!parent.is_null());
+            hew_supervisor_set_restart_notify(parent);
+
+            let child = nested_child_supervisor_init();
+            assert!(!child.is_null(), "child supervisor init should succeed");
+            assert_eq!(
+                NESTED_INIT_CALLS.load(Ordering::SeqCst),
+                1,
+                "initial child supervisor should be created through init_fn",
+            );
+
+            assert_eq!(
+                hew_supervisor_add_child_supervisor_with_init(
+                    parent,
+                    child,
+                    nested_child_supervisor_init
+                ),
+                0,
+            );
+
+            let mut sibling_state: i32 = 42;
+            let sibling_spec = HewChildSpec {
+                name: ptr::null::<c_char>(),
+                init_state: (&raw mut sibling_state).cast(),
+                init_state_size: std::mem::size_of::<i32>(),
+                dispatch: Some(sibling_dispatch),
+                restart_policy: RESTART_PERMANENT,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+            };
+            assert_eq!(
+                hew_supervisor_add_child_spec(parent, &raw const sibling_spec),
+                0,
+                "parent should add a healthy sibling actor",
+            );
+            assert_eq!(hew_supervisor_start(parent), 0);
+
+            let first_actor = hew_supervisor_get_child(child, 0);
+            assert!(
+                !first_actor.is_null(),
+                "nested child actor should be spawned"
+            );
+
+            let before = NESTED_DISPATCH_COUNT.load(Ordering::SeqCst);
+            hew_actor_send(first_actor, 1, ptr::null_mut(), 0);
+            for _ in 0..20 {
+                if NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
+                "nested actor should process messages before crashing",
+            );
+
+            let first_actor_id = (*first_actor).id;
+            hew_actor_trap(first_actor, 1);
+
+            let count = hew_supervisor_wait_restart(child, 1, 10_000);
+            assert!(
+                count >= 1,
+                "child supervisor should restart nested actor once"
+            );
+            assert_eq!(hew_supervisor_is_running(child), 1);
+
+            let restarted_actor = hew_supervisor_get_child(child, 0);
+            assert!(
+                !restarted_actor.is_null(),
+                "child supervisor should replace crashed actor"
+            );
+            assert_ne!(
+                (*restarted_actor).id,
+                first_actor_id,
+                "first crash should restart the nested actor in-place",
+            );
+
+            hew_actor_trap(restarted_actor, 1);
+
+            let count = hew_supervisor_wait_restart(parent, 1, 10_000);
+            assert!(
+                count >= 1,
+                "parent should observe child supervisor escalation"
+            );
+            assert_eq!(
+                hew_supervisor_is_running(parent),
+                1,
+                "parent should remain running and recover the nested subtree",
+            );
+            assert_eq!(
+                NESTED_INIT_CALLS.load(Ordering::SeqCst),
+                2,
+                "parent should call init_fn to replace the exhausted child supervisor",
+            );
+
+            let restarted_child = hew_supervisor_get_child_supervisor(parent, 0);
+            assert!(
+                !restarted_child.is_null(),
+                "parent should expose a replacement child supervisor",
+            );
+            assert_ne!(
+                restarted_child, child,
+                "parent should replace the exhausted child supervisor instance",
+            );
+            assert_eq!(hew_supervisor_is_running(restarted_child), 1);
+
+            let recovered_actor = hew_supervisor_get_child(restarted_child, 0);
+            assert!(
+                !recovered_actor.is_null(),
+                "replacement child supervisor should recreate its actor subtree",
+            );
+
+            let before = NESTED_DISPATCH_COUNT.load(Ordering::SeqCst);
+            hew_actor_send(recovered_actor, 1, ptr::null_mut(), 0);
+            for _ in 0..20 {
+                if NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
+                "replacement nested actor should continue processing messages",
+            );
+
+            let sibling = hew_supervisor_get_child(parent, 0);
+            assert!(
+                !sibling.is_null(),
+                "healthy sibling actor should remain available after child supervisor recovery",
+            );
+            let before = SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst);
+            hew_actor_send(sibling, 1, ptr::null_mut(), 0);
+            for _ in 0..20 {
+                if SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
+                "healthy sibling actor should still process messages after nested recovery",
             );
 
             hew_supervisor_stop(parent);

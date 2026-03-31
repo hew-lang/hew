@@ -509,6 +509,25 @@ foreach(HEW_FILE ${PROGRESSIVE_HEWS})
   endif()
 endforeach()
 
+# Services examples (flat directory — stable actor-pattern goldens)
+# Adding a new golden: create examples/services/<name>.expected — no CMakeLists editing needed.
+# Multi-actor tests that fan messages across actors require HEW_WORKERS=1 for determinism.
+file(GLOB SERVICES_HEWS "${EXAMPLES_ROOT}/services/*.hew")
+foreach(HEW_FILE ${SERVICES_HEWS})
+  get_filename_component(HEW_NAME ${HEW_FILE} NAME_WE)
+
+  set(EXPECTED_FILE "${EXAMPLES_ROOT}/services/${HEW_NAME}.expected")
+  if(EXISTS ${EXPECTED_FILE})
+    set(TEST_NAME "services_${HEW_NAME}")
+    add_example_test(${TEST_NAME} ${HEW_FILE} ${EXPECTED_FILE})
+  else()
+    message(VERBOSE "Skipping services/${HEW_NAME} — no .expected file")
+  endif()
+endforeach()
+
+# pub_sub fans messages across independent subscriber actors — force single worker
+set_tests_properties(services_pub_sub PROPERTIES ENVIRONMENT "HEW_WORKERS=1")
+
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).
 # These compile raw .ll files with coroutine intrinsics and verify output.

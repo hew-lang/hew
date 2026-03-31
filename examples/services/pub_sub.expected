@@ -1,0 +1,33 @@
+=== Pub/Sub Broker ===
+
+--- Registering subscriptions ---
+[broker] subscription added: topic=orders
+[broker] subscription added: topic=orders
+[broker] subscription added: topic=metrics
+[broker] subscription added: topic=metrics
+[broker] subscription added: topic=alerts
+[broker] subscription added: topic=alerts
+
+--- Publishing messages ---
+[broker] published #1 → 2 subscribers
+  [alice] #1 topic=orders: order #1001 created
+  [bob] #1 topic=orders: order #1001 created
+[broker] published #2 → 2 subscribers
+  [alice] #2 topic=orders: order #1002 shipped
+  [bob] #2 topic=orders: order #1002 shipped
+[broker] published #3 → 2 subscribers
+  [bob] #3 topic=metrics: cpu=42% mem=68%
+  [carol] #1 topic=metrics: cpu=42% mem=68%
+[broker] published #4 → 2 subscribers
+  [alice] #3 topic=alerts: disk usage above 90%
+  [carol] #2 topic=alerts: disk usage above 90%
+[broker] published #5 → 0 subscribers
+
+--- Stats ---
+[broker] total published: 5, subscriptions: 6
+  [alice] total received: 3
+  [bob] total received: 3
+  [carol] total received: 2
+
+Pub/sub complete. No channels, no mutexes, no select loops.
+The broker actor serialises all routing — data-race free.

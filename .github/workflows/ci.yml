@@ -381,13 +381,16 @@ jobs:
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+          # Record the concrete patch version so cache keys bust on Homebrew patch upgrades.
+          LLVM_VERSION_FULL="$("${LLVM_PREFIX}/bin/llvm-config" --version)"
+          echo "LLVM_VERSION_FULL=${LLVM_VERSION_FULL}" >> "$GITHUB_ENV"
 
       - name: Cache hew-codegen build
         uses: actions/cache@v4
         with:
           path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_PREFIX }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_PREFIX }}-
+          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-
 
       - name: Run Rust workspace tests
         # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.

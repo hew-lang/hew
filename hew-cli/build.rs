@@ -125,9 +125,14 @@ fn configure_and_build(
     let llvm_dir = env::var("LLVM_DIR").ok();
     let mlir_dir = env::var("MLIR_DIR").ok();
 
+    // Canonicalize llvm_prefix for the signature so that Homebrew patch upgrades
+    // (e.g. 22.1.1 → 22.1.2) bust the cached build dir even though the stable
+    // symlink path (e.g. /opt/homebrew/opt/llvm@22) stays the same.
     let signature = format!(
         "target={target}\nbuild_type={build_type}\nembed_static={embed_static}\nllvm_prefix={}\nllvm_dir={}\nmlir_dir={}\ncc={}\ncxx={}\n",
-        llvm_prefix.map_or_else(String::new, |path| path.display().to_string()),
+        llvm_prefix.map_or_else(String::new, |path| {
+            path.canonicalize().unwrap_or_else(|_| path.clone()).display().to_string()
+        }),
         llvm_dir.clone().unwrap_or_default(),
         mlir_dir.clone().unwrap_or_default(),
         cc.as_ref().map_or_else(String::new, |tool| path_display(tool.clone())),

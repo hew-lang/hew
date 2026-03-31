@@ -25,15 +25,20 @@ All servers implement identical routing logic: `/` → 200, `/health` → 200, `
 
 ## Building
 
+Run these commands from `examples/benchmarks/` (or `cd examples/benchmarks` from the
+repository root first).
+
 ```bash
+cd examples/benchmarks
+
 # Hew (naive or expert)
-cargo run -p hew-cli -- build examples/benchmarks/http_server.hew -o /tmp/http_hew
-cargo run -p hew-cli -- build examples/benchmarks/http_server_expert.hew -o /tmp/http_hew_expert
+hew build http_server.hew -o http-hew
+hew build http_server_expert.hew -o http-hew-expert
 
 # Rust naive (tiny_http)
-mkdir -p /tmp/rust_http/src
-cp examples/benchmarks/http_server.rs /tmp/rust_http/src/main.rs
-cat > /tmp/rust_http/Cargo.toml << 'EOF'
+mkdir -p rust_http/src
+cp http_server.rs rust_http/src/main.rs
+cat > rust_http/Cargo.toml << 'EOF'
 [package]
 name = "rust-http-bench"
 version = "0.1.0"
@@ -41,12 +46,12 @@ edition = "2021"
 [dependencies]
 tiny_http = "0.12"
 EOF
-cd /tmp/rust_http && cargo build --release
+cd rust_http && cargo build --release && cd ..
 
 # Rust expert (axum)
-mkdir -p /tmp/rust_http_expert/src
-cp examples/benchmarks/http_server_expert.rs /tmp/rust_http_expert/src/main.rs
-cat > /tmp/rust_http_expert/Cargo.toml << 'EOF'
+mkdir -p rust_http_expert/src
+cp http_server_expert.rs rust_http_expert/src/main.rs
+cat > rust_http_expert/Cargo.toml << 'EOF'
 [package]
 name = "rust-http-expert"
 version = "0.1.0"
@@ -57,11 +62,11 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 EOF
-cd /tmp/rust_http_expert && cargo build --release
+cd rust_http_expert && cargo build --release && cd ..
 
 # Go
-go build -o /tmp/http_go examples/benchmarks/http_server.go
-go build -o /tmp/http_go_expert examples/benchmarks/http_server_expert.go
+go build -o http-go http_server.go
+go build -o http-go-expert http_server_expert.go
 
 # Python (no build needed)
 ```
@@ -69,11 +74,11 @@ go build -o /tmp/http_go_expert examples/benchmarks/http_server_expert.go
 ## Running the benchmark
 
 ```bash
-# Start servers (pick naive or expert)
-/tmp/http_hew &
-/tmp/rust_http/target/release/rust-http-bench &
-/tmp/http_go &
-python3 examples/benchmarks/http_server.py &
+# Start servers from examples/benchmarks/ (pick naive or expert)
+./http-hew &
+./rust_http/target/release/rust-http-bench &
+./http-go &
+python3 http_server.py &
 
 # Benchmark with siege (5 seconds, concurrency 25)
 siege -c 25 -t 5S --no-parser http://127.0.0.1:18080/  # Hew

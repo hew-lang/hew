@@ -455,11 +455,10 @@ set_tests_properties(
 )
 
 # ── Learning/playground example tests (auto-discovered) ─────────────────────
-# Any .hew file in examples/playground/, examples/progressive/, or
-# examples/junior/ with a matching .expected file is automatically registered
-# as a test. Adding a new example + .expected file creates a test automatically
-# — no CMakeLists.txt editing needed.
-# examples/junior/12_errors.hew is intentionally excluded (compile-failure demo).
+# Any .hew file in examples/playground/ or examples/progressive/ with a
+# matching .expected file is automatically registered as a test. Adding a new
+# example + .expected file creates a test automatically — no CMakeLists.txt
+# editing needed.
 
 set(EXAMPLES_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../examples")
 cmake_path(ABSOLUTE_PATH EXAMPLES_ROOT NORMALIZE)
@@ -495,20 +494,6 @@ endforeach()
 
 # Force single scheduler worker for multi-actor tests (non-deterministic ordering)
 set_tests_properties(playground_concurrency_supervisor PROPERTIES ENVIRONMENT "HEW_WORKERS=1")
-
-# Junior examples
-file(GLOB JUNIOR_HEWS "${EXAMPLES_ROOT}/junior/*.hew")
-foreach(HEW_FILE ${JUNIOR_HEWS})
-  get_filename_component(HEW_NAME ${HEW_FILE} NAME_WE)
-
-  set(EXPECTED_FILE "${EXAMPLES_ROOT}/junior/${HEW_NAME}.expected")
-  if(EXISTS ${EXPECTED_FILE})
-    set(TEST_NAME "junior_${HEW_NAME}")
-    add_example_test(${TEST_NAME} ${HEW_FILE} ${EXPECTED_FILE})
-  else()
-    message(VERBOSE "Skipping junior/${HEW_NAME} — no .expected file")
-  endif()
-endforeach()
 
 # Progressive examples (flat directory, numbered sequence 01–NN)
 file(GLOB PROGRESSIVE_HEWS "${EXAMPLES_ROOT}/progressive/*.hew")

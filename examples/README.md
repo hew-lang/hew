@@ -19,7 +19,7 @@ hew build examples/fibonacci.hew -o fibonacci
 
 ### Learning Paths
 
-- **progressive/** -- Numbered lessons (01-12) introducing core language features with expected output files
+- **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more
 
 ### Topic Collections
@@ -46,9 +46,9 @@ hew build examples/fibonacci.hew -o fibonacci
 | Actors        | `actor_fib`, `fibonacci_actors`, `lambda_actor*`, `concurrent_counter`    |
 | Supervisors   | `supervisor_*` (6 examples covering crash budgets, nesting, worker pools) |
 | Networking    | `http_server`, `mqtt_broker`, `chat_server`, `chat_client`, `curl_client` |
-| Async/Streams | `async_demo`, `for_await_loop`, `scope_demo`, `scope_minimal`             |
+| Async/Streams | `async_demo`, `scope_demo`, `scope_minimal`                               |
 | Stress Tests  | `stress_*` (8 examples for actors, mailboxes, scheduling, supervision)    |
-| Self-Hosting  | `selfhost_*` (calculator, echo server, lexer, pipeline)                   |
+| Self-Hosting  | `selfhost_lexer_v2`                                                       |
 | Types         | `enum_test`, `enums_and_options`, `types_and_traits`, `type_inference`    |
 | Strings       | `string_escapes`, `string_ops_test`, `string_test`                        |
 | Utilities     | `hew_grep`, `regex_demo`, `file_reader`, `cli_argparse`                   |

@@ -735,19 +735,40 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         decoded = stringIf.getResult(0);
       } else if (!isWirePrimitiveType(field.ty) && structTypes.count(field.ty)) {
         // Nested wire struct: decode the bytes payload and call T_decode(data_ptr, len).
-        // T_decode creates its own internal stack buffer, so we pass the raw data pointer
-        // directly rather than wrapping it in another HewWireBuf.
-        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                                   mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
-                                   mlir::ValueRange{bufPtr, scratchPtr, scratchLen});
+        // T_decode creates its own internal stack buffer from the raw pointer.
+        // Mirror the WireKind::Bytes error-handling pattern: only load scratch
+        // values on success, set decodeError and yield a zero struct on failure.
+        auto decodeBytesResult =
+            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                       mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
+                                       mlir::ValueRange{bufPtr, scratchPtr, scratchLen})
+                .getResult();
+        auto nestedBytesOk =
+            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                        decodeBytesResult,
+                                        createIntConstant(builder, location, i32Type, 0));
+        auto nestedIf =
+            mlir::scf::IfOp::create(builder, location, fty, nestedBytesOk, /*withElseRegion=*/true);
+
+        builder.setInsertionPointToStart(&nestedIf.getThenRegion().front());
         auto innerDataPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, scratchPtr);
         auto innerLen =
             mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
-        auto innerDecFn =
-            module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_decode");
-        decoded = mlir::func::CallOp::create(builder, location, innerDecFn,
-                                             mlir::ValueRange{innerDataPtr, innerLen})
-                      .getResult(0);
+        auto innerDecFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_decode");
+        auto innerStruct =
+            mlir::func::CallOp::create(builder, location, innerDecFn,
+                                       mlir::ValueRange{innerDataPtr, innerLen})
+                .getResult(0);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerStruct});
+
+        builder.setInsertionPointToStart(&nestedIf.getElseRegion().front());
+        mlir::LLVM::StoreOp::create(builder, location,
+                                    createIntConstant(builder, location, i32Type, 1), decodeError);
+        auto zeroStruct = mlir::LLVM::ZeroOp::create(builder, location, fty);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{zeroStruct});
+
+        builder.setInsertionPointAfter(nestedIf);
+        decoded = nestedIf.getResult(0);
       } else {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                    mlir::SymbolRefAttr::get(&context, "hew_wire_decode_varint"),

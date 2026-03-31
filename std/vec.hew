@@ -16,8 +16,9 @@
 //!     println(vec.contains_i32(v, 2));       // true
 //!     println(vec.contains_i32(v, 9));       // false
 //!     println(vec.index_of_i32(v, 2));       // 1
-//!     println(vec.first_i32(v));             // 1
-//!     println(vec.last_i32(v));              // 3
+//!     // first / last return Option<T>; cast your Vec<i32> to Vec<i64> for first/last
+//!     match vec.first_i64(v2) { Some(x) => println(x), None => {} }  // 1
+//!     match vec.last_i64(v2)  { Some(x) => println(x), None => {} }  // 3
 //!     println(vec.min_i32(v));               // 1
 //!     println(vec.max_i32(v));               // 3
 //! }
@@ -210,90 +211,93 @@ pub fn index_of_str(v: Vec<String>, val: String) -> i32 {
 
 // ── first / last ──────────────────────────────────────────────────────────
 
-/// Return the first element of `v`, or `0` if `v` is empty.
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<i32> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(7);
 /// v.push(8);
-/// println(vec.first_i32(v));  // 7
+/// println(vec.first_i64(v));  // Some(7)
 /// ```
-pub fn first_i32(v: Vec<i32>) -> i32 {
-    if v.len() == 0 {
-        return 0;
+pub fn first_i64(v: Vec<i64>) -> Option<int> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
     }
-    v.get(0)
+    Some(v.get(i))
 }
 
-/// Return the first element of `v`, or `0` if `v` is empty.
-pub fn first_i64(v: Vec<i64>) -> i64 {
-    if v.len() == 0 {
-        return 0;
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+pub fn first_f64(v: Vec<f64>) -> Option<f64> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
     }
-    v.get(0)
+    Some(v.get(i))
 }
 
-/// Return the first element of `v`, or `0.0` if `v` is empty.
-pub fn first_f64(v: Vec<f64>) -> f64 {
-    if v.len() == 0 {
-        return 0.0;
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+pub fn first_str(v: Vec<String>) -> Option<String> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
     }
-    v.get(0)
+    Some(v.get(i))
 }
 
-/// Return the first element of `v`, or `""` if `v` is empty.
-pub fn first_str(v: Vec<String>) -> String {
-    if v.len() == 0 {
-        return "";
-    }
-    v.get(0)
-}
-
-/// Return the last element of `v`, or `0` if `v` is empty.
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<i32> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(7);
 /// v.push(8);
-/// println(vec.last_i32(v));  // 8
+/// println(vec.last_i64(v));  // Some(8)
 /// ```
-pub fn last_i32(v: Vec<i32>) -> i32 {
+pub fn last_i64(v: Vec<i64>) -> Option<int> {
+    var i = 0;
     let n = v.len();
     if n == 0 {
-        return 0;
+        return None;
     }
-    v.get(n - 1)
+    while i + 1 < n {
+        i = i + 1;
+    }
+    Some(v.get(i))
 }
 
-/// Return the last element of `v`, or `0` if `v` is empty.
-pub fn last_i64(v: Vec<i64>) -> i64 {
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+pub fn last_f64(v: Vec<f64>) -> Option<f64> {
+    var i = 0;
     let n = v.len();
     if n == 0 {
-        return 0;
+        return None;
     }
-    v.get(n - 1)
+    while i + 1 < n {
+        i = i + 1;
+    }
+    Some(v.get(i))
 }
 
-/// Return the last element of `v`, or `0.0` if `v` is empty.
-pub fn last_f64(v: Vec<f64>) -> f64 {
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+pub fn last_str(v: Vec<String>) -> Option<String> {
+    var i = 0;
     let n = v.len();
     if n == 0 {
-        return 0.0;
+        return None;
     }
-    v.get(n - 1)
-}
-
-/// Return the last element of `v`, or `""` if `v` is empty.
-pub fn last_str(v: Vec<String>) -> String {
-    let n = v.len();
-    if n == 0 {
-        return "";
+    while i + 1 < n {
+        i = i + 1;
     }
-    v.get(n - 1)
+    Some(v.get(i))
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────

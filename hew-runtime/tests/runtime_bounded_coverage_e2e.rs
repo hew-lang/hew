@@ -1,5 +1,15 @@
 //! End-to-end bounded execution coverage for actor budget, scheduler, and
 //! supervisor restart budget controls.
+//!
+//! # Test-binary isolation
+//!
+//! This file contains exactly **one** `#[test]` function and is compiled into
+//! its own integration-test binary by Cargo (`tests/runtime_bounded_coverage_e2e`).
+//! The scheduler and deterministic subsystems are process-global singletons.
+//! Correctness of the metric assertions below (e.g. worker count starts at 0,
+//! `hew_sched_metrics_active_workers` reflects only activity in this test)
+//! depends on this binary being the sole user of those globals.  Do not add
+//! further tests here; create a new file if additional coverage is needed.
 
 #![expect(
     clippy::undocumented_unsafe_blocks,
@@ -20,7 +30,7 @@ use hew_runtime::scheduler::{
     hew_sched_init, hew_sched_metrics_active_workers, hew_sched_metrics_worker_count,
 };
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_is_running,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_supervisor_is_running,
     hew_supervisor_new, hew_supervisor_set_restart_notify, hew_supervisor_start,
     hew_supervisor_stop, hew_supervisor_wait_restart, HewChildSpec, HewSupervisor,
 };
@@ -28,6 +38,9 @@ use hew_runtime::supervisor::{
 static SCHED_INIT: Once = Once::new();
 
 fn ensure_single_worker_scheduler() {
+    // This Once runs exactly once per process.  Because this binary contains
+    // only this test, `hew_deterministic_reset()` starts from a clean slate
+    // and there are no scheduler metrics from prior tests to account for.
     SCHED_INIT.call_once(|| {
         hew_deterministic_reset();
         // SAFETY: this integration test is the only test in this binary and
@@ -124,23 +137,26 @@ fn cstr(s: &str) -> CString {
     CString::new(s).expect("CString::new failed")
 }
 
-unsafe fn wait_for_child(
-    sup: *mut HewSupervisor,
-    index: i32,
-    timeout: Duration,
-) -> (*mut HewActor, u64) {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let child = unsafe { hew_supervisor_get_child(sup, index) };
-        if !child.is_null() {
-            return (child, unsafe { (*child).id });
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for child[{index}] to be spawned"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+/// Wait for the supervisor's child slot at `index` to hold a live actor,
+/// reading the pointer under the restart-notify mutex via
+/// `hew_supervisor_get_child_wait` so that the happens-before from
+/// `restart_child_from_spec`'s write through `notify_restart`'s mutex
+/// signal is formally established on the slow (condvar) path.
+///
+/// Returns the child pointer; panics on timeout.
+unsafe fn wait_for_child(sup: *mut HewSupervisor, index: i32, timeout: Duration) -> *mut HewActor {
+    // Convert to milliseconds, saturating at i32::MAX (~24 days).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "timeout values in this test are well under i32::MAX ms"
+    )]
+    let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    let child = unsafe { hew_supervisor_get_child_wait(sup, index, timeout_ms) };
+    assert!(
+        !child.is_null(),
+        "timed out waiting for child[{index}] to be spawned"
+    );
+    child
 }
 
 unsafe fn wait_for_actor_state(
@@ -216,7 +232,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
         assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
         assert_eq!(hew_supervisor_start(sup), 0);
 
-        let (child, first_child_id) = wait_for_child(sup, 0, Duration::from_secs(5));
+        let child = wait_for_child(sup, 0, Duration::from_secs(5));
         hew_actor_set_budget(child, 1);
 
         for _ in 0..3 {
@@ -272,10 +288,18 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             "first crash should trigger one restart within budget (count={restart_count})"
         );
 
-        let (restarted_child, restarted_child_id) = wait_for_child(sup, 0, Duration::from_secs(5));
+        // `hew_supervisor_wait_restart` establishes a happens-before with the
+        // `children[0]` write in `restart_child_from_spec` (sequenced-before
+        // the mutex lock in `notify_restart` in the same supervisor thread).
+        // `hew_supervisor_get_child_wait` then reads `children[0]` and, on
+        // the slow (condvar) path, does so under the restart-notify mutex,
+        // which is the formally synchronised access.  On the fast path the
+        // h-b chain from `wait_restart`'s mutex reacquire still holds, but
+        // using `get_child_wait` makes the intended synchronization explicit.
+        let restarted_child = wait_for_child(sup, 0, Duration::from_secs(5));
         assert_ne!(
-            restarted_child_id, first_child_id,
-            "restart should install a fresh child actor"
+            restarted_child, child,
+            "restart should install a fresh child actor at a different address"
         );
         hew_actor_set_budget(restarted_child, 1);
 

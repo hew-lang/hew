@@ -1116,12 +1116,15 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
-  // ── Auto-field-drop for wire structs with owned fields ─────────────
+  // ── Auto-field-drop for user structs with owned fields (no Drop impl) ──
+  // Covers all registered user-defined structs, not just wire structs: any
+  // struct with owned fields (String, Vec, nested Drop'd struct, etc.) that
+  // lacks a user-written Drop impl must have its fields freed automatically.
   if (value && !dropScopes.empty()) {
     auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
     if (structTy && structTy.isIdentified() &&
         !userDropFuncs.count(structTy.getName().str()) &&
-        wireStructNames.count(structTy.getName().str())) {
+        structTypes.count(structTy.getName().str())) {
       bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
       if (needsFieldDrop) {
         bool isOwnedStruct = false;
@@ -1142,8 +1145,25 @@ void MLIRGen::registerDropsForVariable(
         bool alreadyReg = false;
         for (auto &e : dropScopes.back())
           if (e.varName == varName) { alreadyReg = true; break; }
-        if (isOwnedStruct && !alreadyReg)
+        if (isOwnedStruct && !alreadyReg) {
           registerDroppable(varName, "__auto_field_drop");
+          // If a return guard is active (returnFlag non-null) and the struct
+          // value may be defined inside a guard block (i.e. declareVariable
+          // didn't promote it to mutableVars), the raw SSA value might not
+          // dominate the drop point.  Create a hoisted alloca and store the
+          // value now so emitDropEntry can load from it regardless of where
+          // the drop eventually fires.
+          auto &newEntry = dropScopes.back().back();
+          if (!newEntry.promotedSlot && returnFlag) {
+            auto storageType = toSlotStorageType(value.getType());
+            auto alloca = createHoistedAlloca(storageType, value.getType());
+            auto storedValue = coerceType(value, storageType, builder.getUnknownLoc());
+            mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
+            if (storageType != value.getType())
+              slotSemanticTypes[alloca] = value.getType();
+            newEntry.promotedSlot = alloca;
+          }
+        }
       }
     }
   }

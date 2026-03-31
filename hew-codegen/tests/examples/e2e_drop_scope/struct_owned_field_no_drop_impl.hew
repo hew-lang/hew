@@ -1,0 +1,41 @@
+// Regression test: non-wire user-defined struct with owned inner fields but
+// no user Drop impl must auto-drop its owned fields when it goes out of scope.
+//
+// Without the fix, the Outer struct has no drop registered (it is not a wire
+// struct and has no Drop impl), so Inner's drop never fires.
+// With the fix, auto-field-drop is registered for any user struct whose
+// fields require cleanup — the inner Handle drop must fire.
+
+type Handle {
+    id: int;
+}
+
+impl Drop for Handle {
+    fn drop(h: Handle) {
+        print("drop Handle ");
+        println(h.id);
+    }
+}
+
+// No Drop impl — relies on auto-field-drop to clean up the Handle field.
+type Container {
+    handle: Handle;
+    label: String;
+}
+
+fn make_container(id: int, label: String) -> Container {
+    Container { handle: Handle { id: id }, label: label }
+}
+
+fn main() -> int {
+    let c1 = Container { handle: Handle { id: 1 }, label: "first" };
+    print("created ");
+    println(c1.label);
+    {
+        let c2 = make_container(2, "second");
+        print("created ");
+        println(c2.label);
+    }
+    println("after c2 scope");
+    return 0;
+}

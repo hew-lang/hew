@@ -3329,6 +3329,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     }
   }
 
+  if (method == "clone") {
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
+        .getResult();
+  }
   if (method == "trim") {
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("trim"), receiver, mlir::ValueRange{})

@@ -54,12 +54,13 @@ use hew_runtime::result::{
 };
 use hew_runtime::string::{
     hew_bool_to_string, hew_float_to_string, hew_int_to_string, hew_string_byte_length,
-    hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_concat,
-    hew_string_contains, hew_string_ends_with, hew_string_equals, hew_string_find,
-    hew_string_from_char, hew_string_index_of, hew_string_is_ascii, hew_string_length,
-    hew_string_repeat, hew_string_replace, hew_string_reverse_utf8, hew_string_slice,
-    hew_string_split, hew_string_starts_with, hew_string_substring_utf8, hew_string_to_bytes,
-    hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase, hew_string_trim,
+    hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_clone,
+    hew_string_concat, hew_string_contains, hew_string_ends_with, hew_string_equals,
+    hew_string_find, hew_string_from_char, hew_string_index_of, hew_string_is_ascii,
+    hew_string_length, hew_string_repeat, hew_string_replace, hew_string_reverse_utf8,
+    hew_string_slice, hew_string_split, hew_string_starts_with, hew_string_substring_utf8,
+    hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase,
+    hew_string_trim,
 };
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
@@ -278,6 +279,26 @@ fn string_concat_with_null() {
         let r3 = hew_string_concat(ptr::null(), ptr::null());
         assert_eq!(read_cstr(r3), "");
         free_cstr(r3);
+    }
+}
+
+#[test]
+fn string_clone_returns_distinct_copy() {
+    unsafe {
+        let original = hew_string_concat(cstr("hello").as_ptr(), cstr(" world").as_ptr());
+        let cloned = hew_string_clone(original);
+        assert_ne!(original as usize, cloned as usize);
+        assert_eq!(read_cstr(original), read_cstr(cloned));
+        free_cstr(original);
+        free_cstr(cloned);
+    }
+}
+
+#[test]
+fn string_clone_null_returns_null() {
+    unsafe {
+        let result = hew_string_clone(std::ptr::null());
+        assert!(result.is_null());
     }
 }
 

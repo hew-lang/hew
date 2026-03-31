@@ -1064,6 +1064,32 @@ pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
     unsafe { libc::free(s.cast()) };
 }
 
+/// Duplicate a string, returning a fresh heap allocation.
+/// Caller must `free` the result (or pass it to `hew_string_drop`).
+///
+/// # Safety
+///
+/// `s` must be null or a valid NUL-terminated C string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_clone(s: *const c_char) -> *mut c_char {
+    if s.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: s is a valid NUL-terminated C string per contract.
+    let len = unsafe { cstr_len(s) };
+    let alloc_size = len + 1;
+    // SAFETY: Requesting alloc_size bytes from malloc.
+    let result = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
+    if len > 0 {
+        // SAFETY: s is valid for len bytes; result has alloc_size bytes.
+        unsafe { std::ptr::copy_nonoverlapping(s.cast::<u8>(), result, len) };
+    }
+    // SAFETY: result + len is within the allocated region.
+    unsafe { *result.add(len) = 0 };
+    result.cast::<c_char>()
+}
+
 // ---------------------------------------------------------------------------
 // UTF-8 aware string operations
 // ---------------------------------------------------------------------------

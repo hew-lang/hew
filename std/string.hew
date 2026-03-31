@@ -295,41 +295,104 @@ pub fn replace(s: String, old: String, new_val: String) -> String {
 
 /// Split a string by `sep` into a list of substrings.
 ///
+/// An empty separator returns a single-element list containing the
+/// original string unchanged (mirrors the FFI behaviour).
+/// A trailing delimiter produces a trailing empty element.
+///
 /// # Examples
 ///
 /// ```
 /// import std::string;
 ///
 /// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
+/// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
+/// let empty = string.split("x", "");       // ["x"]
 /// ```
 pub fn split(s: String, sep: String) -> Vec<String> {
-    unsafe { hew_string_split(s, sep) }
+    let result: Vec<String> = Vec::new();
+    let slen = s.len();
+    let dlen = sep.len();
+    if dlen == 0 {
+        result.push(s);
+        return result;
+    }
+    var start = 0;
+    while start <= slen {
+        let rest = s.slice(start, slen);
+        let idx = rest.find(sep);
+        if idx < 0 {
+            result.push(rest);
+            break;
+        }
+        result.push(s.slice(start, start + idx));
+        start = start + idx + dlen;
+    }
+    result
 }
 
 /// Split a string into lines, stripping `\r\n` or `\n` endings.
 ///
+/// Always emits a final element for the text after the last newline
+/// (which will be empty when the string ends with a newline), matching
+/// the FFI behaviour.
+///
 /// # Examples
 ///
 /// ```
 /// import std::string;
 ///
-/// let lines = string.lines("foo\nbar");  // ["foo", "bar"]
+/// let lines = string.lines("foo\nbar");   // ["foo", "bar"]
+/// let crlf  = string.lines("a\r\nb");    // ["a", "b"]
+/// let trail = string.lines("foo\n");     // ["foo", ""]
 /// ```
 pub fn lines(s: String) -> Vec<String> {
-    unsafe { hew_string_lines(s) }
+    let result: Vec<String> = Vec::new();
+    let slen = s.len();
+    var start = 0;
+    while start < slen {
+        let rest = s.slice(start, slen);
+        let idx = rest.find("\n");
+        if idx < 0 {
+            break;
+        }
+        var end = start + idx;
+        if end > start && s.slice(end - 1, end) == "\r" {
+            end = end - 1;
+        }
+        result.push(s.slice(start, end));
+        start = start + idx + 1;
+    }
+    // Always emit the final segment (may be empty when string ends with \n).
+    var final_end = slen;
+    if final_end > start && s.slice(final_end - 1, final_end) == "\r" {
+        final_end = final_end - 1;
+    }
+    result.push(s.slice(start, final_end));
+    result
 }
 
 /// Join a list of strings with `sep` between each element.
 ///
+/// Returns an empty string for an empty list.
+///
 /// # Examples
 ///
 /// ```
 /// import std::string;
 ///
-/// let s = string.join(parts, ", ");
+/// let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
+/// let e = string.join([], ",");                // ""
 /// ```
 pub fn join(parts: Vec<String>, sep: String) -> String {
-    unsafe { hew_string_join(parts, sep) }
+    let n = parts.len();
+    if n == 0 {
+        return "";
+    }
+    var result = parts.get(0);
+    for i in 1..n {
+        result = result + sep + parts.get(i);
+    }
+    result
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────
@@ -357,7 +420,4 @@ pub trait ToString {
 
 extern "C" {
     fn hew_char_to_string(code: i32) -> String;
-    fn hew_string_split(s: String, sep: String) -> Vec<String>;
-    fn hew_string_lines(s: String) -> Vec<String>;
-    fn hew_string_join(parts: Vec<String>, sep: String) -> String;
 }

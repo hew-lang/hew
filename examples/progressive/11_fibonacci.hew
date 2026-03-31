@@ -1,6 +1,6 @@
 // Test 11: Fibonacci function
 // Testing recursion
-fn fib(n: i32) -> i32 {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {

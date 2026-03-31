@@ -455,9 +455,10 @@ set_tests_properties(
 )
 
 # ── Learning/playground example tests (auto-discovered) ─────────────────────
-# Any .hew file in examples/playground/ or examples/junior/ with a matching
-# .expected file is automatically registered as a test. Adding a new example +
-# .expected file creates a test automatically — no CMakeLists.txt editing needed.
+# Any .hew file in examples/playground/, examples/progressive/, or
+# examples/junior/ with a matching .expected file is automatically registered
+# as a test. Adding a new example + .expected file creates a test automatically
+# — no CMakeLists.txt editing needed.
 # examples/junior/12_errors.hew is intentionally excluded (compile-failure demo).
 
 set(EXAMPLES_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../examples")
@@ -508,6 +509,21 @@ foreach(HEW_FILE ${JUNIOR_HEWS})
     message(VERBOSE "Skipping junior/${HEW_NAME} — no .expected file")
   endif()
 endforeach()
+
+# Progressive examples (flat directory, numbered sequence 01–NN)
+file(GLOB PROGRESSIVE_HEWS "${EXAMPLES_ROOT}/progressive/*.hew")
+foreach(HEW_FILE ${PROGRESSIVE_HEWS})
+  get_filename_component(HEW_NAME ${HEW_FILE} NAME_WE)
+
+  set(EXPECTED_FILE "${EXAMPLES_ROOT}/progressive/${HEW_NAME}.expected")
+  if(EXISTS ${EXPECTED_FILE})
+    set(TEST_NAME "progressive_${HEW_NAME}")
+    add_example_test(${TEST_NAME} ${HEW_FILE} ${EXPECTED_FILE})
+  else()
+    message(VERBOSE "Skipping progressive/${HEW_NAME} — no .expected file")
+  endif()
+endforeach()
+
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).
 # These compile raw .ll files with coroutine intrinsics and verify output.

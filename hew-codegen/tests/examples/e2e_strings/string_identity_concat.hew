@@ -1,0 +1,55 @@
+// Test: identity concat ("" + s) must produce a distinct owned copy,
+// not alias the input, so both the temporary and the bound variable
+// can be safely dropped.
+//
+// The separate `let key_code` and `let a_code` bindings are essential
+// to reproduce the codegen bug — inline usage generates different drop
+// scoping that happens to be safe.
+//
+// The sort is repeated in a loop to stress the allocator enough to
+// detect the double-free on platforms with forgiving malloc.
+fn main() {
+    var round = 0;
+    while round < 50 {
+        let names: Vec<String> = Vec::new();
+        names.push("foxtrot_padding_to_make_strings_longer_for_allocator");
+        names.push("echo_padding_to_make_strings_longer_for_allocator__");
+        names.push("delta_padding_to_make_strings_longer_for_allocator_");
+        names.push("charlie_padding_to_make_strings_longer_for_alloc___");
+        names.push("bravo_padding_to_make_strings_longer_for_allocator_");
+        names.push("alpha_padding_to_make_strings_longer_for_allocator_");
+        names.push("golf_padding_to_make_strings_longer_for_allocator__");
+        names.push("hotel_padding_to_make_strings_longer_for_allocator_");
+        names.push("india_padding_to_make_strings_longer_for_allocator_");
+        names.push("juliet_padding_to_make_strings_longer_for_allocator");
+        names.push("kilo_padding_to_make_strings_longer_for_allocator__");
+        names.push("lima_padding_to_make_strings_longer_for_allocator__");
+        names.push("mike_padding_to_make_strings_longer_for_allocator__");
+        names.push("november_padding_to_make_strings_longer_for_alloc__");
+        names.push("oscar_padding_to_make_strings_longer_for_allocator_");
+        names.push("papa_padding_to_make_strings_longer_for_allocator__");
+
+        // Insertion sort using "" + s as deep copy
+        var i = 1;
+        while i < names.len() {
+            let key = "" + names[i];
+            let key_code = string_char_at(key, 0);
+            var j = i - 1;
+            while j >= 0 {
+                let a_code = string_char_at(names[j], 0);
+                if a_code > key_code {
+                    names[j + 1] = "" + names[j];
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+            names[j + 1] = key;
+            i += 1;
+        }
+
+        round += 1;
+    }
+
+    println("PASS");
+}

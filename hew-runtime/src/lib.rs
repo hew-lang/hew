@@ -113,6 +113,18 @@ pub mod profiler {
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
     /// No-op: profiler feature is disabled.
+    ///
+    /// On non-wasm targets the parameters match the real function signature so
+    /// call sites in `hew_node.rs` compile without casts.  On wasm32 the typed
+    /// modules are absent, so raw pointers are used instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn maybe_start_with_context(
+        _cluster: *mut crate::cluster::HewCluster,
+        _connmgr: *mut crate::connection::HewConnMgr,
+        _routing: *mut crate::routing::HewRoutingTable,
+    ) {
+    }
+    #[cfg(target_arch = "wasm32")]
     pub fn maybe_start_with_context(
         _cluster: *mut std::ffi::c_void,
         _connmgr: *mut std::ffi::c_void,
@@ -121,6 +133,8 @@ pub mod profiler {
     }
     /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
+    /// No-op: profiler feature is disabled.
+    pub fn shutdown() {}
 }
 
 // Global allocator — only on native targets. On WASM, the default Rust

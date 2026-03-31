@@ -160,8 +160,13 @@ jobs:
           # --no-default-features excludes the tokio/quinn/profiler optional
           # features; the core runtime concurrency primitives (reply-channel,
           # mailbox, scheduler) are exercised by the lib tests without them.
+          # --test-threads=1 avoids two TSan-specific pitfalls: (a) the ~20x
+          # slowdown makes timing-sensitive timer tests unreliable under
+          # parallel load; (b) single-threaded ensures TSan race reports are
+          # isolated to the test that triggered them, not cross-test noise.
           cargo +nightly test \
             --target x86_64-unknown-linux-gnu \
             -p hew-runtime \
             --no-default-features \
-            --lib
+            --lib \
+            -- --test-threads=1

@@ -1,14 +1,14 @@
 // Test 5: Writing functions
 // Testing function definitions and calling them
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i64, b: i64) -> i64 {
     a + b
 }
 
-fn multiply(a: i32, b: i32) -> i32 {
+fn multiply(a: i64, b: i64) -> i64 {
     a * b
 }
 
-fn is_positive(x: i32) -> i32 {
+fn is_positive(x: i64) -> i64 {
     if x > 0 {
         1
     } else {

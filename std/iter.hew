@@ -4,6 +4,21 @@
 //! Since Hew does not yet have a full Iterator trait, these are
 //! specialised per element type: `Vec<int>`, `Vec<String>`, and `Vec<f64>`.
 //!
+//! ## Available operations
+//!
+//! | Function        | `Vec<int>`    | `Vec<String>` | `Vec<f64>`    |
+//! |-----------------|---------------|---------------|---------------|
+//! | map             | `map_int`     | `map_str`     | `map_f64`     |
+//! | filter          | `filter_int`  | `filter_str`  | `filter_f64`  |
+//! | fold            | `fold_int`    | `fold_str`    | `fold_f64`    |
+//! | any             | `any`         | `any_str`     | `any_f64`     |
+//! | all             | `all`         | `all_str`     | `all_f64`     |
+//! | sum             | `sum`         | —             | `sum_f64`     |
+//! | product         | `product`     | —             | `product_f64` |
+//! | take            | `take_int`    | `take_str`    | `take_f64`    |
+//! | skip            | `skip_int`    | `skip_str`    | `skip_f64`    |
+//! | count predicate | `count_int`   | `count_str`   | `count_f64`   |
+//!
 //! # Examples
 //!
 //! ```
@@ -14,8 +29,10 @@
 //!     v.push(1);
 //!     v.push(2);
 //!     v.push(3);
-//!     println(iter.sum(v));           // 6
-//!     println(iter.any(v, (x: int) => x > 2));  // true
+//!     println(iter.sum(v));                              // 6
+//!     println(iter.any(v, (x: int) => x > 2));          // true
+//!     println(iter.take_int(v, 2).len());               // 2
+//!     println(iter.count_int(v, (x: int) => x > 1));   // 2
 //! }
 //! ```
 
@@ -369,4 +386,248 @@ pub fn sum_f64(v: Vec<f64>) -> f64 {
         total = total + v.get(i);
     }
     total
+}
+
+// ── take / skip (int, String, f64) ────────────────────────────────────────
+
+/// Return the first `n` elements of `v`. If `n` exceeds the length, the
+/// whole vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(10); v.push(20); v.push(30);
+/// let t = iter.take_int(v, 2);
+/// // t == [10, 20]
+/// ```
+pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    var limit = n;
+    if v.len() < n {
+        limit = v.len();
+    }
+    for i in 0..limit {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Skip the first `n` elements of `v` and return the rest. If `n` exceeds
+/// the length, an empty vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(10); v.push(20); v.push(30);
+/// let s = iter.skip_int(v, 1);
+/// // s == [20, 30]
+/// ```
+pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    var start = n;
+    if n < 0 {
+        start = 0;
+    }
+    if n > v.len() {
+        start = v.len();
+    }
+    for i in start..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Return the number of elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1); v.push(2); v.push(3); v.push(4);
+/// println(iter.count_int(v, (x: int) => x % 2 == 0));  // 2
+/// ```
+pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
+    var n: int = 0;
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            n = n + 1;
+        }
+    }
+    n
+}
+
+/// Return the first `n` elements of `v`. If `n` exceeds the length, the
+/// whole vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("a"); v.push("b"); v.push("c");
+/// let t = iter.take_str(v, 2);
+/// // t == ["a", "b"]
+/// ```
+pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
+    let out: Vec<String> = Vec::new();
+    var limit = n;
+    if v.len() < n {
+        limit = v.len();
+    }
+    for i in 0..limit {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Skip the first `n` elements of `v` and return the rest. If `n` exceeds
+/// the length, an empty vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("a"); v.push("b"); v.push("c");
+/// let s = iter.skip_str(v, 1);
+/// // s == ["b", "c"]
+/// ```
+pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
+    let out: Vec<String> = Vec::new();
+    var start = n;
+    if n < 0 {
+        start = 0;
+    }
+    if n > v.len() {
+        start = v.len();
+    }
+    for i in start..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Return the number of elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("foo"); v.push("bar"); v.push("baz");
+/// println(iter.count_str(v, (s: String) => s.starts_with("b")));  // 2
+/// ```
+pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
+    var n: int = 0;
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            n = n + 1;
+        }
+    }
+    n
+}
+
+/// Return the first `n` elements of `v`. If `n` exceeds the length, the
+/// whole vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0); v.push(2.0); v.push(3.0);
+/// let t = iter.take_f64(v, 2);
+/// // t == [1.0, 2.0]
+/// ```
+pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
+    let out: Vec<f64> = Vec::new();
+    var limit = n;
+    if v.len() < n {
+        limit = v.len();
+    }
+    for i in 0..limit {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Skip the first `n` elements of `v` and return the rest. If `n` exceeds
+/// the length, an empty vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0); v.push(2.0); v.push(3.0);
+/// let s = iter.skip_f64(v, 1);
+/// // s == [2.0, 3.0]
+/// ```
+pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
+    let out: Vec<f64> = Vec::new();
+    var start = n;
+    if n < 0 {
+        start = 0;
+    }
+    if n > v.len() {
+        start = v.len();
+    }
+    for i in start..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
+/// Return the number of elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0); v.push(2.5); v.push(-1.0);
+/// println(iter.count_f64(v, (x: f64) => x > 0.0));  // 2
+/// ```
+pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
+    var n: int = 0;
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            n = n + 1;
+        }
+    }
+    n
+}
+
+// ── product (int, f64) ────────────────────────────────────────────────────
+
+/// Return the product of all elements. Returns `1` for an empty vector
+/// (the multiplicative identity).
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(2); v.push(3); v.push(4);
+/// println(iter.product(v));  // 24
+/// ```
+pub fn product(v: Vec<int>) -> int {
+    var acc: int = 1;
+    for i in 0..v.len() {
+        acc = acc * v.get(i);
+    }
+    acc
+}
+
+/// Return the product of all elements. Returns `1.0` for an empty vector
+/// (the multiplicative identity).
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(2.0); v.push(0.5); v.push(4.0);
+/// println(iter.product_f64(v));  // 4.0
+/// ```
+pub fn product_f64(v: Vec<f64>) -> f64 {
+    var acc: f64 = 1.0;
+    for i in 0..v.len() {
+        acc = acc * v.get(i);
+    }
+    acc
 }

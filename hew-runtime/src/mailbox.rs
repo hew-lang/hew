@@ -295,13 +295,14 @@ impl MpscQueue {
         while !cur.is_null() {
             // SAFETY: `cur` is a valid node in the queue.
             let next = unsafe { (*cur).next.load(Ordering::Relaxed) };
-            // Sentinel has msg_type == -1 and null data, so freeing its
-            // data is a no-op.
-            // SAFETY: each node was malloc'd.
-            unsafe {
-                libc::free((*cur).data);
-                libc::free(cur.cast());
-            }
+            // Route every node through hew_msg_node_free so that any queued
+            // ask/reply channels are retired and their waiters unblocked with
+            // an empty reply before the memory is freed. The sentinel has
+            // null reply_channel and null data, so this is a safe no-op for
+            // it beyond freeing the sentinel node itself.
+            // SAFETY: each node was malloc'd; hew_msg_node_free handles null
+            // data and null reply_channel gracefully.
+            unsafe { hew_msg_node_free(cur) };
             cur = next;
         }
     }
@@ -1496,6 +1497,82 @@ mod tests {
             let _ = val;
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    // Regression test: fast-path mailbox teardown must retire queued
+    // reply-bearing nodes via hew_msg_node_free so that ask waiters are
+    // unblocked promptly rather than blocking until timeout.
+    #[test]
+    fn drain_and_free_unblocks_reply_waiter() {
+        use crate::reply_channel::{
+            hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain, hew_reply_wait,
+        };
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+
+        // SAFETY: all raw pointers are valid; ownership is carefully tracked.
+        unsafe {
+            // Create an unbounded fast-path mailbox (uses user_fast MpscQueue).
+            let mb = hew_mailbox_new();
+
+            // Allocate a reply channel. refs=1 (owned by the waiter side).
+            let ch = hew_reply_channel_new();
+            assert!(!ch.is_null());
+
+            // Retain a second reference for the message node's "sender" slot.
+            // refs=2 after this call.
+            hew_reply_channel_retain(ch);
+
+            // Enqueue a message with the reply channel attached without
+            // dispatching it, simulating an actor that is freed before it can
+            // process the message.
+            let rc = hew_mailbox_send_with_reply(mb, 1, ptr::null_mut(), 0, ch.cast());
+            assert_eq!(rc, 0, "send_with_reply should succeed");
+
+            // Barrier so the waiter thread is definitely blocking before we
+            // free the mailbox.
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_clone = barrier.clone();
+
+            // Encode the channel pointer as usize so the closure is Send
+            // (usize: Send; *mut T: !Send). The pointer remains valid for the
+            // life of the test because we hold the waiter-side reference.
+            let ch_addr: usize = ch as usize;
+
+            // Waiter thread: blocks on hew_reply_wait then records the result.
+            let waiter = thread::spawn(move || {
+                barrier_clone.wait();
+                // SAFETY: ch_addr encodes a valid HewReplyChannel pointer;
+                // single-reader guarantee holds since only this thread calls
+                // hew_reply_wait on this channel. Outer unsafe block covers
+                // this closure.
+                let ch_ptr = ch_addr as *mut crate::reply_channel::HewReplyChannel;
+                let val = hew_reply_wait(ch_ptr);
+                // hew_msg_node_free sends an empty reply (null, 0), so val
+                // must be null.
+                let got_null = val.is_null();
+                // Release the waiter's reference (refs: 1→0 → freed).
+                hew_reply_channel_free(ch_ptr);
+                got_null
+            });
+
+            // Let the waiter reach hew_reply_wait before we tear down.
+            barrier.wait();
+            // Small yield so the waiter thread has time to enter the condvar.
+            thread::sleep(Duration::from_millis(5));
+
+            // Free the mailbox. With the fix, drain_and_free() calls
+            // hew_msg_node_free which calls hew_reply() to unblock the waiter.
+            hew_mailbox_free(mb);
+
+            // The waiter should complete promptly (well within 2 s).
+            let got_null = waiter.join().expect("waiter thread panicked");
+            assert!(
+                got_null,
+                "reply waiter must receive a null/empty reply when mailbox is freed with a queued ask node"
+            );
         }
     }
 

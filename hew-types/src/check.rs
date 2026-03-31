@@ -5849,7 +5849,9 @@ impl Checker {
                 self.check_arity(args, 0, &format!("`String::{method}`"), span);
                 Ty::Bool
             }
-            "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" => Ty::String,
+            "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" | "clone" => {
+                Ty::String
+            }
             "replace" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();

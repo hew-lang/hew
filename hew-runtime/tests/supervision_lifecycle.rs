@@ -225,8 +225,17 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             }
         }
 
-        // Verify crashes were recorded
-        let final_crash_count = hew_crash_log_count();
+        // Verify crashes were recorded — poll to handle slow Windows runners
+        // (mirrors the per-crash polling loop above; the final read can still
+        // race the crash-log update on heavily-loaded CI machines).
+        let mut final_crash_count = hew_crash_log_count();
+        for _ in 0..100 {
+            if final_crash_count >= crashes_before + 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            final_crash_count = hew_crash_log_count();
+        }
         let _state = hew_supervisor_get_child_circuit_state(sup, 0);
         assert!(
             final_crash_count >= crashes_before + 2,

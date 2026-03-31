@@ -333,31 +333,41 @@ fn load_project_context(input: &str) -> Result<ProjectContext, String> {
     })
 }
 
+/// Render a single parser diagnostic, dispatching to the error or warning
+/// renderer based on the error's severity.
+fn render_parse_diagnostic(source: &str, filename: &str, err: &hew_parser::ParseError) {
+    let hints: Vec<String> = err.hint.iter().cloned().collect();
+    match err.severity {
+        hew_parser::Severity::Warning => {
+            super::diagnostic::render_warning(
+                source,
+                filename,
+                &err.span,
+                &err.message,
+                &[],
+                &hints,
+            );
+        }
+        hew_parser::Severity::Error => {
+            super::diagnostic::render_diagnostic(
+                source,
+                filename,
+                &err.span,
+                &err.message,
+                &[],
+                &hints,
+            );
+        }
+    }
+}
+
 /// **Stage 2 — Parse.** Run the parser and render any diagnostics. Returns
 /// the parsed program or an error if there were parse errors.
 fn parse_source(source: &str, input: &str) -> Result<hew_parser::ast::Program, String> {
     let result = hew_parser::parse(source);
     if !result.errors.is_empty() {
         for err in &result.errors {
-            let hints: Vec<String> = err.hint.iter().cloned().collect();
-            match err.severity {
-                hew_parser::Severity::Warning => super::diagnostic::render_warning(
-                    source,
-                    input,
-                    &err.span,
-                    &err.message,
-                    &[],
-                    &hints,
-                ),
-                hew_parser::Severity::Error => super::diagnostic::render_diagnostic(
-                    source,
-                    input,
-                    &err.span,
-                    &err.message,
-                    &[],
-                    &hints,
-                ),
-            }
+            render_parse_diagnostic(source, input, err);
         }
         if result
             .errors
@@ -452,40 +462,24 @@ fn typecheck_program(
     let has_errors = !tco.errors.is_empty();
 
     for err in &tco.errors {
-        let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = err
-            .notes
-            .iter()
-            .map(|(span, msg)| super::diagnostic::DiagnosticNote {
-                span,
-                message: msg.as_str(),
-            })
-            .collect();
-        super::diagnostic::render_diagnostic(
+        super::diagnostic::render_diagnostic_with_raw_notes(
             source,
             input,
             &err.span,
             &err.message,
-            &notes,
+            &err.notes,
             &err.suggestions,
         );
     }
 
     // Render warnings (these don't block compilation).
     for warn in &tco.warnings {
-        let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = warn
-            .notes
-            .iter()
-            .map(|(span, msg)| super::diagnostic::DiagnosticNote {
-                span,
-                message: msg.as_str(),
-            })
-            .collect();
-        super::diagnostic::render_warning(
+        super::diagnostic::render_warning_with_raw_notes(
             source,
             input,
             &warn.span,
             &warn.message,
-            &notes,
+            &warn.notes,
             &warn.suggestions,
         );
     }
@@ -1365,29 +1359,7 @@ fn parse_and_resolve_file(
     if !result.errors.is_empty() {
         let display_path = canonical.display().to_string();
         for err in &result.errors {
-            let hints: Vec<String> = err.hint.iter().cloned().collect();
-            match err.severity {
-                hew_parser::Severity::Warning => {
-                    super::diagnostic::render_warning(
-                        &source,
-                        &display_path,
-                        &err.span,
-                        &err.message,
-                        &[],
-                        &hints,
-                    );
-                }
-                hew_parser::Severity::Error => {
-                    super::diagnostic::render_diagnostic(
-                        &source,
-                        &display_path,
-                        &err.span,
-                        &err.message,
-                        &[],
-                        &hints,
-                    );
-                }
-            }
+            render_parse_diagnostic(&source, &display_path, err);
         }
         if result
             .errors

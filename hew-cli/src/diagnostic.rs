@@ -94,6 +94,50 @@ pub fn render_warning(
     }
 }
 
+/// Render an error diagnostic where notes are provided as `(span, message)` pairs.
+///
+/// Convenience wrapper around [`render_diagnostic`] for callers that hold notes as
+/// raw `(Range<usize>, String)` tuples rather than [`DiagnosticNote`] slices.
+pub fn render_diagnostic_with_raw_notes(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    message: &str,
+    raw_notes: &[(Range<usize>, String)],
+    suggestions: &[String],
+) {
+    let notes: Vec<DiagnosticNote<'_>> = raw_notes
+        .iter()
+        .map(|(s, msg)| DiagnosticNote {
+            span: s,
+            message: msg.as_str(),
+        })
+        .collect();
+    render_diagnostic(source, filename, span, message, &notes, suggestions);
+}
+
+/// Render a warning diagnostic where notes are provided as `(span, message)` pairs.
+///
+/// Convenience wrapper around [`render_warning`] for callers that hold notes as
+/// raw `(Range<usize>, String)` tuples rather than [`DiagnosticNote`] slices.
+pub fn render_warning_with_raw_notes(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    message: &str,
+    raw_notes: &[(Range<usize>, String)],
+    suggestions: &[String],
+) {
+    let notes: Vec<DiagnosticNote<'_>> = raw_notes
+        .iter()
+        .map(|(s, msg)| DiagnosticNote {
+            span: s,
+            message: msg.as_str(),
+        })
+        .collect();
+    render_warning(source, filename, span, message, &notes, suggestions);
+}
+
 /// Render the source line and `^^^` underline for a span.
 fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     let lines: Vec<&str> = source.lines().collect();

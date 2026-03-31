@@ -1,0 +1,59 @@
+# LSAN suppressions for hew-codegen sanitizer runs.
+#
+# LLVM and MLIR intentionally retain global singletons for the lifetime of the
+# process.  These are one-shot allocations that are never freed; they are not
+# real leaks but they generate LSan reports when detect_leaks=1 is set.
+#
+# Format: leak:<substring-of-mangled-symbol-or-source-path>
+# LSAN matches each suppression as a substring against every frame in the
+# allocation's stack trace, so broad class/namespace prefixes are safe.
+#
+# Reference: https://llvm.org/docs/HowToBuildWithAddressSanitizer.html and
+# the LLVM project's own compiler-rt/test/lsan suppression files.
+
+# ── LLVM ManagedStatic / global singletons ────────────────────────────────
+# ManagedStatic<T> is the LLVM mechanism for on-demand global state; objects
+# are freed only via llvm_shutdown(), which our test binaries do not call.
+leak:llvm::ManagedStatic
+leak:ManagedStaticBase::RegisterManagedStatic
+
+# ── LLVM command-line option registration ─────────────────────────────────
+# cl::opt<>/cl::alias constructors register into a per-process global list.
+leak:llvm::cl::Option::addArgument
+leak:llvm::cl::opt<
+leak:llvm::cl::alias
+
+# ── LLVM target / backend initialisation ──────────────────────────────────
+# InitializeAllTargets* functions populate a static target registry.
+leak:llvm::InitializeAllTargets
+leak:llvm::InitializeAllTargetMCs
+leak:llvm::InitializeAllAsmPrinters
+leak:llvm::InitializeAllAsmParsers
+leak:llvm::TargetRegistry::RegisterTarget
+
+# ── LLVM pass registry ────────────────────────────────────────────────────
+leak:llvm::PassRegistry::getPassRegistry
+
+# ── MLIR context thread pool ──────────────────────────────────────────────
+# MLIRContext spins up an llvm::ThreadPool whose threads are joined but whose
+# bookkeeping structures outlive the join point visible to ASan.
+leak:mlir::MLIRContext::MLIRContext
+leak:llvm::ThreadPool::ThreadPool
+leak:llvm::ThreadPoolTaskGroup
+
+# ── MLIR dialect / attribute storage ─────────────────────────────────────
+# Dialect storage objects and attribute uniquing tables are arena-allocated
+# inside MLIRContext and freed with it, but leak-checking fires before the
+# context destructor runs in some translation-unit ordering scenarios.
+leak:mlir::StorageUniquer
+leak:mlir::detail::StorageUniquerImpl
+
+# ── MLIR pass pipeline infrastructure ────────────────────────────────────
+leak:mlir::PassManager::PassManager
+leak:mlir::OpPassManager
+
+# ── LLVM IR / bitcode infrastructure ─────────────────────────────────────
+# LLVMContext holds a number of type-uniquing caches released at destruction;
+# LSan can observe allocations made during context construction before
+# destruction fires.
+leak:llvm::LLVMContextImpl::LLVMContextImpl

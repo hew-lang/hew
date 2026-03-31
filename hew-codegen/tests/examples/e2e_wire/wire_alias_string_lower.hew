@@ -1,0 +1,26 @@
+// Test: string (lowercase) alias fields in a new-style #[wire] struct are
+// correctly encoded in binary and serialized in JSON.
+//
+// The old-style wire parser normalises "string"/"str" → "String", so this bug
+// only manifested through the new-style #[wire] struct syntax where field types
+// are taken verbatim from the TypeExpr.
+//
+// Before the fix, wireKindOf("string") returned Integer, causing:
+//   - Binary encode path: fell through all dispatch branches → field silently
+//     omitted from the wire buffer; always decoded back as null.
+//   - JSON to_json: used rtSetInt (treating the string pointer as an integer) →
+//     undefined output.
+#[wire]
+struct StringAlias {
+    label: string @1;
+    count: i32 @2;
+}
+
+fn main() {
+    let s = StringAlias { label: "hello", count: 3 };
+    println(s.to_json());
+    let buf = s.encode();
+    let s2 = StringAlias.decode(buf);
+    println(s2.label);
+    println(s2.count);
+}

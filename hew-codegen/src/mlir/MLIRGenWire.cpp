@@ -35,9 +35,9 @@ static WireJsonKind jsonKindOf(const std::string &ty) {
     return WireJsonKind::Bool;
   if (ty == "f32")
     return WireJsonKind::Float32;
-  if (ty == "f64")
+  if (ty == "f64" || ty == "float")
     return WireJsonKind::Float64;
-  if (ty == "String" || ty == "bytes")
+  if (ty == "String" || ty == "bytes" || ty == "string" || ty == "str")
     return WireJsonKind::String;
   return WireJsonKind::Integer;
 }
@@ -65,9 +65,9 @@ static WireKind wireKindOf(const std::string &ty) {
     return WireKind::Bool;
   if (ty == "f32")
     return WireKind::Float32;
-  if (ty == "f64")
+  if (ty == "f64" || ty == "float")
     return WireKind::Float64;
-  if (ty == "String")
+  if (ty == "String" || ty == "string" || ty == "str")
     return WireKind::String;
   if (ty == "bytes")
     return WireKind::Bytes;
@@ -78,9 +78,9 @@ static WireKind wireKindOf(const std::string &ty) {
 static std::string encodeFunc(const std::string &ty) {
   if (ty == "f32")
     return "hew_wire_encode_field_fixed32";
-  if (ty == "f64")
+  if (ty == "f64" || ty == "float")
     return "hew_wire_encode_field_fixed64";
-  if (ty == "String")
+  if (ty == "String" || ty == "string" || ty == "str")
     return "hew_wire_encode_field_string";
   if (ty == "bytes")
     return "hew_wire_encode_field_bytes";
@@ -259,7 +259,7 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
     fieldTypes.push_back(mlirTy);
     // Preserve Hew-level semantic type for owned-field detection.
     // wireTypeToMLIR maps String/bytes to !llvm.ptr, losing type info.
-    auto semanticTy = (field.ty == "String" || field.ty == "string")
+    auto semanticTy = (field.ty == "String" || field.ty == "string" || field.ty == "str")
                           ? mlir::Type(hew::StringRefType::get(&context))
                           : mlirTy;
     info.fields.push_back({field.name, mlirTy, semanticTy, fieldIdx, field.ty});

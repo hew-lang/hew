@@ -1,0 +1,19 @@
+// Test: float alias fields are correctly encoded in binary and serialized in JSON.
+//
+// Before the fix, wireKindOf("float") returned Integer, causing:
+//   - Binary encode/decode: field fell through all dispatch branches → silently
+//     omitted from the wire buffer; always decoded back as 0.0.
+//   - JSON to_json: used rtSetInt instead of rtSetFloat → wrong output.
+wire type FloatAlias {
+    val: float @1;
+    count: i32 @2;
+}
+
+fn main() {
+    let f = FloatAlias { val: 1.5, count: 7 };
+    println(f.to_json());
+    let buf = f.encode();
+    let f2 = FloatAlias.decode(buf);
+    println(f2.val);
+    println(f2.count);
+}

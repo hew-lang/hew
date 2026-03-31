@@ -372,6 +372,17 @@ pub unsafe extern "C" fn hew_select_first(
 }
 
 #[cfg(test)]
+pub(crate) unsafe fn hew_reply_channel_is_ready_for_test(ch: *mut HewReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+
+    // SAFETY: test callers pass a valid channel pointer and only read the
+    // atomic readiness flag; no ownership changes occur here.
+    unsafe { (*ch).ready.load(Ordering::Acquire) }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -1515,7 +1515,8 @@ mod tests {
     #[test]
     fn drain_and_free_unblocks_reply_waiter() {
         use crate::reply_channel::{
-            hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain, hew_reply_wait,
+            hew_reply_channel_free, hew_reply_channel_is_ready_for_test, hew_reply_channel_new,
+            hew_reply_channel_retain, hew_reply_wait_timeout,
         };
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1550,21 +1551,23 @@ mod tests {
             // life of the test because we hold the waiter-side reference.
             let ch_addr: usize = ch as usize;
 
-            // Waiter thread: blocks on hew_reply_wait then records the result.
+            // Waiter thread: waits with a timeout so a regression fails fast
+            // instead of hanging the test process until the job-level timeout.
             let waiter = thread::spawn(move || {
                 barrier_clone.wait();
                 // SAFETY: ch_addr encodes a valid HewReplyChannel pointer;
                 // single-reader guarantee holds since only this thread calls
-                // hew_reply_wait on this channel. Outer unsafe block covers
+                // hew_reply_wait_timeout on this channel. Outer unsafe block covers
                 // this closure.
                 let ch_ptr = ch_addr as *mut crate::reply_channel::HewReplyChannel;
-                let val = hew_reply_wait(ch_ptr);
+                let val = hew_reply_wait_timeout(ch_ptr, 1_000);
+                let observed_reply = hew_reply_channel_is_ready_for_test(ch_ptr);
                 // hew_msg_node_free sends an empty reply (null, 0), so val
                 // must be null.
                 let got_null = val.is_null();
                 // Release the waiter's reference (refs: 1→0 → freed).
                 hew_reply_channel_free(ch_ptr);
-                got_null
+                (got_null, observed_reply)
             });
 
             // Let the waiter reach hew_reply_wait before we tear down.
@@ -1576,8 +1579,11 @@ mod tests {
             // hew_msg_node_free which calls hew_reply() to unblock the waiter.
             hew_mailbox_free(mb);
 
-            // The waiter should complete promptly (well within 2 s).
-            let got_null = waiter.join().expect("waiter thread panicked");
+            let (got_null, observed_reply) = waiter.join().expect("waiter thread panicked");
+            assert!(
+                observed_reply,
+                "reply waiter timed out instead of observing the mailbox teardown reply"
+            );
             assert!(
                 got_null,
                 "reply waiter must receive a null/empty reply when mailbox is freed with a queued ask node"

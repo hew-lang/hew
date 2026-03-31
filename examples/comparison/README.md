@@ -41,6 +41,6 @@ hew build counter_service.hew -o counter-hew && ./counter-hew
 # Go
 go run counter_service.go
 
-# Rust (this directory is not a Cargo crate)
+# Rust (this directory is not a Cargo crate — rustc compiles it directly)
 rustc --edition=2021 counter_service.rs -o counter-rs && ./counter-rs
 ```

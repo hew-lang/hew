@@ -1,0 +1,58 @@
+// Test: String.clone() produces a distinct owned copy
+fn main() {
+    println("=== String Clone ===");
+
+    // Basic clone of a literal
+    let original = "hello";
+    let copy = original.clone();
+    println(copy);
+
+    // Clone from concat (heap-allocated source)
+    let cat = string_concat("foo", "bar");
+    let cat_copy = cat.clone();
+    println(cat_copy);
+
+    // Clone in a loop (each iteration gets an independent copy)
+    let words: Vec<String> = Vec::new();
+    words.push("alpha");
+    words.push("beta");
+    words.push("gamma");
+
+    let clones: Vec<String> = Vec::new();
+    for i in 0..words.len() {
+        clones.push(words[i].clone());
+    }
+    for i in 0..clones.len() {
+        println(clones[i]);
+    }
+
+    // Clone used in insertion sort (proper replacement for "" + s)
+    let names: Vec<String> = Vec::new();
+    names.push("charlie");
+    names.push("bravo");
+    names.push("alpha");
+
+    var i = 1;
+    while i < names.len() {
+        let key = names[i].clone();
+        let key_code = string_char_at(key, 0);
+        var j = i - 1;
+        while j >= 0 {
+            let a_code = string_char_at(names[j], 0);
+            if a_code > key_code {
+                names[j + 1] = names[j].clone();
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+        names[j + 1] = key;
+        i += 1;
+    }
+
+    for k in 0..names.len() {
+        println(names[k]);
+    }
+
+    println("PASS");
+}

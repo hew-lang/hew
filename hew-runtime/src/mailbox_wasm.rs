@@ -17,6 +17,9 @@ use std::sync::atomic::AtomicPtr;
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
 
+/// Key extractor used by coalescing mailboxes.
+pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
+
 // ── Conditional no_mangle ───────────────────────────────────────────────
 //
 // On wasm32 these functions replace the native mailbox symbols 1-for-1.
@@ -99,6 +102,9 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
 
 /// Free a [`HewMsgNode`] and its payload.
 ///
+/// If the node still owns an ask reply channel, it is completed with an
+/// empty reply before the node is freed so the waiter is not left hanging.
+///
 /// # Safety
 ///
 /// `node` must have been allocated by [`msg_node_alloc`] (or
@@ -110,14 +116,8 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
     }
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
-        // If a reply channel was set (ask pattern) but the message was never
-        // dispatched (e.g. actor stopped with messages in the queue), send an
-        // empty reply so the waiting caller of hew_actor_ask is unblocked.
         if !(*node).reply_channel.is_null() {
-            #[cfg(target_arch = "wasm32")]
-            crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
+            retire_reply_channel((*node).reply_channel);
             (*node).reply_channel = ptr::null_mut();
         }
         libc::free((*node).data);
@@ -155,6 +155,10 @@ pub struct HewMailboxWasm {
     capacity: i64,
     /// Policy applied when user-queue is at capacity.
     overflow: HewOverflowPolicy,
+    /// Optional key extractor used by [`HewOverflowPolicy::Coalesce`].
+    coalesce_key_fn: Option<HewCoalesceKeyFn>,
+    /// Fallback policy used when coalesce finds no matching key.
+    coalesce_fallback: HewOverflowPolicy,
     /// High-water mark: maximum `count` value observed.
     high_water_mark: i64,
     /// Whether the mailbox has been closed.
@@ -166,6 +170,168 @@ fn update_high_water_mark(mb: &mut HewMailboxWasm) {
     if mb.count > mb.high_water_mark {
         mb.high_water_mark = mb.count;
     }
+}
+
+fn normalize_coalesce_fallback(policy: HewOverflowPolicy) -> HewOverflowPolicy {
+    match policy {
+        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropOld,
+        other => other,
+    }
+}
+
+unsafe fn coalesce_message_key(
+    key_fn: Option<HewCoalesceKeyFn>,
+    msg_type: i32,
+    data: *mut c_void,
+    data_size: usize,
+) -> u64 {
+    if let Some(key_fn) = key_fn {
+        // SAFETY: caller guarantees key function and payload pointers are valid.
+        unsafe { key_fn(msg_type, data, data_size) }
+    } else {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "bit-pattern-preserving cast is fine for fallback msg_type keying"
+        )]
+        {
+            msg_type as u64
+        }
+    }
+}
+
+unsafe fn replace_node_payload(
+    node: *mut HewMsgNode,
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+) -> bool {
+    // SAFETY: `node` is a valid queued node exclusively owned by the mailbox.
+    unsafe {
+        let mut new_buf: *mut c_void = ptr::null_mut();
+        if data_size > 0 && !data.is_null() {
+            new_buf = libc::malloc(data_size);
+            if new_buf.is_null() {
+                return false;
+            }
+            libc::memcpy(new_buf, data, data_size);
+        }
+
+        libc::free((*node).data);
+        (*node).data = new_buf;
+        (*node).msg_type = msg_type;
+        (*node).data_size = data_size;
+    }
+    true
+}
+
+unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
+    if reply_channel.is_null() {
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: `reply_channel` is a live native reply channel owned by the
+    // mailbox and we are retiring it with an empty reply.
+    unsafe {
+        crate::reply_channel::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+    }
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: `reply_channel` is a live WASM reply channel owned by the mailbox
+    // and we are retiring it with an empty reply.
+    unsafe {
+        crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+    }
+}
+
+unsafe fn send_user_message(
+    mb: &mut HewMailboxWasm,
+    msg_type: i32,
+    data: *const c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+) -> i32 {
+    if mb.closed {
+        return HewError::ErrClosed as i32;
+    }
+
+    if mb.capacity > 0 && mb.count >= mb.capacity {
+        match mb.overflow {
+            HewOverflowPolicy::Block | HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => {
+                return HewError::ErrMailboxFull as i32;
+            }
+            HewOverflowPolicy::DropOld => {
+                if let Some(old) = mb.user_queue.pop_front() {
+                    // SAFETY: node was allocated by msg_node_alloc.
+                    unsafe { msg_node_free(old) };
+                    mb.count -= 1;
+                }
+            }
+            HewOverflowPolicy::Coalesce => {
+                // SAFETY: `data` validity guaranteed by caller.
+                let incoming_key = unsafe {
+                    coalesce_message_key(mb.coalesce_key_fn, msg_type, data.cast_mut(), size)
+                };
+                let found = mb
+                    .user_queue
+                    .iter()
+                    .find(|&&node| {
+                        // SAFETY: all queued nodes were allocated by msg_node_alloc.
+                        unsafe {
+                            coalesce_message_key(
+                                mb.coalesce_key_fn,
+                                (*node).msg_type,
+                                (*node).data,
+                                (*node).data_size,
+                            ) == incoming_key
+                        }
+                    })
+                    .copied();
+                if let Some(existing) = found {
+                    // SAFETY: `existing` points at a queued node still owned by
+                    // `mb`, so reading its reply-channel field is valid.
+                    let existing_reply_channel = unsafe { (*existing).reply_channel };
+                    // SAFETY: `existing` remains owned by the mailbox queue.
+                    let ok = unsafe { replace_node_payload(existing, msg_type, data, size) };
+                    if !ok {
+                        return HewError::ErrOom as i32;
+                    }
+                    // Preserve the queued node's reply_channel to mirror the
+                    // native mailbox contract for ask-style coalescing, but
+                    // retire any superseded incoming waiter immediately.
+                    if !reply_channel.is_null() && reply_channel != existing_reply_channel {
+                        // SAFETY: the incoming ask waiter is no longer queued.
+                        unsafe { retire_reply_channel(reply_channel) };
+                    }
+                    return HewError::Ok as i32;
+                }
+
+                match normalize_coalesce_fallback(mb.coalesce_fallback) {
+                    HewOverflowPolicy::Block
+                    | HewOverflowPolicy::DropNew
+                    | HewOverflowPolicy::Fail => {
+                        return HewError::ErrMailboxFull as i32;
+                    }
+                    HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
+                        if let Some(old) = mb.user_queue.pop_front() {
+                            // SAFETY: node was allocated by msg_node_alloc.
+                            unsafe { msg_node_free(old) };
+                            mb.count -= 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // SAFETY: `data` validity guaranteed by caller.
+    let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    // SAFETY: node was just allocated and is exclusively owned.
+    unsafe { (*node).reply_channel = reply_channel };
+    mb.user_queue.push_back(node);
+    mb.count += 1;
+    update_high_water_mark(mb);
+
+    HewError::Ok as i32
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
@@ -183,6 +349,8 @@ wasm_no_mangle! {
             count: 0,
             capacity: -1,
             overflow: HewOverflowPolicy::DropNew,
+            coalesce_key_fn: None,
+            coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
         }))
@@ -202,6 +370,8 @@ wasm_no_mangle! {
             count: 0,
             capacity: i64::from(capacity),
             overflow: HewOverflowPolicy::DropNew,
+            coalesce_key_fn: None,
+            coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
         }))
@@ -232,9 +402,41 @@ wasm_no_mangle! {
             count: 0,
             capacity: cap,
             overflow: policy,
+            coalesce_key_fn: None,
+            coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
         }))
+    }
+}
+
+wasm_no_mangle! {
+    /// Create a bounded WASM mailbox using [`HewOverflowPolicy::Coalesce`].
+    ///
+    /// # Safety
+    ///
+    /// Returned pointer must be freed with [`hew_mailbox_free`].
+    pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMailboxWasm {
+        // SAFETY: constructor forwards trusted parameters to the mailbox factory.
+        unsafe { hew_mailbox_new_with_policy(usize::try_from(capacity).unwrap_or(usize::MAX), HewOverflowPolicy::Coalesce) }
+    }
+}
+
+wasm_no_mangle! {
+    /// Configure coalescing behaviour for a mailbox.
+    ///
+    /// # Safety
+    ///
+    /// `mb` must be a valid mailbox pointer.
+    pub unsafe extern "C" fn hew_mailbox_set_coalesce_config(
+        mb: *mut HewMailboxWasm,
+        key_fn: Option<HewCoalesceKeyFn>,
+        fallback_policy: HewOverflowPolicy,
+    ) {
+        // SAFETY: caller guarantees `mb` is valid.
+        let mb = unsafe { &mut *mb };
+        mb.coalesce_key_fn = key_fn;
+        mb.coalesce_fallback = normalize_coalesce_fallback(fallback_policy);
     }
 }
 
@@ -249,7 +451,8 @@ wasm_no_mangle! {
     /// if the mailbox is closed.
     ///
     /// On WASM, `Block` degrades to `DropNew` because there is no way to
-    /// block a single-threaded runtime. `Coalesce` falls back to `DropOld`.
+    /// block a single-threaded runtime. `Coalesce` still replaces matching
+    /// queued messages and otherwise uses its configured fallback policy.
     ///
     /// # Panics
     ///
@@ -269,38 +472,8 @@ wasm_no_mangle! {
     ) -> i32 {
         // SAFETY: Caller guarantees `mb` is valid.
         let mb = unsafe { &mut *mb };
-
-        if mb.closed {
-            return HewError::ErrClosed as i32;
-        }
-
-        // Bounded capacity check.
-        if mb.capacity > 0 && mb.count >= mb.capacity {
-            match mb.overflow {
-                // Block degrades to DropNew on single-threaded WASM.
-                HewOverflowPolicy::Block
-                | HewOverflowPolicy::DropNew
-                | HewOverflowPolicy::Fail => {
-                    return HewError::ErrMailboxFull as i32;
-                }
-                HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
-                    // Pop the oldest user message, then push the new one.
-                    if let Some(old) = mb.user_queue.pop_front() {
-                        // SAFETY: node was allocated by msg_node_alloc.
-                        unsafe { msg_node_free(old) };
-                        mb.count -= 1;
-                    }
-                }
-            }
-        }
-
-        // SAFETY: `data` validity guaranteed by caller.
-        let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
-        mb.user_queue.push_back(node);
-        mb.count += 1;
-        update_high_water_mark(mb);
-
-        HewError::Ok as i32
+        // SAFETY: Caller guarantees payload validity.
+        unsafe { send_user_message(mb, msg_type, data.cast_const(), size, ptr::null_mut()) }
     }
 }
 
@@ -323,37 +496,8 @@ wasm_no_mangle! {
     ) -> i32 {
         // SAFETY: Caller guarantees `mb` is valid.
         let mb = unsafe { &mut *mb };
-
-        if mb.closed {
-            return HewError::ErrClosed as i32;
-        }
-
-        if mb.capacity > 0 && mb.count >= mb.capacity {
-            match mb.overflow {
-                HewOverflowPolicy::Block
-                | HewOverflowPolicy::DropNew
-                | HewOverflowPolicy::Fail => {
-                    return HewError::ErrMailboxFull as i32;
-                }
-                HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
-                    if let Some(old) = mb.user_queue.pop_front() {
-                        // SAFETY: node was allocated by msg_node_alloc.
-                        unsafe { msg_node_free(old) };
-                        mb.count -= 1;
-                    }
-                }
-            }
-        }
-
-        // SAFETY: `data` validity guaranteed by caller.
-        let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
-        // SAFETY: node was just allocated and is exclusively owned.
-        unsafe { (*node).reply_channel = reply_channel };
-        mb.user_queue.push_back(node);
-        mb.count += 1;
-        update_high_water_mark(mb);
-
-        HewError::Ok as i32
+        // SAFETY: Caller guarantees payload validity and reply-channel provenance.
+        unsafe { send_user_message(mb, msg_type, data.cast_const(), size, reply_channel) }
     }
 }
 
@@ -529,7 +673,8 @@ wasm_no_mangle! {
     /// # Safety
     ///
     /// `mb` must have been returned by [`hew_mailbox_new`],
-    /// [`hew_mailbox_new_bounded`], or [`hew_mailbox_new_with_policy`]
+    /// [`hew_mailbox_new_bounded`], [`hew_mailbox_new_with_policy`], or
+    /// [`hew_mailbox_new_coalesce`]
     /// and must not be used after this call.
     pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailboxWasm) {
         if mb.is_null() {
@@ -559,6 +704,36 @@ wasm_no_mangle! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct PriceUpdate {
+        symbol: u32,
+        price: i32,
+    }
+
+    unsafe extern "C" fn price_symbol_key(
+        _msg_type: i32,
+        data: *mut c_void,
+        data_size: usize,
+    ) -> u64 {
+        assert_eq!(data_size, size_of::<PriceUpdate>());
+        // SAFETY: tests only call this with valid `PriceUpdate` payloads.
+        let update = unsafe { &*data.cast::<PriceUpdate>() };
+        u64::from(update.symbol)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[repr(C)]
+    struct ReplyChannelPrefix {
+        refs: AtomicUsize,
+        ready: AtomicBool,
+        cancelled: AtomicBool,
+        value: *mut c_void,
+        value_size: usize,
+    }
 
     #[test]
     fn send_recv_roundtrip() {
@@ -877,6 +1052,172 @@ mod tests {
                 HewError::ErrMailboxFull as i32
             );
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_uses_configured_key_fn() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(2);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let first = PriceUpdate {
+                symbol: 7,
+                price: 10,
+            };
+            let second = PriceUpdate {
+                symbol: 9,
+                price: 20,
+            };
+            let replacement = PriceUpdate {
+                symbol: 7,
+                price: 99,
+            };
+
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    100,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    200,
+                    (&raw const second).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 2);
+
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    300,
+                    (&raw const replacement).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 2);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 300);
+            let payload = (*node).data.cast::<PriceUpdate>();
+            assert_eq!((*payload).symbol, 7);
+            assert_eq!((*payload).price, 99);
+            msg_node_free(node);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 200);
+            let payload = (*node).data.cast::<PriceUpdate>();
+            assert_eq!((*payload).symbol, 9);
+            assert_eq!((*payload).price, 20);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coalesce_send_with_reply_retires_superseded_incoming_waiter() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+
+            let first: i32 = 10;
+            let replacement: i32 = 77;
+            let existing_reply = crate::reply_channel::hew_reply_channel_new();
+            crate::reply_channel::hew_reply_channel_retain(existing_reply);
+            let incoming_reply = crate::reply_channel::hew_reply_channel_new();
+            crate::reply_channel::hew_reply_channel_retain(incoming_reply);
+
+            let existing_reply_ptr = existing_reply.cast::<c_void>();
+            let incoming_reply_ptr = incoming_reply.cast::<c_void>();
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>(),
+                    existing_reply_ptr,
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const replacement).cast_mut().cast(),
+                    size_of::<i32>(),
+                    incoming_reply_ptr,
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let incoming_state = incoming_reply.cast::<ReplyChannelPrefix>();
+            assert_eq!((*incoming_state).refs.load(Ordering::Acquire), 1);
+            assert!((*incoming_state).ready.load(Ordering::Acquire));
+            assert!((*incoming_state).value.is_null());
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 7);
+            assert_eq!(*((*node).data.cast::<i32>()), 77);
+            assert_eq!((*node).reply_channel, existing_reply_ptr);
+            msg_node_free(node);
+
+            crate::reply_channel::hew_reply_channel_free(existing_reply);
+            crate::reply_channel::hew_reply_channel_free(incoming_reply);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drop_old_retires_evicted_reply_waiter() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
+            let first: i32 = 10;
+            let second: i32 = 20;
+            let reply = crate::reply_channel::hew_reply_channel_new();
+            crate::reply_channel::hew_reply_channel_retain(reply);
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>(),
+                    reply.cast(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    2,
+                    (&raw const second).cast_mut().cast(),
+                    size_of::<i32>()
+                ),
+                HewError::Ok as i32
+            );
+
+            let reply_state = reply.cast::<ReplyChannelPrefix>();
+            assert_eq!((*reply_state).refs.load(Ordering::Acquire), 1);
+            assert!((*reply_state).ready.load(Ordering::Acquire));
+            assert!((*reply_state).value.is_null());
+
+            crate::reply_channel::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
         }
     }

@@ -568,6 +568,7 @@ unsafe fn replace_node_payload(
     msg_type: i32,
     data: *const c_void,
     data_size: usize,
+    reply_channel: *mut c_void,
 ) -> bool {
     // SAFETY: `node` is a valid queue node owned while mailbox lock is held.
     unsafe {
@@ -584,6 +585,13 @@ unsafe fn replace_node_payload(
         (*node).data = new_buf;
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
+        if (*node).reply_channel != reply_channel {
+            // Keep the queued node's reply channel stable, but retire the
+            // superseded incoming waiter so ask callers never hang.
+            if !reply_channel.is_null() {
+                crate::reply_channel::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+            }
+        }
     }
     true
 }
@@ -722,8 +730,9 @@ unsafe fn send_with_overflow(
                         .copied();
                     if let Some(existing) = found {
                         // SAFETY: `existing` is valid; replace its payload.
-                        let ok =
-                            unsafe { replace_node_payload(existing, msg_type, data, data_size) };
+                        let ok = unsafe {
+                            replace_node_payload(existing, msg_type, data, data_size, reply_channel)
+                        };
                         if !ok {
                             return SendOutcome::Oom;
                         }

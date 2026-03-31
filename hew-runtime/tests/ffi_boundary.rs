@@ -1230,10 +1230,16 @@ mod mailbox_policies {
 
 mod coalesce_tests {
     use std::ffi::c_void;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use hew_runtime::mailbox::{
         hew_mailbox_free, hew_mailbox_len, hew_mailbox_new_coalesce, hew_mailbox_send,
-        hew_mailbox_try_push, hew_mailbox_try_recv, hew_msg_node_free,
+        hew_mailbox_send_with_reply, hew_mailbox_try_push, hew_mailbox_try_recv, hew_msg_node_free,
+    };
+    use hew_runtime::reply_channel::{
+        hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain, hew_reply_wait,
+        hew_reply_wait_timeout, hew_select_first, HewReplyChannel,
     };
 
     #[test]
@@ -1346,6 +1352,91 @@ mod coalesce_tests {
             assert_eq!(*((*node).data.cast::<i32>()), 77);
             hew_msg_node_free(node);
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_preserves_original_reply_channel_and_retires_incoming_waiter() {
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            let ch1 = hew_reply_channel_new();
+            let ch2 = hew_reply_channel_new();
+            assert!(!ch1.is_null());
+            assert!(!ch2.is_null());
+
+            // Mirror ask-style ownership: the caller keeps one reference while
+            // the queued message holds a sender-side reference until it is
+            // replied or retired.
+            hew_reply_channel_retain(ch1);
+            hew_reply_channel_retain(ch2);
+
+            let (tx, rx) = mpsc::channel();
+            let waiter_ch2 = ch2 as usize;
+            let waiter = std::thread::spawn(move || {
+                let reply = hew_reply_wait(waiter_ch2 as *mut HewReplyChannel);
+                let is_null = reply.is_null();
+                if !reply.is_null() {
+                    libc::free(reply);
+                }
+                tx.send(is_null)
+                    .expect("superseded waiter result should send");
+            });
+
+            let v1: i32 = 10;
+            let v2: i32 = 99;
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    1,
+                    (&raw const v1).cast_mut().cast(),
+                    size_of::<i32>(),
+                    ch1.cast(),
+                ),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    1,
+                    (&raw const v2).cast_mut().cast(),
+                    size_of::<i32>(),
+                    ch2.cast(),
+                ),
+                0
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            assert_eq!(
+                rx.recv_timeout(Duration::from_millis(200)),
+                Ok(true),
+                "coalescing should retire the superseded incoming waiter immediately"
+            );
+            waiter
+                .join()
+                .expect("superseded waiter thread should finish");
+
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 1);
+            assert_eq!(*((*node).data.cast::<i32>()), 99);
+            assert_eq!(
+                (*node).reply_channel.cast::<HewReplyChannel>(),
+                ch1,
+                "the surviving coalesced message must preserve the original queued reply channel"
+            );
+            hew_msg_node_free(node);
+
+            let mut ready = [ch1];
+            assert_eq!(
+                hew_select_first(ready.as_mut_ptr(), 1, 0),
+                0,
+                "freeing the surviving coalesced node should still resolve the original waiter"
+            );
+            assert!(hew_reply_wait_timeout(ch1, 0).is_null());
+
+            hew_reply_channel_free(ch1);
+            hew_reply_channel_free(ch2);
             hew_mailbox_free(mb);
         }
     }

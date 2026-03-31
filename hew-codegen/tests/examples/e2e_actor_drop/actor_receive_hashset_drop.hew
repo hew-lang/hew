@@ -1,0 +1,23 @@
+// Regression: actor receive handler with HashSet<String> parameter must
+// register the param for drop so hew_hashset_free is called at scope exit.
+// Before the fix the handler leaked the HashSet (sender relinquishes
+// ownership but the receiver never freed it).  With ASan this shows as a
+// leak; without it the allocation silently escapes.
+
+actor Filter {
+    receive fn check(allowed: HashSet<String>) {
+        println(allowed.contains("ok"));
+        println(allowed.contains("no"));
+        println(allowed.len());
+        // `allowed` is freed here via hew_hashset_free (registered drop)
+    }
+}
+
+fn main() {
+    let f = spawn Filter;
+    let allowed: HashSet<String> = HashSet::new();
+    allowed.insert("ok");
+    allowed.insert("yes");
+    f.check(allowed);
+    sleep_ms(50);
+}

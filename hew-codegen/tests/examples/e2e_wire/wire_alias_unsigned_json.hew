@@ -1,0 +1,26 @@
+// Test: unsigned alias types (uint, byte, char) are correctly included in
+// binary wire encoding and produce correct JSON output.
+//
+// Before the predicate fix:
+//   - `byte`, `char`, and `uint` were absent from isVarintType so those fields
+//     were silently skipped from binary encoding — they always decoded to 0.
+//   - `byte` and `char` were absent from isUnsignedWireType so JSON would
+//     sign-extend values instead of zero-extending them.
+//
+// Values are chosen < 128 to isolate the isVarintType/isUnsignedWireType bug
+// from the unrelated u8-struct-storage sign-extension issue.
+#[wire]
+struct Unsigned {
+    a: byte @1;
+    b: char @2;
+    c: uint @3;
+}
+
+fn main() {
+    let u = Unsigned { a: 100, b: 'A', c: 300 };
+    println(u.to_json());
+    let buf = u.encode();
+    let u2 = Unsigned.decode(buf);
+    println(u2.a);
+    println(u2.c);
+}

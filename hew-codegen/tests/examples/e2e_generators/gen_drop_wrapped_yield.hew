@@ -12,6 +12,11 @@
 //
 // With the fix the generator only suspends; the caller holds the sole live
 // Token inside the Item wrapper and drops it when it leaves scope.
+//
+// The caller unpacks each Slot value and stores the extracted Token id in a
+// let-binding so that drops fire in the usual let-scope (LIFO) order.
+// Spurious drops in the generator would print "drop N" before "N"; correct
+// behaviour prints all values first, drops last.
 
 type Token {
     id: int;
@@ -29,6 +34,13 @@ enum Slot {
     Empty;
 }
 
+fn unwrap_slot(s: Slot) -> Token {
+    match s {
+        Item(t) => t,
+        Empty => Token { id: -1 },
+    }
+}
+
 gen fn slotted_tokens(n: int) -> Slot {
     var i = 0;
     loop {
@@ -41,20 +53,10 @@ gen fn slotted_tokens(n: int) -> Slot {
 
 fn main() -> int {
     let g = slotted_tokens(2);
-
-    match g.next() {
-        Item(t) => {
-            println(t.id);
-        },
-        Empty => {},
-    }
-
-    match g.next() {
-        Item(t) => {
-            println(t.id);
-        },
-        Empty => {},
-    }
-
+    let t1 = unwrap_slot(g.next());
+    println(t1.id);
+    let t2 = unwrap_slot(g.next());
+    println(t2.id);
+    // t2 drops first (LIFO), then t1
     return 0;
 }

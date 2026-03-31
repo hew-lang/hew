@@ -2,7 +2,7 @@
 //!
 //! Pure Hew implementations of common functional-style operations.
 //! Since Hew does not yet have a full Iterator trait, these are
-//! specialised to `Vec<int>`.
+//! specialised per element type: `Vec<int>`, `Vec<String>`, and `Vec<f64>`.
 //!
 //! # Examples
 //!
@@ -136,6 +136,235 @@ pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
 /// ```
 pub fn sum(v: Vec<int>) -> int {
     var total: int = 0;
+    for i in 0..v.len() {
+        total = total + v.get(i);
+    }
+    total
+}
+
+// ── String helpers ────────────────────────────────────────────────────────
+
+/// Apply `f` to every element and return a new vector of results.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("hello");
+/// v.push("world");
+/// let shouted = iter.map_str(v, (s: String) => s + "!");
+/// // shouted == ["hello!", "world!"]
+/// ```
+pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
+    let out: Vec<String> = Vec::new();
+    for i in 0..v.len() {
+        out.push(f(v.get(i)));
+    }
+    out
+}
+
+/// Return a new vector containing only elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("foo");
+/// v.push("bar");
+/// v.push("baz");
+/// let bs = iter.filter_str(v, (s: String) => s.starts_with("b"));
+/// // bs == ["bar", "baz"]
+/// ```
+pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
+    let out: Vec<String> = Vec::new();
+    for i in 0..v.len() {
+        let val = v.get(i);
+        if f(val) {
+            out.push(val);
+        }
+    }
+    out
+}
+
+/// Left-fold: accumulate all elements starting from `init`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("a");
+/// v.push("b");
+/// v.push("c");
+/// let joined = iter.fold_str(v, "", (acc: String, s: String) => acc + s);
+/// // joined == "abc"
+/// ```
+pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -> String {
+    var acc = init;
+    for i in 0..v.len() {
+        acc = f(acc, v.get(i));
+    }
+    acc
+}
+
+/// Return `true` if `f` returns `true` for at least one element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("foo");
+/// v.push("bar");
+/// println(iter.any_str(v, (s: String) => s == "bar"));  // true
+/// println(iter.any_str(v, (s: String) => s == "baz"));  // false
+/// ```
+pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return `true` if `f` returns `true` for every element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("foo");
+/// v.push("bar");
+/// println(iter.all_str(v, (s: String) => s.len() == 3));  // true
+/// println(iter.all_str(v, (s: String) => s == "foo"));    // false
+/// ```
+pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) == false {
+            return false;
+        }
+    }
+    true
+}
+
+// ── f64 helpers ───────────────────────────────────────────────────────────
+
+/// Apply `f` to every element and return a new vector of results.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.0);
+/// let doubled = iter.map_f64(v, (x: f64) => x * 2.0);
+/// // doubled == [2.0, 4.0]
+/// ```
+pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
+    let out: Vec<f64> = Vec::new();
+    for i in 0..v.len() {
+        out.push(f(v.get(i)));
+    }
+    out
+}
+
+/// Return a new vector containing only elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.5);
+/// v.push(3.0);
+/// let big = iter.filter_f64(v, (x: f64) => x > 2.0);
+/// // big == [2.5, 3.0]
+/// ```
+pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
+    let out: Vec<f64> = Vec::new();
+    for i in 0..v.len() {
+        let val = v.get(i);
+        if f(val) {
+            out.push(val);
+        }
+    }
+    out
+}
+
+/// Left-fold: accumulate all elements starting from `init`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.0);
+/// v.push(3.0);
+/// let total = iter.fold_f64(v, 0.0, (acc: f64, x: f64) => acc + x);
+/// // total == 6.0
+/// ```
+pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
+    var acc = init;
+    for i in 0..v.len() {
+        acc = f(acc, v.get(i));
+    }
+    acc
+}
+
+/// Return `true` if `f` returns `true` for at least one element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.0);
+/// v.push(3.0);
+/// println(iter.any_f64(v, (x: f64) => x > 2.5));  // true
+/// println(iter.any_f64(v, (x: f64) => x > 9.0));  // false
+/// ```
+pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return `true` if `f` returns `true` for every element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.0);
+/// v.push(3.0);
+/// println(iter.all_f64(v, (x: f64) => x > 0.0));  // true
+/// println(iter.all_f64(v, (x: f64) => x > 2.0));  // false
+/// ```
+pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) == false {
+            return false;
+        }
+    }
+    true
+}
+
+/// Return the sum of all elements.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.0);
+/// v.push(2.5);
+/// v.push(3.0);
+/// println(iter.sum_f64(v));  // 6.5
+/// ```
+pub fn sum_f64(v: Vec<f64>) -> f64 {
+    var total: f64 = 0.0;
     for i in 0..v.len() {
         total = total + v.get(i);
     }

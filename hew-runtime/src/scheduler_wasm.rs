@@ -1132,10 +1132,35 @@ mod tests {
 
     // ── Tests for Bug #1 and Bug #2 fixes ───────────────────────────────
 
+    #[cfg(target_arch = "wasm32")]
     extern "C" {
         fn hew_mailbox_new() -> *mut c_void;
         fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
         fn hew_mailbox_free(mb: *mut c_void);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn hew_mailbox_new() -> *mut c_void {
+        // SAFETY: native test runs use the wasm mailbox implementation to
+        // match scheduler_wasm's test-only receive wrappers.
+        unsafe { crate::mailbox_wasm::hew_mailbox_new().cast() }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn hew_mailbox_send(
+        mb: *mut c_void,
+        msg_type: i32,
+        data: *mut c_void,
+        size: usize,
+    ) -> i32 {
+        // SAFETY: native test runs pass a mailbox allocated by mailbox_wasm.
+        unsafe { crate::mailbox_wasm::hew_mailbox_send(mb.cast(), msg_type, data, size) }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn hew_mailbox_free(mb: *mut c_void) {
+        // SAFETY: native test runs pass a mailbox allocated by mailbox_wasm.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb.cast()) }
     }
 
     fn stub_actor_with_id(id: u64) -> HewActor {

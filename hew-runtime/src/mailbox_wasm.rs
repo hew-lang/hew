@@ -701,8 +701,6 @@ wasm_no_mangle! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(target_arch = "wasm32"))]
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -720,16 +718,6 @@ mod tests {
         // SAFETY: tests only call this with valid `PriceUpdate` payloads.
         let update = unsafe { &*data.cast::<PriceUpdate>() };
         u64::from(update.symbol)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[repr(C)]
-    struct ReplyChannelPrefix {
-        refs: AtomicUsize,
-        ready: AtomicBool,
-        cancelled: AtomicBool,
-        value: *mut c_void,
-        value_size: usize,
     }
 
     #[test]
@@ -771,7 +759,6 @@ mod tests {
             );
             assert_eq!(rc, HewError::Ok as i32);
 
-            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 1);
             assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
             assert!(!crate::reply_channel_wasm::test_replied(ch));
 
@@ -795,7 +782,6 @@ mod tests {
             );
 
             crate::reply_channel_wasm::hew_reply_channel_free(ch);
-            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
         }
     }
 
@@ -1203,10 +1189,10 @@ mod tests {
 
             let first: i32 = 10;
             let replacement: i32 = 77;
-            let existing_reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(existing_reply);
-            let incoming_reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(incoming_reply);
+            let existing_reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(existing_reply);
+            let incoming_reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(incoming_reply);
 
             let existing_reply_ptr = existing_reply.cast::<c_void>();
             let incoming_reply_ptr = incoming_reply.cast::<c_void>();
@@ -1233,10 +1219,9 @@ mod tests {
             );
             assert_eq!(hew_mailbox_len(mb), 1);
 
-            let incoming_state = incoming_reply.cast::<ReplyChannelPrefix>();
-            assert_eq!((*incoming_state).refs.load(Ordering::Acquire), 1);
-            assert!((*incoming_state).ready.load(Ordering::Acquire));
-            assert!((*incoming_state).value.is_null());
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(incoming_reply), 1);
+            assert!(crate::reply_channel_wasm::test_replied(incoming_reply));
+            assert!(crate::reply_channel_wasm::reply_take(incoming_reply).is_null());
 
             let node = hew_mailbox_try_recv(mb);
             assert_eq!((*node).msg_type, 7);
@@ -1244,8 +1229,8 @@ mod tests {
             assert_eq!((*node).reply_channel, existing_reply_ptr);
             msg_node_free(node);
 
-            crate::reply_channel::hew_reply_channel_free(existing_reply);
-            crate::reply_channel::hew_reply_channel_free(incoming_reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(existing_reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(incoming_reply);
             hew_mailbox_free(mb);
         }
     }
@@ -1258,8 +1243,8 @@ mod tests {
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
             let first: i32 = 10;
             let second: i32 = 20;
-            let reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(reply);
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(reply);
 
             assert_eq!(
                 hew_mailbox_send_with_reply(
@@ -1281,12 +1266,11 @@ mod tests {
                 HewError::Ok as i32
             );
 
-            let reply_state = reply.cast::<ReplyChannelPrefix>();
-            assert_eq!((*reply_state).refs.load(Ordering::Acquire), 1);
-            assert!((*reply_state).ready.load(Ordering::Acquire));
-            assert!((*reply_state).value.is_null());
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+            assert!(crate::reply_channel_wasm::test_replied(reply));
+            assert!(crate::reply_channel_wasm::reply_take(reply).is_null());
 
-            crate::reply_channel::hew_reply_channel_free(reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
         }
     }

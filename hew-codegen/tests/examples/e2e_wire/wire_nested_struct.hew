@@ -1,29 +1,32 @@
-// Test: nested wire struct field encode/decode roundtrip
+// Test: nested wire struct — inner type declared before outer.
+// Exercises to_json, from_json, binary encode/decode roundtrip.
 #[wire]
-struct Inner {
+struct Point {
     x: i32,
     y: i32,
 }
 
 #[wire]
-struct Outer {
-    label: String,
-    point: Inner,
-    count: i32,
+struct Segment {
+    start: Point,
+    end: Point,
 }
 
 fn main() {
-    let inner = Inner { x: 10, y: 20 };
-    let outer = Outer { label: "test", point: inner, count: 42 };
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 3, y: 4 };
+    let seg = Segment { start: p1, end: p2 };
 
-    // Binary roundtrip: encode → decode
-    let buf = outer.encode();
-    let decoded = Outer.decode(buf);
+    // JSON serialization
+    let json = seg.to_json();
+    println(json);
 
-    // Verify scalar field
-    println(decoded.count);
+    // JSON roundtrip
+    let seg2 = Segment.from_json(json);
+    println(seg2.to_json());
 
-    // Verify nested struct fields via JSON
-    let j = decoded.to_json();
-    println(j);
+    // Binary roundtrip
+    let buf = seg.encode();
+    let seg3 = Segment.decode(buf);
+    println(seg3.to_json());
 }

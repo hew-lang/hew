@@ -1,0 +1,28 @@
+// Test: nested wire struct — outer type declared before inner (reverse order).
+// Verifies that declaration order does not affect correctness.
+#[wire]
+struct Envelope {
+    inner: Payload,
+}
+
+#[wire]
+struct Payload {
+    value: i32,
+    label: String,
+}
+
+fn main() {
+    let p = Payload { value: 42, label: "hello" };
+    let e = Envelope { inner: p };
+
+    // JSON roundtrip
+    let json = e.to_json();
+    println(json);
+    let e2 = Envelope.from_json(json);
+    println(e2.to_json());
+
+    // Binary roundtrip
+    let buf = e.encode();
+    let e3 = Envelope.decode(buf);
+    println(e3.to_json());
+}

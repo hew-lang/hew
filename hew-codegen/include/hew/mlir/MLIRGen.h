@@ -112,6 +112,9 @@ private:
   /// Pre-register wire struct type with wire-aware field types so that actor
   /// registration (pass 1e) can resolve wire struct parameter types.
   void preRegisterWireStructType(const ast::WireDecl &decl);
+  /// Pre-declare (body-less) helper functions for a wire struct so that outer
+  /// wire structs can reference them regardless of declaration order.
+  void predeclareWireHelpers(const ast::WireDecl &decl);
   /// Generate mangled method wrappers for wire types so that method dispatch
   /// (o.to_json(), Point.from_json()) works through the standard struct path.
   void generateWireMethodWrappers(const ast::WireDecl &decl);

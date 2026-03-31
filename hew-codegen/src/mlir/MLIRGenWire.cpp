@@ -43,17 +43,19 @@ static WireJsonKind jsonKindOf(const std::string &ty) {
 }
 
 /// Map a wire type name to the MLIR type used for the field value.
+/// Includes Hew type aliases (int, uint, float, etc.) for correctness.
 static mlir::Type wireTypeToMLIR(mlir::OpBuilder &builder, const std::string &ty) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  if (ty == "i64" || ty == "u64")
+  if (ty == "i64" || ty == "u64" || ty == "int" || ty == "Int" || ty == "uint" ||
+      ty == "duration" || ty == "usize" || ty == "isize")
     return builder.getI64Type();
   if (ty == "f32")
     return builder.getF32Type();
-  if (ty == "f64")
+  if (ty == "f64" || ty == "float")
     return builder.getF64Type();
-  if (ty == "String" || ty == "bytes")
+  if (ty == "String" || ty == "bytes" || ty == "string" || ty == "str")
     return ptrType;
-  return builder.getI32Type(); // i32, u32, i16, u16, i8, u8, bool
+  return builder.getI32Type(); // i32, u32, i16, u16, i8, u8, bool, byte, char
 }
 
 enum class WireKind { Bool, Float32, Float64, String, Bytes, Integer };
@@ -103,20 +105,30 @@ static bool isVarintType(const std::string &ty) {
 /// Check if a wire type name is a primitive scalar wire type.
 /// Type names that are NOT primitives are treated as nested wire struct
 /// references and require a struct-type lookup via structTypes.
+/// Includes Hew type aliases so they are not misclassified as struct names.
 static bool isWirePrimitiveType(const std::string &ty) {
   return ty == "bool" || ty == "i8" || ty == "u8" || ty == "i16" || ty == "u16" ||
          ty == "i32" || ty == "u32" || ty == "i64" || ty == "u64" ||
-         ty == "f32" || ty == "f64" || ty == "String" || ty == "bytes";
+         ty == "f32" || ty == "f64" || ty == "String" || ty == "bytes" ||
+         // Hew type aliases:
+         ty == "int" || ty == "Int" || ty == "uint" || ty == "float" ||
+         ty == "byte" || ty == "char" || ty == "duration" || ty == "usize" || ty == "isize" ||
+         ty == "string" || ty == "str";
 }
 
-/// Resolve the MLIR type for a wire field, falling back to a struct lookup
-/// for non-primitive type names (i.e. nested wire struct references).
+/// Resolve the MLIR type for a wire field.  For non-primitive type names
+/// (user-defined wire struct references), returns a (possibly forward-declared)
+/// LLVM identified struct type so that reverse-order declarations work: MLIR
+/// identified structs are mutable handles whose body is filled in later by
+/// preRegisterWireStructType.
 static mlir::Type resolveWireFieldType(mlir::OpBuilder &builder, const std::string &ty,
                                        const std::unordered_map<std::string, StructTypeInfo> &st) {
   if (!isWirePrimitiveType(ty)) {
     auto it = st.find(ty);
     if (it != st.end())
       return it->second.mlirType;
+    // Not yet registered (reverse-order decl): return forward-declared identified struct.
+    return mlir::LLVM::LLVMStructType::getIdentified(builder.getContext(), ty);
   }
   return wireTypeToMLIR(builder, ty);
 }
@@ -244,6 +256,52 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
   if (!info.mlirType.isInitialized())
     (void)info.mlirType.setBody(fieldTypes, /*isPacked=*/false);
   structTypes[declName] = info;
+}
+
+/// Emit forward declarations (no body) for all six helper functions of a wire
+/// struct so that encode/decode/JSON/YAML of outer structs can reference helpers
+/// for inner structs regardless of declaration order.
+void MLIRGen::predeclareWireHelpers(const ast::WireDecl &decl) {
+  if (decl.kind != ast::WireDeclKind::Struct)
+    return;
+
+  const auto &name = decl.name;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i64Type = builder.getI64Type();
+
+  // The struct type may not have its body set yet if this runs before
+  // preRegisterWireStructType for this decl; getIdentified gives a stable
+  // forward-declared handle that resolves once setBody is called later.
+  auto structMlirTy = mlir::LLVM::LLVMStructType::getIdentified(&context, name);
+
+  // Collect field types for the encode/to_json/to_yaml signatures.
+  llvm::SmallVector<mlir::Type, 8> fieldTypes;
+  for (const auto &field : decl.fields) {
+    fieldTypes.push_back(resolveWireFieldType(builder, field.ty, structTypes));
+  }
+
+  auto predeclare = [&](llvm::StringRef fnName, mlir::FunctionType fnType) {
+    if (!module.lookupSymbol<mlir::func::FuncOp>(fnName)) {
+      auto savedIP = builder.saveInsertionPoint();
+      builder.setInsertionPointToEnd(module.getBody());
+      auto fn = mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), fnName, fnType);
+      fn.setPrivate();
+      builder.restoreInsertionPoint(savedIP);
+    }
+  };
+
+  predeclare(name + "_encode",
+             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_decode",
+             mlir::FunctionType::get(&context, {ptrType, i64Type}, {structMlirTy}));
+  predeclare(name + "_to_json",
+             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_from_json",
+             mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
+  predeclare(name + "_to_yaml",
+             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_from_yaml",
+             mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
 }
 
 void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {

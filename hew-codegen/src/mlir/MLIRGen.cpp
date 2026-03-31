@@ -2564,6 +2564,24 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
 
   // Pass 1h: Generate wire declarations (encode/decode/json/yaml functions)
   // so wire struct/enum types exist before extern signature conversion.
+  //
+  // Pass 1h0: Pre-declare all wire struct helper function signatures (no bodies)
+  // so that nested wire struct codegens can find inner struct helpers regardless
+  // of declaration order.  generateWireDecl erases and re-creates them with full
+  // bodies in the second sub-pass below.
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
+      predeclareWireHelpers(*wd);
+    } else if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
+      if (td->wire.has_value()) {
+        auto wd = wireMetadataToWireDecl(*td);
+        predeclareWireHelpers(wd);
+      }
+    }
+  });
+
+  // Pass 1h1: Generate full wire function bodies.
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
@@ -2759,6 +2777,7 @@ void MLIRGen::generateItem(const ast::Item &item, std::optional<mlir::Location> 
   } else if (auto *ad = std::get_if<ast::ActorDecl>(&item.kind)) {
     generateActorDecl(*ad);
   } else if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
+    predeclareWireHelpers(*wd);
     generateWireDecl(*wd);
   } else if (std::holds_alternative<ast::ImportDecl>(item.kind)) {
     // Imports are processed in pass 0; nothing to do here.

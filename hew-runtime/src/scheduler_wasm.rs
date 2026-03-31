@@ -160,10 +160,6 @@ static mut INITIALIZED: bool = false;
 /// Whether an actor is currently being activated (for `active_workers` metric).
 static mut ACTIVATING: bool = false;
 
-/// The actor currently being dispatched (WASM equivalent of the native
-/// thread-local `CURRENT_ACTOR`).
-static mut CURRENT_ACTOR: *mut HewActor = std::ptr::null_mut();
-
 /// Saved arena pointer during activation.
 static mut PREV_ARENA: *mut c_void = std::ptr::null_mut();
 
@@ -387,10 +383,28 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         _ => base_budget,
     };
 
+    // Save outer activation state so that nested activations (e.g. a dispatch
+    // handler calling hew_actor_ask → hew_sched_run → activate_actor_wasm) do
+    // not destroy the outer actor's view of the world (Bug #2: reentrancy fix).
+    // SAFETY: Single-threaded; no data races possible.
+    let saved_activating: bool = unsafe { ACTIVATING };
+    // SAFETY: Single-threaded; no data races possible.
+    let saved_prev_arena: *mut c_void = unsafe { PREV_ARENA };
+    // SAFETY: Single-threaded; no data races possible.
+    let saved_reply_channel: *mut c_void = unsafe { CURRENT_REPLY_CHANNEL };
+
+    // Register this actor in the canonical current-actor slot that actor.rs
+    // self APIs (hew_actor_self, hew_actor_self_pid, hew_actor_self_stop) read.
+    // Returns the previous slot value so we can restore it on exit (Bug #1 fix).
+    // SAFETY: actor is valid; the cast is safe because scheduler_wasm::HewActor
+    // and crate::actor::HewActor have identical C ABI layouts, verified by the
+    // compile-time offset_of! assertions above.
+    let prev_actor =
+        crate::actor::set_current_actor(actor.cast::<c_void>().cast::<crate::actor::HewActor>());
+
     // SAFETY: Single-threaded global state access.
     unsafe {
         ACTIVATING = true;
-        CURRENT_ACTOR = actor;
         PREV_ARENA = std::ptr::null_mut();
     }
 
@@ -447,12 +461,14 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         }
     }
 
-    // Restore global state.
+    // Restore per-activation globals so the outer activation (if any) sees its
+    // own actor, arena, and reply channel again (Bug #1 + Bug #2 fix).
+    crate::actor::set_current_actor(prev_actor);
     // SAFETY: Single-threaded global state access.
     unsafe {
-        CURRENT_ACTOR = std::ptr::null_mut();
-        PREV_ARENA = std::ptr::null_mut();
-        ACTIVATING = false;
+        PREV_ARENA = saved_prev_arena;
+        CURRENT_REPLY_CHANNEL = saved_reply_channel;
+        ACTIVATING = saved_activating;
         TASKS_COMPLETED += 1;
     }
 
@@ -674,7 +690,10 @@ mod tests {
             ptr::addr_of_mut!(RUN_QUEUE).write(None);
             ptr::addr_of_mut!(INITIALIZED).write(false);
             ptr::addr_of_mut!(ACTIVATING).write(false);
-            ptr::addr_of_mut!(CURRENT_ACTOR).write(ptr::null_mut());
+            // Reset the canonical current-actor slot (CURRENT_ACTOR_WASM on
+            // wasm32, thread-local on native) rather than the removed
+            // scheduler-local CURRENT_ACTOR static.
+            crate::actor::set_current_actor(ptr::null_mut());
             ptr::addr_of_mut!(PREV_ARENA).write(ptr::null_mut());
             ptr::addr_of_mut!(TASKS_SPAWNED).write(0);
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
@@ -947,6 +966,177 @@ mod tests {
         hew_sched_run();
         assert_eq!(hew_sched_metrics_global_queue_len(), 0);
 
+        hew_sched_shutdown();
+    }
+
+    // ── Tests for Bug #1 and Bug #2 fixes ───────────────────────────────
+
+    extern "C" {
+        fn hew_mailbox_new() -> *mut c_void;
+        fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
+        fn hew_mailbox_free(mb: *mut c_void);
+    }
+
+    fn stub_actor_with_id(id: u64) -> HewActor {
+        let mut a = stub_actor();
+        a.id = id;
+        a
+    }
+
+    // Dispatch callback that records hew_actor_current_id() into a static.
+    static DISPATCH_SAW_ACTOR_ID: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(-999);
+
+    unsafe extern "C" fn dispatch_record_current_id(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        let id = crate::actor::hew_actor_current_id();
+        DISPATCH_SAW_ACTOR_ID.store(id, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Bug #1 regression: `hew_actor_self` / `hew_actor_current_id` must return the
+    /// dispatching actor's own ID during WASM dispatch, not -1 / null.
+    ///
+    /// Before the fix, `scheduler_wasm` set its own `CURRENT_ACTOR` slot while
+    /// actor.rs self APIs read `CURRENT_ACTOR_WASM` — two different statics —
+    /// so self APIs always saw null / returned -1.
+    #[test]
+    fn self_api_sees_current_actor_during_dispatch() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // SAFETY: hew_mailbox_new has no preconditions; returns an owned pointer.
+        let mb = unsafe { hew_mailbox_new() };
+        assert!(!mb.is_null(), "mailbox allocation failed");
+
+        let mut actor = stub_actor_with_id(42);
+        actor.dispatch = Some(dispatch_record_current_id);
+        actor.mailbox = mb;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // SAFETY: mb is a valid mailbox pointer; data is null with size 0.
+        unsafe { hew_mailbox_send(mb, 0, ptr::null_mut(), 0) };
+
+        DISPATCH_SAW_ACTOR_ID.store(-999, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        hew_sched_run();
+
+        assert_eq!(
+            DISPATCH_SAW_ACTOR_ID.load(std::sync::atomic::Ordering::Relaxed),
+            42,
+            "hew_actor_current_id() must return the dispatching actor's ID, not -1"
+        );
+
+        // SAFETY: mb is a valid mailbox pointer; all messages have been consumed.
+        unsafe { hew_mailbox_free(mb) };
+        hew_sched_shutdown();
+    }
+
+    // Statics for the nested-activation test.
+    static OUTER_ID_BEFORE_INNER: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(-999);
+    static OUTER_ID_AFTER_INNER: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(-999);
+
+    unsafe extern "C" fn outer_dispatch_nested(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // Record current actor before triggering inner activation.
+        OUTER_ID_BEFORE_INNER.store(
+            crate::actor::hew_actor_current_id(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        // Simulate hew_actor_ask → hew_sched_run: run all pending actors,
+        // including the inner actor already in the queue.
+        hew_sched_run();
+        // After inner activation returns, we should still be "outer".
+        OUTER_ID_AFTER_INNER.store(
+            crate::actor::hew_actor_current_id(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    unsafe extern "C" fn inner_dispatch_noop(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // No-op: sufficient to exercise the nested activation path.
+    }
+
+    /// Bug #2 regression: when a WASM dispatch handler triggers nested
+    /// activation (e.g. via `hew_actor_ask` → `hew_sched_run`), the inner
+    /// activation must not permanently overwrite the outer activation's
+    /// current-actor/reply-channel/activating globals.
+    ///
+    /// Before the fix, the inner `activate_actor_wasm` call would write its own
+    /// actor pointer and then zero everything on exit, leaving the outer
+    /// dispatch with a null current actor.
+    #[test]
+    fn nested_activation_preserves_outer_actor() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // SAFETY: hew_mailbox_new has no preconditions; returns an owned pointer.
+        let mb_outer = unsafe { hew_mailbox_new() };
+        assert!(!mb_outer.is_null(), "outer mailbox allocation failed");
+        // SAFETY: hew_mailbox_new has no preconditions; returns an owned pointer.
+        let mb_inner = unsafe { hew_mailbox_new() };
+        assert!(!mb_inner.is_null(), "inner mailbox allocation failed");
+
+        let mut actor_outer = stub_actor_with_id(10);
+        actor_outer.dispatch = Some(outer_dispatch_nested);
+        actor_outer.mailbox = mb_outer;
+        let outer_ptr: *mut HewActor = (&raw const actor_outer).cast_mut();
+
+        let mut actor_inner = stub_actor_with_id(20);
+        actor_inner.dispatch = Some(inner_dispatch_noop);
+        actor_inner.mailbox = mb_inner;
+        let inner_ptr: *mut HewActor = (&raw const actor_inner).cast_mut();
+
+        // SAFETY: mailboxes are valid; data is null with size 0.
+        unsafe { hew_mailbox_send(mb_outer, 0, ptr::null_mut(), 0) };
+        // SAFETY: mailboxes are valid; data is null with size 0.
+        unsafe { hew_mailbox_send(mb_inner, 0, ptr::null_mut(), 0) };
+
+        // Enqueue outer first so it runs first; inner will be in the queue
+        // when outer's dispatch calls hew_sched_run().
+        OUTER_ID_BEFORE_INNER.store(-999, std::sync::atomic::Ordering::Relaxed);
+        OUTER_ID_AFTER_INNER.store(-999, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: actors are valid, scheduler is initialized.
+        unsafe { sched_enqueue(outer_ptr) };
+        // SAFETY: actors are valid, scheduler is initialized.
+        unsafe { sched_enqueue(inner_ptr) };
+
+        hew_sched_run();
+
+        assert_eq!(
+            OUTER_ID_BEFORE_INNER.load(std::sync::atomic::Ordering::Relaxed),
+            10,
+            "outer dispatch must see itself as current actor before inner activation"
+        );
+        assert_eq!(
+            OUTER_ID_AFTER_INNER.load(std::sync::atomic::Ordering::Relaxed),
+            10,
+            "outer dispatch must still see itself after nested activation returns (save/restore)"
+        );
+
+        // SAFETY: mailboxes are valid; all messages have been consumed.
+        unsafe { hew_mailbox_free(mb_outer) };
+        // SAFETY: mailboxes are valid; all messages have been consumed.
+        unsafe { hew_mailbox_free(mb_inner) };
         hew_sched_shutdown();
     }
 }

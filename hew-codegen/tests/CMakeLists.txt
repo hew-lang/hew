@@ -709,6 +709,8 @@ add_wasm_file_test(simple_generator       e2e_generators       simple_generator)
 add_wasm_file_test(gen_fib                e2e_generators       gen_fib)
 add_wasm_file_test(gen_loop               e2e_generators       gen_loop)
 add_wasm_file_test(for_over_generator     e2e_generators       for_over_generator)
+add_wasm_file_test(gen_drop_yield         e2e_generators       gen_drop_yield)
+add_wasm_file_test(gen_drop_else_if       e2e_generators       gen_drop_else_if)
 add_wasm_file_test(async_gen              e2e_async_gen        async_gen)
 add_wasm_file_test(golden_generator       e2e_golden           golden_generator)
 

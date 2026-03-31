@@ -1,0 +1,40 @@
+// Regression test: generator drop exclusion.
+//
+// Each yielded Token transfers ownership to the caller.  Without the fix,
+// generateGeneratorFunction left funcLevelDropExcludeVars empty, causing the
+// generator's loop-body popDropScope to emit a spurious drop of the yielded
+// variable immediately after the coroutine resumes — a double-free.
+//
+// With the fix the generator only suspends; the caller holds the sole live
+// copy and drops it (in LIFO order) when it leaves scope.
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        print("drop ");
+        println(t.id);
+    }
+}
+
+gen fn token_stream(n: int) -> Token {
+    var i = 0;
+    loop {
+        if i >= n { break; }
+        let t = Token { id: i + 1 };
+        yield t;
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    let g = token_stream(2);
+    let t1 = g.next();
+    println(t1.id);
+    let t2 = g.next();
+    println(t2.id);
+    // t2 drops first (LIFO), then t1
+    return 0;
+}

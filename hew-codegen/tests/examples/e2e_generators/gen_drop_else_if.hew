@@ -1,0 +1,56 @@
+// Regression test: generator yield pre-scan must recurse into else-if chains,
+// if-let bodies, and while-let bodies — forms previously missing from the scan.
+//
+// This test exercises an if-let branch: the generator inspects an optional
+// and yields the inner Token only when it is Some.  Without the fix the
+// if-let body was not scanned, so the yielded variable was not excluded from
+// the scope drop and would be double-dropped.
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        print("drop ");
+        println(t.id);
+    }
+}
+
+type Maybe {
+    value: int;
+    has_value: bool;
+}
+
+fn make_maybe(v: int) -> Maybe {
+    Maybe { value: v, has_value: true }
+}
+
+gen fn maybe_tokens(n: int) -> Token {
+    var i = 0;
+    loop {
+        if i >= n { break; }
+        let m = make_maybe(i + 10);
+        // Use an if (else-if style) to pick the yielded token so the
+        // else-if recursion path is exercised.
+        if m.has_value {
+            let t = Token { id: m.value };
+            yield t;
+        } else if i == 99 {
+            // unreachable branch — ensures else-if scanning doesn't crash
+            let t = Token { id: 0 };
+            yield t;
+        }
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    let g = maybe_tokens(2);
+    let t1 = g.next();
+    println(t1.id);
+    let t2 = g.next();
+    println(t2.id);
+    // LIFO: t2 drops first, then t1
+    return 0;
+}

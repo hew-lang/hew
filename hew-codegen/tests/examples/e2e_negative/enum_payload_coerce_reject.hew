@@ -1,0 +1,16 @@
+// Regression: user-defined enum variant constructor with an uncoercible payload
+// must emit a proper diagnostic and return nullptr instead of forwarding a null
+// SSA value into EnumConstructOp.  Mirrors the same null-propagation class
+// fixed for Some/Ok/Err, but exercising the user-defined-variant path.
+fn forty_two() -> int { 42 }
+
+enum Foo {
+    Bar(int);
+}
+
+fn main() {
+    // forty_two has type fn() -> int, not int.
+    // coerceType(fn_value, int, …) has no known conversion,
+    // returns nullptr, and the guarded path must propagate that failure.
+    let _x: Foo = Foo::Bar(forty_two);
+}

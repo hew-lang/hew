@@ -1827,8 +1827,11 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
             auto argVal = generateExpression(ast::callArgExpr(call.args[i]).value);
             if (!argVal)
               return nullptr;
-            if (vi && i < vi->payloadTypes.size() && argVal.getType() != vi->payloadTypes[i])
+            if (vi && i < vi->payloadTypes.size() && argVal.getType() != vi->payloadTypes[i]) {
               argVal = coerceType(argVal, vi->payloadTypes[i], location);
+              if (!argVal)
+                return nullptr;
+            }
             payloads.push_back(argVal);
           }
 

@@ -261,6 +261,7 @@ add_e2e_reject_test(actor_return_fn_ref_reject e2e_negative actor_return_fn_ref_
 add_e2e_reject_test(lambda_return_fn_ref_reject e2e_negative lambda_return_fn_ref_reject "coerceType: no known conversion")
 add_e2e_reject_test(select_timeout_coerce_reject e2e_negative select_timeout_coerce_reject "coerceType: no known conversion")
 add_e2e_reject_test(option_inner_coerce_reject   e2e_negative option_inner_coerce_reject   "coerceType: no known conversion")
+add_e2e_reject_test(enum_payload_coerce_reject   e2e_negative enum_payload_coerce_reject   "coerceType: no known conversion")
 add_e2e_reject_test(arity_mismatch       e2e_negative arity_mismatch       "takes 2 argument(s) but 1")
 add_e2e_reject_test(self_keyword_reject  e2e_negative self_keyword_reject  "not a valid parameter name")
 add_e2e_reject_test(self_typed_param_reject e2e_negative self_typed_param_reject "not a valid parameter name")

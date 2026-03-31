@@ -41,13 +41,23 @@ macro_rules! wasm_no_mangle {
 //
 // We duplicate the struct here rather than importing from `crate::mailbox`
 // because that module is `#[cfg(not(target_arch = "wasm32"))]` and does
-// not exist on WASM targets. The layout is identical for C ABI compat.
+// not exist on WASM targets.
+//
+// The shared prefix fields (next … reply_channel) have identical offsets to
+// the native struct for C ABI compat.  The native struct appends one extra
+// tail field, `trace_context: HewTraceContext`, that WASM intentionally
+// omits (tracing infrastructure is not used on the single-threaded WASM
+// scheduler).  This struct is therefore a strict prefix of the native layout;
+// the compile-time assertions below enforce that the prefix never drifts.
 
 /// A single message in a mailbox queue.
 ///
 /// Allocated with [`libc::malloc`] and freed by [`msg_node_free`].
 /// The `next` field is unused on WASM (queues are `VecDeque`-backed)
 /// but kept for struct layout compatibility with the native mailbox.
+///
+/// The native struct appends a `trace_context` tail field that WASM omits;
+/// this struct is a strict prefix of the native layout.
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewMsgNode {
@@ -62,6 +72,39 @@ pub struct HewMsgNode {
     /// Optional reply channel for the ask pattern (unused by mailbox).
     pub reply_channel: *mut c_void,
 }
+
+// Compile-time check: this WASM HewMsgNode must have identical alignment
+// and field offsets (for the shared prefix fields) to the canonical native
+// definition in `crate::mailbox`.
+//
+// The native struct appends `trace_context` after `reply_channel`; the WASM
+// struct is intentionally a strict prefix, so we check per-field offsets and
+// alignment rather than size equality.
+//
+// Gated to `not(target_arch = "wasm32")` because `crate::mailbox` is only
+// compiled on native targets; this block therefore runs during `cargo test`
+// where both modules exist simultaneously.
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = {
+    use std::mem::offset_of;
+    type W = HewMsgNode;
+    type N = crate::mailbox::HewMsgNode;
+
+    assert!(
+        align_of::<W>() == align_of::<N>(),
+        "WASM HewMsgNode alignment diverged from native (mailbox_wasm)"
+    );
+    assert!(
+        size_of::<W>() <= size_of::<N>(),
+        "WASM HewMsgNode grew larger than native — layout diverged (mailbox_wasm)"
+    );
+
+    assert!(offset_of!(W, next) == offset_of!(N, next));
+    assert!(offset_of!(W, msg_type) == offset_of!(N, msg_type));
+    assert!(offset_of!(W, data) == offset_of!(N, data));
+    assert!(offset_of!(W, data_size) == offset_of!(N, data_size));
+    assert!(offset_of!(W, reply_channel) == offset_of!(N, reply_channel));
+};
 
 // ── Message node helpers ────────────────────────────────────────────────
 

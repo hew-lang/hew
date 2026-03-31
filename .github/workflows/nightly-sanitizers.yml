@@ -78,15 +78,16 @@ jobs:
       - name: Run C++ unit tests (sanitizers)
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-codegen/lsan.supp
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           cd hew-codegen/build
           ctest --output-on-failure -R "^(mlir_dialect|translate|coro_generator|coro_fib_generator)$"
 
       - name: Run targeted sanitizer E2E tests
-        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-codegen/lsan.supp
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           cd hew-codegen/build

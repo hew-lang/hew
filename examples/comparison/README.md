@@ -29,13 +29,18 @@ Define a network message format.
 
 ## Running
 
+Run these commands from `examples/comparison/` (or `cd examples/comparison`
+from the repository root first).
+
 ```bash
+cd examples/comparison
+
 # Hew
-hew build examples/comparison/counter_service.hew -o counter && ./counter
+hew build counter_service.hew -o counter-hew && ./counter-hew
 
 # Go
-go run examples/comparison/counter_service.go
+go run counter_service.go
 
-# Rust
-rustc --edition=2021 examples/comparison/counter_service.rs -o counter && ./counter
+# Rust (this directory is not a Cargo crate)
+rustc --edition=2021 counter_service.rs -o counter-rs && ./counter-rs
 ```

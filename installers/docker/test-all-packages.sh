@@ -14,8 +14,11 @@
 # Options:
 #   --version VERSION   Override version (default: from Cargo.toml)
 #   --skip-build        Skip `make release` and package build; use existing dist/
-#   --only LIST         Comma-separated subset: debian,ubuntu,rpm,arch,alpine
+#   --only LIST         Comma-separated subset: debian,ubuntu,ubuntu22,rpm,fedora,arch,alpine
 #   --arch ARCH         Target arch: x86_64 (default) or aarch64
+#   --build-timeout N   Timeout in seconds for `make release` (default: 1800)
+#   --package-timeout N Timeout in seconds for package assembly (default: 900)
+#   --test-timeout N    Timeout in seconds per Docker distribution test (default: 300)
 #   -h / --help         Show this help
 
 set -euo pipefail
@@ -44,9 +47,16 @@ VERSION=""
 TARGET_ARCH="$(uname -m)"
 SKIP_BUILD=false
 ONLY=""
+BUILD_TIMEOUT=1800
+PACKAGE_TIMEOUT=900
+TEST_TIMEOUT=300
 
 _usage() {
-    sed -n '2,/^[^#]/{ /^#/{ s/^# \?//; p }; /^[^#]/q }' "$0"
+    awk '
+        NR == 1 { next }
+        /^#/ { sub(/^# ?/, ""); print; next }
+        { exit }
+    ' "$0"
     exit 0
 }
 
@@ -58,6 +68,18 @@ while [[ $# -gt 0 ]]; do
         ;;
     --arch)
         TARGET_ARCH="$2"
+        shift 2
+        ;;
+    --build-timeout)
+        BUILD_TIMEOUT="$2"
+        shift 2
+        ;;
+    --package-timeout)
+        PACKAGE_TIMEOUT="$2"
+        shift 2
+        ;;
+    --test-timeout)
+        TEST_TIMEOUT="$2"
         shift 2
         ;;
     --skip-build)
@@ -77,6 +99,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 _should_test() { [[ -z "${ONLY}" ]] || [[ ",${ONLY}," == *",$1,"* ]]; }
+
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN=gtimeout
+else
+    echo "error: timeout or gtimeout is required for bounded execution" >&2
+    exit 1
+fi
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    "$TIMEOUT_BIN" --kill-after=5 "$seconds" "$@"
+}
 
 # ── Version detection ─────────────────────────────────────────────────────────
 if [[ -z "${VERSION}" ]]; then
@@ -126,10 +163,11 @@ if $SKIP_BUILD; then
     info "mode" "skip-build — using existing packages in dist/"
 else
     info "building" "release binaries (make release)..."
-    make -C "${REPO_DIR}" release
+    info "timeout" "${BUILD_TIMEOUT}s make release / ${PACKAGE_TIMEOUT}s package build"
+    run_with_timeout "${BUILD_TIMEOUT}" make -C "${REPO_DIR}" release
 
     info "building" "all package formats (installers/build-packages.sh)..."
-    "${REPO_DIR}/installers/build-packages.sh" \
+    run_with_timeout "${PACKAGE_TIMEOUT}" "${REPO_DIR}/installers/build-packages.sh" \
         --version "${VERSION}" \
         --arch "${TARGET_ARCH}" \
         --only "tarball,debian,rpm,arch"
@@ -157,15 +195,20 @@ _run_test() {
     [[ -f "${APK_PKG}" ]] && cp "${APK_PKG}" "${tmpdir}/" || true
 
     local output
-    if output=$(docker run --rm \
+    if output=$(run_with_timeout "${TEST_TIMEOUT}" docker run --rm \
         -v "${tmpdir}:/pkg" \
         "${image}" \
         bash -c "${install_cmds}" 2>&1); then
         echo "${output}" | sed 's/^/    /'
         _pass "${label}" "hew run succeeded"
     else
+        status=$?
         echo "${output}" | sed 's/^/    /'
-        _fail "${label}" "test failed (exit ${?})"
+        if [[ "${status}" -eq 124 ]]; then
+            _fail "${label}" "timed out after ${TEST_TIMEOUT}s"
+        else
+            _fail "${label}" "test failed (exit ${status})"
+        fi
     fi
     rm -rf "${tmpdir}"
 }

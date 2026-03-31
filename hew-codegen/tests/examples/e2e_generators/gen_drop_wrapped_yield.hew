@@ -45,15 +45,15 @@ fn main() -> int {
     match g.next() {
         Item(t) => {
             println(t.id);
-        }
-        Empty => {}
+        },
+        Empty => {},
     }
 
     match g.next() {
         Item(t) => {
             println(t.id);
-        }
-        Empty => {}
+        },
+        Empty => {},
     }
 
     return 0;

@@ -1,0 +1,33 @@
+=== Circuit Breaker Pattern ===
+
+[breaker] init: max_failures=3
+--- Normal operation ---
+[breaker] request 1 OK → 10
+[breaker] request 2 OK → 20
+[breaker] request 3 OK → 30
+
+--- Backend goes down ---
+[backend] degraded — returning errors
+[breaker] request 4 FAILED (count=1)
+[breaker] request 5 FAILED (count=2)
+[breaker] request 6 FAILED — TRIPPED OPEN (count=3)
+
+--- Breaker is open (fast-fail) ---
+[breaker] OPEN — rejecting request 7
+Result while open: -1
+[breaker] OPEN — rejecting request 8
+Result while open: -1
+
+--- Backend recovers ---
+[backend] restored to healthy
+[breaker] Open → HalfOpen (allowing probe)
+[breaker] request 9 OK → 90 (HalfOpen → Closed)
+Probe request result: 90
+
+--- Back to normal ---
+[breaker] request 10 OK → 100
+[breaker] request 11 OK → 110
+Final breaker state: 0 (0=Closed)
+
+Circuit breaker complete.
+The actor IS the state machine — no mutexes, no shared state.

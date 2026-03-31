@@ -16,11 +16,15 @@
 //!     println(vec.contains_i32(v, 2));       // true
 //!     println(vec.contains_i32(v, 9));       // false
 //!     println(vec.index_of_i32(v, 2));       // 1
-//!     // first / last return Option<T>; cast your Vec<i32> to Vec<i64> for first/last
-//!     match vec.first_i64(v2) { Some(x) => println(x), None => {} }  // 1
-//!     match vec.last_i64(v2)  { Some(x) => println(x), None => {} }  // 3
 //!     println(vec.min_i32(v));               // 1
 //!     println(vec.max_i32(v));               // 3
+//!
+//!     let v2: Vec<i64> = Vec::new();
+//!     v2.push(1);
+//!     v2.push(2);
+//!     v2.push(3);
+//!     match vec.first_i64(v2) { Some(x) => println(x), None => {} }  // 1
+//!     match vec.last_i64(v2)  { Some(x) => println(x), None => {} }  // 3
 //! }
 //! ```
 

@@ -116,6 +116,9 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
     }
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
+        // If a reply channel was set (ask pattern) but the message was never
+        // replied to, deposit an empty reply so the waiting side observes the
+        // orphaned ask and releases the sender-side reference.
         if !(*node).reply_channel.is_null() {
             retire_reply_channel((*node).reply_channel);
             (*node).reply_channel = ptr::null_mut();
@@ -228,14 +231,8 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     if reply_channel.is_null() {
         return;
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    // SAFETY: `reply_channel` is a live native reply channel owned by the
-    // mailbox and we are retiring it with an empty reply.
-    unsafe {
-        crate::reply_channel::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
-    }
-    #[cfg(target_arch = "wasm32")]
+    // mailbox_wasm reply channels are always WASM-style channels — both in WASM
+    // production builds and in non-WASM test builds that exercise this module.
     // SAFETY: `reply_channel` is a live WASM reply channel owned by the mailbox
     // and we are retiring it with an empty reply.
     unsafe {
@@ -704,8 +701,6 @@ wasm_no_mangle! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(target_arch = "wasm32"))]
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -725,16 +720,6 @@ mod tests {
         u64::from(update.symbol)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[repr(C)]
-    struct ReplyChannelPrefix {
-        refs: AtomicUsize,
-        ready: AtomicBool,
-        cancelled: AtomicBool,
-        value: *mut c_void,
-        value_size: usize,
-    }
-
     #[test]
     fn send_recv_roundtrip() {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
@@ -752,6 +737,51 @@ mod tests {
             msg_node_free(node);
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn closing_and_freeing_mailbox_completes_orphaned_ask_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively; the
+        // queued ask simulates an actor being stopped/closed before dispatch.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            let val: i32 = 42;
+            let rc = hew_mailbox_send_with_reply(
+                mb,
+                7,
+                (&raw const val).cast_mut().cast(),
+                size_of::<i32>(),
+                ch.cast(),
+            );
+            assert_eq!(rc, HewError::Ok as i32);
+
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
+            assert!(!crate::reply_channel_wasm::test_replied(ch));
+
+            hew_mailbox_close(mb);
+            hew_mailbox_free(mb);
+
+            assert!(
+                crate::reply_channel_wasm::test_replied(ch),
+                "draining a closed mailbox should signal orphaned ask waiters"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "draining a closed mailbox should release the sender-side ask reference"
+            );
+
+            let reply = crate::reply_channel_wasm::reply_take(ch);
+            assert!(
+                reply.is_null(),
+                "orphaned asks should resolve as null replies"
+            );
+
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
         }
     }
 
@@ -881,6 +911,31 @@ mod tests {
             msg_node_free(node);
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn freeing_mailbox_releases_queued_reply_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(ch), 2);
+            assert_eq!(
+                hew_mailbox_send_with_reply(mb, 7, ptr::null_mut(), 0, ch.cast()),
+                HewError::Ok as i32
+            );
+
+            hew_mailbox_free(mb);
+
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "draining queued messages must release the queued sender ref"
+            );
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
         }
     }
 
@@ -1134,10 +1189,10 @@ mod tests {
 
             let first: i32 = 10;
             let replacement: i32 = 77;
-            let existing_reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(existing_reply);
-            let incoming_reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(incoming_reply);
+            let existing_reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(existing_reply);
+            let incoming_reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(incoming_reply);
 
             let existing_reply_ptr = existing_reply.cast::<c_void>();
             let incoming_reply_ptr = incoming_reply.cast::<c_void>();
@@ -1164,10 +1219,9 @@ mod tests {
             );
             assert_eq!(hew_mailbox_len(mb), 1);
 
-            let incoming_state = incoming_reply.cast::<ReplyChannelPrefix>();
-            assert_eq!((*incoming_state).refs.load(Ordering::Acquire), 1);
-            assert!((*incoming_state).ready.load(Ordering::Acquire));
-            assert!((*incoming_state).value.is_null());
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(incoming_reply), 1);
+            assert!(crate::reply_channel_wasm::test_replied(incoming_reply));
+            assert!(crate::reply_channel_wasm::reply_take(incoming_reply).is_null());
 
             let node = hew_mailbox_try_recv(mb);
             assert_eq!((*node).msg_type, 7);
@@ -1175,8 +1229,8 @@ mod tests {
             assert_eq!((*node).reply_channel, existing_reply_ptr);
             msg_node_free(node);
 
-            crate::reply_channel::hew_reply_channel_free(existing_reply);
-            crate::reply_channel::hew_reply_channel_free(incoming_reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(existing_reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(incoming_reply);
             hew_mailbox_free(mb);
         }
     }
@@ -1189,8 +1243,8 @@ mod tests {
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
             let first: i32 = 10;
             let second: i32 = 20;
-            let reply = crate::reply_channel::hew_reply_channel_new();
-            crate::reply_channel::hew_reply_channel_retain(reply);
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(reply);
 
             assert_eq!(
                 hew_mailbox_send_with_reply(
@@ -1212,12 +1266,11 @@ mod tests {
                 HewError::Ok as i32
             );
 
-            let reply_state = reply.cast::<ReplyChannelPrefix>();
-            assert_eq!((*reply_state).refs.load(Ordering::Acquire), 1);
-            assert!((*reply_state).ready.load(Ordering::Acquire));
-            assert!((*reply_state).value.is_null());
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+            assert!(crate::reply_channel_wasm::test_replied(reply));
+            assert!(crate::reply_channel_wasm::reply_take(reply).is_null());
 
-            crate::reply_channel::hew_reply_channel_free(reply);
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
         }
     }

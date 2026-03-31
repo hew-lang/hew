@@ -1488,7 +1488,8 @@ unsafe fn actor_send_internal(
 }
 
 // ── Ask (request-response) ──────────────────────────────────────────────
-// Ask functions use native reply channels and are not available on WASM.
+// Native asks block on threaded reply channels; WASM asks cooperate by
+// driving the single-threaded scheduler in bounded ticks.
 
 /// Send a synchronous request and block until a reply arrives.
 ///
@@ -1595,6 +1596,23 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     }
 
     result
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+const HEW_WASM_ASK_TICK_ACTIVATIONS: i32 = 1;
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn wake_wasm_actor(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        a.idle_count.store(0, Ordering::Relaxed);
+        a.hibernating.store(0, Ordering::Relaxed);
+        // SAFETY: actor is valid and the cooperative scheduler is initialized.
+        unsafe { crate::scheduler_wasm::hew_wasm_sched_enqueue(actor.cast()) };
+    }
 }
 
 /// Send a message with a caller-provided reply channel.
@@ -1992,7 +2010,6 @@ extern "C" {
     fn hew_mailbox_send_sys(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
     fn hew_mailbox_close(mb: *mut c_void);
     fn hew_wasm_sched_enqueue(actor: *mut c_void);
-    fn hew_sched_run();
 }
 
 /// Spawn a new actor with an unbounded mailbox (WASM).
@@ -2183,6 +2200,138 @@ pub unsafe extern "C" fn hew_actor_try_send(
     0
 }
 
+/// Shared WASM send-with-channel primitive for ask/select lowering.
+///
+/// # Safety
+///
+/// Same requirements as the native [`hew_actor_ask_with_channel`].
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn ask_with_channel_wasm_internal(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { crate::reply_channel_wasm::hew_reply_channel_retain(ch.cast()) };
+
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
+    let mut send_result = unsafe {
+        crate::mailbox_wasm::hew_mailbox_send_with_reply(a.mailbox.cast(), msg_type, data, size, ch)
+    };
+    if send_result == HewError::ErrClosed as i32 {
+        send_result = HewError::ErrActorStopped as i32;
+    }
+    if send_result != HewError::Ok as i32 {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { crate::reply_channel_wasm::hew_reply_channel_free(ch.cast()) };
+        return send_result;
+    }
+
+    // SAFETY: actor is valid and owned by the runtime.
+    unsafe { wake_wasm_actor(actor) };
+
+    HewError::Ok as i32
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn actor_ask_wasm_impl(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: Option<i32>,
+) -> *mut c_void {
+    use crate::reply_channel_wasm;
+
+    let ch = reply_channel_wasm::hew_reply_channel_new();
+
+    // SAFETY: ch is a live reply channel and `actor`/`data` follow the
+    // same preconditions as this shared ask implementation.
+    let send_result =
+        unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch.cast()) };
+    if send_result != HewError::Ok as i32 {
+        // SAFETY: ch was created by hew_reply_channel_new and the failed send
+        // already released the queued sender-side retain.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        return ptr::null_mut();
+    }
+
+    let deadline = timeout_ms.map(|ms| {
+        std::time::Instant::now()
+            + std::time::Duration::from_millis(u64::try_from(ms.max(0)).unwrap_or(0))
+    });
+
+    loop {
+        // SAFETY: ch stays live until we release the caller-side reference below.
+        if unsafe { reply_channel_wasm::reply_ready(ch) } {
+            break;
+        }
+
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            // Timeout: mark the channel as cancelled so any later replier or
+            // queued-message cleanup releases the sender-side reference.
+            // SAFETY: ch is still live while we release our caller-side ref.
+            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
+            // SAFETY: release the caller-side reference after recording cancellation.
+            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+            return ptr::null_mut();
+        }
+
+        // SAFETY: scheduler must be initialized by the runtime/host.
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
+
+        // SAFETY: ch stays live until we release the caller-side reference below.
+        if unsafe { reply_channel_wasm::reply_ready(ch) } {
+            break;
+        }
+
+        if remaining == 0 {
+            // No runnable work remains, so the cooperative caller cannot make
+            // further progress before returning control to the host. Cancel
+            // the channel for both bounded and unbounded asks so any later
+            // replier or queued-message cleanup skips allocating reply data.
+            // SAFETY: ch remains live until the caller-side reference is released below.
+            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
+            // SAFETY: release the caller-side reference before returning without a reply.
+            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+            return ptr::null_mut();
+        }
+    }
+
+    // SAFETY: ch is a valid reply channel pointer created above.
+    let reply = unsafe { reply_channel_wasm::reply_take(ch) };
+    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+    unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+
+    reply
+}
+
+/// Send a message with a caller-provided reply channel (WASM).
+///
+/// Mirrors the native send-with-channel contract for `select.add`: retain
+/// the caller-provided reply channel for the queued send, wake an idle actor,
+/// and return a status code without waiting for a reply.
+///
+/// # Safety
+///
+/// Same requirements as the native [`hew_actor_ask_with_channel`].
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_with_channel(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: same preconditions as ask_with_channel_wasm_internal.
+    unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch) }
+}
+
 /// Cooperative ask: send a request and run the scheduler until a reply
 /// arrives (WASM).
 ///
@@ -2197,54 +2346,30 @@ pub unsafe extern "C" fn hew_actor_ask(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
-    use crate::reply_channel_wasm;
+    // SAFETY: same preconditions as actor_ask_wasm_impl.
+    unsafe { actor_ask_wasm_impl(actor, msg_type, data, size, None) }
+}
 
-    let ch = reply_channel_wasm::hew_reply_channel_new();
-
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { reply_channel_wasm::hew_reply_channel_retain(ch) };
-
-    // Send with reply channel in the HewMsgNode field (not packed in data).
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
-    let send_result = unsafe {
-        crate::mailbox_wasm::hew_mailbox_send_with_reply(
-            a.mailbox.cast(),
-            msg_type,
-            data,
-            size,
-            ch.cast(),
-        )
-    };
-
-    if send_result != HewError::Ok as i32 {
-        // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
-    }
-
-    // Transition IDLE → RUNNABLE and enqueue.
-    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        // SAFETY: actor is valid.
-        unsafe { hew_wasm_sched_enqueue(actor.cast()) };
-    }
-
-    // Cooperatively process messages until the reply is deposited.
-    // SAFETY: scheduler must be initialized.
-    unsafe { hew_sched_run() };
-
-    // Read the reply and free the channel.
-    // SAFETY: ch is a valid reply channel pointer created above.
-    let reply = unsafe { reply_channel_wasm::reply_take(ch) };
-    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
-    unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-
-    reply
+/// Cooperative ask with timeout: send a request and drive the scheduler in
+/// bounded ticks until the reply arrives or the timeout expires (WASM).
+///
+/// Returns the reply value, or null on timeout / when no runnable work
+/// remains that can satisfy the ask before control returns to the host.
+///
+/// # Safety
+///
+/// Same requirements as the native [`hew_actor_ask_timeout`].
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_ask_timeout(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: i32,
+) -> *mut c_void {
+    // SAFETY: same preconditions as actor_ask_wasm_impl.
+    unsafe { actor_ask_wasm_impl(actor, msg_type, data, size, Some(timeout_ms)) }
 }
 
 /// Close an actor, rejecting new messages (WASM).
@@ -2478,5 +2603,102 @@ mod tests {
         assert!(actor.is_null(), "spawn should return null on OOM");
         let err = crate::hew_last_error();
         assert!(!err.is_null(), "hew_last_error should be set after OOM");
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    unsafe extern "C" fn self_stop_without_reply_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        hew_actor_self_stop();
+    }
+
+    unsafe extern "C" fn reply_once_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        let mut value: i32 = 21;
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                size_of::<i32>(),
+            );
+        }
+    }
+
+    #[test]
+    fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(self_stop_without_reply_dispatch));
+            assert!(!actor.is_null());
+
+            let reply = hew_actor_ask(actor, 1, ptr::null_mut(), 0);
+            assert!(
+                reply.is_null(),
+                "ask should resolve as null when the actor stops before replying"
+            );
+            assert_eq!(
+                (&*actor).actor_state.load(Ordering::Relaxed),
+                HewActorState::Stopped as i32
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "ask cleanup should release the sender-side WASM reply-channel ref"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    #[test]
+    fn ask_successful_reply_returns_value_without_duplicate_cleanup() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(reply_once_dispatch));
+            assert!(!actor.is_null());
+
+            let reply = hew_actor_ask(actor, 1, ptr::null_mut(), 0);
+            assert!(!reply.is_null(), "happy-path ask should return a reply");
+            assert_eq!(*reply.cast::<i32>(), 21);
+            libc::free(reply);
+
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "successful asks should leave no live WASM reply channels"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
     }
 }

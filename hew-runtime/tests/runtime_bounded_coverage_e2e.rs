@@ -281,6 +281,10 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             "child should return to Idle after draining the queued work"
         );
 
+        // Capture the actor ID while `child` is still live (before crash_child
+        // sends the crash-triggering message).  The `id` field is set once at
+        // spawn and never mutated; reading it here is safe.
+        let child_id = (*child).id;
         crash_child(child);
         let restart_count = hew_supervisor_wait_restart(sup, 1, 5_000);
         assert!(
@@ -297,9 +301,15 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
         // h-b chain from `wait_restart`'s mutex reacquire still holds, but
         // using `get_child_wait` makes the intended synchronization explicit.
         let restarted_child = wait_for_child(sup, 0, Duration::from_secs(5));
+        // Compare actor IDs rather than pointer addresses: the allocator may
+        // reuse the same heap address for the replacement actor, so pointer
+        // inequality is not a reliable freshness signal.  Actor IDs are
+        // monotonically increasing and unique across all spawns in a process,
+        // so a strict inequality on IDs is the correct check.
+        let restarted_id = (*restarted_child).id;
         assert_ne!(
-            restarted_child, child,
-            "restart should install a fresh child actor at a different address"
+            restarted_id, child_id,
+            "restart should assign a fresh actor ID (old={child_id}, new={restarted_id})"
         );
         hew_actor_set_budget(restarted_child, 1);
 

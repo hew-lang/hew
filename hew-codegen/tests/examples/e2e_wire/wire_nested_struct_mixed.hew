@@ -1,0 +1,25 @@
+// Test: outer wire struct mixing a nested struct field with primitive fields.
+// Exercises the encode/decode loop when nested and scalar fields interleave.
+#[wire]
+struct Coords {
+    x: i32,
+    y: i32,
+}
+
+#[wire]
+struct Annotated {
+    label: String,
+    position: Coords,
+    weight: i32,
+}
+
+fn main() {
+    let c = Coords { x: 7, y: 8 };
+    let a = Annotated { label: "pt", position: c, weight: 42 };
+
+    // Binary roundtrip: encode → decode, then verify both scalar and nested field.
+    let buf = a.encode();
+    let a2 = Annotated.decode(buf);
+    println(a2.weight);
+    println(a2.to_json());
+}

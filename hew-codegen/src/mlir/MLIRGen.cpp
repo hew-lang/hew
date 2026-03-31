@@ -743,7 +743,10 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     for (size_t i = 0; i < srcTuple.getElementTypes().size(); ++i) {
       auto elem = hew::TupleExtractOp::create(builder, location, srcTuple.getElementTypes()[i],
                                               value, builder.getI64IntegerAttr(i));
-      elements.push_back(coerceType(elem, dstTuple.getElementTypes()[i], location));
+      auto coercedElem = coerceType(elem, dstTuple.getElementTypes()[i], location);
+      if (!coercedElem)
+        return nullptr;
+      elements.push_back(coercedElem);
     }
     return hew::TupleCreateOp::create(builder, location, dstTuple, elements);
   }
@@ -968,6 +971,11 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
         if (dstHasReturn && srcHasReturn) {
           auto result = callOp.getResult(0);
           auto coerced = coerceType(result, llvmDstRet, location);
+          if (!coerced) {
+            thunkOp.erase();
+            builder.restoreInsertionPoint(savedIP);
+            return nullptr;
+          }
           mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coerced});
         } else {
           mlir::func::ReturnOp::create(builder, location);
@@ -1022,6 +1030,8 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
         auto elem = hew::ArrayExtractOp::create(builder, location, arrayType.getElementType(),
                                                 value, builder.getI64IntegerAttr(i));
         auto coerced = coerceType(elem, elemType, location);
+        if (!coerced)
+          return nullptr;
         hew::VecPushOp::create(builder, location, vec, coerced);
       }
       return vec;
@@ -1057,13 +1067,36 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
-  // Fallthrough: no explicit coercion found. Return the value with a warning
-  // rather than erroring, because the codegen has implicit coercion paths
-  // (e.g., string→int hashing, value→Option wrapping) that are not yet
-  // modelled as explicit coercions. These should be added over time.
+  // T → Option<T>: explicitly materialize Some(value) before the fail-closed
+  // fallback. Timeout/select lowering still exercises this real coercion path.
+  if (auto dstOption = mlir::dyn_cast<hew::OptionEnumType>(targetType)) {
+    auto payload = coerceType(value, dstOption.getInnerType(), location, isUnsigned);
+    if (payload && payload.getType() == dstOption.getInnerType()) {
+      return hew::EnumConstructOp::create(
+          builder, location, dstOption, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+          mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+    }
+    if (!payload)
+      return nullptr;
+  }
+
+  // Fallthrough: no explicit coercion found. Fail closed so callers can stop
+  // materialising downstream IR from a mismatched SSA value.
+  ++errorCount_;
   emitError(location) << "coerceType: no known conversion from " << value.getType() << " to "
                       << targetType;
-  return value;
+  return nullptr;
+}
+
+mlir::Value MLIRGen::coerceTypeForSink(mlir::Value value, mlir::Type targetType,
+                                       mlir::Location location) {
+  auto coerced = coerceType(value, targetType, location);
+  if (coerced && coerced.getType() == targetType)
+    return coerced;
+
+  if (coerced)
+    ++errorCount_;
+  return createDefaultValue(builder, location, targetType);
 }
 
 // ============================================================================
@@ -3907,7 +3940,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // null-after-move tracking to avoid double-frees when a param is consumed
   // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
-  mlir::Value bodyValue = generateBlock(*method.body);
+  mlir::Value bodyValue =
+      generateBlock(*method.body, /*statementPosition=*/resultTypes.empty());
 
   auto *currentBlock = builder.getInsertionBlock();
   if (currentBlock &&
@@ -3921,21 +3955,20 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
       auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
                          .getResult();
-      if (slotVal.getType() != resultTypes[0])
-        slotVal = coerceType(slotVal, resultTypes[0], location);
+      slotVal = coerceTypeForSink(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       builder.setInsertionPointToStart(&selectOp.getElseRegion().front());
       mlir::Value normalValue = bodyValue;
       if (!normalValue)
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
-      normalValue = coerceType(normalValue, resultTypes[0], location);
+      normalValue = coerceTypeForSink(normalValue, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
-      bodyValue = coerceType(bodyValue, resultTypes[0], location);
+      bodyValue = coerceTypeForSink(bodyValue, resultTypes[0], location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
     } else {
       mlir::func::ReturnOp::create(builder, location);
@@ -4348,8 +4381,21 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     ensureReturnSlot(location);
   }
 
-  // Generate the function body
-  mlir::Value bodyValue = generateBlock(fn.body);
+  // Generate the function body. Functions with an explicit unit/void return
+  // type (or implicit main) discard the block result. For unannotated functions
+  // that already contain nested explicit returns, keep final statement-position
+  // if/match lowering on the statement path rather than forcing a value path
+  // with no established function result type.
+  bool finalStmtNeedsStatementLowering = false;
+  if (!fn.return_type && hasNestedReturn && !fn.body.trailing_expr && !fn.body.stmts.empty()) {
+    const auto &lastStmt = fn.body.stmts.back()->value;
+    finalStmtNeedsStatementLowering =
+        std::holds_alternative<ast::StmtIf>(lastStmt.kind) ||
+        std::holds_alternative<ast::StmtMatch>(lastStmt.kind);
+  }
+  bool bodyResultDiscarded = isImplicitMainReturn || (fn.return_type && resultTypes.empty()) ||
+                             finalStmtNeedsStatementLowering;
+  mlir::Value bodyValue = generateBlock(fn.body, /*statementPosition=*/bodyResultDiscarded);
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
@@ -4380,8 +4426,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
       auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
                          .getResult();
-      if (slotVal.getType() != resultTypes[0])
-        slotVal = coerceType(slotVal, resultTypes[0], location);
+      slotVal = coerceTypeForSink(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       // Else (normal flow): yield body value
@@ -4390,7 +4435,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       if (!normalValue) {
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
       }
-      normalValue = coerceType(normalValue, resultTypes[0], location);
+      normalValue = coerceTypeForSink(normalValue, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
@@ -4402,7 +4447,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         emitDropsExcept(funcLevelDropExcludeValues);
       else
         emitAllDrops();
-      auto coercedBody = coerceType(bodyValue, resultTypes[0], location);
+      auto coercedBody = coerceTypeForSink(bodyValue, resultTypes[0], location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coercedBody});
     } else {
       emitAllDrops();
@@ -4559,7 +4604,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
     // Generate the function body naturally — loops, conditionals all work
-    generateBlock(fn.body);
+    generateBlock(fn.body, /*statementPosition=*/true);
 
     // Ensure terminator
     auto *currentBlock = builder.getInsertionBlock();

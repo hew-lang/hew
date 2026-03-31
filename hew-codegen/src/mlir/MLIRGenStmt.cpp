@@ -38,6 +38,18 @@
 using namespace hew;
 using namespace mlir;
 
+namespace {
+
+bool isInferredType(const ast::Spanned<ast::TypeExpr> &typeExpr) {
+  return typeExpr.span.start == 0 && typeExpr.span.end == 0;
+}
+
+bool usesTimeoutPlaceholder(const std::optional<ast::Spanned<ast::Expr>> &expr) {
+  return expr && std::holds_alternative<ast::ExprTimeout>(expr->value.kind);
+}
+
+} // namespace
+
 // ============================================================================
 // Shared helpers
 // ============================================================================
@@ -184,7 +196,7 @@ void MLIRGen::generateStmtsWithReturnGuards(
     mlir::Value val = generateExpression(*trailingExpr);
     if (val && returnSlot) {
       auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-      val = coerceType(val, slotType, location);
+      val = coerceTypeForSink(val, slotType, location);
       mlir::memref::StoreOp::create(builder, location, val, returnSlot);
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
       mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
@@ -229,7 +241,7 @@ void MLIRGen::generateLoopBodyWithContinueGuards(
 // Block generation
 // ============================================================================
 
-mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
+mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPosition) {
   // Create a new scope for variables in this block
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
@@ -307,66 +319,63 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         return nullptr; // Value in returnSlot
       }
 
-      // Handle last statement as value-producing (IfStmt or MatchStmt)
-      if (auto *ifNode = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
-        // Generate preceding stmts with guards
-        if (stmtCount > 1) {
-          generateStmtsWithReturnGuards(stmts, 0, stmtCount - 1, nullptr, location);
+      bool canProduceGuardedTailValue =
+          !statementPosition && currentFunction && currentFunction.getResultTypes().size() == 1;
+      if (canProduceGuardedTailValue) {
+        // Handle last statement as value-producing (IfStmt or MatchStmt)
+        if (auto *ifNode = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+          // Generate preceding stmts with guards
+          if (stmtCount > 1) {
+            generateStmtsWithReturnGuards(stmts, 0, stmtCount - 1, nullptr, location);
+          }
+          // Guard the value-producing if-statement
+          auto flagVal =
+              mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+          auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
+          auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+          auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          auto val = generateIfStmtAsExpr(*ifNode);
+          if (val && returnSlot) {
+            auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
+            val = coerceTypeForSink(val, slotType, location);
+            mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+            mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
+          }
+          ensureYieldTerminator(location);
+          builder.setInsertionPointAfter(guard);
+          return nullptr;
         }
-        // Guard the value-producing if-statement
-        auto flagVal =
-            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
-        auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
-        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
-                                             /*withElseRegion=*/false);
-        builder.setInsertionPointToStart(&guard.getThenRegion().front());
-        auto val = generateIfStmtAsExpr(*ifNode);
-        if (val && returnSlot) {
-          auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
-          mlir::memref::StoreOp::create(builder, location, val, returnSlot);
-          mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
-        }
-        ensureYieldTerminator(location);
-        builder.setInsertionPointAfter(guard);
-        return nullptr;
-      }
 
-      if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
-        if (stmtCount > 1) {
-          generateStmtsWithReturnGuards(stmts, 0, stmtCount - 1, nullptr, location);
+        if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+          if (stmtCount > 1) {
+            generateStmtsWithReturnGuards(stmts, 0, stmtCount - 1, nullptr, location);
+          }
+          auto flagVal =
+              mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+          auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
+          auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+          auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          auto scrutinee = generateExpression(matchNode->scrutinee.value);
+          if (scrutinee)
+            scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
+                                                   &matchNode->arms);
+          auto resultType = currentFunction.getResultTypes()[0];
+          auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
+                               : nullptr;
+          if (val && returnSlot) {
+            auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
+            val = coerceTypeForSink(val, slotType, location);
+            mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+            mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
+          }
+          ensureYieldTerminator(location);
+          builder.setInsertionPointAfter(guard);
+          return nullptr;
         }
-        auto flagVal =
-            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
-        auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
-        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
-                                             /*withElseRegion=*/false);
-        builder.setInsertionPointToStart(&guard.getThenRegion().front());
-        auto scrutinee = generateExpression(matchNode->scrutinee.value);
-        if (scrutinee)
-          scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
-                                                 &matchNode->arms);
-        mlir::Type resultType;
-        if (currentFunction && currentFunction.getResultTypes().size() == 1) {
-          resultType = currentFunction.getResultTypes()[0];
-        } else {
-          // Statement-position match: result is discarded, type is irrelevant.
-          // TODO: generate statement-position match without value-producing path.
-          resultType = builder.getI32Type();
-        }
-        auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
-                             : nullptr;
-        if (val && returnSlot) {
-          auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
-          mlir::memref::StoreOp::create(builder, location, val, returnSlot);
-          mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
-        }
-        ensureYieldTerminator(location);
-        builder.setInsertionPointAfter(guard);
-        return nullptr;
       }
 
       // No trailing expression: generate all statements with guards
@@ -398,30 +407,33 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       }
     }
 
-    // Case 2: If statement as a value-producing block ending
-    // When a block ends with `if ... { ... } else { ... }` and the enclosing
-    // function returns a value, generate it as an if-expression.
-    if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
-      return generateIfStmtAsExpr(*ifStmt);
-    }
-
-    // Case 3: Match statement as a value-producing block ending
-    if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
-      auto location = loc(lastStmt.span);
-      auto scrutinee = generateExpression(matchNode->scrutinee.value);
-      if (!scrutinee)
-        return nullptr;
-      scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
-                                             &matchNode->arms);
-      mlir::Type resultType;
-      if (currentFunction && currentFunction.getResultTypes().size() == 1) {
-        resultType = currentFunction.getResultTypes()[0];
-      } else {
-        // Statement-position match: result is discarded, type is irrelevant.
-        // TODO: generate statement-position match without value-producing path.
-        resultType = builder.getI32Type();
+    if (!statementPosition) {
+      // Case 2: If statement as a value-producing block ending
+      // When a block ends with `if ... { ... } else { ... }` and the enclosing
+      // function returns a value, generate it as an if-expression.
+      if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+        if (!currentFunction || currentFunction.getResultTypes().size() != 1) {
+          generateIfStmt(*ifStmt);
+          return nullptr;
+        }
+        return generateIfStmtAsExpr(*ifStmt);
       }
-      return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
+
+      // Case 3: Match statement as a value-producing block ending
+      if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+        if (!currentFunction || currentFunction.getResultTypes().size() != 1) {
+          generateMatchStmt(*matchNode);
+          return nullptr;
+        }
+        auto location = loc(lastStmt.span);
+        auto scrutinee = generateExpression(matchNode->scrutinee.value);
+        if (!scrutinee)
+          return nullptr;
+        scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
+                                               &matchNode->arms);
+        auto resultType = currentFunction.getResultTypes()[0];
+        return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
+      }
     }
 
     // Case 4: Loop/While/For as a value-producing block ending (via break-with-value)
@@ -584,7 +596,10 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   // Type coercion: if declared type doesn't match value type, try to coerce
   if (stmt.ty) {
     auto declaredType = convertType(stmt.ty->value);
-    if (isValidType(declaredType))
+    // Timeout lowering still evaluates the inner expression directly while the
+    // enriched AST annotates `| after` results as inferred Option<T>.
+    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    if (isValidType(declaredType) && !skipInferredTimeoutCoercion)
       value = coerceType(value, declaredType, location);
   }
 
@@ -833,7 +848,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.ty) {
     varType = convertType(stmt.ty->value);
-    if (isValidType(varType) && initValue)
+    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion)
       initValue = coerceType(initValue, varType, location);
   }
 
@@ -3106,7 +3122,7 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
           collectVisibleBindingIdentities(stmt.value->value, funcLevelEarlyReturnExcludeValues,
                                           &funcLevelEarlyReturnExcludeResolvedNames);
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-          val = coerceType(val, slotType, location);
+          val = coerceTypeForSink(val, slotType, location);
           mlir::memref::StoreOp::create(builder, location, val, returnSlot);
         }
       }
@@ -3132,7 +3148,7 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
       auto val = generateExpression(stmt.value->value);
       if (val) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1)
-          val = coerceType(val, currentFunction.getResultTypes()[0], location);
+          val = coerceTypeForSink(val, currentFunction.getResultTypes()[0], location);
         DropValueSet returnValues;
         collectVisibleBindingIdentities(stmt.value->value, returnValues);
         if (!returnValues.empty())

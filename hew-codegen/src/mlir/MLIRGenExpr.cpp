@@ -3383,12 +3383,10 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!idx)
       return mlir::Value{};
     idx = coerceType(idx, i32Type, location);
-    auto charCode =
-        hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("char_at"),
-                                    receiver, mlir::ValueRange{idx});
-    auto conv = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context),
-                                        charCode.getResult());
-    return conv.getResult();
+    return hew::StringMethodOp::create(builder, location, i32Type,
+                                       builder.getStringAttr("char_at"), receiver,
+                                       mlir::ValueRange{idx})
+        .getResult();
   }
   if (method == "split") {
     auto sep = generateExpression(ast::callArgExpr(mc.args[0]).value);
@@ -5216,7 +5214,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   if (currentBlock &&
       (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
     if (returnType && bodyVal) {
-      bodyVal = coerceType(bodyVal, returnType, location);
+      bodyVal = coerceTypeForSink(bodyVal, returnType, location);
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyVal});
     } else if (returnType) {
       auto defVal = createDefaultValue(builder, location, returnType);
@@ -5873,6 +5871,15 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
   mlir::Type selectResultType = resultTypes[0];
 
   bool hasTimeoutBody = sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->body;
+  auto coerceSelectResultForSink = [&](mlir::Value value) -> mlir::Value {
+    auto coerced = coerceType(value, selectResultType, location);
+    if (coerced && coerced.getType() == selectResultType)
+      return coerced;
+
+    if (coerced)
+      ++errorCount_;
+    return createDefaultValue(builder, location, selectResultType);
+  };
 
   auto generateArmChain = [&](auto &&self, size_t armIdx) -> mlir::Value {
     if (armIdx >= armCount) {
@@ -5880,7 +5887,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
         SymbolTableScopeT scope(symbolTable);
         MutableTableScopeT mutScope(mutableVars);
         auto val = generateExpression((*sel.timeout)->body->value);
-        return val ? coerceType(val, selectResultType, location)
+        return val ? coerceSelectResultForSink(val)
                    : createDefaultValue(builder, location, selectResultType);
       }
       return createDefaultValue(builder, location, selectResultType);
@@ -5902,7 +5909,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       hew::SelectDestroyOp::create(builder, location, channels[armIdx]);
 
       auto retVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
-      return coerceType(retVal, selectResultType, location);
+      return coerceSelectResultForSink(retVal);
     }
 
     auto armIdxVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
@@ -5928,7 +5935,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       hew::SelectDestroyOp::create(builder, location, channels[armIdx]);
 
       auto yieldVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
-      yieldVal = coerceType(yieldVal, selectResultType, location);
+      yieldVal = coerceSelectResultForSink(yieldVal);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
     }
 
@@ -5937,7 +5944,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto *elseBlock = builder.getInsertionBlock();
     if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
       auto yieldVal = elseVal ? elseVal : createDefaultValue(builder, location, selectResultType);
-      yieldVal = coerceType(yieldVal, selectResultType, location);
+      yieldVal = coerceSelectResultForSink(yieldVal);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
     }
 

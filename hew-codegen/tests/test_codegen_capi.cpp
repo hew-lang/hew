@@ -20,10 +20,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <process.h>
 #define getpid _getpid
 #else
@@ -114,6 +117,81 @@ static std::vector<uint8_t> hewToMsgpack(const std::string &source) {
     std::filesystem::remove(astPath);
   }
   return data;
+}
+
+static std::string captureStderr(const std::function<void()> &fn) {
+  fflush(stderr);
+  auto capturePath = std::filesystem::current_path() /
+                     ("test_codegen_capi_stderr_" + std::to_string(getpid()) + ".log");
+  FILE *capture = std::fopen(capturePath.string().c_str(), "wb");
+  if (!capture)
+    return {};
+
+#ifdef _WIN32
+  const int stderrFd = _fileno(stderr);
+  const int savedStderr = _dup(stderrFd);
+  if (savedStderr < 0) {
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+  if (_dup2(_fileno(capture), stderrFd) < 0) {
+    _close(savedStderr);
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+#else
+  const int stderrFd = fileno(stderr);
+  const int savedStderr = dup(stderrFd);
+  if (savedStderr < 0) {
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+  if (dup2(fileno(capture), stderrFd) < 0) {
+    close(savedStderr);
+    std::fclose(capture);
+    std::filesystem::remove(capturePath);
+    return {};
+  }
+#endif
+
+  fn();
+  fflush(stderr);
+
+#ifdef _WIN32
+  _dup2(savedStderr, stderrFd);
+  _close(savedStderr);
+#else
+  dup2(savedStderr, stderrFd);
+  close(savedStderr);
+#endif
+  std::fclose(capture);
+
+  std::ifstream captured(capturePath, std::ios::binary);
+  std::string output((std::istreambuf_iterator<char>(captured)), {});
+  std::filesystem::remove(capturePath);
+  return output;
+}
+
+static int replaceMsgpackFixStr(std::vector<uint8_t> &data, const char *from, const char *to) {
+  const auto fromLen = std::strlen(from);
+  if (fromLen != std::strlen(to) || fromLen == 0 || fromLen > 31)
+    return 0;
+
+  const uint8_t tag = static_cast<uint8_t>(0xa0 | fromLen);
+  int replacements = 0;
+  for (size_t i = 0; i + 1 + fromLen <= data.size(); ++i) {
+    if (data[i] != tag)
+      continue;
+    if (std::memcmp(data.data() + i + 1, from, fromLen) != 0)
+      continue;
+    std::memcpy(data.data() + i + 1, to, fromLen);
+    ++replacements;
+    i += fromLen;
+  }
+  return replacements;
 }
 
 static HewCodegenOptions makeOptions(HewCodegenMode mode) {
@@ -339,6 +417,55 @@ static void test_emit_mlir_verification_report_includes_details() {
   PASS();
 }
 
+static void test_unsupported_return_coercion_fails_before_verifier() {
+  TEST(unsupported_return_coercion_fails_before_verifier);
+  auto ast = hewToMsgpack(R"(
+fn main() -> int {
+    42
+}
+  )");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  if (replaceMsgpackFixStr(ast, "int", "str") == 0) {
+    FAIL("failed to rewrite int return type in msgpack AST");
+    return;
+  }
+
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = 0;
+  auto stderrText = captureStderr([&] {
+    rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  });
+
+  if (buf.data != nullptr) {
+    hew_codegen_buffer_free(buf);
+    buf = {};
+  }
+
+  if (rc != 1) {
+    FAIL("expected rc=1 for unsupported return coercion");
+    return;
+  }
+  const char *err = hew_codegen_last_error();
+  if (!strstr(err, "MLIR generation failed")) {
+    FAIL("expected MLIR generation failure");
+    return;
+  }
+  if (stderrText.find("coerceType: no known conversion") == std::string::npos) {
+    FAIL("expected unsupported coercion diagnostic");
+    return;
+  }
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for unsupported coercion");
+    return;
+  }
+  PASS();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Successful emission tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -545,6 +672,7 @@ int main() {
   test_object_mode_without_path_returns_error();
   test_object_mode_empty_path_returns_error();
   test_emit_mlir_verification_report_includes_details();
+  test_unsupported_return_coercion_fails_before_verifier();
 
   // Successful emission
   test_emit_mlir_produces_output();

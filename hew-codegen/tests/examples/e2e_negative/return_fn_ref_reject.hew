@@ -1,0 +1,12 @@
+// Negative test: return sinks must reject unsupported function-ref -> int
+// coercions instead of forwarding invalid SSA values into store/return ops.
+fn forty_two() -> int { 42 }
+
+fn bad(flag: bool) -> int {
+    if flag {
+        return forty_two;
+    }
+    forty_two
+}
+
+fn main() {}

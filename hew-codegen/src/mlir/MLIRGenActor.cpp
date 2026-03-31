@@ -345,7 +345,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         }
 
         // Generate the receive fn body (yields will call hew_gen_yield)
-        generateBlock(recv.body);
+        generateBlock(recv.body, /*statementPosition=*/true);
 
         // Ensure terminator
         if (!hasRealTerminator(builder.getInsertionBlock()))
@@ -541,7 +541,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     resolveFunctionDropExclusionCandidates();
 
     // Generate function body
-    mlir::Value bodyValue = generateBlock(recv.body);
+    mlir::Value bodyValue = generateBlock(recv.body, /*statementPosition=*/resultTypes.empty());
 
     // Pop the param drop scope — popDropScope emits drops for owned params
     // (excluding any trailing-expression variable via funcLevelDropExcludeVars)
@@ -556,7 +556,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     // Emit return
     if (!hasRealTerminator(builder.getInsertionBlock())) {
       if (!resultTypes.empty() && bodyValue) {
-        bodyValue = coerceType(bodyValue, resultTypes[0], location);
+        bodyValue = coerceTypeForSink(bodyValue, resultTypes[0], location);
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
       } else {
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
@@ -617,7 +617,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     }
 
     // Generate init block body
-    generateBlock(decl.init->body);
+    generateBlock(decl.init->body, /*statementPosition=*/true);
 
     // Ensure terminator
     if (!hasRealTerminator(builder.getInsertionBlock()))
@@ -648,7 +648,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     declareVariable("self", selfPtr);
 
     // Generate terminate block body
-    generateBlock(decl.terminate->body);
+    generateBlock(decl.terminate->body, /*statementPosition=*/true);
 
     // Ensure terminator
     if (!hasRealTerminator(builder.getInsertionBlock()))

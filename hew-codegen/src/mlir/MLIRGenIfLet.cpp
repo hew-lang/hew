@@ -78,7 +78,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
     bindConstructorPatternVars(*ctorPat, scrutinee, location);
 
     // Generate the then body
-    generateBlock(stmt.body);
+    generateBlock(stmt.body, /*statementPosition=*/true);
 
     ensureYieldTerminator(location);
   }
@@ -86,7 +86,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   // Else region (if present)
   if (hasElse) {
     builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    generateBlock(*stmt.else_body);
+    generateBlock(*stmt.else_body, /*statementPosition=*/true);
 
     ensureYieldTerminator(location);
   }

@@ -261,7 +261,9 @@ private:
   // ── Block lowering ───────────────────────────────────────────────
   /// Generates all statements in a block and returns the block's trailing
   /// expression value (or nullptr if the block has no trailing expression).
-  mlir::Value generateBlock(const ast::Block &block);
+  /// When statementPosition is true, final if/match statements are lowered as
+  /// plain statements instead of implicit block results.
+  mlir::Value generateBlock(const ast::Block &block, bool statementPosition = false);
 
   // ── Match ────────────────────────────────────────────────────────
   void generateMatchStmt(const ast::StmtMatch &stmt);
@@ -422,6 +424,11 @@ private:
   /// Coerce a value to a target type (e.g., int-to-float promotion).
   mlir::Value coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
                          bool isUnsigned = false);
+  /// Sink-hardening wrapper around coerceType(). Guarantees the returned value
+  /// has targetType by substituting a typed default on coercion failure and
+  /// incrementing errorCount_ so generation still fails closed.
+  mlir::Value coerceTypeForSink(mlir::Value value, mlir::Type targetType,
+                                mlir::Location location);
 
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.

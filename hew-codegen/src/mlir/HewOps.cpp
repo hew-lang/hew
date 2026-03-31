@@ -1212,45 +1212,15 @@ void hew::HashMapFreeOp::getCanonicalizationPatterns(mlir::RewritePatternSet &re
 // StringConcatOp — canonicalization
 //===----------------------------------------------------------------------===//
 
-namespace {
-struct EliminateIdentityConcat : public mlir::OpRewritePattern<hew::StringConcatOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  mlir::LogicalResult matchAndRewrite(hew::StringConcatOp op,
-                                      mlir::PatternRewriter &rewriter) const override {
-    // Check if a value is a ConstantOp referencing a GlobalStringOp with ""
-    auto isEmptyString = [&](mlir::Value v) -> bool {
-      auto constOp = v.getDefiningOp<hew::ConstantOp>();
-      if (!constOp)
-        return false;
-      auto strAttr = llvm::dyn_cast<mlir::StringAttr>(constOp.getValue());
-      if (!strAttr)
-        return false;
-      auto module = op->getParentOfType<mlir::ModuleOp>();
-      if (!module)
-        return false;
-      auto globalStr = module.lookupSymbol<hew::GlobalStringOp>(strAttr.getValue());
-      if (!globalStr)
-        return false;
-      return globalStr.getValue().empty();
-    };
-
-    if (isEmptyString(op.getRhs())) {
-      rewriter.replaceOp(op, op.getLhs());
-      return mlir::success();
-    }
-    if (isEmptyString(op.getLhs())) {
-      rewriter.replaceOp(op, op.getRhs());
-      return mlir::success();
-    }
-    return mlir::failure();
-  }
-};
-} // namespace
-
 void hew::StringConcatOp::getCanonicalizationPatterns(mlir::RewritePatternSet &results,
                                                       mlir::MLIRContext *context) {
-  results.add<EliminateIdentityConcat>(context);
+  // Intentionally empty.  The previous EliminateIdentityConcat pattern
+  // replaced concat("", s) / concat(s, "") with the non-empty operand,
+  // but that aliases the materialized temporary registered for drop.
+  // When the concat result is also bound to a variable, both drop entries
+  // free the same pointer — a double-free that crashes on real workloads.
+  // The runtime hew_string_concat already handles empty strings correctly
+  // (always allocates a fresh buffer).  Use .clone() for explicit copies.
 }
 
 //===----------------------------------------------------------------------===//

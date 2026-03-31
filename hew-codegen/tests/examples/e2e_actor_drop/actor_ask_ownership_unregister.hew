@@ -1,0 +1,37 @@
+// Regression: actor ask with an identifier arg whose type is NOT in the
+// deep-copy set (String/Vec/HashMap/Closure) must call unregisterDroppable
+// so the sender's scope does NOT fire the user drop after ownership has
+// transferred to the receive handler.
+//
+// Token has a custom impl Drop that prints "drop:<id>".
+// Before the fix, the sender retained a DropEntry for `tok`, which caused
+// "drop:7" to appear AFTER "done" (sender scope-exit fires after the ask
+// returns, i.e. after ownership is gone → wrong).
+// With the fix, unregisterDroppable removes the entry and "drop:7" does
+// NOT appear after "done".
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        println(f"drop:{t.id}");
+    }
+}
+
+actor Vault {
+    receive fn store(t: Token) -> int {
+        t.id
+    }
+}
+
+fn main() {
+    let v = spawn Vault;
+    let tok = Token { id: 7 };
+    let n = await v.store(tok);
+    // If unregisterDroppable did NOT fire, "drop:7" would appear here,
+    // indicating the sender still owns (and drops) a value it transferred.
+    println(n);
+    println("done");
+}

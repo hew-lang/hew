@@ -1508,6 +1508,23 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
                               builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
                               /*timeout_ms=*/mlir::IntegerAttr{});
 
+  // Ownership parity with the non-wire send path: String, Vec, HashMap, and
+  // Closure are deep-copied at the actor boundary so the sender retains
+  // ownership and drops normally.  Everything else passes the raw pointer
+  // through — the receiver owns it, so the sender must NOT drop.
+  // ask has no wire path, so this applies unconditionally.
+  for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
+    const auto &argSpanned = ast::callArgExpr(args[i]);
+    auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind);
+    if (!identExpr)
+      continue;
+    auto argType = (*argVals)[i].getType();
+    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
+                  hew::ClosureType>(argType))
+      continue;
+    unregisterDroppable(identExpr->name);
+  }
+
   if (!recvInfo->returnType.has_value())
     return nullptr; // void handler — result is discarded by the caller
   return askOp.getResult();

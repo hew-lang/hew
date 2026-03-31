@@ -8,6 +8,12 @@
 
 #include "hew/codegen_capi.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +30,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
+
+namespace hew::codegen_detail {
+std::string formatEmitMlirVerificationFailure(mlir::ModuleOp module);
+}
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -113,6 +123,21 @@ static HewCodegenOptions makeOptions(HewCodegenMode mode) {
   opts.output_path = nullptr;
   opts.target_triple = nullptr;
   return opts;
+}
+
+static mlir::ModuleOp makeInvalidVerifierFailureModule(mlir::MLIRContext &context) {
+  mlir::OpBuilder builder(&context);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  auto f64Type = builder.getF64Type();
+  auto funcType = builder.getFunctionType({}, {f64Type});
+  auto funcOp = mlir::func::FuncOp::create(builder, loc, "main", funcType);
+  module.push_back(funcOp);
+
+  auto *entryBlock = funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+  mlir::func::ReturnOp::create(builder, loc);
+  return module;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -277,6 +302,38 @@ static void test_object_mode_empty_path_returns_error() {
   int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
   if (rc != 1) {
     FAIL("expected rc=1 for object mode with empty path");
+    return;
+  }
+  PASS();
+}
+
+// The full EmitMlir C API path re-verifies a module that MLIRGen already
+// verifies before returning it. Exercise the seam-local formatter directly so
+// the embedded error text stays deterministic.
+static void test_emit_mlir_verification_report_includes_details() {
+  TEST(emit_mlir_verification_report_includes_details);
+
+  mlir::MLIRContext context;
+  context.disableMultithreading();
+  context.loadDialect<mlir::func::FuncDialect>();
+
+  auto module = makeInvalidVerifierFailureModule(context);
+  std::string verifierFailure = hew::codegen_detail::formatEmitMlirVerificationFailure(module);
+  if (verifierFailure.empty()) {
+    FAIL("expected verifier failure report");
+    return;
+  }
+  if (verifierFailure.find("module verification failed while emitting MLIR") ==
+      std::string::npos) {
+    FAIL("expected EmitMlir stage summary in error message");
+    return;
+  }
+  if (verifierFailure.find("func.return") == std::string::npos) {
+    FAIL("expected verifier diagnostic details in error message");
+    return;
+  }
+  if (verifierFailure.find("MLIR module dump:") == std::string::npos) {
+    FAIL("expected module dump header in error message");
     return;
   }
   PASS();
@@ -487,6 +544,7 @@ int main() {
   test_last_error_cleared_on_new_call();
   test_object_mode_without_path_returns_error();
   test_object_mode_empty_path_returns_error();
+  test_emit_mlir_verification_report_includes_details();
 
   // Successful emission
   test_emit_mlir_produces_output();

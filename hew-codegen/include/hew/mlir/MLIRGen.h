@@ -72,7 +72,8 @@ public:
 
 private:
   // ── Type conversion ──────────────────────────────────────────────
-  mlir::Type convertType(const ast::TypeExpr &type);
+  mlir::Type convertType(const ast::TypeExpr &type,
+                         std::optional<mlir::Location> errorLoc = std::nullopt);
 
   /// Convert a TypeExpr to an MLIR type, returning nullptr on failure.
   /// Calls convertType() and checks the result with isValidType().
@@ -80,25 +81,32 @@ private:
   /// error from convertType()), increments errorCount_, and returns nullptr.
   /// Use this at call sites that consume the type — it prevents silent
   /// NoneType propagation and centralizes the validation boilerplate.
-  mlir::Type convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context);
+  mlir::Type convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context,
+                                std::optional<mlir::Location> errorLoc = std::nullopt);
 
   mlir::Type defaultIntType();
   mlir::Type defaultFloatType();
 
   // ── Top-level items ──────────────────────────────────────────────
-  void generateItem(const ast::Item &item);
+  void generateItem(const ast::Item &item, std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void registerTypeDecl(const ast::TypeDecl &decl);
   void generateIndirectEnumDropFunc(const std::string &enumName);
-  void registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride = "");
-  void generateImplDecl(const ast::ImplDecl &decl);
+  void registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride = "",
+                                 std::optional<mlir::Location> fallbackLoc = std::nullopt);
+  void generateImplDecl(const ast::ImplDecl &decl,
+                        std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void registerTraitDecl(const ast::TraitDecl &decl);
   void generateTraitDefaultMethod(const ast::TraitMethod &method, const std::string &targetTypeName,
-                                  const std::string &mangledName);
-  void generateExternBlock(const ast::ExternBlock &block);
+                                  const std::string &mangledName,
+                                  std::optional<mlir::Location> fallbackLoc = std::nullopt);
+  void generateExternBlock(const ast::ExternBlock &block,
+                           std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void generateImport(const ast::ImportDecl &decl);
-  mlir::func::FuncOp generateFunction(const ast::FnDecl &fn, const std::string &nameOverride = "");
+  mlir::func::FuncOp generateFunction(const ast::FnDecl &fn, const std::string &nameOverride = "",
+                                      std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void generateGeneratorFunction(const ast::FnDecl &fn);
-  void registerActorDecl(const ast::ActorDecl &decl);
+  void registerActorDecl(const ast::ActorDecl &decl,
+                         std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void generateActorDecl(const ast::ActorDecl &decl);
   void generateWireDecl(const ast::WireDecl &decl);
   /// Pre-register wire struct type with wire-aware field types so that actor

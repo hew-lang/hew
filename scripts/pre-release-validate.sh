@@ -72,19 +72,35 @@ REMOTE_BUILD_TIMEOUT="${HEW_TIMEOUT_REMOTE_BUILD:-1800}"
 SMOKE_TIMEOUT="${HEW_TIMEOUT_SMOKE:-120}"
 TEST_TIMEOUT="${HEW_TIMEOUT_TEST:-900}"
 
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_BIN=timeout
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_BIN=gtimeout
-else
+# Detect a timeout binary; prefer one that supports GNU --kill-after=N.
+# Sets TIMEOUT_CMD array: ("binary" ["--kill-after=5"])
+_pick_timeout_cmd() {
+    local bin
+    for bin in timeout gtimeout; do
+        command -v "$bin" >/dev/null 2>&1 || continue
+        # Probe: run 'true' with a 10s budget; GNU timeout accepts --kill-after here.
+        if "$bin" --kill-after=1 10 true 2>/dev/null; then
+            TIMEOUT_CMD=("$bin" --kill-after=5)
+            return 0
+        fi
+    done
+    # Fallback: use whatever is available without --kill-after (e.g. BSD/wrapper)
+    for bin in timeout gtimeout; do
+        command -v "$bin" >/dev/null 2>&1 || continue
+        TIMEOUT_CMD=("$bin")
+        return 0
+    done
     echo "error: timeout or gtimeout is required for bounded execution" >&2
     exit 1
-fi
+}
+TIMEOUT_CMD=()
+_pick_timeout_cmd
+unset -f _pick_timeout_cmd
 
 run_with_timeout() {
     local seconds="$1"
     shift
-    "$TIMEOUT_BIN" --kill-after=5 "$seconds" "$@"
+    "${TIMEOUT_CMD[@]}" "$seconds" "$@"
     local status=$?
     # 124 = soft timeout; 137 = SIGKILL from --kill-after fired
     if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then

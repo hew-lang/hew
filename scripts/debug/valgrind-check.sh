@@ -40,19 +40,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_BIN=timeout
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_BIN=gtimeout
-else
+_pick_timeout_cmd() {
+    local bin
+    for bin in timeout gtimeout; do
+        command -v "$bin" >/dev/null 2>&1 || continue
+        if "$bin" --kill-after=1 10 true 2>/dev/null; then
+            TIMEOUT_CMD=("$bin" --kill-after=5)
+            return 0
+        fi
+    done
+    for bin in timeout gtimeout; do
+        command -v "$bin" >/dev/null 2>&1 || continue
+        TIMEOUT_CMD=("$bin")
+        return 0
+    done
     echo "error: timeout or gtimeout is required for bounded execution" >&2
     exit 1
-fi
+}
+TIMEOUT_CMD=()
+_pick_timeout_cmd
+unset -f _pick_timeout_cmd
 
 run_with_timeout() {
     local seconds="$1"
     shift
-    "$TIMEOUT_BIN" --kill-after=5 "$seconds" "$@"
+    "${TIMEOUT_CMD[@]}" "$seconds" "$@"
 }
 
 # Programs to test, covering different subsystems.
@@ -78,7 +90,7 @@ for prog in "${PROGRAMS[@]}"; do
         build_status=$?
     fi
     if [ "$build_status" -ne 0 ]; then
-        if [ "$build_status" -eq 124 ]; then
+        if [ "$build_status" -eq 124 ] || [ "$build_status" -eq 137 ]; then
             echo "FAIL  $name  (timed out after ${TIMEOUT}s during build)"
             FAIL=1
         else
@@ -95,7 +107,7 @@ for prog in "${PROGRAMS[@]}"; do
         run_status=$?
     fi
 
-    if [ "$run_status" -eq 124 ]; then
+    if [ "$run_status" -eq 124 ] || [ "$run_status" -eq 137 ]; then
         echo "FAIL  $name  (timed out after ${TIMEOUT}s under valgrind)"
         FAIL=1
         continue

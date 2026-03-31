@@ -4648,8 +4648,48 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
               recordYieldIdent(fid->name, depth);
         } else if (auto *te = std::get_if<ast::ExprTuple>(&expr.kind)) {
           for (const auto &elem : te->elements)
-            if (auto *eid = std::get_if<ast::ExprIdentifier>(&elem->value.kind))
-              recordYieldIdent(eid->name, depth);
+            collectYieldExpr(elem->value, depth);
+        } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
+          // Descend into enum variant constructors (Some, Ok, Err, …) only —
+          // ownership of their argument transfers to the constructed value.
+          // Regular function calls borrow arguments, so they are excluded.
+          // Heuristic mirrors collectExcludeVars: simple uppercase identifier
+          // with no '::' separators and no '_' (not a generated name).
+          bool isVariantCtor = false;
+          if (auto *id = std::get_if<ast::ExprIdentifier>(&callE->function->value.kind)) {
+            const auto &name = id->name;
+            if (!name.empty() && name.find("::") == std::string::npos &&
+                name.find('_') == std::string::npos &&
+                std::isupper(static_cast<unsigned char>(name[0])))
+              isVariantCtor = true;
+          }
+          if (isVariantCtor) {
+            for (const auto &arg : callE->args)
+              collectYieldExpr(ast::callArgExpr(arg).value, depth);
+          }
+        } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+          // ExprIf doesn't push scopes — branches stay at same depth
+          if (ifE->then_block)
+            collectYieldExpr(ifE->then_block->value, depth);
+          if (ifE->else_block && *ifE->else_block)
+            collectYieldExpr((*ifE->else_block)->value, depth);
+        } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+          // ExprIfLet bodies are blocks → collectYieldsFromBlock pushes scope
+          collectYieldsFromBlock(ifLet->body, depth + 1);
+          if (ifLet->else_body)
+            collectYieldsFromBlock(*ifLet->else_body, depth + 1);
+        } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+          // ExprMatch arms don't push scopes — stay at same depth
+          for (const auto &arm : matchE->arms) {
+            if (arm.body)
+              collectYieldExpr(arm.body->value, depth);
+          }
+        } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+          // ExprBlock → collectYieldsFromBlock pushes scope
+          collectYieldsFromBlock(blockE->block, depth + 1);
+        } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+          // ExprUnsafe wraps a Block — descend like ExprBlock
+          collectYieldsFromBlock(unsafeE->block, depth + 1);
         }
       };
 

@@ -1811,8 +1811,70 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Main
+// Test: Generator with wrapped yields (ExprCall variant ctor) lowers correctly
 // ============================================================================
+static void test_generator_wrapped_yield_drop_exclusion() {
+  TEST(generator_wrapped_yield_drop_exclusion);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  // A generator that yields a Drop-implementing Token wrapped inside an
+  // enum variant constructor (Item(t)).  With the bug, collectYieldExpr
+  // skipped ExprCall nodes so `t` was NOT excluded from scope drops —
+  // the generator body would emit a spurious drop at every yield site.
+  // The module must generate and verify cleanly with the fix applied.
+  auto module = generateMLIR(ctx, R"(
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        println(t.id);
+    }
+}
+
+enum Slot {
+    Item(Token);
+    Empty;
+}
+
+gen fn slotted(n: int) -> Slot {
+    var i = 0;
+    loop {
+        if i >= n { break; }
+        let t = Token { id: i + 1 };
+        yield Item(t);
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    let g = slotted(1);
+    match g.next() {
+        Item(t) => { println(t.id); },
+        Empty => {},
+    }
+    return 0;
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for generator with wrapped yield");
+    return;
+  }
+
+  if (mlir::failed(mlir::verify(module))) {
+    FAIL("MLIR verification failed for generator with wrapped yield");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+
 
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
@@ -1844,6 +1906,7 @@ int main() {
   test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();
   test_join_emits_send_failure_cleanup();
+  test_generator_wrapped_yield_drop_exclusion();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

@@ -1,0 +1,60 @@
+// Regression test: generator drop exclusion for wrapped yields (ExprCall).
+//
+// When a Drop-implementing value is yielded through an enum variant constructor
+// — e.g. Item(t), Some(t), Ok(t) — collectYieldExpr must descend into the
+// argument so the owned inner variable is excluded from scope drops at the
+// yield site.
+//
+// Without the fix, collectYieldExpr skipped ExprCall nodes entirely, so `t`
+// was not recorded in funcLevelDropExcludeVars.  The generator's loop-body
+// popDropScope would therefore emit a spurious drop of `t` immediately after
+// the coroutine suspended — a double-free for any Drop-implementing type.
+//
+// With the fix the generator only suspends; the caller holds the sole live
+// Token inside the Item wrapper and drops it when it leaves scope.
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        print("drop ");
+        println(t.id);
+    }
+}
+
+enum Slot {
+    Item(Token);
+    Empty;
+}
+
+gen fn slotted_tokens(n: int) -> Slot {
+    var i = 0;
+    loop {
+        if i >= n { break; }
+        let t = Token { id: i + 1 };
+        yield Item(t);   // ExprCall: collectYieldExpr must descend and exclude t
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    let g = slotted_tokens(2);
+
+    match g.next() {
+        Item(t) => {
+            println(t.id);
+        }
+        Empty => {}
+    }
+
+    match g.next() {
+        Item(t) => {
+            println(t.id);
+        }
+        Empty => {}
+    }
+
+    return 0;
+}

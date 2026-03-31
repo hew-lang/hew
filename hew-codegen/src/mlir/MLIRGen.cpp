@@ -4603,8 +4603,94 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     // null-after-move tracking to avoid double-frees when a param is consumed
     // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
+    // Pre-scan the generator body for yield expressions and populate
+    // funcLevelDropExcludeVars / funcLevelReturnVarNames before body
+    // generation.  Mirrors the return-expression collection in generateFunction:
+    // variables whose ownership transfers via yield must not be dropped by the
+    // generator's own scope cleanup (the caller takes ownership on each yield).
+    //
+    // For each yielded identifier found at AST-scan depth `depth` we record it
+    // at every depth in [0, depth].  This handles the cross-scope case where a
+    // variable is declared in an outer block but yielded from an inner loop or
+    // branch, ensuring the enclosing scope's popDropScope correctly excludes it.
+    {
+      using ExcludeSet = std::set<std::pair<std::string, size_t>>;
+
+      auto recordYieldIdent = [&](const std::string &name, size_t depth) {
+        for (size_t d = 0; d <= depth; ++d)
+          funcLevelDropExcludeVars.insert({name, d});
+      };
+
+      std::function<void(const ast::Expr &, size_t)> collectYieldExpr;
+      std::function<void(const ast::Block &, size_t)> collectYieldsFromBlock;
+
+      collectYieldExpr = [&](const ast::Expr &expr, size_t depth) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+          recordYieldIdent(id->name, depth);
+        } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
+          for (const auto &[fname, fval] : si->fields)
+            if (auto *fid = std::get_if<ast::ExprIdentifier>(&fval->value.kind))
+              recordYieldIdent(fid->name, depth);
+        } else if (auto *te = std::get_if<ast::ExprTuple>(&expr.kind)) {
+          for (const auto &elem : te->elements)
+            if (auto *eid = std::get_if<ast::ExprIdentifier>(&elem->value.kind))
+              recordYieldIdent(eid->name, depth);
+        }
+      };
+
+      collectYieldsFromBlock = [&](const ast::Block &blk, size_t depth) {
+        // Trailing expression may itself be a yield.
+        if (blk.trailing_expr) {
+          if (auto *yld = std::get_if<ast::ExprYield>(&blk.trailing_expr->value.kind)) {
+            if (yld->value && *yld->value)
+              collectYieldExpr((*yld->value)->value, depth);
+          }
+        }
+        for (const auto &stmt : blk.stmts) {
+          if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt->value.kind)) {
+            if (auto *yld = std::get_if<ast::ExprYield>(&exprStmt->expr.value.kind)) {
+              if (yld->value && *yld->value)
+                collectYieldExpr((*yld->value)->value, depth);
+              continue;
+            }
+          }
+          if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+            collectYieldsFromBlock(ifStmt->then_block, depth + 1);
+            if (ifStmt->else_block) {
+              if (ifStmt->else_block->block)
+                collectYieldsFromBlock(*ifStmt->else_block->block, depth + 1);
+            }
+          } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+            collectYieldsFromBlock(forStmt->body, depth + 1);
+          } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+            collectYieldsFromBlock(whileStmt->body, depth + 1);
+          } else if (auto *loopStmt = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
+            collectYieldsFromBlock(loopStmt->body, depth + 1);
+          } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+            for (const auto &arm : matchStmt->arms) {
+              if (!arm.body) continue;
+              if (auto *yld = std::get_if<ast::ExprYield>(&arm.body->value.kind)) {
+                if (yld->value && *yld->value)
+                  collectYieldExpr((*yld->value)->value, depth);
+              } else if (auto *blkE = std::get_if<ast::ExprBlock>(&arm.body->value.kind)) {
+                collectYieldsFromBlock(blkE->block, depth + 1);
+              }
+            }
+          }
+        }
+      };
+
+      collectYieldsFromBlock(fn.body, 0);
+      funcLevelReturnVarNames.clear();
+      for (const auto &[name, depth] : funcLevelDropExcludeVars)
+        funcLevelReturnVarNames.insert(name);
+      resolveFunctionDropExclusionCandidates();
+    }
+
     // Generate the function body naturally — loops, conditionals all work
     generateBlock(fn.body, /*statementPosition=*/true);
+    funcLevelDropExcludeVars.clear();
+    funcLevelReturnVarNames.clear();
 
     // Ensure terminator
     auto *currentBlock = builder.getInsertionBlock();

@@ -4623,6 +4623,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
 
       std::function<void(const ast::Expr &, size_t)> collectYieldExpr;
       std::function<void(const ast::Block &, size_t)> collectYieldsFromBlock;
+      std::function<void(const ast::StmtIf &, size_t)> collectYieldsFromStmtIf;
 
       collectYieldExpr = [&](const ast::Expr &expr, size_t depth) {
         if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
@@ -4635,6 +4636,21 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
           for (const auto &elem : te->elements)
             if (auto *eid = std::get_if<ast::ExprIdentifier>(&elem->value.kind))
               recordYieldIdent(eid->name, depth);
+        }
+      };
+
+      // Handles else-if chains: else-if does not add a scope (depth unchanged),
+      // else-block bodies do (depth + 1), mirroring collectExcludeVarsFromStmtIf.
+      collectYieldsFromStmtIf = [&](const ast::StmtIf &ifStmt, size_t depth) {
+        collectYieldsFromBlock(ifStmt.then_block, depth + 1);
+        if (ifStmt.else_block) {
+          if (ifStmt.else_block->block)
+            collectYieldsFromBlock(*ifStmt.else_block->block, depth + 1);
+          if (ifStmt.else_block->if_stmt) {
+            const auto &nested = ifStmt.else_block->if_stmt->value;
+            if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+              collectYieldsFromStmtIf(*nestedIf, depth); // else-if: same depth
+          }
         }
       };
 
@@ -4655,15 +4671,18 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
             }
           }
           if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
-            collectYieldsFromBlock(ifStmt->then_block, depth + 1);
-            if (ifStmt->else_block) {
-              if (ifStmt->else_block->block)
-                collectYieldsFromBlock(*ifStmt->else_block->block, depth + 1);
-            }
+            collectYieldsFromStmtIf(*ifStmt, depth);
+          } else if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&stmt->value.kind)) {
+            // if-let body and optional else body each push a scope.
+            collectYieldsFromBlock(ifLetStmt->body, depth + 1);
+            if (ifLetStmt->else_body)
+              collectYieldsFromBlock(*ifLetStmt->else_body, depth + 1);
           } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
             collectYieldsFromBlock(forStmt->body, depth + 1);
           } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
             collectYieldsFromBlock(whileStmt->body, depth + 1);
+          } else if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
+            collectYieldsFromBlock(whileLetStmt->body, depth + 1);
           } else if (auto *loopStmt = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
             collectYieldsFromBlock(loopStmt->body, depth + 1);
           } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {

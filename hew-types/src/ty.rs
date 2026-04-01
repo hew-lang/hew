@@ -224,96 +224,93 @@ impl Ty {
         })
     }
 
+    #[must_use]
+    fn canonical_named_builtin(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "Option" => "Option",
+            "Result" => "Result",
+            "Vec" => "Vec",
+            "HashMap" => "HashMap",
+            "ActorRef" => "ActorRef",
+            "Actor" => "Actor",
+            "Task" => "Task",
+            "Stream" | "stream.Stream" => "Stream",
+            "Sink" | "stream.Sink" => "Sink",
+            "StreamPair" => "StreamPair",
+            "Sender" | "channel.Sender" => "Sender",
+            "Receiver" | "channel.Receiver" => "Receiver",
+            "Generator" => "Generator",
+            "AsyncGenerator" => "AsyncGenerator",
+            "Range" => "Range",
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn is_named_builtin(name: &str) -> bool {
+        Self::canonical_named_builtin(name).is_some()
+    }
+
     // -- Constructor helpers: all produce Ty::Named --
 
     /// Construct `Option<inner>`.
     #[must_use]
     pub fn option(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Option".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Option".to_string(), vec![inner])
     }
 
     /// Construct `Result<ok, err>`.
     #[must_use]
     pub fn result(ok: Ty, err: Ty) -> Ty {
-        Ty::Named {
-            name: "Result".to_string(),
-            args: vec![ok, err],
-        }
+        Self::normalize_named("Result".to_string(), vec![ok, err])
     }
 
     /// Construct `ActorRef<inner>`.
     #[must_use]
     pub fn actor_ref(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "ActorRef".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("ActorRef".to_string(), vec![inner])
     }
 
     /// Construct `Sender<inner>`.
     #[must_use]
     pub fn sender(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Sender".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Sender".to_string(), vec![inner])
     }
 
     /// Construct `Receiver<inner>`.
     #[must_use]
     pub fn receiver(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Receiver".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Receiver".to_string(), vec![inner])
     }
 
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Stream".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Stream".to_string(), vec![inner])
     }
 
     /// Construct `Sink<inner>`.
     #[must_use]
     pub fn sink(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Sink".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Sink".to_string(), vec![inner])
     }
 
     /// Construct `Generator<yields, returns>`.
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {
-        Ty::Named {
-            name: "Generator".to_string(),
-            args: vec![yields, returns],
-        }
+        Self::normalize_named("Generator".to_string(), vec![yields, returns])
     }
 
     /// Construct `AsyncGenerator<yields>`.
     #[must_use]
     pub fn async_generator(yields: Ty) -> Ty {
-        Ty::Named {
-            name: "AsyncGenerator".to_string(),
-            args: vec![yields],
-        }
+        Self::normalize_named("AsyncGenerator".to_string(), vec![yields])
     }
 
     /// Construct `Range<inner>`.
     #[must_use]
     pub fn range(inner: Ty) -> Ty {
-        Ty::Named {
-            name: "Range".to_string(),
-            args: vec![inner],
-        }
+        Self::normalize_named("Range".to_string(), vec![inner])
     }
 
     // -- Accessor helpers: match on Named patterns --
@@ -421,10 +418,14 @@ impl Ty {
         self.as_sink().is_some()
     }
 
-    /// Identity: just constructs `Ty::Named`. Kept for compatibility with
-    /// callers that normalized named types to dedicated variants.
+    /// Canonicalize known named builtins to their shared spelling before
+    /// constructing `Ty::Named`.
     #[must_use]
     pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
+        let name = match Self::canonical_named_builtin(&name) {
+            Some(canonical) if canonical != name => canonical.to_string(),
+            _ => name,
+        };
         Ty::Named { name, args }
     }
 

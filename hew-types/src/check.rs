@@ -6250,16 +6250,7 @@ impl Checker {
                     // linked through unification.
                     if key == "channel.new" {
                         let t = Ty::Var(TypeVar::fresh());
-                        return Ty::Tuple(vec![
-                            Ty::Named {
-                                name: "channel.Sender".to_string(),
-                                args: vec![t.clone()],
-                            },
-                            Ty::Named {
-                                name: "channel.Receiver".to_string(),
-                                args: vec![t],
-                            },
-                        ]);
+                        return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
                     return sig.return_type;
                 }
@@ -8049,10 +8040,7 @@ impl Checker {
                 // Handle `Self` type
                 if name == "Self" {
                     if let Some((self_type_name, self_type_args)) = &self.current_self_type {
-                        return Ty::Named {
-                            name: self_type_name.clone(),
-                            args: self_type_args.clone(),
-                        };
+                        return Ty::normalize_named(self_type_name.clone(), self_type_args.clone());
                     }
                 }
                 if let Some(alias_name) = name.strip_prefix("Self::") {
@@ -8149,10 +8137,7 @@ impl Checker {
                             }
                             _ => args,
                         };
-                        Ty::Named {
-                            name: resolved_name,
-                            args,
-                        }
+                        Ty::normalize_named(resolved_name, args)
                     }
                 }
             }
@@ -9080,6 +9065,35 @@ mod tests {
         // but fn_sigs is populated in pass 1 (before body checking), so the signature
         // should already reflect the resolved return type.
         assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
+    }
+
+    #[test]
+    fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
+        let source = concat!(
+            "import std::stream;\n",
+            "import std::channel::channel;\n",
+            "\n",
+            "fn stream_id(s: stream.Stream<int>) -> stream.Stream<int> { s }\n",
+            "fn close_sender(tx: channel.Sender) {\n",
+            "    tx.close();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+        assert_eq!(output.fn_sigs["stream_id"].params[0], Ty::stream(Ty::I64));
+        assert_eq!(output.fn_sigs["stream_id"].return_type, Ty::stream(Ty::I64));
+        assert!(matches!(
+            &output.fn_sigs["close_sender"].params[0],
+            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        ));
     }
 
     #[test]

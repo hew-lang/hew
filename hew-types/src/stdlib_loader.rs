@@ -235,10 +235,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                             return Ty::option(type_expr_to_ty(&first.0, module_short));
                         }
                     }
-                    Ty::Named {
-                        name: "Option".to_string(),
-                        args: vec![],
-                    }
+                    Ty::normalize_named("Option".to_string(), vec![])
                 }
                 // Result<O, E> → Ty::result() helper
                 "Result" => {
@@ -250,14 +247,10 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                             );
                         }
                     }
-                    Ty::Named {
-                        name: "Result".to_string(),
-                        args: vec![],
-                    }
+                    Ty::normalize_named("Result".to_string(), vec![])
                 }
-                // Built-in generic/language types — do NOT module-qualify
-                "Vec" | "HashMap" | "ActorRef" | "Actor" | "Task" | "Stream" | "Sink"
-                | "StreamPair" => {
+                // Canonical named builtins — do NOT module-qualify.
+                builtin if Ty::is_named_builtin(builtin) => {
                     let args = type_args
                         .as_ref()
                         .map(|a| {
@@ -266,15 +259,12 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    Ty::Named {
-                        name: name.clone(),
-                        args,
-                    }
+                    Ty::normalize_named(builtin.to_string(), args)
                 }
                 // Qualified handle type like "json.Value"
-                n if n.contains('.') => Ty::Named {
-                    name: n.to_string(),
-                    args: type_args
+                n if n.contains('.') => Ty::normalize_named(
+                    n.to_string(),
+                    type_args
                         .as_ref()
                         .map(|args| {
                             args.iter()
@@ -282,11 +272,11 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                },
+                ),
                 // Unqualified type name — qualify with module short name
-                other => Ty::Named {
-                    name: format!("{module_short}.{other}"),
-                    args: type_args
+                other => Ty::normalize_named(
+                    format!("{module_short}.{other}"),
+                    type_args
                         .as_ref()
                         .map(|args| {
                             args.iter()
@@ -294,7 +284,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                },
+                ),
             }
         }
         TypeExpr::Option(inner) => Ty::option(type_expr_to_ty(&inner.0, module_short)),
@@ -607,6 +597,38 @@ mod tests {
         assert!(
             has_string_fn,
             "json module should have String-typed functions"
+        );
+    }
+
+    #[test]
+    fn channel_signatures_use_canonical_builtin_names() {
+        let info = load_module("std::channel", &test_root()).unwrap();
+
+        let clone_sig = info
+            .functions
+            .iter()
+            .find(|(name, _, _)| name == "hew_channel_sender_clone")
+            .expect("channel module should expose sender clone");
+        assert_eq!(
+            clone_sig.1,
+            vec![Ty::normalize_named("Sender".to_string(), vec![])]
+        );
+        assert_eq!(
+            clone_sig.2,
+            Ty::normalize_named("Sender".to_string(), vec![])
+        );
+
+        let new_sig = info
+            .wrapper_fns
+            .iter()
+            .find(|(name, _, _)| name == "new")
+            .expect("channel module should expose new()");
+        assert_eq!(
+            new_sig.2,
+            Ty::Tuple(vec![
+                Ty::normalize_named("Sender".to_string(), vec![]),
+                Ty::normalize_named("Receiver".to_string(), vec![]),
+            ])
         );
     }
 

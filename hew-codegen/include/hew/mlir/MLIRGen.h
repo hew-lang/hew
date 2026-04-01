@@ -116,17 +116,20 @@ private:
   /// wire structs can reference them regardless of declaration order.
   void predeclareWireHelpers(const ast::WireDecl &decl);
   /// Generate mangled method wrappers for wire types so that method dispatch
-  /// (o.to_json(), Point.from_json()) works through the standard struct path.
+  /// (o.to_json(), Point.from_json(), Status.from_yaml()) works through the
+  /// standard type-dispatch path.
   void generateWireMethodWrappers(const ast::WireDecl &decl);
   /// Return an !llvm.ptr to a NUL-terminated global string constant.
   mlir::Value wireStringPtr(mlir::Location location, llvm::StringRef value);
-  /// Generate Foo_to_{json,yaml} — parameterized by format and field name resolver.
+  /// Generate Foo_to_{json,yaml} for wire structs and unit-only wire enums —
+  /// parameterized by format and field name resolver / naming convention.
   void generateWireToSerial(
       const ast::WireDecl &decl, llvm::StringRef format,
       const std::optional<ast::NamingCase> &namingCase,
       llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
           fieldOverride);
-  /// Generate Foo_from_{json,yaml} — parameterized by format and field name resolver.
+  /// Generate Foo_from_{json,yaml} for wire structs and unit-only wire enums —
+  /// parameterized by format and field name resolver / naming convention.
   void generateWireFromSerial(
       const ast::WireDecl &decl, llvm::StringRef format,
       const std::optional<ast::NamingCase> &namingCase,

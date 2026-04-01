@@ -1003,7 +1003,11 @@ impl Checker {
         }
     }
 
-    /// Register codec methods for a wire type (encode, decode, `to_json`, `from_json`, etc.).
+    /// Register codec methods for a wire type.
+    ///
+    /// - Wire structs expose binary + JSON/YAML helpers.
+    /// - Unit-only wire enums expose JSON/YAML helpers.
+    /// - Payload-bearing wire enums do not currently expose helper methods.
     fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
             name: type_name.to_string(),
@@ -1011,12 +1015,30 @@ impl Checker {
         };
         let bytes_ty = Ty::Bytes;
 
-        // Instance methods: encode(self) -> bytes, to_json(self) -> String, to_yaml(self) -> String
-        let instance_methods = [
-            ("encode", vec![], bytes_ty.clone()),
-            ("to_json", vec![], Ty::String),
-            ("to_yaml", vec![], Ty::String),
-        ];
+        let Some(type_def) = self.type_defs.get(type_name) else {
+            return;
+        };
+        let is_wire_struct = type_def.kind == TypeDefKind::Struct;
+        let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
+            && type_def
+                .variants
+                .values()
+                .all(|variant| matches!(variant, VariantDef::Unit));
+
+        let instance_methods = if is_wire_struct {
+            vec![
+                ("encode", vec![], bytes_ty.clone()),
+                ("to_json", vec![], Ty::String),
+                ("to_yaml", vec![], Ty::String),
+            ]
+        } else if is_unit_wire_enum {
+            vec![
+                ("to_json", vec![], Ty::String),
+                ("to_yaml", vec![], Ty::String),
+            ]
+        } else {
+            vec![]
+        };
 
         if let Some(type_def) = self.type_defs.get_mut(type_name) {
             for (method_name, params, return_type) in instance_methods {
@@ -1032,12 +1054,20 @@ impl Checker {
             }
         }
 
-        // Static methods registered as fn sigs: TypeName.decode(bytes) -> Self, etc.
-        let static_methods = [
-            ("decode", vec![bytes_ty], self_ty.clone()),
-            ("from_json", vec![Ty::String], self_ty.clone()),
-            ("from_yaml", vec![Ty::String], self_ty),
-        ];
+        let static_methods = if is_wire_struct {
+            vec![
+                ("decode", vec![bytes_ty], self_ty.clone()),
+                ("from_json", vec![Ty::String], self_ty.clone()),
+                ("from_yaml", vec![Ty::String], self_ty),
+            ]
+        } else if is_unit_wire_enum {
+            vec![
+                ("from_json", vec![Ty::String], self_ty.clone()),
+                ("from_yaml", vec![Ty::String], self_ty),
+            ]
+        } else {
+            vec![]
+        };
 
         for (method_name, params, return_type) in static_methods {
             let qualified_name = format!("{type_name}.{method_name}");
@@ -1544,6 +1574,7 @@ impl Checker {
         self.registry.register_type(wd.name.clone(), field_types);
 
         self.type_defs.insert(wd.name.clone(), type_def);
+        self.register_wire_methods(&wd.name);
     }
 
     fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {

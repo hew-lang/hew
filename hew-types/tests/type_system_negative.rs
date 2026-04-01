@@ -390,6 +390,69 @@ fn duplicate_definition_same_wire_type() {
     );
 }
 
+// ── 6j. DuplicateDefinition — define same type alias twice ────────────
+
+#[test]
+fn duplicate_definition_same_type_alias() {
+    let output = typecheck(
+        r"
+        type Foo = int;
+        type Foo = int;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6k. DuplicateDefinition — type alias collides with struct ─────────
+
+#[test]
+fn duplicate_definition_type_alias_collides_with_struct() {
+    let output = typecheck(
+        r"
+        type Foo { x: int; }
+        type Foo = int;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6l. DuplicateDefinition — type alias collides with trait ──────────
+
+#[test]
+fn duplicate_definition_type_alias_collides_with_trait() {
+    let output = typecheck(
+        r"
+        trait Foo { fn render(val: Self) -> int; }
+        type Foo = int;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 7. Shadowing — inner scope binding shadows outer scope ───────────
 // Nested/child scope shadowing emits a warning (not an error); only same-scope
 // rebinding and actor field shadowing are hard errors.

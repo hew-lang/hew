@@ -870,6 +870,9 @@ impl Checker {
                     self.register_wire_decl(wd);
                 }
                 Item::TypeAlias(ta) => {
+                    if !self.register_type_namespace_name(&ta.name, span) {
+                        continue;
+                    }
                     let resolved = self.resolve_type_expr(&ta.ty.0);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                 }

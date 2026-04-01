@@ -897,7 +897,7 @@ impl Checker {
                     self.supervisor_children.insert(sd.name.clone(), children);
                 }
                 Item::Machine(md) => {
-                    if !self.register_type_namespace_name(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
                         continue;
                     }
                     self.register_machine_decl(md);
@@ -909,16 +909,38 @@ impl Checker {
     }
 
     fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
-        if let Some(prev_span) = self.type_def_spans.get(name) {
-            self.errors.push(TypeError::duplicate_definition(
-                span.clone(),
-                name,
-                prev_span.clone(),
-            ));
+        if let Some(prev_span) = self.type_def_spans.get(name).cloned() {
+            self.report_duplicate_type_namespace_name(name, span, prev_span);
             return false;
         }
 
         self.type_def_spans.insert(name.to_string(), span.clone());
+        true
+    }
+
+    fn report_duplicate_type_namespace_name(&mut self, name: &str, span: &Span, prev_span: Span) {
+        self.errors.push(TypeError::duplicate_definition(
+            span.clone(),
+            name,
+            prev_span,
+        ));
+    }
+
+    fn register_machine_type_namespace_names(&mut self, machine_name: &str, span: &Span) -> bool {
+        if let Some(prev_span) = self.type_def_spans.get(machine_name).cloned() {
+            self.report_duplicate_type_namespace_name(machine_name, span, prev_span);
+            return false;
+        }
+
+        let event_type_name = format!("{machine_name}Event");
+        if let Some(prev_span) = self.type_def_spans.get(&event_type_name).cloned() {
+            self.report_duplicate_type_namespace_name(&event_type_name, span, prev_span);
+            return false;
+        }
+
+        self.type_def_spans
+            .insert(machine_name.to_string(), span.clone());
+        self.type_def_spans.insert(event_type_name, span.clone());
         true
     }
 

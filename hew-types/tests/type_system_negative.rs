@@ -261,7 +261,111 @@ fn duplicate_definition_same_machine() {
     );
 }
 
-// ── 6g. DuplicateDefinition — define same wire type twice ────────────
+// ── 6g. DuplicateDefinition — machine companion event collides with type ──
+
+#[test]
+fn duplicate_definition_machine_companion_event_same_type() {
+    let output = typecheck(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+        type LightEvent { code: int; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_definition_machine_companion_event_type_before_machine() {
+    let output = typecheck(
+        r"
+        type LightEvent { code: int; }
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6h. DuplicateDefinition — machine companion event collides with trait ──
+
+#[test]
+fn duplicate_definition_machine_companion_event_same_trait() {
+    let output = typecheck(
+        r"
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+        trait LightEvent { fn render(val: Self) -> int; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_definition_machine_companion_event_trait_before_machine() {
+    let output = typecheck(
+        r"
+        trait LightEvent { fn render(val: Self) -> int; }
+        machine Light {
+            state Off;
+            state On;
+            event Toggle;
+            on Toggle: Off -> On;
+            on Toggle: On -> Off;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6i. DuplicateDefinition — define same wire type twice ────────────
 
 #[test]
 fn duplicate_definition_same_wire_type() {

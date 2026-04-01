@@ -599,8 +599,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // Timeout lowering still evaluates the inner expression directly while the
     // enriched AST annotates `| after` results as inferred Option<T>.
     bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
-    if (isValidType(declaredType) && !skipInferredTimeoutCoercion)
-      value = coerceType(value, declaredType, location);
+    if (isValidType(declaredType) && !skipInferredTimeoutCoercion) {
+      bool isUnsigned =
+          mlir::isa<mlir::IntegerType>(declaredType) && isUnsignedTypeExpr(stmt.ty->value);
+      value = coerceType(value, declaredType, location, isUnsigned);
+    }
   }
 
   // Extract the name from the pattern
@@ -849,8 +852,10 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   if (stmt.ty) {
     varType = convertType(stmt.ty->value);
     bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
-    if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion)
-      initValue = coerceType(initValue, varType, location);
+    if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion) {
+      bool isUnsigned = mlir::isa<mlir::IntegerType>(varType) && isUnsignedTypeExpr(stmt.ty->value);
+      initValue = coerceType(initValue, varType, location, isUnsigned);
+    }
   }
 
   if (!varType) {
@@ -1261,6 +1266,13 @@ void MLIRGen::registerDropsForVariable(
 
 void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   auto location = currentLoc;
+  auto coerceAssignedValue = [&](mlir::Value value, mlir::Type targetType) -> mlir::Value {
+    bool isUnsigned = false;
+    if (mlir::isa<mlir::IntegerType>(targetType))
+      if (auto *ty = resolvedTypeOf(stmt.target.span))
+        isUnsigned = isUnsignedTypeExpr(*ty);
+    return coerceType(value, targetType, location, isUnsigned);
+  };
 
   // Handle field assignment: self.field = value (pointer-based)
   if (auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.target.value.kind)) {
@@ -1291,7 +1303,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
             // Handle compound assignment
             if (stmt.op) {
               auto current = mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr);
-              rhs = coerceType(rhs, field.type, location);
+              rhs = coerceAssignedValue(rhs, field.type);
               bool isFloat = llvm::isa<mlir::FloatType>(field.type);
               bool isUnsigned = false;
               if (mlir::isa<mlir::IntegerType>(field.type))
@@ -1301,7 +1313,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
               if (!rhs)
                 return;
             }
-            rhs = coerceType(rhs, field.type, location);
+            rhs = coerceAssignedValue(rhs, field.type);
             mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
             return;
           }
@@ -1354,7 +1366,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       auto currentFieldVal = mlir::LLVM::ExtractValueOp::create(
           builder, location, currentStruct,
           llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
-      rhs = coerceType(rhs, targetField->type, location);
+      rhs = coerceAssignedValue(rhs, targetField->type);
       bool isFloat = llvm::isa<mlir::FloatType>(targetField->type);
       bool isUnsigned = false;
       if (mlir::isa<mlir::IntegerType>(targetField->type))
@@ -1364,7 +1376,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       if (!rhs)
         return;
     }
-    rhs = coerceType(rhs, targetField->type, location);
+    rhs = coerceAssignedValue(rhs, targetField->type);
     auto updated = mlir::LLVM::InsertValueOp::create(
         builder, location, currentStruct, rhs,
         llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
@@ -1386,7 +1398,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       indexVal = mlir::arith::ExtSIOp::create(builder, location, i64Type, indexVal);
 
     if (auto vecType = mlir::dyn_cast<hew::VecType>(collectionVal.getType())) {
-      rhsVal = coerceType(rhsVal, vecType.getElementType(), location);
+      rhsVal = coerceAssignedValue(rhsVal, vecType.getElementType());
       if (stmt.op) {
         auto currentVal = hew::VecGetOp::create(builder, location, vecType.getElementType(),
                                                 collectionVal, indexVal);
@@ -1415,7 +1427,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         return;
       }
 
-      rhsVal = coerceType(rhsVal, hewArrayType.getElementType(), location);
+      rhsVal = coerceAssignedValue(rhsVal, hewArrayType.getElementType());
       auto llvmArrayType =
           mlir::LLVM::LLVMArrayType::get(hewArrayType.getElementType(), hewArrayType.getSize());
       auto llvmArray = hew::BitcastOp::create(builder, location, llvmArrayType, collectionVal);
@@ -1469,7 +1481,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (existingVar) {
     // Assign to local variable
     if (stmt.op) {
-      rhs = coerceType(rhs, existingVar.getType(), location);
+      rhs = coerceAssignedValue(rhs, existingVar.getType());
       auto type = existingVar.getType();
       bool isFloat = llvm::isa<mlir::FloatType>(type);
       bool isUnsigned = false;
@@ -1482,7 +1494,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         return;
       storeVariable(name, result);
     } else {
-      rhs = coerceType(rhs, existingVar.getType(), location);
+      rhs = coerceAssignedValue(rhs, existingVar.getType());
       // Drop old owned value before overwriting to prevent memory leaks.
       // Only safe when RHS is a fresh allocation (not loaded from another
       // variable), to avoid double-free from shared ownership.
@@ -1511,7 +1523,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
               if (stmt.op) {
                 auto current =
                     mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
-                rhs = coerceType(rhs, field.type, location);
+                rhs = coerceAssignedValue(rhs, field.type);
                 bool isFloat = llvm::isa<mlir::FloatType>(field.type);
                 bool isUnsigned = false;
                 if (mlir::isa<mlir::IntegerType>(field.type))
@@ -1521,7 +1533,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                 if (!rhs)
                   return;
               }
-              rhs = coerceType(rhs, field.type, location);
+              rhs = coerceAssignedValue(rhs, field.type);
               mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
               // Ownership transfer: the RHS is now owned by the actor
               // state.  Unregister any drop for the source variable so
@@ -1608,14 +1620,37 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
     return nullptr;
   }
 
+  auto hasUnsignedBlockResult = [&](const ast::Block &block) {
+    if (!mlir::isa<mlir::IntegerType>(resultType))
+      return false;
+
+    auto isUnsignedExprResult = [&](const ast::Expr &expr) {
+      if (auto *typeExpr = resolvedTypeOf(expr.span))
+        return isUnsignedTypeExpr(*typeExpr);
+      return false;
+    };
+
+    if (block.trailing_expr)
+      return isUnsignedExprResult(block.trailing_expr->value);
+
+    if (block.stmts.empty())
+      return false;
+
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind))
+      return isUnsignedExprResult(exprStmt->expr.value);
+
+    return false;
+  };
+
   auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
   mlir::Value thenVal = generateBlock(stmt.then_block);
+  bool thenIsUnsigned = hasUnsignedBlockResult(stmt.then_block);
   auto *thenBlock = builder.getInsertionBlock();
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
-      thenVal = coerceType(thenVal, resultType, location);
+      thenVal = coerceType(thenVal, resultType, location, thenIsUnsigned);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
@@ -1632,10 +1667,11 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   } else if (elseBlock.block) {
     elseVal = generateBlock(*elseBlock.block);
   }
+  bool elseIsUnsigned = elseBlock.block && hasUnsignedBlockResult(*elseBlock.block);
   auto *elseBlk = builder.getInsertionBlock();
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
-      elseVal = coerceType(elseVal, resultType, location);
+      elseVal = coerceType(elseVal, resultType, location, elseIsUnsigned);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);

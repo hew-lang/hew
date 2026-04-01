@@ -1,6 +1,7 @@
 // Test: numeric literal coercion to various types
 
 const N: Int = 10;
+type Wide = u16;
 
 fn get_i32_value() -> i32 {
     return 100;
@@ -126,6 +127,107 @@ fn test_let_coercion() {
     println(c);
 }
 
+fn test_unsigned_widening_statement_coercion() {
+    let a: u8 = 200;
+
+    let b: u16 = a;
+    println(b);
+
+    var c: u16 = a;
+    println(c);
+
+    c = a;
+    println(c);
+
+    let d: Wide = a;
+    println(d);
+
+    var e: Wide = a;
+    println(e);
+
+    e = a;
+    println(e);
+}
+
+fn widen_unsigned_if_tail(flag: bool) -> u16 {
+    let then_value: u8 = 200;
+    let else_value: u8 = 201;
+
+    if flag {
+        then_value
+    } else {
+        else_value
+    }
+}
+
+fn test_unsigned_if_tail_coercion() {
+    println(widen_unsigned_if_tail(true));
+    println(widen_unsigned_if_tail(false));
+}
+
+fn test_aliased_unsigned_as_cast_coercion() {
+    let a: u8 = 200;
+    let cast_value: u16 = a as Wide;
+    println(cast_value);
+}
+
+fn widen_unsigned_on_return() -> u16 {
+    let value: u8 = 200;
+    return value;
+}
+
+fn widen_unsigned_on_trailing() -> u16 {
+    let value: u8 = 200;
+    value
+}
+
+fn widen_aliased_unsigned_on_return() -> Wide {
+    let value: u8 = 200;
+    return value;
+}
+
+fn widen_aliased_unsigned_on_trailing() -> Wide {
+    let value: u8 = 200;
+    value
+}
+
+fn test_unsigned_return_coercion() {
+    println(widen_unsigned_on_return());
+    println(widen_unsigned_on_trailing());
+    println(widen_aliased_unsigned_on_return());
+    println(widen_aliased_unsigned_on_trailing());
+}
+
+fn call_unsigned_lambda(f: fn(u8) -> u16, value: u8) -> u16 {
+    f(value)
+}
+
+fn call_aliased_unsigned_lambda(f: fn(u8) -> Wide, value: u8) -> Wide {
+    f(value)
+}
+
+fn test_unsigned_lambda_return_coercion() {
+    println(call_unsigned_lambda((value: u8) -> u16 => value, 200));
+    println(call_aliased_unsigned_lambda((value: u8) -> Wide => value, 200));
+}
+
+actor UnsignedResponder {
+    receive fn widen_unsigned_on_return(value: u8) -> u16 {
+        return value;
+    }
+
+    receive fn widen_aliased_unsigned_on_trailing(value: u8) -> Wide {
+        let widened: u8 = value;
+        widened
+    }
+}
+
+fn test_actor_unsigned_return_coercion() {
+    let responder = spawn UnsignedResponder();
+    println(await responder.widen_unsigned_on_return(200));
+    println(await responder.widen_aliased_unsigned_on_trailing(200));
+}
+
 fn main() {
     test_i32_basics();
     test_i16();
@@ -138,4 +240,10 @@ fn main() {
     test_const_coercion();
     test_comparison_coercion();
     test_let_coercion();
+    test_unsigned_widening_statement_coercion();
+    test_unsigned_if_tail_coercion();
+    test_aliased_unsigned_as_cast_coercion();
+    test_unsigned_return_coercion();
+    test_unsigned_lambda_return_coercion();
+    test_actor_unsigned_return_coercion();
 }

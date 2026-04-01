@@ -1096,9 +1096,19 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   return nullptr;
 }
 
+bool MLIRGen::shouldUseUnsignedReturnSinkCoercion(mlir::Type targetType) {
+  if (!currentFunctionReturnTypeExpr || !currentFunction || !mlir::isa<mlir::IntegerType>(targetType))
+    return false;
+
+  auto resultTypes = currentFunction.getFunctionType().getResults();
+  return resultTypes.size() == 1 && resultTypes.front() == targetType &&
+         isUnsignedTypeExpr(*currentFunctionReturnTypeExpr);
+}
+
 mlir::Value MLIRGen::coerceTypeForSink(mlir::Value value, mlir::Type targetType,
                                        mlir::Location location) {
-  auto coerced = coerceType(value, targetType, location);
+  auto coerced =
+      coerceType(value, targetType, location, shouldUseUnsignedReturnSinkCoercion(targetType));
   if (coerced && coerced.getType() == targetType)
     return coerced;
 
@@ -3980,6 +3990,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
 
   auto prevFunction = currentFunction;
   currentFunction = funcOp;
+  auto prevFunctionReturnTypeExpr = currentFunctionReturnTypeExpr;
+  currentFunctionReturnTypeExpr = method.return_type ? &method.return_type->value : nullptr;
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
   auto prevReturnSlotIsLazy = returnSlotIsLazy;
@@ -4071,6 +4083,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
+  currentFunctionReturnTypeExpr = prevFunctionReturnTypeExpr;
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
 }
@@ -4158,6 +4171,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // contaminate the outer function's allocas.
   auto prevFunction = currentFunction;
   currentFunction = funcOp;
+  auto prevFunctionReturnTypeExpr = currentFunctionReturnTypeExpr;
+  currentFunctionReturnTypeExpr = fn.return_type ? &fn.return_type->value : nullptr;
 
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
@@ -4560,6 +4575,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
+  currentFunctionReturnTypeExpr = prevFunctionReturnTypeExpr;
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
   return funcOp;
@@ -4629,6 +4645,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     MutableTableScopeT mutScope(mutableVars);
     auto prevFunction = currentFunction;
     currentFunction = coroFunc;
+    auto prevFunctionReturnTypeExpr = currentFunctionReturnTypeExpr;
+    currentFunctionReturnTypeExpr = nullptr;
 
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
@@ -4856,6 +4874,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
     pendingFunctionParamDrops = std::move(prevPendingParamDrops);
     currentFnDefers = std::move(prevFnDefers);
+    currentFunctionReturnTypeExpr = prevFunctionReturnTypeExpr;
     currentFunction = prevFunction;
     builder.restoreInsertionPoint(savedIP);
   }

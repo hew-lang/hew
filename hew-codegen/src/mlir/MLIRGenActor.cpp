@@ -578,6 +578,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     MutableTableScopeT mutScope(mutableVars);
 
     FunctionGenerationScope funcScope(*this, funcOp);
+    if (recv.return_type)
+      currentFunctionReturnTypeExpr = &recv.return_type->value;
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     funcLevelDropScopeBase = dropScopes.size();
 

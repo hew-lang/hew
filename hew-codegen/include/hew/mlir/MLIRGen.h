@@ -60,14 +60,20 @@ public:
   /// Returns nullptr on failure.
   mlir::ModuleOp generate(const ast::Program &program);
 
-  /// Return true if the given TypeExpr refers to an unsigned integer type
+  /// Return true if the given name is a builtin unsigned integer type
   /// (u8, u16, u32, u64, uint, byte).
-  static bool isUnsignedTypeExpr(const ast::TypeExpr &type) {
-    if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
-      return named->name == "u8" || named->name == "u16" || named->name == "u32" ||
-             named->name == "u64" || named->name == "uint" || named->name == "byte";
-    }
-    return false;
+  static bool isBuiltinUnsignedIntegerName(llvm::StringRef name) {
+    return name == "u8" || name == "u16" || name == "u32" || name == "u64" || name == "uint" ||
+           name == "byte";
+  }
+
+  /// Return true if the given TypeExpr refers to an unsigned integer type
+  /// directly or through a type alias.
+  bool isUnsignedTypeExpr(const ast::TypeExpr &type) const {
+    auto *named = std::get_if<ast::TypeNamed>(&type.kind);
+    if (!named)
+      return false;
+    return isBuiltinUnsignedIntegerName(resolveTypeAlias(named->name));
   }
 
 private:
@@ -434,8 +440,11 @@ private:
   /// Sink-hardening wrapper around coerceType(). Guarantees the returned value
   /// has targetType by substituting a typed default on coercion failure and
   /// incrementing errorCount_ so generation still fails closed.
+  /// Preserves unsigned widening when the sink is the active function's
+  /// declared unsigned integer return type.
   mlir::Value coerceTypeForSink(mlir::Value value, mlir::Type targetType,
                                 mlir::Location location);
+  bool shouldUseUnsignedReturnSinkCoercion(mlir::Type targetType);
 
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.
@@ -887,6 +896,7 @@ private:
 
   // ── Current function tracking ────────────────────────────────────
   mlir::func::FuncOp currentFunction;
+  const ast::TypeExpr *currentFunctionReturnTypeExpr = nullptr;
 
   // ── Loop control (for break/continue) ──────────────────────────
   // Stack of memref<i1> values: when set to false, the loop terminates.
@@ -922,12 +932,13 @@ private:
 
   /// RAII guard that saves/restores function generation state.
   /// On construction: saves currentFunction, returnFlag, returnSlot,
-  /// channelIntOutValidAlloca; sets currentFunction to newFunc and
-  /// resets the rest to nullptr.
+  /// currentFunctionReturnTypeExpr, channelIntOutValidAlloca; sets
+  /// currentFunction to newFunc and resets the rest to nullptr.
   /// On destruction: restores all saved values.
   struct FunctionGenerationScope {
     MLIRGen &gen;
     mlir::func::FuncOp prevFunction;
+    const ast::TypeExpr *prevFunctionReturnTypeExpr;
     mlir::Value prevReturnFlag;
     mlir::Value prevReturnSlot;
     bool prevReturnSlotIsLazy;
@@ -935,11 +946,13 @@ private:
     mlir::Value prevChannelIntOutValidAlloca;
 
     FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
-        : gen(g), prevFunction(g.currentFunction), prevReturnFlag(g.returnFlag),
+        : gen(g), prevFunction(g.currentFunction),
+          prevFunctionReturnTypeExpr(g.currentFunctionReturnTypeExpr), prevReturnFlag(g.returnFlag),
           prevReturnSlot(g.returnSlot), prevReturnSlotIsLazy(g.returnSlotIsLazy),
           prevEarlyReturnFlag(g.earlyReturnFlag),
           prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
       gen.currentFunction = newFunc;
+      gen.currentFunctionReturnTypeExpr = nullptr;
       gen.returnFlag = nullptr;
       gen.returnSlot = nullptr;
       gen.returnSlotIsLazy = false;
@@ -949,6 +962,7 @@ private:
 
     ~FunctionGenerationScope() {
       gen.currentFunction = prevFunction;
+      gen.currentFunctionReturnTypeExpr = prevFunctionReturnTypeExpr;
       gen.returnFlag = prevReturnFlag;
       gen.returnSlot = prevReturnSlot;
       gen.returnSlotIsLazy = prevReturnSlotIsLazy;

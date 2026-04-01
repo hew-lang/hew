@@ -10,7 +10,11 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use hew_cabi::cabi::str_to_malloc;
+use base64::Engine as _;
+use hew_cabi::{
+    cabi::str_to_malloc,
+    vec::{hwvec_to_u8, u8_to_hwvec, HewVec},
+};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -184,6 +188,34 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c
     let v = unsafe { &*val };
     match v.inner.as_str() {
         Some(s) => str_to_malloc(s),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Get a base64-decoded bytes value from a [`HewYamlValue`].
+///
+/// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
+/// values return null. Invalid base64 inputs decode to an empty bytes vector to
+/// match `std::encoding::base64::decode`.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> *mut HewVec {
+    if val.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    match v.inner.as_str() {
+        Some(s) => {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(s)
+                .unwrap_or_default();
+            // SAFETY: allocates a new HewVec owned by the caller.
+            unsafe { u8_to_hwvec(&decoded) }
+        }
         None => std::ptr::null_mut(),
     }
 }
@@ -441,6 +473,37 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
         map.insert(
             serde_yaml::Value::String(key_str),
             serde_yaml::Value::String(val_str),
+        );
+    }
+}
+
+/// Set a bytes field on a YAML mapping as a base64-encoded string.
+///
+/// # Safety
+///
+/// Same as [`hew_yaml_object_set_bool`]. `val` must be a valid bytes
+/// [`HewVec`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_object_set_bytes(
+    obj: *mut HewYamlValue,
+    key: *const c_char,
+    val: *mut HewVec,
+) {
+    if obj.is_null() || key.is_null() || val.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
+    let key_str = unsafe { CStr::from_ptr(key) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    // SAFETY: val is non-null (checked above) and points to a valid bytes HewVec.
+    let encoded = base64::engine::general_purpose::STANDARD.encode(unsafe { hwvec_to_u8(val) });
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
+        map.insert(
+            serde_yaml::Value::String(key_str),
+            serde_yaml::Value::String(encoded),
         );
     }
 }

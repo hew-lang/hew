@@ -34,7 +34,7 @@ namespace hew {
 
 /// Classifies a wire type for JSON/YAML serialization.
 /// Resolves the semantic kind from the type name string.
-enum class WireJsonKind { Bool, Float32, Float64, String, Integer };
+enum class WireJsonKind { Bool, Float32, Float64, String, Bytes, Integer };
 
 static WireJsonKind jsonKindOf(const std::string &ty) {
   if (ty == "bool")
@@ -43,8 +43,10 @@ static WireJsonKind jsonKindOf(const std::string &ty) {
     return WireJsonKind::Float32;
   if (ty == "f64" || ty == "float")
     return WireJsonKind::Float64;
-  if (ty == "String" || ty == "bytes" || ty == "string" || ty == "str")
+  if (ty == "String" || ty == "string" || ty == "str")
     return WireJsonKind::String;
+  if (ty == "bytes")
+    return WireJsonKind::Bytes;
   return WireJsonKind::Integer;
 }
 
@@ -1177,6 +1179,7 @@ void MLIRGen::generateWireToSerial(
   std::string rtSetBool = "hew_" + format.str() + "_object_set_bool";
   std::string rtSetFloat = "hew_" + format.str() + "_object_set_float";
   std::string rtSetString = "hew_" + format.str() + "_object_set_string";
+  std::string rtSetBytes = "hew_" + format.str() + "_object_set_bytes";
   std::string rtSetInt = "hew_" + format.str() + "_object_set_int";
   std::string rtStringify = "hew_" + format.str() + "_stringify";
   std::string rtFree = "hew_" + format.str() + "_free";
@@ -1236,6 +1239,10 @@ void MLIRGen::generateWireToSerial(
     } else if (jkind == WireJsonKind::String) {
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetString),
+                                 mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (jkind == WireJsonKind::Bytes) {
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetBytes),
                                  mlir::ValueRange{objPtr, keyPtr, fv});
     } else if (!isWirePrimitiveType(field.ty)) {
       // Unknown type: not a wire struct and not a known primitive — fail closed.
@@ -1412,6 +1419,7 @@ void MLIRGen::generateWireFromSerial(
   std::string rtGetBool = "hew_" + format.str() + "_get_bool";
   std::string rtGetFloat = "hew_" + format.str() + "_get_float";
   std::string rtGetString = "hew_" + format.str() + "_get_string";
+  std::string rtGetBytes = "hew_" + format.str() + "_get_bytes";
   std::string rtGetInt = "hew_" + format.str() + "_get_int";
   std::string rtFree = "hew_" + format.str() + "_free";
 
@@ -1470,6 +1478,11 @@ void MLIRGen::generateWireFromSerial(
     } else if (jkind == WireJsonKind::String) {
       decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                            mlir::SymbolRefAttr::get(&context, rtGetString),
+                                           mlir::ValueRange{fieldJval})
+                    .getResult();
+    } else if (jkind == WireJsonKind::Bytes) {
+      decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                           mlir::SymbolRefAttr::get(&context, rtGetBytes),
                                            mlir::ValueRange{fieldJval})
                     .getResult();
     } else if (!isWirePrimitiveType(field.ty)) {

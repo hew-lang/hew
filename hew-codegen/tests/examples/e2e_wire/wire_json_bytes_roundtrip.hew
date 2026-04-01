@@ -1,0 +1,25 @@
+// Test: JSON round-trip preserves bytes fields via base64 strings.
+extern "C" {
+    fn Packet_to_json(payload: bytes) -> String;
+    fn Packet_from_json(json: String) -> Packet;
+}
+
+wire type Packet {
+    payload: bytes @1;
+}
+
+fn main() {
+    let payload = bytes::from([0, 255, 65]);
+    let json1 = unsafe { Packet_to_json(payload) };
+    println(json1);
+
+    let roundtrip = unsafe { Packet_from_json(json1) };
+    let bytes = roundtrip.payload;
+    println(bytes.len());
+    println(bytes.get(0));
+    println(bytes.get(1));
+    println(bytes.get(2));
+
+    let json2 = unsafe { Packet_to_json(bytes) };
+    println(json2);
+}

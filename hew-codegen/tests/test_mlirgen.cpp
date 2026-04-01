@@ -1441,6 +1441,69 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: JSON/YAML bytes helpers use dedicated base64 runtime shims
+// ============================================================================
+static void test_wire_bytes_use_base64_serial_helpers() {
+  TEST(wire_bytes_use_base64_serial_helpers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+wire type BlobPacket {
+    payload: bytes @1;
+    note: String @2;
+}
+
+fn main() -> int {
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto encodeFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_encode");
+  auto decodeFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_decode");
+  auto toJsonFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_to_json");
+  auto fromJsonFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_from_json");
+  auto toYamlFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_to_yaml");
+  auto fromYamlFn = module.lookupSymbol<mlir::func::FuncOp>("BlobPacket_from_yaml");
+
+  if (!encodeFn || !decodeFn || !toJsonFn || !fromJsonFn || !toYamlFn || !fromYamlFn) {
+    FAIL("expected BlobPacket wire helpers to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(encodeFn, "hew_wire_encode_field_bytes") != 1 ||
+      countRuntimeCallsByCallee(encodeFn, "hew_wire_encode_field_string") != 1 ||
+      countRuntimeCallsByCallee(decodeFn, "hew_wire_decode_bytes") != 1 ||
+      countRuntimeCallsByCallee(decodeFn, "hew_wire_decode_string") != 1) {
+    FAIL("binary wire bytes/string helpers should remain unchanged");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_bytes") != 1 ||
+      countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_string") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_bytes") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_string") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_bytes") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_string") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_bytes") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_string") != 1) {
+    FAIL("JSON/YAML bytes fields should route through dedicated base64 helpers");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Mixed-payload wire enum uses ABI-safe payload layout
 // ============================================================================
 static void test_wire_enum_mixed_payload_layout() {
@@ -2575,6 +2638,7 @@ int main() {
   test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();
+  test_wire_bytes_use_base64_serial_helpers();
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_typedecl_preserves_variants();
   test_wire_enum_mixed_payload_match_positions();

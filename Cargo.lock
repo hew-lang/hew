@@ -1655,6 +1655,7 @@ version = "0.2.2"
 name = "hew-std-encoding-json"
 version = "0.2.2"
 dependencies = [
+ "base64",
  "hew-cabi",
  "hew-runtime",
  "libc",
@@ -1713,6 +1714,7 @@ dependencies = [
 name = "hew-std-encoding-yaml"
 version = "0.2.2"
 dependencies = [
+ "base64",
  "hew-cabi",
  "hew-runtime",
  "libc",

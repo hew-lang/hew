@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use hew_parser::ast::{
-    Item, TypeBodyItem, TypeDeclKind, TypeExpr, WireDecl, WireDeclKind, WireFieldDecl,
+    Item, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, WireDecl, WireDeclKind,
+    WireFieldDecl,
 };
 
 /// A wire declaration with optional version metadata.
@@ -110,6 +111,14 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                         _ => None,
                     })
                     .collect();
+                let variants: Vec<VariantDecl> = td
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        TypeBodyItem::Variant(variant) => Some(variant.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 let field_since: BTreeMap<u32, u32> = wire
                     .field_meta
                     .iter()
@@ -142,7 +151,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                                 }
                             })
                             .collect(),
-                        variants: vec![],
+                        variants,
                         json_case: wire.json_case,
                         yaml_case: wire.yaml_case,
                     },
@@ -166,10 +175,6 @@ fn compare_wire_schemas(
     let baseline_by_name = build_wire_map(baseline, "baseline schema", &mut report);
 
     for (name, current_vwd) in &current_by_name {
-        if current_vwd.decl.kind != WireDeclKind::Struct {
-            continue;
-        }
-
         // Report version progression
         if let Some(v) = current_vwd.version {
             if let Some(baseline_vwd) = baseline_by_name.get(name) {
@@ -205,21 +210,37 @@ fn compare_wire_schemas(
                 ));
                 continue;
             }
-            compare_wire_struct(name, current_vwd, baseline_vwd, &mut report);
-        } else {
+            match current_vwd.decl.kind {
+                WireDeclKind::Struct => {
+                    compare_wire_struct(name, current_vwd, baseline_vwd, &mut report);
+                }
+                WireDeclKind::Enum => {
+                    compare_wire_enum(name, current_vwd, baseline_vwd, &mut report);
+                }
+            }
+        } else if current_vwd.decl.kind == WireDeclKind::Struct {
             warn_new_required_and_deprecated_fields(name, &current_vwd.decl, &mut report);
         }
     }
 
     for (name, baseline_vwd) in &baseline_by_name {
-        if baseline_vwd.decl.kind != WireDeclKind::Struct || current_by_name.contains_key(name) {
+        if current_by_name.contains_key(name) {
             continue;
         }
-        for field in baseline_vwd.decl.fields.iter().filter(|f| !f.is_optional) {
-            report.errors.push(format!(
-                "removed required field `{name}.{} @{}` (wire type removed)",
-                field.name, field.field_number
-            ));
+        match baseline_vwd.decl.kind {
+            WireDeclKind::Struct => {
+                for field in baseline_vwd.decl.fields.iter().filter(|f| !f.is_optional) {
+                    report.errors.push(format!(
+                        "removed required field `{name}.{} @{}` (wire type removed)",
+                        field.name, field.field_number
+                    ));
+                }
+            }
+            WireDeclKind::Enum => {
+                report
+                    .errors
+                    .push(format!("removed wire enum `{name}` (wire type removed)"));
+            }
         }
     }
 
@@ -307,6 +328,77 @@ fn compare_wire_struct(
     }
 }
 
+fn compare_wire_enum(
+    wire_name: &str,
+    current: &VersionedWireDecl,
+    baseline: &VersionedWireDecl,
+    report: &mut CompatibilityReport,
+) {
+    for (index, (current_variant, baseline_variant)) in current
+        .decl
+        .variants
+        .iter()
+        .zip(&baseline.decl.variants)
+        .enumerate()
+    {
+        let position = index + 1;
+        if current_variant.name != baseline_variant.name {
+            report.errors.push(format!(
+                "changed variant order for `{wire_name}` at position {position}: `{}` -> `{}`",
+                baseline_variant.name, current_variant.name
+            ));
+            continue;
+        }
+        compare_wire_enum_variant_payload(wire_name, current_variant, baseline_variant, report);
+    }
+
+    if current.decl.variants.len() > baseline.decl.variants.len() {
+        for variant in &current.decl.variants[baseline.decl.variants.len()..] {
+            report
+                .errors
+                .push(format!("added variant `{wire_name}::{}`", variant.name));
+        }
+    } else if baseline.decl.variants.len() > current.decl.variants.len() {
+        for variant in &baseline.decl.variants[current.decl.variants.len()..] {
+            report
+                .errors
+                .push(format!("removed variant `{wire_name}::{}`", variant.name));
+        }
+    }
+}
+
+fn compare_wire_enum_variant_payload(
+    wire_name: &str,
+    current_variant: &VariantDecl,
+    baseline_variant: &VariantDecl,
+    report: &mut CompatibilityReport,
+) {
+    let current_payload = variant_payload_types(current_variant);
+    let baseline_payload = variant_payload_types(baseline_variant);
+
+    if current_payload.len() != baseline_payload.len() {
+        report.errors.push(format!(
+            "changed payload arity for `{wire_name}::{}`: {} -> {}",
+            current_variant.name,
+            baseline_payload.len(),
+            current_payload.len()
+        ));
+        return;
+    }
+
+    for (index, (current_ty, baseline_ty)) in
+        current_payload.iter().zip(&baseline_payload).enumerate()
+    {
+        if current_ty != baseline_ty {
+            let payload_position = index + 1;
+            report.errors.push(format!(
+                "changed payload type for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
+                current_variant.name, baseline_ty, current_ty
+            ));
+        }
+    }
+}
+
 fn build_field_map<'a>(
     wire_name: &str,
     decl: &'a WireDecl,
@@ -336,6 +428,20 @@ fn describe_field_type(field: &WireFieldDecl) -> String {
         format!("repeated {}", field.ty)
     } else {
         field.ty.clone()
+    }
+}
+
+fn variant_payload_types(variant: &VariantDecl) -> Vec<String> {
+    match &variant.kind {
+        VariantKind::Unit => Vec::new(),
+        VariantKind::Tuple(fields) => fields
+            .iter()
+            .map(|field| type_expr_to_string(&field.0))
+            .collect(),
+        VariantKind::Struct(fields) => fields
+            .iter()
+            .map(|(_name, field)| type_expr_to_string(&field.0))
+            .collect(),
     }
 }
 

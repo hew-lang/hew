@@ -1,0 +1,24 @@
+// Regression: ask with a named Vec<String> must deep-copy the Vec payload and
+// its string elements so the receiver can read/drop the cloned data while the
+// sender later drops its original allocation without ownership fallout.
+
+actor Printer {
+    receive fn inspect(words: Vec<String>) -> int {
+        println(words.get(0));
+        println(words.get(1));
+        println(words.get(2));
+        words.len()
+    }
+}
+
+fn main() {
+    let p = spawn Printer;
+    let words: Vec<String> = Vec::new();
+    words.push("alpha");
+    words.push("beta");
+    words.push("gamma");
+
+    let n = await p.inspect(words);
+    println(n);
+    println("done");
+}

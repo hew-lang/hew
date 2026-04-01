@@ -946,6 +946,76 @@ void MLIRGen::registerDropsForVariable(
 
   bool isBorrowedGetString = false;
 
+  // When `let x = struct_var.field` extracts a String field from a user
+  // struct that has owned fields (and will free them via __auto_field_drop),
+  // registering a separate hew_string_drop for `x` creates an aliased
+  // pointer that gets freed twice: once by `x`'s drop and once by the
+  // struct's auto-field-drop.  Detect this pattern and suppress the
+  // hew_string_drop registration so the struct remains the sole owner.
+  //
+  // Restriction: only suppress when the source is a plain identifier
+  // (variable or function parameter).  For temporaries like `f().field`,
+  // the struct has no owner to free its fields, so `x` must keep its drop.
+  // Detect `let x = struct_var.string_field` — the field extraction pattern.
+  // When the RHS is an ExprFieldAccess from a plain identifier whose resolved
+  // type is a user struct with owned fields, `x` must NOT get its own
+  // hew_string_drop because the struct owner will free the field via
+  // __auto_field_drop exactly once.
+  //
+  // Two complementary detection paths are used:
+  //   (A) AST path: uses resolvedTypeOf() — works for local variables whose
+  //       expression type was recorded by the type checker.
+  //   (B) MLIR path: traces the defining op chain of the MLIR `value` back
+  //       through bitcasts to a hew.field_get on an LLVM struct type.  This
+  //       path handles imported-module function bodies, where the type checker
+  //       does not type-check bodies (only signatures) and therefore leaves no
+  //       entries in exprTypeMap.
+  bool isFieldExtractionFromOwnedStruct = false;
+  if (stmtValue && *stmtValue) {
+    if (auto *fa = std::get_if<ast::ExprFieldAccess>(&(*stmtValue)->value.kind)) {
+      if (std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+        // (A) AST-based path: look up the identifier's resolved type.
+        if (auto *srcTy = resolvedTypeOf(fa->object->span)) {
+          if (auto *named = std::get_if<ast::TypeNamed>(&srcTy->kind)) {
+            if (structTypes.count(named->name) &&
+                !userDropFuncs.count(named->name) &&
+                structHasOwnedFields(named->name))
+              isFieldExtractionFromOwnedStruct = true;
+          }
+        }
+        // (B) MLIR-value path: trace the MLIR value back through bitcasts to
+        //     a hew.field_get on an identified LLVM struct with owned fields.
+        //     This handles imported function bodies not seen by the type checker.
+        if (!isFieldExtractionFromOwnedStruct && value) {
+          mlir::Value v = value;
+          // Peel through any bitcast layers.
+          while (v) {
+            auto *defOp = v.getDefiningOp();
+            if (!defOp)
+              break;
+            if (auto bitcast = mlir::dyn_cast<hew::BitcastOp>(defOp)) {
+              v = bitcast.getInput();
+            } else if (auto fieldGet = mlir::dyn_cast<hew::FieldGetOp>(defOp)) {
+              // Check the struct type of the object the field is accessed on.
+              auto srcType = fieldGet.getStructVal().getType();
+              if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(srcType)) {
+                if (structTy.isIdentified()) {
+                  auto name = structTy.getName().str();
+                  if (structTypes.count(name) && !userDropFuncs.count(name) &&
+                      structHasOwnedFields(name))
+                    isFieldExtractionFromOwnedStruct = true;
+                }
+              }
+              break;
+            } else {
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Type-annotation-based drops ────────────────────────────────────
   if (stmtTy && *stmtTy) {
     if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind)) {
@@ -982,7 +1052,7 @@ void MLIRGen::registerDropsForVariable(
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
             isBorrowed = (mc->method == "get");
         }
-        if (!isBorrowed)
+        if (!isBorrowed && !isFieldExtractionFromOwnedStruct)
           registerDroppable(varName, "hew_string_drop");
       } else {
         auto dropIt = userDropFuncs.find(typeName);
@@ -1025,10 +1095,11 @@ void MLIRGen::registerDropsForVariable(
               std::holds_alternative<ast::ExprLiteral>(vk))
             isOwned = true;
         }
-        if (isOwned)
+        if (isOwned && !isFieldExtractionFromOwnedStruct)
           registerDroppable(varName, "hew_string_drop");
       } else {
-        registerDroppable(varName, "hew_string_drop");
+        if (!isFieldExtractionFromOwnedStruct)
+          registerDroppable(varName, "hew_string_drop");
       }
     }
   }
@@ -1116,12 +1187,15 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
-  // ── Auto-field-drop for wire structs with owned fields ─────────────
+  // ── Auto-field-drop for user structs with owned fields (no Drop impl) ──
+  // Covers all registered user-defined structs, not just wire structs: any
+  // struct with owned fields (String, Vec, nested Drop'd struct, etc.) that
+  // lacks a user-written Drop impl must have its fields freed automatically.
   if (value && !dropScopes.empty()) {
     auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
     if (structTy && structTy.isIdentified() &&
         !userDropFuncs.count(structTy.getName().str()) &&
-        wireStructNames.count(structTy.getName().str())) {
+        structTypes.count(structTy.getName().str())) {
       bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
       if (needsFieldDrop) {
         bool isOwnedStruct = false;
@@ -1142,8 +1216,25 @@ void MLIRGen::registerDropsForVariable(
         bool alreadyReg = false;
         for (auto &e : dropScopes.back())
           if (e.varName == varName) { alreadyReg = true; break; }
-        if (isOwnedStruct && !alreadyReg)
+        if (isOwnedStruct && !alreadyReg) {
           registerDroppable(varName, "__auto_field_drop");
+          // If a return guard is active (returnFlag non-null) and the struct
+          // value may be defined inside a guard block (i.e. declareVariable
+          // didn't promote it to mutableVars), the raw SSA value might not
+          // dominate the drop point.  Create a hoisted alloca and store the
+          // value now so emitDropEntry can load from it regardless of where
+          // the drop eventually fires.
+          auto &newEntry = dropScopes.back().back();
+          if (!newEntry.promotedSlot && returnFlag) {
+            auto storageType = toSlotStorageType(value.getType());
+            auto alloca = createHoistedAlloca(storageType, value.getType());
+            auto storedValue = coerceType(value, storageType, builder.getUnknownLoc());
+            mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
+            if (storageType != value.getType())
+              slotSemanticTypes[alloca] = value.getType();
+            newEntry.promotedSlot = alloca;
+          }
+        }
       }
     }
   }

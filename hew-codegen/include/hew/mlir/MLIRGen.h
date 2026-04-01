@@ -772,6 +772,9 @@ private:
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
+  /// Mangled function/method symbols whose String result is just a borrowed
+  /// alias of an owned field on a caller-owned struct parameter/receiver.
+  std::unordered_set<std::string> borrowedFieldReturnCallees;
   // (name, scope-depth) pairs to exclude from drops.  The depth is relative
   // to funcLevelDropScopeBase so that a shadowed binding in an inner scope
   // is NOT confused with the same-named return variable at depth 0.
@@ -853,6 +856,7 @@ private:
   /// Returns true if `v` is a temporary string (heap-allocated, not from
   /// a variable load or a constant).  Safe to drop after consumption.
   bool isTemporaryString(mlir::Value v);
+  void maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::StringRef symbolName);
 
   // ── Temporary materialization ─────────────────────────────────────
   /// Counter for generating unique __tmp_N implicit let-binding names.

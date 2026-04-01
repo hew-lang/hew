@@ -1,0 +1,30 @@
+// Regression test: no-Drop-impl struct with owned String field in a function
+// that has an early-return path.
+//
+// When the early-return path is taken, the struct variable is never
+// constructed; the promoted-slot alloca remains zeroinit.  Without the
+// null-guard in emitDropEntry, the __auto_field_drop path calls
+// emitFieldDropsForUserStruct on a zeroinit struct, extracts a null data
+// pointer from the String field, and passes it to hew_string_drop — crash.
+//
+// With the fix, the first pointer-like field of the struct is checked; if null
+// (zeroinit), emitFieldDropsForUserStruct is skipped entirely.
+
+type Resource {
+    name: String;
+    count: int;
+}
+
+fn make_count(flag: bool) -> int {
+    if flag { return -1; }
+    let r = Resource { name: "owned", count: 99 };
+    r.count
+}
+
+fn main() -> int {
+    let a = make_count(true);
+    println(f"a={a}");
+    let b = make_count(false);
+    println(f"b={b}");
+    return 0;
+}

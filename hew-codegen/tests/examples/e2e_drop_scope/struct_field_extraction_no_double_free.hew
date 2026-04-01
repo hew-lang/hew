@@ -1,0 +1,66 @@
+// Regression test: extracting a String field from a user struct with owned
+// fields must not cause a double-free.
+//
+// Patterns exercised:
+//   let x = local_var.string_field;      // ExprFieldAccess on local var
+//   let x = fn_param_struct.string_field; // ExprFieldAccess on fn param
+//
+// Before the fix, `x` received a separate hew_string_drop registration.
+// When `x` went out of scope its drop freed the data; then `struct_var`'s
+// __auto_field_drop tried to free the same field again → heap corruption.
+//
+// The fix has two complementary detection paths:
+//   (A) AST path: resolvedTypeOf() — works for local variables in main file.
+//   (B) MLIR path: traces MLIR value through bitcasts to a hew.field_get op
+//       on an LLVM struct type.  This handles imported-module function bodies
+//       where the type checker does not record expression types.
+
+type Config {
+    name: String;
+    level: int;
+}
+
+fn make_config(name: String, level: int) -> Config {
+    Config { name: name, level: level }
+}
+
+// Tests the MLIR-path detection: function parameter type info is NOT recorded
+// by the type checker (only signatures are checked for imports), so the
+// AST-based path would miss this.  The MLIR-based path traces the field_get
+// back through bitcasts to identify the struct type.
+fn print_config_name(cfg: Config) -> String {
+    let n = cfg.name;   // field extraction from fn param — MLIR path handles this
+    n
+}
+
+fn main() -> int {
+    // Direct struct-literal case.
+    let c = Config { name: "direct", level: 0 };
+    let c_name = c.name;          // field extraction — must NOT get its own drop
+    println(c_name);              // prints "direct"
+
+    // Function-return case.
+    let d = make_config("returned", 1);
+    let d_name = d.name;          // same pattern
+    println(d_name);              // prints "returned"
+
+    // Field extraction inside a nested scope — struct outlives the extracted
+    // field variable (extraction goes out of scope first, struct still owns).
+    {
+        let e = make_config("scoped", 2);
+        let e_name = e.name;
+        println(e_name);          // prints "scoped"
+        // e_name goes out of scope here (no drop fired)
+        // e goes out of scope here → __auto_field_drop frees name exactly once
+    }
+
+    // Function-parameter case: field extraction inside a called function.
+    // Without the MLIR-path fix, cfg.name would be dropped inside the function
+    // AND again when the caller's copy of the struct is auto-field-dropped.
+    let f = make_config("param", 3);
+    let f_name = print_config_name(f);
+    println(f_name);              // prints "param"
+
+    println("done");
+    return 0;
+}

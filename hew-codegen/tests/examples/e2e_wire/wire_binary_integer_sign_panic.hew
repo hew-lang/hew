@@ -1,0 +1,11 @@
+// Test: binary decode rejects sign-invalid unsigned varints instead of
+// reinterpreting them through i64 -> i32 truncation.
+wire type Limits {
+    byte_value: byte @1;
+}
+
+fn main() {
+    // field 1, varint wire type (tag 0x08), value u64::MAX
+    let buf = bytes::from([8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1]);
+    Limits.decode(buf);
+}

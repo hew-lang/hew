@@ -13,8 +13,18 @@
 //!     v.push(1);
 //!     v.push(2);
 //!     v.push(3);
-//!     println(vec.contains_i32(v, 2));   // true
-//!     println(vec.contains_i32(v, 9));   // false
+//!     println(vec.contains_i32(v, 2));       // true
+//!     println(vec.contains_i32(v, 9));       // false
+//!     println(vec.index_of_i32(v, 2));       // 1
+//!     println(vec.min_i32(v));               // 1
+//!     println(vec.max_i32(v));               // 3
+//!
+//!     let v2: Vec<i64> = Vec::new();
+//!     v2.push(1);
+//!     v2.push(2);
+//!     v2.push(3);
+//!     match vec.first_i64(v2) { Some(x) => println(x), None => {} }  // 1
+//!     match vec.last_i64(v2)  { Some(x) => println(x), None => {} }  // 3
 //! }
 //! ```
 
@@ -105,4 +115,313 @@ pub fn contains_str(v: Vec<String>, val: String) -> bool {
         i = i + 1;
     }
     false
+}
+
+// ── index_of ──────────────────────────────────────────────────────────────
+
+/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i32> = Vec::new();
+/// v.push(10);
+/// v.push(20);
+/// v.push(30);
+/// println(vec.index_of_i32(v, 20));  // 1
+/// println(vec.index_of_i32(v, 99));  // -1
+/// ```
+pub fn index_of_i32(v: Vec<i32>, val: i32) -> i32 {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i64> = Vec::new();
+/// v.push(100);
+/// v.push(200);
+/// println(vec.index_of_i64(v, 200));  // 1
+/// println(vec.index_of_i64(v, 999));  // -1
+/// ```
+pub fn index_of_i64(v: Vec<i64>, val: i64) -> i32 {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
+/// Uses exact equality; NaN will never match.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(1.5);
+/// v.push(2.5);
+/// println(vec.index_of_f64(v, 2.5));  // 1
+/// println(vec.index_of_f64(v, 9.9));  // -1
+/// ```
+pub fn index_of_f64(v: Vec<f64>, val: f64) -> i32 {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("a");
+/// v.push("b");
+/// println(vec.index_of_str(v, "b"));   // 1
+/// println(vec.index_of_str(v, "z"));   // -1
+/// ```
+pub fn index_of_str(v: Vec<String>, val: String) -> i32 {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+// ── first / last ──────────────────────────────────────────────────────────
+
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i64> = Vec::new();
+/// v.push(7);
+/// v.push(8);
+/// println(vec.first_i64(v));  // Some(7)
+/// ```
+pub fn first_i64(v: Vec<i64>) -> Option<int> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    Some(v.get(i))
+}
+
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+pub fn first_f64(v: Vec<f64>) -> Option<f64> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    Some(v.get(i))
+}
+
+/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
+pub fn first_str(v: Vec<String>) -> Option<String> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    Some(v.get(i))
+}
+
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i64> = Vec::new();
+/// v.push(7);
+/// v.push(8);
+/// println(vec.last_i64(v));  // Some(8)
+/// ```
+pub fn last_i64(v: Vec<i64>) -> Option<int> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    while i + 1 < n {
+        i = i + 1;
+    }
+    Some(v.get(i))
+}
+
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+pub fn last_f64(v: Vec<f64>) -> Option<f64> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    while i + 1 < n {
+        i = i + 1;
+    }
+    Some(v.get(i))
+}
+
+/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
+pub fn last_str(v: Vec<String>) -> Option<String> {
+    var i = 0;
+    let n = v.len();
+    if n == 0 {
+        return None;
+    }
+    while i + 1 < n {
+        i = i + 1;
+    }
+    Some(v.get(i))
+}
+
+// ── min / max ─────────────────────────────────────────────────────────────
+
+/// Return the smallest element in `v`.
+///
+/// # Panics
+///
+/// Panics at runtime if `v` is empty.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i32> = Vec::new();
+/// v.push(3);
+/// v.push(1);
+/// v.push(2);
+/// println(vec.min_i32(v));  // 1
+/// ```
+pub fn min_i32(v: Vec<i32>) -> i32 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val < m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
+}
+
+/// Return the smallest element in `v`. Panics if `v` is empty.
+pub fn min_i64(v: Vec<i64>) -> i64 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val < m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
+}
+
+/// Return the smallest element in `v`. Panics if `v` is empty.
+/// NaN propagates: if any element is NaN the result is unspecified.
+pub fn min_f64(v: Vec<f64>) -> f64 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val < m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
+}
+
+/// Return the largest element in `v`.
+///
+/// # Panics
+///
+/// Panics at runtime if `v` is empty.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i32> = Vec::new();
+/// v.push(3);
+/// v.push(1);
+/// v.push(2);
+/// println(vec.max_i32(v));  // 3
+/// ```
+pub fn max_i32(v: Vec<i32>) -> i32 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val > m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
+}
+
+/// Return the largest element in `v`. Panics if `v` is empty.
+pub fn max_i64(v: Vec<i64>) -> i64 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val > m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
+}
+
+/// Return the largest element in `v`. Panics if `v` is empty.
+/// NaN propagates: if any element is NaN the result is unspecified.
+pub fn max_f64(v: Vec<f64>) -> f64 {
+    var m = v.get(0);
+    var i = 1;
+    let n = v.len();
+    while i < n {
+        let val = v.get(i);
+        if val > m {
+            m = val;
+        }
+        i = i + 1;
+    }
+    m
 }

@@ -1,0 +1,25 @@
+// Test: YAML round-trip preserves bytes fields via base64 strings.
+extern "C" {
+    fn Packet_to_yaml(payload: bytes) -> String;
+    fn Packet_from_yaml(yaml: String) -> Packet;
+}
+
+wire type Packet {
+    payload: bytes @1;
+}
+
+fn main() {
+    let payload = bytes::from([0, 255, 65]);
+    let yaml1 = unsafe { Packet_to_yaml(payload) };
+    print(yaml1);
+
+    let roundtrip = unsafe { Packet_from_yaml(yaml1) };
+    let bytes = roundtrip.payload;
+    println(bytes.len());
+    println(bytes.get(0));
+    println(bytes.get(1));
+    println(bytes.get(2));
+
+    let yaml2 = unsafe { Packet_to_yaml(bytes) };
+    print(yaml2);
+}

@@ -10,7 +10,11 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use hew_cabi::cabi::str_to_malloc;
+use base64::Engine as _;
+use hew_cabi::{
+    cabi::str_to_malloc,
+    vec::{hwvec_to_u8, u8_to_hwvec, HewVec},
+};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -173,6 +177,34 @@ pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut c
     let v = unsafe { &*val };
     match v.inner.as_str() {
         Some(s) => str_to_malloc(s),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Get a base64-decoded bytes value from a [`HewJsonValue`].
+///
+/// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
+/// values return null. Invalid base64 inputs decode to an empty bytes vector to
+/// match `std::encoding::base64::decode`.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_get_bytes(val: *const HewJsonValue) -> *mut HewVec {
+    if val.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    match v.inner.as_str() {
+        Some(s) => {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(s)
+                .unwrap_or_default();
+            // SAFETY: allocates a new HewVec owned by the caller.
+            unsafe { u8_to_hwvec(&decoded) }
+        }
         None => std::ptr::null_mut(),
     }
 }
@@ -445,6 +477,34 @@ pub unsafe extern "C" fn hew_json_object_set_string(
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::String(val));
+    }
+}
+
+/// Set a bytes field on a JSON object as a base64-encoded string.
+///
+/// # Safety
+///
+/// Same as [`hew_json_object_set_bool`]. `val` must be a valid bytes
+/// [`HewVec`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_object_set_bytes(
+    obj: *mut HewJsonValue,
+    key: *const c_char,
+    val: *mut HewVec,
+) {
+    if obj.is_null() || key.is_null() || val.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
+    let key = unsafe { CStr::from_ptr(key) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    // SAFETY: val is non-null (checked above) and points to a valid bytes HewVec.
+    let encoded = base64::engine::general_purpose::STANDARD.encode(unsafe { hwvec_to_u8(val) });
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
+    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
+        map.insert(key, serde_json::Value::String(encoded));
     }
 }
 

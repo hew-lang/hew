@@ -897,7 +897,7 @@ impl Checker {
                     self.supervisor_children.insert(sd.name.clone(), children);
                 }
                 Item::Machine(md) => {
-                    if !self.register_type_namespace_name(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
                         continue;
                     }
                     self.register_machine_decl(md);
@@ -920,6 +920,15 @@ impl Checker {
 
         self.type_def_spans.insert(name.to_string(), span.clone());
         true
+    }
+
+    fn register_machine_type_namespace_names(&mut self, machine_name: &str, span: &Span) -> bool {
+        if !self.register_type_namespace_name(machine_name, span) {
+            return false;
+        }
+
+        let event_type_name = format!("{machine_name}Event");
+        self.register_type_namespace_name(&event_type_name, span)
     }
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]

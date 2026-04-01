@@ -1991,6 +1991,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
             argUnsigned = true;
         }
         args[i] = coerceType(args[i], expectedType, location, argUnsigned);
+        if (!args[i])
+          return nullptr;
       }
     }
     auto callOp = mlir::func::CallOp::create(builder, location, callee, args);

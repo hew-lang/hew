@@ -48,10 +48,9 @@ bool usesTimeoutPlaceholder(const std::optional<ast::Spanned<ast::Expr>> &expr) 
   return expr && std::holds_alternative<ast::ExprTimeout>(expr->value.kind);
 }
 
-bool hasUnsignedIntegerAnnotation(const std::optional<ast::Spanned<ast::TypeExpr>> &typeExpr,
-                                  mlir::Type targetType) {
-  return typeExpr && mlir::isa<mlir::IntegerType>(targetType) &&
-         MLIRGen::isUnsignedTypeExpr(typeExpr->value);
+bool isBuiltinUnsignedIntegerName(llvm::StringRef name) {
+  return name == "u8" || name == "u16" || name == "u32" || name == "u64" || name == "uint" ||
+         name == "byte";
 }
 
 } // namespace
@@ -606,8 +605,14 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // enriched AST annotates `| after` results as inferred Option<T>.
     bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
     if (isValidType(declaredType) && !skipInferredTimeoutCoercion) {
-      value = coerceType(value, declaredType, location,
-                         hasUnsignedIntegerAnnotation(stmt.ty, declaredType));
+      bool isUnsigned = false;
+      if (mlir::isa<mlir::IntegerType>(declaredType)) {
+        isUnsigned = isUnsignedTypeExpr(stmt.ty->value);
+        if (!isUnsigned)
+          if (auto *named = std::get_if<ast::TypeNamed>(&stmt.ty->value.kind))
+            isUnsigned = isBuiltinUnsignedIntegerName(resolveTypeAlias(named->name));
+      }
+      value = coerceType(value, declaredType, location, isUnsigned);
     }
   }
 
@@ -858,8 +863,14 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
     varType = convertType(stmt.ty->value);
     bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
     if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion) {
-      initValue =
-          coerceType(initValue, varType, location, hasUnsignedIntegerAnnotation(stmt.ty, varType));
+      bool isUnsigned = false;
+      if (mlir::isa<mlir::IntegerType>(varType)) {
+        isUnsigned = isUnsignedTypeExpr(stmt.ty->value);
+        if (!isUnsigned)
+          if (auto *named = std::get_if<ast::TypeNamed>(&stmt.ty->value.kind))
+            isUnsigned = isBuiltinUnsignedIntegerName(resolveTypeAlias(named->name));
+      }
+      initValue = coerceType(initValue, varType, location, isUnsigned);
     }
   }
 

@@ -1,6 +1,7 @@
 // Test: numeric literal coercion to various types
 
 const N: Int = 10;
+type Wide = u16;
 
 fn get_i32_value() -> i32 {
     return 100;
@@ -137,6 +138,15 @@ fn test_unsigned_widening_statement_coercion() {
 
     c = a;
     println(c);
+
+    let d: Wide = a;
+    println(d);
+
+    var e: Wide = a;
+    println(e);
+
+    e = a;
+    println(e);
 }
 
 fn widen_unsigned_if_tail(flag: bool) -> u16 {

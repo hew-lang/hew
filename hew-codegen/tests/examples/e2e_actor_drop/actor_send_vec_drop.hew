@@ -14,6 +14,10 @@ actor Summer {
         }
         println(f"sum: {sum}");
     }
+
+    receive fn ping() -> int {
+        0
+    }
 }
 
 fn main() {
@@ -23,5 +27,5 @@ fn main() {
     data.push(20);
     data.push(30);
     s.total(data);
-    sleep_ms(50);
+    await s.ping();
 }

@@ -254,7 +254,9 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
   }
   // Hew dialect enum types: produce a default-valued enum via hew.enum_construct
   if (auto opt = mlir::dyn_cast<hew::OptionEnumType>(type)) {
-    // Default Option: None (variant 0, no payloads)
+    // Default Option: None (variant 0, no payloads). mlir::ArrayAttr{} is
+    // intentionally null (absent) — verify() skips position checking when
+    // payloads is empty.
     return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
                                         llvm::StringRef("Option"), mlir::ValueRange{},
                                         /*payload_positions=*/mlir::ArrayAttr{});

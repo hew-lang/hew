@@ -126,6 +126,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
               << "cannot determine type for `None`; add an explicit type annotation";
           return nullptr;
         }
+        // No payload → mlir::ArrayAttr{} (null) is intentionally absent.
+        // EnumConstructOp::verify() skips position checking when payloads
+        // is empty, so the null ArrayAttr is semantically correct here.
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, optionType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("Option"), mlir::ValueRange{},

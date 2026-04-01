@@ -1241,38 +1241,22 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
 /// Default timeout for remote ask operations (5 seconds).
 const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 
-/// Allocate a zeroed fallback buffer for failed remote asks.
-///
-/// The codegen unconditionally loads from the reply pointer, so we must
-/// never return null for non-void ask results. A zeroed buffer produces
-/// a zero/null value which is a safe default on failure.
-fn alloc_zeroed_reply(reply_size: usize) -> *mut c_void {
-    if reply_size == 0 {
-        return ptr::null_mut();
-    }
-
-    // SAFETY: calloc is safe with any positive size.
-    unsafe { libc::calloc(1, reply_size) }
-}
-
 /// Perform a blocking ask against a PID, handling local and remote actors.
 ///
 /// If the PID targets the local node, delegates to `hew_actor_ask`.
 /// If remote, sends the message with a `request_id` over the mesh and
 /// blocks until the reply arrives (or times out).
 ///
-/// Returns a `malloc`'d reply buffer on success. On failure or timeout,
-/// non-void asks receive a zeroed allocation sized for the expected reply
-/// so the codegen can safely load the result value. The caller must `free`
-/// the returned pointer.
+/// Returns a `malloc`'d reply buffer on success. Remote failures return
+/// `NULL` instead of fabricating a zero/default reply value. Successful
+/// remote asks for `void` also surface as `NULL`. The caller must `free`
+/// any non-null returned pointer.
 ///
 /// # Safety
 ///
 /// - `pid` must be a valid actor PID.
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
-/// - `reply_size` must match the expected non-void reply width so remote
-///   failure fallbacks allocate enough bytes for the caller's load.
 #[expect(
     clippy::too_many_lines,
     reason = "local + remote ask paths are clearer in one function"
@@ -1283,7 +1267,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
     msg_type: i32,
     data: *mut c_void,
     size: usize,
-    reply_size: usize,
+    _reply_size: usize,
 ) -> *mut c_void {
     let target_node_id = crate::pid::hew_pid_node(pid);
     let local_node_id = crate::pid::hew_pid_local_node();
@@ -1298,12 +1282,12 @@ pub unsafe extern "C" fn hew_node_api_ask(
     let guard = CURRENT_NODE.read_or_recover();
     let node_ptr = *guard as *mut HewNode;
     if node_ptr.is_null() {
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
     // SAFETY: read lock pins CURRENT_NODE.
     let node = unsafe { &*node_ptr };
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
 
     // Look up the connection for the target node.
@@ -1315,7 +1299,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
             let map = node.conn_by_node.lock_or_recover();
             match map.get(&target_node_id) {
                 Some(&id) => cid = id,
-                None => return alloc_zeroed_reply(reply_size),
+                None => return ptr::null_mut(),
             }
         }
         cid
@@ -1347,7 +1331,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         // SAFETY: wire_buf was initialised above.
         unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
         REPLY_TABLE.remove(request_id);
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
 
     // Send the encoded envelope.
@@ -1374,7 +1358,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
 
     if !send_ok {
         REPLY_TABLE.remove(request_id);
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
 
     // Drop the read lock before blocking so other threads can use the node.
@@ -1390,15 +1374,15 @@ pub unsafe extern "C" fn hew_node_api_ask(
     while data_guard.is_none() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            // Timeout — remove the pending entry and return a zeroed fallback.
+            // Timeout — remove the pending entry and return the null failure sentinel.
             REPLY_TABLE.remove(request_id);
-            return alloc_zeroed_reply(reply_size);
+            return ptr::null_mut();
         }
         let (new_guard, wait_result) = pending.cond.wait_timeout_or_recover(data_guard, remaining);
         data_guard = new_guard;
         if wait_result.timed_out() && data_guard.is_none() {
             REPLY_TABLE.remove(request_id);
-            return alloc_zeroed_reply(reply_size);
+            return ptr::null_mut();
         }
     }
 
@@ -1407,13 +1391,13 @@ pub unsafe extern "C" fn hew_node_api_ask(
     drop(data_guard);
 
     if reply_data.is_empty() {
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
 
     // SAFETY: malloc for reply buffer.
     let result = unsafe { libc::malloc(reply_data.len()) };
     if result.is_null() {
-        return alloc_zeroed_reply(reply_size);
+        return ptr::null_mut();
     }
     // SAFETY: result was just allocated with reply_data.len() bytes.
     unsafe {
@@ -1428,17 +1412,16 @@ mod tests {
     use std::net::TcpListener;
     use std::time::Duration;
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-    unsafe extern "C" {
-        fn malloc_usable_size(ptr: *const c_void) -> usize;
-    }
-
-    #[cfg(target_os = "macos")]
-    unsafe extern "C" {
-        fn malloc_size(ptr: *const c_void) -> usize;
-    }
-
     static NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ResetCurrentNode(usize);
+
+    impl Drop for ResetCurrentNode {
+        fn drop(&mut self) {
+            let mut current = CURRENT_NODE.write_or_recover();
+            *current = self.0;
+        }
+    }
 
     struct TestNode(*mut HewNode);
 
@@ -1661,51 +1644,41 @@ mod tests {
 
     // ── Reply routing table unit tests ─────────────────────────────────
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "macos"
-    ))]
-    unsafe fn usable_allocation_size(ptr: *mut c_void) -> usize {
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-        {
-            // SAFETY: `ptr` comes from libc allocation APIs in this test module.
-            unsafe { malloc_usable_size(ptr) }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            // SAFETY: `ptr` comes from libc allocation APIs in this test module.
-            unsafe { malloc_size(ptr) }
-        }
-    }
-
     #[test]
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "macos"
-    ))]
-    fn alloc_zeroed_reply_uses_requested_size() {
-        let reply_size = 73;
-        let reply = alloc_zeroed_reply(reply_size);
-        assert!(!reply.is_null());
+    fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
 
-        // SAFETY: `reply` was allocated by alloc_zeroed_reply above.
-        let usable_size = unsafe { usable_allocation_size(reply) };
-        assert!(
-            usable_size >= reply_size,
-            "usable allocation {usable_size} should cover requested {reply_size} bytes"
-        );
+        let saved_current_node = {
+            let mut current = CURRENT_NODE.write_or_recover();
+            let saved = *current;
+            *current = 0;
+            saved
+        };
+        let _reset_current_node = ResetCurrentNode(saved_current_node);
 
-        // SAFETY: the usable allocation size check above guarantees this range is valid.
-        let bytes = unsafe { std::slice::from_raw_parts(reply.cast::<u8>(), reply_size) };
-        assert!(bytes.iter().all(|&byte| byte == 0));
+        let local_node_id = crate::pid::hew_pid_local_node();
+        let remote_node_id = if local_node_id == u16::MAX {
+            u16::MAX - 1
+        } else {
+            local_node_id + 1
+        };
+        assert_ne!(remote_node_id, 0);
+        assert_ne!(remote_node_id, local_node_id);
 
-        // SAFETY: `reply` was allocated by libc::calloc in alloc_zeroed_reply.
-        unsafe { libc::free(reply) };
+        let remote_pid = crate::pid::hew_pid_make(remote_node_id, 1);
+        // SAFETY: null data with size 0 is valid; the remote path should fail
+        // immediately because no active node is installed.
+        let reply = unsafe {
+            hew_node_api_ask(
+                remote_pid,
+                7,
+                ptr::null_mut(),
+                0,
+                std::mem::size_of::<u64>(),
+            )
+        };
+
+        assert!(reply.is_null());
     }
 
     #[test]

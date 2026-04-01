@@ -1,0 +1,29 @@
+// Regression: trivial method/function String returns that alias an owned
+// field on a caller-owned struct must not register a temporary string drop.
+
+type VersionLike {
+    pre_release: String;
+    major: i64;
+}
+
+trait VersionLikeMethods {
+    fn pre(ver: VersionLike) -> String;
+}
+
+impl VersionLikeMethods for VersionLike {
+    fn pre(ver: VersionLike) -> String { ver.pre_release }
+}
+
+fn pre_of(ver: VersionLike) -> String {
+    ver.pre_release
+}
+
+fn main() {
+    let v1 = VersionLike { pre_release: "alpha", major: 1 };
+    println(v1.pre());
+
+    let v2 = VersionLike { pre_release: "beta", major: 2 };
+    println(pre_of(v2));
+
+    println("done");
+}

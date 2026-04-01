@@ -2553,6 +2553,39 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
   });
 
+  // Pass 1f2: Record trivial borrowed String-return functions/methods so
+  // caller-side temporary materialization can avoid registering an aliased
+  // hew_string_drop for values that are still owned by a caller-side struct.
+  borrowedFieldReturnCallees.clear();
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
+      maybeRegisterBorrowedFieldReturn(*fn, mangleName(currentModulePath, "", fn->name));
+      return;
+    }
+
+    auto *impl = std::get_if<ast::ImplDecl>(&item.kind);
+    if (!impl || (impl->type_params && !impl->type_params->empty()))
+      return;
+
+    std::string typeName;
+    if (auto *named = std::get_if<ast::TypeNamed>(&impl->target_type.value.kind))
+      typeName = named->name;
+    if (typeName.empty())
+      return;
+
+    auto savedModulePath = currentModulePath;
+    if (typeDefModulePath.count(typeName))
+      currentModulePath = typeDefModulePath[typeName];
+    typeParamSubstitutions["Self"] = typeName;
+    for (const auto &method : impl->methods) {
+      auto mangledMethod = mangleName(currentModulePath, typeName, method.name);
+      maybeRegisterBorrowedFieldReturn(method, mangledMethod);
+    }
+    typeParamSubstitutions.erase("Self");
+    currentModulePath = savedModulePath;
+  });
+
   // Pass 1g: Pre-register module-level constants so function bodies can
   // reference them. ConstDecl stores the AST expression for inline codegen.
   forEachItem([&](const auto &spannedItem) {
@@ -5338,6 +5371,68 @@ bool MLIRGen::structHasOwnedFields(const std::string &name) const {
   return false;
 }
 
+void MLIRGen::maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::StringRef symbolName) {
+  if (!fn.return_type || fn.is_generator || (fn.type_params && !fn.type_params->empty()))
+    return;
+
+  auto *retNamed = std::get_if<ast::TypeNamed>(&fn.return_type->value.kind);
+  if (!retNamed)
+    return;
+  auto returnTypeName = resolveTypeAlias(retNamed->name);
+  if (returnTypeName != "String" && returnTypeName != "string" && returnTypeName != "str")
+    return;
+
+  const ast::Expr *returnedExpr = nullptr;
+  if (fn.body.trailing_expr && fn.body.stmts.empty()) {
+    returnedExpr = &fn.body.trailing_expr->value;
+  } else if (!fn.body.trailing_expr && fn.body.stmts.size() == 1) {
+    if (auto *ret = std::get_if<ast::StmtReturn>(&fn.body.stmts.front()->value.kind)) {
+      if (ret->value)
+        returnedExpr = &ret->value->value;
+    }
+  }
+  if (!returnedExpr)
+    return;
+
+  auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&returnedExpr->kind);
+  if (!fieldAccess)
+    return;
+  auto *receiverIdent = std::get_if<ast::ExprIdentifier>(&fieldAccess->object->value.kind);
+  if (!receiverIdent)
+    return;
+
+  auto paramIt = std::find_if(fn.params.begin(), fn.params.end(), [&](const ast::Param &param) {
+    return param.name == receiverIdent->name;
+  });
+  if (paramIt == fn.params.end())
+    return;
+
+  auto *paramNamed = std::get_if<ast::TypeNamed>(&paramIt->ty.value.kind);
+  if (!paramNamed)
+    return;
+  std::string typeName = paramNamed->name;
+  if (auto substIt = typeParamSubstitutions.find(typeName); substIt != typeParamSubstitutions.end())
+    typeName = substIt->second;
+  typeName = resolveTypeAlias(typeName);
+
+  auto structIt = structTypes.find(typeName);
+  if (structIt == structTypes.end() || userDropFuncs.count(typeName) ||
+      !structHasOwnedFields(typeName))
+    return;
+
+  auto fieldIt = std::find_if(structIt->second.fields.begin(), structIt->second.fields.end(),
+                              [&](const StructFieldInfo &field) {
+                                return field.name == fieldAccess->field;
+                              });
+  if (fieldIt == structIt->second.fields.end())
+    return;
+  if (!mlir::isa<hew::StringRefType>(fieldIt->semanticType) &&
+      !mlir::isa<hew::StringRefType>(fieldIt->type))
+    return;
+
+  borrowedFieldReturnCallees.insert(symbolName.str());
+}
+
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
   // Stream/Sink RAII: load from alloca, null-check, call close, null out.
   // This prevents double-free if .close() was called explicitly (which
@@ -5613,6 +5708,19 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
                                                      const ast::Expr &astExpr) const {
   if (!val)
     return {};
+
+  if (std::holds_alternative<ast::ExprCall>(astExpr.kind) ||
+      std::holds_alternative<ast::ExprMethodCall>(astExpr.kind)) {
+    mlir::Value callVal = val;
+    if (auto *defOp = callVal.getDefiningOp()) {
+      if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() > 0)
+        callVal = defOp->getOperand(0);
+    }
+    if (auto callOp = callVal.getDefiningOp<mlir::func::CallOp>()) {
+      if (borrowedFieldReturnCallees.count(callOp.getCallee().str()) > 0)
+        return {};
+    }
+  }
 
   // Identifiers are already variable-bound — not temporaries.
   if (std::holds_alternative<ast::ExprIdentifier>(astExpr.kind))

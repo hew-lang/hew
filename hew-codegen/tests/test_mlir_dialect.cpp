@@ -1727,6 +1727,111 @@ static void test_enum_extract_payload_fold_non_default_position() {
 }
 
 //===----------------------------------------------------------------------===//
+// Test: Err without explicit payload_positions fails verification
+//
+// mlir::ArrayAttr{} is a null default-constructed value; the ODS builder
+// treats it as absent and never stores the attribute. EnumConstructOp::verify()
+// then falls back to implicit sequential slot assignment: pos = i + 1, so the
+// first (and only) payload goes to struct field 1. For Result<T,E> the struct
+// layout is {i32 tag, T ok, E err}: field 1 is the Ok slot, field 2 is Err.
+// When T != E an Err construct without explicit payload_positions causes a
+// verifier type-mismatch (payload type E vs field[1] type T). This test
+// confirms the verifier catches that case, demonstrating why the explicit
+// payload_positions = [2] added by this fix are semantically necessary.
+//===----------------------------------------------------------------------===//
+
+static void test_enum_construct_err_implicit_slot_verifier_rejects() {
+  TEST(enum_construct_err_implicit_slot_verifier_rejects);
+
+  mlir::MLIRContext ctx;
+  ctx.allowUnregisteredDialects();
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  // Result<i32, i64>: struct { i32 tag, i32 ok, i64 err }
+  // field 1 = i32 (Ok payload), field 2 = i64 (Err payload)
+  auto resultStruct = mlir::LLVM::LLVMStructType::getLiteral(&ctx, {i32Type, i32Type, i64Type});
+
+  auto funcType = builder.getFunctionType({i64Type}, {i64Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_err_implicit", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto errPayload = entryBlock->getArgument(0); // i64
+
+  // Construct Err(i64) WITHOUT payload_positions. mlir::ArrayAttr{} is null —
+  // the ODS builder does not store it. verify() falls back to pos = 0+1 = 1.
+  // Field 1 has type i32 (the Ok slot), but errPayload is i64 → type mismatch.
+  hew::EnumConstructOp::create(builder, loc, resultStruct, uint32_t(1), "__Result",
+                                mlir::ValueRange{errPayload},
+                                /*payload_positions=*/mlir::ArrayAttr{});
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{errPayload});
+
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("expected verifier to reject Err construct lacking explicit payload_positions when T!=E");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
+// Test: Err with explicit payload_positions=[2] passes verification
+//===----------------------------------------------------------------------===//
+
+static void test_enum_construct_err_explicit_slot_verifier_accepts() {
+  TEST(enum_construct_err_explicit_slot_verifier_accepts);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto resultStruct = mlir::LLVM::LLVMStructType::getLiteral(&ctx, {i32Type, i32Type, i64Type});
+
+  auto funcType = builder.getFunctionType({i64Type}, {i64Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_err_explicit", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto errPayload = entryBlock->getArgument(0); // i64
+
+  // Err(i64) WITH explicit payload_positions=[2]: field 2 is i64 → passes.
+  auto posAttr = builder.getI64ArrayAttr({2});
+  hew::EnumConstructOp::create(builder, loc, resultStruct, uint32_t(1), "__Result",
+                                mlir::ValueRange{errPayload}, posAttr);
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{errPayload});
+
+  if (mlir::failed(mlir::verify(module))) {
+    FAIL("Err construct with explicit payload_positions=[2] should pass verification");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Test: Dead Vec NOT eliminated when vec has other uses
 //===----------------------------------------------------------------------===//
 
@@ -3010,6 +3115,8 @@ int main() {
   test_cast_constant_fold();
   test_enum_extract_payload_fold();
   test_enum_extract_payload_fold_non_default_position();
+  test_enum_construct_err_implicit_slot_verifier_rejects();
+  test_enum_construct_err_explicit_slot_verifier_accepts();
   test_dead_vec_not_eliminated_with_uses();
   test_dead_hashmap_not_eliminated_with_uses();
 

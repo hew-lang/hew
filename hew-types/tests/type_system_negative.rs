@@ -144,6 +144,148 @@ fn duplicate_definition_same_function() {
     );
 }
 
+// ── 6b. DuplicateDefinition — define same struct twice ──────────────
+
+#[test]
+fn duplicate_definition_same_struct() {
+    let output = typecheck(
+        r"
+        type Foo { x: int; }
+        type Foo { y: int; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6c. DuplicateDefinition — define same enum twice ────────────────
+
+#[test]
+fn duplicate_definition_same_enum() {
+    let output = typecheck(
+        r"
+        enum Colour { Red; }
+        enum Colour { Green; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6d. DuplicateDefinition — define same trait twice ───────────────
+
+#[test]
+fn duplicate_definition_same_trait() {
+    let output = typecheck(
+        r"
+        trait Printable { fn render(val: Self) -> int; }
+        trait Printable { fn print(val: Self) -> int; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6e. DuplicateDefinition — define same actor twice ───────────────
+
+#[test]
+fn duplicate_definition_same_actor() {
+    let output = typecheck(
+        r"
+        actor Worker { let id: int; }
+        actor Worker { let count: int; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6f. DuplicateDefinition — define same machine twice ─────────────
+
+#[test]
+fn duplicate_definition_same_machine() {
+    let output = typecheck(
+        r"
+        machine Traffic {
+            state Red;
+            state Green;
+            event Tick;
+            on Tick: Red -> Green;
+            on Tick: Green -> Red;
+        }
+        machine Traffic {
+            state Idle;
+            state Busy;
+            event Tick;
+            on Tick: Idle -> Busy;
+            on Tick: Busy -> Idle;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6g. DuplicateDefinition — define same wire type twice ────────────
+
+#[test]
+fn duplicate_definition_same_wire_type() {
+    let output = typecheck(
+        r"
+        wire type Packet {
+            id: i32 @1;
+        }
+        wire type Packet {
+            name: String @1;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 7. Shadowing — inner scope binding shadows outer scope ───────────
 // Nested/child scope shadowing emits a warning (not an error); only same-scope
 // rebinding and actor field shadowing are hard errors.

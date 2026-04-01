@@ -531,6 +531,57 @@ fn test_pub_type_accessible_qualified() {
     );
 }
 
+#[test]
+fn test_pub_type_import_conflicting_with_local_type_errors() {
+    let local_type = TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: "Config".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+    };
+    let imported_type = TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: "Config".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+    };
+    let import = make_user_import(
+        &["myapp", "config"],
+        None,
+        vec![(Item::TypeDecl(imported_type), 0..0)],
+    );
+
+    let program = Program {
+        items: vec![
+            (Item::TypeDecl(local_type), 0..0),
+            (Item::Import(import), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── diamond dependency via module graph ───────────────────────────────────────
 
 #[test]

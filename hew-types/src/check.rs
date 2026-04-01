@@ -2511,6 +2511,10 @@ impl Checker {
                             td.methods.insert(method.name.clone(), sig);
                         }
                     }
+                    if let Some(tb) = &id.trait_bound {
+                        self.trait_impls_set
+                            .insert((type_name.clone(), tb.name.clone()));
+                    }
 
                     // Restore previous self type
                     self.current_self_type = prev_self_type;
@@ -2779,6 +2783,10 @@ impl Checker {
                                 continue;
                             }
                             self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        }
+                        if let Some(tb) = &id.trait_bound {
+                            self.trait_impls_set
+                                .insert((type_name.clone(), tb.name.clone()));
                         }
 
                         // Restore previous self type
@@ -10555,6 +10563,68 @@ fn main() {
                 .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("json")),
             "should not warn about used import: {:?}",
             output.warnings
+        );
+    }
+
+    #[test]
+    fn stdlib_import_registers_trait_impls_for_generic_bounds() {
+        let module_source = r#"
+            pub trait Describable {
+                fn describe(val: Self) -> String;
+            }
+
+            pub type Label {
+                text: String;
+            }
+
+            pub fn make_label() -> Label {
+                Label { text: "hello" }
+            }
+
+            impl Describable for Label {
+                fn describe(label: Label) -> String {
+                    label.text
+                }
+            }
+
+            pub fn describe<T: Describable>(item: T) -> String {
+                item.describe()
+            }
+        "#;
+
+        let module = hew_parser::parse(module_source);
+        assert!(
+            module.errors.is_empty(),
+            "module parse errors: {:?}",
+            module.errors
+        );
+
+        let import_decl = ImportDecl {
+            path: vec!["std".to_string(), "string".to_string()],
+            spec: None,
+            file_path: None,
+            resolved_items: Some(module.program.items.clone()),
+            resolved_item_source_paths: Vec::new(),
+            resolved_source_paths: Vec::new(),
+        };
+        let program = Program {
+            module_graph: None,
+            items: vec![(Item::Import(import_decl), 0..0)],
+            module_doc: None,
+        };
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&program);
+
+        assert!(
+            output.errors.is_empty(),
+            "stdlib import should register without type errors: {:?}",
+            output.errors
+        );
+        assert!(
+            checker
+                .trait_impls_set
+                .contains(&("Label".to_string(), "Describable".to_string())),
+            "stdlib Hew items should register trait impls for downstream generic bound checks"
         );
     }
 

@@ -440,8 +440,11 @@ private:
   /// Sink-hardening wrapper around coerceType(). Guarantees the returned value
   /// has targetType by substituting a typed default on coercion failure and
   /// incrementing errorCount_ so generation still fails closed.
+  /// Preserves unsigned widening when the sink is the active function's
+  /// declared unsigned integer return type.
   mlir::Value coerceTypeForSink(mlir::Value value, mlir::Type targetType,
                                 mlir::Location location);
+  bool shouldUseUnsignedReturnSinkCoercion(mlir::Type targetType);
 
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.
@@ -893,6 +896,7 @@ private:
 
   // ── Current function tracking ────────────────────────────────────
   mlir::func::FuncOp currentFunction;
+  const ast::TypeExpr *currentFunctionReturnTypeExpr = nullptr;
 
   // ── Loop control (for break/continue) ──────────────────────────
   // Stack of memref<i1> values: when set to false, the loop terminates.
@@ -928,12 +932,13 @@ private:
 
   /// RAII guard that saves/restores function generation state.
   /// On construction: saves currentFunction, returnFlag, returnSlot,
-  /// channelIntOutValidAlloca; sets currentFunction to newFunc and
-  /// resets the rest to nullptr.
+  /// currentFunctionReturnTypeExpr, channelIntOutValidAlloca; sets
+  /// currentFunction to newFunc and resets the rest to nullptr.
   /// On destruction: restores all saved values.
   struct FunctionGenerationScope {
     MLIRGen &gen;
     mlir::func::FuncOp prevFunction;
+    const ast::TypeExpr *prevFunctionReturnTypeExpr;
     mlir::Value prevReturnFlag;
     mlir::Value prevReturnSlot;
     bool prevReturnSlotIsLazy;
@@ -941,11 +946,13 @@ private:
     mlir::Value prevChannelIntOutValidAlloca;
 
     FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
-        : gen(g), prevFunction(g.currentFunction), prevReturnFlag(g.returnFlag),
+        : gen(g), prevFunction(g.currentFunction),
+          prevFunctionReturnTypeExpr(g.currentFunctionReturnTypeExpr), prevReturnFlag(g.returnFlag),
           prevReturnSlot(g.returnSlot), prevReturnSlotIsLazy(g.returnSlotIsLazy),
           prevEarlyReturnFlag(g.earlyReturnFlag),
           prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
       gen.currentFunction = newFunc;
+      gen.currentFunctionReturnTypeExpr = nullptr;
       gen.returnFlag = nullptr;
       gen.returnSlot = nullptr;
       gen.returnSlotIsLazy = false;
@@ -955,6 +962,7 @@ private:
 
     ~FunctionGenerationScope() {
       gen.currentFunction = prevFunction;
+      gen.currentFunctionReturnTypeExpr = prevFunctionReturnTypeExpr;
       gen.returnFlag = prevReturnFlag;
       gen.returnSlot = prevReturnSlot;
       gen.returnSlotIsLazy = prevReturnSlotIsLazy;

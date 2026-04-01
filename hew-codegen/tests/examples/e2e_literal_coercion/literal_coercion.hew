@@ -171,6 +171,33 @@ fn test_aliased_unsigned_as_cast_coercion() {
     println(cast_value);
 }
 
+fn widen_unsigned_on_return() -> u16 {
+    let value: u8 = 200;
+    return value;
+}
+
+fn widen_unsigned_on_trailing() -> u16 {
+    let value: u8 = 200;
+    value
+}
+
+fn widen_aliased_unsigned_on_return() -> Wide {
+    let value: u8 = 200;
+    return value;
+}
+
+fn widen_aliased_unsigned_on_trailing() -> Wide {
+    let value: u8 = 200;
+    value
+}
+
+fn test_unsigned_return_coercion() {
+    println(widen_unsigned_on_return());
+    println(widen_unsigned_on_trailing());
+    println(widen_aliased_unsigned_on_return());
+    println(widen_aliased_unsigned_on_trailing());
+}
+
 fn main() {
     test_i32_basics();
     test_i16();
@@ -186,4 +213,5 @@ fn main() {
     test_unsigned_widening_statement_coercion();
     test_unsigned_if_tail_coercion();
     test_aliased_unsigned_as_cast_coercion();
+    test_unsigned_return_coercion();
 }

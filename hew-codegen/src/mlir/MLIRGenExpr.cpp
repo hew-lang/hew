@@ -4925,6 +4925,7 @@ mlir::Value MLIRGen::generateEnvDropFn(
 
   auto savedIP = builder.saveInsertionPoint();
   auto savedFunction = currentFunction;
+  auto savedFunctionReturnTypeExpr = currentFunctionReturnTypeExpr;
   builder.setInsertionPointToEnd(module.getBody());
 
   auto dropFn = mlir::func::FuncOp::create(builder, location, fnName, fnType);
@@ -4932,6 +4933,7 @@ mlir::Value MLIRGen::generateEnvDropFn(
   auto *entryBlock = dropFn.addEntryBlock();
   builder.setInsertionPointToStart(entryBlock);
   currentFunction = dropFn;
+  currentFunctionReturnTypeExpr = nullptr;
 
   auto envArg = entryBlock->getArgument(0);
   for (size_t idx : rcFieldIndices) {
@@ -4958,6 +4960,7 @@ mlir::Value MLIRGen::generateEnvDropFn(
   mlir::func::ReturnOp::create(builder, location);
 
   currentFunction = savedFunction;
+  currentFunctionReturnTypeExpr = savedFunctionReturnTypeExpr;
   builder.restoreInsertionPoint(savedIP);
 
   return hew::FuncPtrOp::create(builder, location, ptrType,

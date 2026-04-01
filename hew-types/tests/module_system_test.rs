@@ -799,3 +799,64 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
         output.errors
     );
 }
+
+// ── Missing-module coverage ───────────────────────────────────────────────────
+
+/// An import with no `resolved_items` and an empty registry (simulating the LSP
+/// before search-path fix) must produce an `UnresolvedImport` error rather than
+/// silently succeeding.
+#[test]
+fn test_unresolved_import_fail_closed() {
+    use hew_types::error::TypeErrorKind;
+
+    let import = ImportDecl {
+        path: vec!["no_such_pkg".to_string(), "missing".to_string()],
+        spec: None,
+        file_path: None,
+        resolved_items: None,
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..20)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UnresolvedImport),
+        "expected UnresolvedImport diagnostic, got errors: {errors:?}",
+        errors = output.errors
+    );
+}
+
+/// An import whose `resolved_items` is populated must NOT produce an
+/// `UnresolvedImport` error — the user-module path should be taken.
+#[test]
+fn test_import_with_resolved_items_is_not_unresolved() {
+    use hew_types::error::TypeErrorKind;
+
+    let import = make_user_import(&["myapp", "utils"], None, vec![]);
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..20)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UnresolvedImport),
+        "unexpected UnresolvedImport diagnostic for a user module that has resolved_items"
+    );
+}

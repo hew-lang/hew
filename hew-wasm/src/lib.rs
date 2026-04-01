@@ -220,8 +220,9 @@ struct AnalyzedSource {
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
     let type_output = if parse_result.errors.is_empty() {
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        ));
         Some(checker.check_program(&parse_result.program))
     } else {
         None

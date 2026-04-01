@@ -73,8 +73,9 @@ impl ReplSession {
         }
 
         // Type-check.
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        ));
         let tco = checker.check_program(&parse_result.program);
         let type_errors: Vec<String> = tco.errors.iter().map(|e| e.message.clone()).collect();
 
@@ -126,8 +127,9 @@ impl ReplSession {
                 .collect());
         }
 
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        ));
         let tco = checker.check_program(&parse_result.program);
         if !tco.errors.is_empty() {
             return Err(tco.errors.iter().map(|e| e.message.clone()).collect());

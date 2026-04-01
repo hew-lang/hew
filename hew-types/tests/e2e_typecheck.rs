@@ -123,10 +123,15 @@ fn test_directory(dir: &Path, label: &str) {
 // Canonical qualified-spelling end-to-end tests
 //
 // These tests prove that the literal spellings `stream.Sink` and
-// `channel.Receiver` are valid type annotations in Hew source — i.e. they
-// parse, resolve through the stdlib module registry, and their methods are
-// available to the type checker. An empty-registry checker cannot resolve
-// stdlib imports, so these tests use `typecheck_inline` (full stdlib access).
+// `channel.Receiver` are valid type annotations in Hew source.  The
+// resolution path is: `canonical_named_builtin()` strips the module
+// prefix and normalises to the short canonical name ("Sink", "Receiver"),
+// then the checker's built-in method table handles method calls.  The
+// `import` statements are required by the parser for qualified names to
+// be accepted but are decorative here — type resolution and method
+// dispatch are fully hardcoded and do not go through the stdlib module
+// registry.  `typecheck_inline` (full stdlib access) is used so the
+// imports are satisfied and no spurious "unknown module" errors occur.
 // ===========================================================================
 
 #[test]

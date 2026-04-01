@@ -956,16 +956,60 @@ void MLIRGen::registerDropsForVariable(
   // Restriction: only suppress when the source is a plain identifier
   // (variable or function parameter).  For temporaries like `f().field`,
   // the struct has no owner to free its fields, so `x` must keep its drop.
+  // Detect `let x = struct_var.string_field` — the field extraction pattern.
+  // When the RHS is an ExprFieldAccess from a plain identifier whose resolved
+  // type is a user struct with owned fields, `x` must NOT get its own
+  // hew_string_drop because the struct owner will free the field via
+  // __auto_field_drop exactly once.
+  //
+  // Two complementary detection paths are used:
+  //   (A) AST path: uses resolvedTypeOf() — works for local variables whose
+  //       expression type was recorded by the type checker.
+  //   (B) MLIR path: traces the defining op chain of the MLIR `value` back
+  //       through bitcasts to a hew.field_get on an LLVM struct type.  This
+  //       path handles imported-module function bodies, where the type checker
+  //       does not type-check bodies (only signatures) and therefore leaves no
+  //       entries in exprTypeMap.
   bool isFieldExtractionFromOwnedStruct = false;
   if (stmtValue && *stmtValue) {
     if (auto *fa = std::get_if<ast::ExprFieldAccess>(&(*stmtValue)->value.kind)) {
       if (std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+        // (A) AST-based path: look up the identifier's resolved type.
         if (auto *srcTy = resolvedTypeOf(fa->object->span)) {
           if (auto *named = std::get_if<ast::TypeNamed>(&srcTy->kind)) {
             if (structTypes.count(named->name) &&
                 !userDropFuncs.count(named->name) &&
                 structHasOwnedFields(named->name))
               isFieldExtractionFromOwnedStruct = true;
+          }
+        }
+        // (B) MLIR-value path: trace the MLIR value back through bitcasts to
+        //     a hew.field_get on an identified LLVM struct with owned fields.
+        //     This handles imported function bodies not seen by the type checker.
+        if (!isFieldExtractionFromOwnedStruct && value) {
+          mlir::Value v = value;
+          // Peel through any bitcast layers.
+          while (v) {
+            auto *defOp = v.getDefiningOp();
+            if (!defOp)
+              break;
+            if (auto bitcast = mlir::dyn_cast<hew::BitcastOp>(defOp)) {
+              v = bitcast.getInput();
+            } else if (auto fieldGet = mlir::dyn_cast<hew::FieldGetOp>(defOp)) {
+              // Check the struct type of the object the field is accessed on.
+              auto srcType = fieldGet.getStructVal().getType();
+              if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(srcType)) {
+                if (structTy.isIdentified()) {
+                  auto name = structTy.getName().str();
+                  if (structTypes.count(name) && !userDropFuncs.count(name) &&
+                      structHasOwnedFields(name))
+                    isFieldExtractionFromOwnedStruct = true;
+                }
+              }
+              break;
+            } else {
+              break;
+            }
           }
         }
       }

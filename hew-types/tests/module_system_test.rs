@@ -9,8 +9,8 @@ use hew_parser::ast::{
     ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
-use hew_types::check::TypeDefKind;
-use hew_types::Checker;
+use hew_types::check::{SpanKey, TypeDefKind};
+use hew_types::{Checker, Ty};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -232,6 +232,104 @@ fn test_named_import_selective_resolution() {
     // Both should still be available qualified
     assert!(output.fn_sigs.contains_key("utils.helper"));
     assert!(output.fn_sigs.contains_key("utils.other"));
+}
+
+// ── generic bounds across module imports ─────────────────────────────────────
+
+#[test]
+fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_impl() {
+    let root_source = r#"
+        import myapp::widgets::*;
+
+        fn main() -> String {
+            describe(Label { text: "hello" })
+        }
+    "#;
+    let module_source = r#"
+        pub trait Describable {
+            fn describe(val: Self) -> String;
+        }
+
+        pub type Label {
+            text: String;
+        }
+
+        impl Describable for Label {
+            fn describe(label: Label) -> String {
+                label.text
+            }
+        }
+
+        pub fn describe<T: Describable>(item: T) -> String {
+            item.describe()
+        }
+    "#;
+
+    let mut root = hew_parser::parse(root_source);
+    assert!(
+        root.errors.is_empty(),
+        "root parse errors: {:?}",
+        root.errors
+    );
+
+    let call_span = root
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(fd) if fd.name == "main" => {
+                fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
+            }
+            _ => None,
+        })
+        .expect("main trailing call should exist");
+
+    let module = hew_parser::parse(module_source);
+    assert!(
+        module.errors.is_empty(),
+        "module parse errors: {:?}",
+        module.errors
+    );
+
+    let import_decl = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import should exist");
+    import_decl.resolved_items = Some(module.program.items.clone());
+
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+
+    assert!(
+        output.errors.is_empty(),
+        "imported trait impl should satisfy imported generic bounds: {:?}",
+        output.errors
+    );
+    assert!(
+        output.fn_sigs.contains_key("widgets.describe"),
+        "module-qualified imported generic should be registered"
+    );
+    assert!(
+        output.fn_sigs.contains_key("describe"),
+        "glob import should register imported generic unqualified"
+    );
+
+    let inferred = output
+        .call_type_args
+        .get(&SpanKey::from(&call_span))
+        .expect("imported generic call should record inferred type args");
+    assert_eq!(
+        inferred,
+        &vec![Ty::Named {
+            name: "Label".to_string(),
+            args: vec![],
+        }]
+    );
 }
 
 // ── pub visibility across modules ─────────────────────────────────────────────

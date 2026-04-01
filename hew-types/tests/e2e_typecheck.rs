@@ -14,6 +14,18 @@ fn new_networking_demo_checker() -> hew_types::Checker {
     ]))
 }
 
+/// Typecheck an inline source string with full stdlib access.
+fn typecheck_inline(source: &str) -> hew_types::TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = new_networking_demo_checker();
+    checker.check_program(&parse_result.program)
+}
+
 #[test]
 fn typecheck_all_examples() {
     let examples_dir = repo_root().join("examples");
@@ -105,4 +117,64 @@ fn test_directory(dir: &Path, label: &str) {
         }
     }
     // Informational — don't fail on type-check errors yet
+}
+
+// ===========================================================================
+// Canonical qualified-spelling end-to-end tests
+//
+// These tests prove that the literal spellings `stream.Sink` and
+// `channel.Receiver` are valid type annotations in Hew source.  The
+// resolution path is: `canonical_named_builtin()` strips the module
+// prefix and normalises to the short canonical name ("Sink", "Receiver"),
+// then the checker's built-in method table handles method calls.  The
+// `import` statements are required by the parser for qualified names to
+// be accepted but are decorative here — type resolution and method
+// dispatch are fully hardcoded and do not go through the stdlib module
+// registry.  `typecheck_inline` (full stdlib access) is used so the
+// imports are satisfied and no spurious "unknown module" errors occur.
+// ===========================================================================
+
+#[test]
+fn stream_dot_sink_annotation_typechecks() {
+    // A function whose parameter is explicitly spelled `stream.Sink<String>`.
+    // Proves: the qualified spelling resolves to the canonical Sink<String>
+    // type and its write/close methods are available.
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        fn flush_and_close(s: stream.Sink<String>, msg: String) {
+            s.write(msg);
+            s.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "stream.Sink<String> annotation should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn channel_dot_receiver_annotation_typechecks() {
+    // A function whose parameter is explicitly spelled `channel.Receiver<String>`.
+    // Proves: the qualified spelling resolves to the canonical Receiver<String>
+    // type and its recv/close methods are available.
+    let output = typecheck_inline(
+        r"
+        import std::channel;
+
+        fn take_one(rx: channel.Receiver<String>) -> Option<String> {
+            let v = rx.recv();
+            rx.close();
+            v
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "channel.Receiver<String> annotation should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
 }

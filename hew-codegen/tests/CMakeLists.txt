@@ -29,6 +29,7 @@ target_include_directories(test_mlirgen PRIVATE
 )
 
 target_link_libraries(test_mlirgen PRIVATE
+  HewCodegen
   HewMLIRDialect
   $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
 )

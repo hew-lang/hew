@@ -318,6 +318,10 @@
             {
               "name": "size",
               "type": "u64"
+            },
+            {
+              "name": "reply_size",
+              "type": "u64"
             }
           ],
           "returns": "ptr"

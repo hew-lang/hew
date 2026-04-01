@@ -1007,14 +1007,30 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     // hew_node_api_ask, which sends the message with a request_id over
     // the mesh and blocks until the reply arrives.
     if (targetVal.getType() == i64Type) {
-      auto askFuncType = rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType}, {ptrType});
-      getOrInsertFuncDecl(module, rewriter, "hew_node_api_ask", askFuncType);
-      auto call =
-          mlir::func::CallOp::create(rewriter, loc, "hew_node_api_ask", mlir::TypeRange{ptrType},
-                                     mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
-      auto replyPtr = call.getResult(0);
-
       auto resultType = op.getResult().getType();
+      auto zeroReplySize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
+      auto loadType = resultType;
+      auto isDirectReplyLoadType = [&](mlir::Type type) {
+        return llvm::isa<mlir::LLVM::LLVMPointerType, mlir::IntegerType, mlir::FloatType,
+                         mlir::LLVM::LLVMStructType>(type);
+      };
+      mlir::Value replySize = zeroReplySize;
+      if (!llvm::isa<mlir::NoneType>(resultType)) {
+        loadType = getTypeConverter()->convertType(resultType);
+        if (!loadType)
+          loadType = resultType;
+        auto replyLoadType = isDirectReplyLoadType(loadType) ? loadType : ptrType;
+        replySize = emitSizeOf(rewriter, loc, replyLoadType);
+      }
+
+      auto askFuncType =
+          rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType, sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "hew_node_api_ask", askFuncType);
+      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_node_api_ask",
+                                             mlir::TypeRange{ptrType},
+                                             mlir::ValueRange{targetVal, msgTypeVal, dataPtr,
+                                                              dataSize, replySize});
+      auto replyPtr = call.getResult(0);
 
       // Void-return handler: free the reply buffer and erase the op.
       // free(null) is a safe no-op if the ask failed.
@@ -1029,21 +1045,14 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
 
       // Convert Hew dialect types (e.g., !hew.result, !hew.option) to their
       // LLVM representation so the load uses a concrete LLVM type.
-      auto loadType = getTypeConverter()->convertType(resultType);
-      if (!loadType)
-        loadType = resultType;
-
       // Non-void: load the result from the reply pointer.
       // hew_node_api_ask guarantees a non-null return for non-void asks
       // (returns a zeroed allocation on timeout/failure).
       mlir::Value resultVal;
-      if (loadType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
         auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
         resultVal = loaded.getResult();
-      } else if (loadType == i32Type || loadType == rewriter.getI64Type() ||
-                 llvm::isa<mlir::IntegerType>(loadType) ||
-                 llvm::isa<mlir::FloatType>(loadType) ||
-                 llvm::isa<mlir::LLVM::LLVMStructType>(loadType)) {
+      } else if (isDirectReplyLoadType(loadType)) {
         auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, loadType, replyPtr);
         resultVal = loaded.getResult();
       } else {

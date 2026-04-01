@@ -1,0 +1,13 @@
+// Test: JSON decode rejects sign-invalid bounded integer values instead of
+// silently wrapping them through i64 -> i32 truncation.
+wire type Limits {
+    byte_value: byte @1;
+}
+
+extern "C" {
+    fn Limits_from_json(json: String) -> Limits;
+}
+
+fn main() {
+    unsafe { Limits_from_json("{\"byte_value\":-1}") };
+}

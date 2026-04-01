@@ -1,0 +1,13 @@
+// Test: YAML decode rejects overflow for bounded integer values instead of
+// silently truncating them through i64 -> i32 narrowing.
+wire type Limits {
+    big_count: u32 @1;
+}
+
+extern "C" {
+    fn Limits_from_yaml(yaml: String) -> Limits;
+}
+
+fn main() {
+    unsafe { Limits_from_yaml("big_count: 4294967296\n") };
+}

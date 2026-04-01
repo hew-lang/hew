@@ -457,10 +457,10 @@ set_tests_properties(
 )
 
 # ── Learning/playground example tests (auto-discovered) ─────────────────────
-# Any .hew file in examples/playground/ or examples/progressive/ with a
-# matching .expected file is automatically registered as a test. Adding a new
-# example + .expected file creates a test automatically — no CMakeLists.txt
-# editing needed.
+# Any .hew file in examples/playground/, examples/progressive/, or
+# examples/ux/ with a matching .expected file is automatically registered as a
+# test. Adding a new example + .expected file creates a test automatically —
+# no CMakeLists.txt editing needed.
 
 set(EXAMPLES_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../examples")
 cmake_path(ABSOLUTE_PATH EXAMPLES_ROOT NORMALIZE)
@@ -529,6 +529,21 @@ endforeach()
 
 # pub_sub fans messages across independent subscriber actors — force single worker
 set_tests_properties(services_pub_sub PROPERTIES ENVIRONMENT "HEW_WORKERS=1")
+
+# UX quick-start examples (flat directory, numbered sequence 01–NN)
+file(GLOB UX_HEWS "${EXAMPLES_ROOT}/ux/*.hew")
+foreach(HEW_FILE ${UX_HEWS})
+  get_filename_component(HEW_NAME ${HEW_FILE} NAME_WE)
+
+  set(EXPECTED_FILE "${EXAMPLES_ROOT}/ux/${HEW_NAME}.expected")
+  if(EXISTS ${EXPECTED_FILE})
+    set(TEST_NAME "ux_${HEW_NAME}")
+    add_example_test(${TEST_NAME} ${HEW_FILE} ${EXPECTED_FILE})
+  else()
+    message(VERBOSE "Skipping ux/${HEW_NAME} — no .expected file")
+  endif()
+endforeach()
+
 
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).

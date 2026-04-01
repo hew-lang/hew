@@ -20,7 +20,7 @@ hew build examples/fibonacci.hew -o fibonacci
 ### Learning Paths
 
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
-- **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more
+- **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
 
 ### Topic Collections
 

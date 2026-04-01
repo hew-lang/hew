@@ -5,6 +5,12 @@ fn main() {
     map.insert("a", 100);
     map.insert("b", 200);
 
-    println(map.get("a"));
-    println(map.get("b"));
+    match map.get("a") {
+        Some(v) => println(v),
+        None => println("missing"),
+    }
+    match map.get("b") {
+        Some(v) => println(v),
+        None => println("missing"),
+    }
 }

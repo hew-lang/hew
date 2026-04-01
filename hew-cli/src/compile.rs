@@ -751,6 +751,14 @@ pub fn compile(
 
     // Early exit: emit MLIR/LLVM/object without linking
     if let Some(mode) = options.codegen_mode.embedded_mode() {
+        if options.codegen_mode == CodegenMode::EmitObj {
+            let output_path = output.ok_or_else(|| {
+                "Error: object emission requires an output path (pass -o <FILE>)".to_string()
+            })?;
+            let _ = run_embedded_codegen(&ast_data, mode, options, Some(output_path))?;
+            return Ok(output_path.to_string());
+        }
+
         let text_output = run_embedded_codegen(&ast_data, mode, options, None)?;
         return write_output(output, &text_output);
     }

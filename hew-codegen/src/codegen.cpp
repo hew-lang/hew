@@ -40,6 +40,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
@@ -64,6 +65,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
+
+#include <unordered_map>
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/Coroutines/CoroCleanup.h"
@@ -5158,6 +5161,14 @@ int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
 std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
                                                        const CodegenOptions &opts,
                                                        llvm::LLVMContext &llvmContext) {
+  std::unordered_map<std::string, unsigned> functionDeclLines;
+  if (opts.debug_info) {
+    module.walk([&](mlir::func::FuncOp funcOp) {
+      if (auto fileLoc = funcOp.getLoc()->findInstanceOf<mlir::FileLineColLoc>())
+        functionDeclLines.try_emplace(funcOp.getName().str(), fileLoc.getLine());
+    });
+  }
+
   // Set pointer width so lowering patterns emit correct size_t type.
   // wasm32 uses 32-bit pointers/sizes; default is 64-bit.
   int ptrWidth = 64;
@@ -5206,7 +5217,7 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
   // This wraps the raw debug locations (from MLIR FileLineColLoc) in proper
   // DI metadata (DICompileUnit, DISubprogram) so LLVM emits .debug_info.
   if (opts.debug_info && !opts.source_path.empty()) {
-    hew::emitDebugInfo(*llvmModule, opts.source_path, opts.line_map);
+    hew::emitDebugInfo(*llvmModule, opts.source_path, opts.line_map, functionDeclLines);
   }
 
   // WASM targets: create `__original_main` wrapper that calls the user's

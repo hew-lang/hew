@@ -112,9 +112,13 @@ endif()
 # Platform-specific executable suffix
 if(WIN32)
   set(HEW_EXE_SUFFIX ".exe")
+  set(HEW_OBJ_SUFFIX ".obj")
 else()
   set(HEW_EXE_SUFFIX "")
+  set(HEW_OBJ_SUFFIX ".o")
 endif()
+
+find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
@@ -251,6 +255,23 @@ function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_warn_test.cmake
   )
 endfunction()
+
+if(HEW_DWARFDUMP)
+  # Keep these expectations on declaration lines that differ from the first
+  # executable statement so the smoke test proves decl-line fallback behavior.
+  add_test(
+    NAME dwarf_generated_locations
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DDWARFDUMP=${HEW_DWARFDUMP}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_generated_locations.hew
+      -DOUT_OBJ=${CMAKE_CURRENT_BINARY_DIR}/dwarf_generated_locations${HEW_OBJ_SUFFIX}
+      -DEXPECTED_SYMBOL_LINES=Worker_ping|8,Worker_dispatch|8,Pool_init|18
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_smoke_test.cmake
+  )
+else()
+  message(STATUS "Skipping DWARF smoke test — dwarfdump not found")
+endif()
 
 # ── Negative tests (verify compile-time error detection) ─────────────────────
 add_e2e_reject_test(undefined_var        e2e_negative undefined_var        "undefined variable")

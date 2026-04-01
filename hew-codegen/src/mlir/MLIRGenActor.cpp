@@ -151,6 +151,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
   // Build actor registry info (signatures only, no body generation)
   ActorInfo actorInfo;
   actorInfo.name = actorName;
+  actorInfo.sourceLoc = fallbackLoc.value_or(currentLoc);
   actorInfo.stateType = stateType;
   actorInfo.fieldHewTypes = std::move(fieldHewTypes);
   actorInfo.numUserFields = numUserFields;
@@ -238,7 +239,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
 // ============================================================================
 
 void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
-  auto location = currentLoc;
+  auto actorLoc = currentLoc;
   const std::string &actorName = decl.name;
 
   // De-duplicate: imported actors may appear in both forEachItem iterations
@@ -257,12 +258,35 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     return;
   const auto &actorInfo = regIt->second;
 
+  auto firstBodyLoc = [&](const ast::Block &body, mlir::Location fallback) {
+    if (!body.stmts.empty() && body.stmts.front())
+      return loc(body.stmts.front()->span);
+    if (body.trailing_expr)
+      return loc(body.trailing_expr->span);
+    return fallback;
+  };
+
+  auto receiveSourceLoc = [&](llvm::StringRef receiveName) {
+    llvm::StringRef baseName = receiveName;
+    if (baseName.ends_with("__body"))
+      baseName = baseName.drop_back(sizeof("__body") - 1);
+    else if (baseName.ends_with("__next"))
+      baseName = baseName.drop_back(sizeof("__next") - 1);
+
+    for (const auto &receiveDecl : decl.receive_fns) {
+      if (receiveDecl.name == baseName)
+        return loc(receiveDecl.span);
+    }
+    return actorLoc;
+  };
+
   // Generate receive handler functions
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto prevActorName = currentActorName;
   currentActorName = actorName;
 
   for (const auto &recv : decl.receive_fns) {
+    auto location = receiveSourceLoc(recv.name);
     std::string receiveName = actorName + "_" + recv.name;
 
     if (recv.is_generator && recv.return_type) {
@@ -665,6 +689,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // 2b. Generate init function if the actor has an init block
   //     void ActorName_init(ptr state)
   if (decl.init) {
+    auto location = firstBodyLoc(decl.init->body, actorLoc);
     std::string initName = actorName + "_init";
     auto initFuncType = builder.getFunctionType({ptrType}, {});
 
@@ -724,6 +749,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // 2c. Generate terminate function if the actor has a terminate block
   //     void ActorName_terminate(ptr state)
   if (decl.terminate) {
+    auto location = firstBodyLoc(decl.terminate->body, actorLoc);
     std::string terminateName = actorName + "_terminate";
     auto terminateFuncType = builder.getFunctionType({ptrType}, {});
 
@@ -755,6 +781,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // 3. Generate dispatch function:
   //    void ActorName_dispatch(ptr state, i32 msg_type, ptr data, size_t data_size)
   {
+    auto location = decl.receive_fns.size() == 1 ? receiveSourceLoc(decl.receive_fns.front().name)
+                                                 : actorLoc;
     std::string dispatchName = actorName + "_dispatch";
     auto i32Type = builder.getI32Type();
     auto dispatchType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
@@ -915,6 +943,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 /// For each receive handler, checks if msg_type matches and extracts the
 /// coalesce key field value as u64.
 void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::string &fnName) {
+  auto location = actorInfo.sourceLoc.value_or(currentLoc);
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i32Type = builder.getI32Type();
   auto i64Type = builder.getI64Type();
@@ -923,7 +952,7 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  auto funcOp = mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), fnName, funcType);
+  auto funcOp = mlir::func::FuncOp::create(builder, location, fnName, funcType);
   auto *entryBlock = funcOp.addEntryBlock();
   builder.setInsertionPointToStart(entryBlock);
 
@@ -931,8 +960,7 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
   auto dataPtr = entryBlock->getArgument(1);
 
   // Default: return msg_type as u64 (so each msg_type is its own key bucket)
-  auto defaultKey =
-      mlir::arith::ExtUIOp::create(builder, builder.getUnknownLoc(), i64Type, msgType);
+  auto defaultKey = mlir::arith::ExtUIOp::create(builder, location, i64Type, msgType);
 
   // For each receive fn, check if it has the coalesce key field as a parameter
   // If so, switch on msg_type, extract the field, return as u64
@@ -963,7 +991,7 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
     if (keyFieldIdx < 0)
       continue;
 
-    auto uloc = builder.getUnknownLoc();
+    auto uloc = location;
     auto msgTypeConst =
         mlir::arith::ConstantIntOp::create(builder, uloc, i32Type, static_cast<int64_t>(i));
     auto isThisMsg = mlir::arith::CmpIOp::create(builder, uloc, mlir::arith::CmpIPredicate::eq,
@@ -1005,7 +1033,7 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
     result = ifOp.getResult(0);
   }
 
-  mlir::func::ReturnOp::create(builder, builder.getUnknownLoc(), result);
+  mlir::func::ReturnOp::create(builder, location, result);
 
   builder.restoreInsertionPoint(savedIP);
 }

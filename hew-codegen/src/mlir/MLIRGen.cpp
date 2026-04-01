@@ -2723,9 +2723,8 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   // Runs after ALL actors are registered so cross-actor method calls resolve.
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
-    if (auto *ad = std::get_if<ast::ActorDecl>(&item.kind)) {
-      generateActorDecl(*ad);
-    }
+    if (std::holds_alternative<ast::ActorDecl>(item.kind))
+      generateItem(item, loc(spannedItem.span));
   });
 
   // Pass 2: Generate remaining items (supervisor decls, etc.)
@@ -2794,6 +2793,10 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
 // ============================================================================
 
 void MLIRGen::generateItem(const ast::Item &item, std::optional<mlir::Location> fallbackLoc) {
+  auto savedLoc = currentLoc;
+  if (fallbackLoc)
+    currentLoc = *fallbackLoc;
+
   if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
     if (fn->type_params && !fn->type_params->empty()) {
       // Generic function: store for later specialization, don't generate yet
@@ -2828,6 +2831,8 @@ void MLIRGen::generateItem(const ast::Item &item, std::optional<mlir::Location> 
   } else if (std::holds_alternative<ast::MachineDecl>(item.kind)) {
     // Handled in pass 1b (registration) and pass 1m (code generation)
   }
+
+  currentLoc = savedLoc;
 }
 
 // ============================================================================

@@ -1,0 +1,18 @@
+// Regression test: generator receive fn with HashMap<String, int> param must
+// drop the param when the generator body is exhausted
+// (hew_hashmap_free_impl at body exit).
+// Before this fix the HashMap allocation was leaked.
+
+actor MapReader {
+    receive gen fn read_size(m: HashMap<String, int>) -> int {
+        yield m.len();
+    }
+}
+
+fn main() {
+    let mr = spawn MapReader;
+    let m: HashMap<String, int> = {"x": 1, "y": 2, "z": 3};
+    for await val in mr.read_size(m) {
+        println(val);
+    }
+}

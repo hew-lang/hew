@@ -285,11 +285,13 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
                                  [&](const ActorReceiveInfo &r) { return r.name == recv.name; });
 
       // Build args struct type once: { ptr self, param1_type, param2_type, ... }
+      // Pointer-like Hew types (StringRefType, VecType, HashMapType, …) are
+      // stored as !llvm.ptr so the args struct is a valid LLVM aggregate.
       llvm::SmallVector<mlir::Type, 4> argsFieldTypes;
       argsFieldTypes.push_back(ptrType); // self
       if (recvIt != actorInfo.receiveFns.end()) {
         for (auto ty : recvIt->paramTypes)
-          argsFieldTypes.push_back(ty);
+          argsFieldTypes.push_back(toLLVMStorageType(ty));
       }
       auto argsStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, argsFieldTypes);
 
@@ -306,6 +308,25 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         SymbolTableScopeT varScope(symbolTable);
         MutableTableScopeT mutScope(mutableVars);
         FunctionGenerationScope funcScope(*this, bodyFnOp);
+
+        // Mirror the non-generator receive-fn drop-scope machinery: owned
+        // message params (String, Vec, HashMap, …) must be freed when the
+        // body function returns (generator exhausted).  hew_gen_ctx_create
+        // memcpy's the args struct into heap, so the body function owns
+        // those heap-copied values and must drop them on exit.
+        auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
+        funcLevelDropScopeBase = dropScopes.size();
+        auto prevBodyDropExcludeVars = std::move(funcLevelDropExcludeVars);
+        auto prevBodyDropExcludeValues = std::move(funcLevelDropExcludeValues);
+        auto prevBodyDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+        auto prevBodyEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+        auto prevBodyEarlyReturnExcludeResolvedNames =
+            std::move(funcLevelEarlyReturnExcludeResolvedNames);
+        funcLevelDropExcludeVars.clear();
+        funcLevelDropExcludeValues.clear();
+        funcLevelDropExcludeResolvedNames.clear();
+        funcLevelEarlyReturnExcludeValues.clear();
+        funcLevelEarlyReturnExcludeResolvedNames.clear();
 
         auto argsPtr = entryBlock->getArgument(0);
         auto genCtxArg = entryBlock->getArgument(1);
@@ -325,13 +346,26 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
                                                           llvm::ArrayRef<int64_t>{0});
         declareVariable("self", selfPtr);
 
+        // Push a drop scope for receive-body params.  The gen context owns a
+        // heap copy of the args (via hew_gen_ctx_create memcpy), so the body
+        // function is responsible for freeing any owned heap values on exit.
+        pushDropScope();
+
         // Extract and bind message parameters (fields 1..N)
         {
           size_t pi = 0;
           for (const auto &param : recv.params) {
-            auto paramVal = mlir::LLVM::ExtractValueOp::create(
+            mlir::Value paramVal = mlir::LLVM::ExtractValueOp::create(
                 builder, location, argsStruct,
                 llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
+            // Coerce from LLVM storage type back to semantic Hew type
+            // (e.g., !llvm.ptr → !hew.string_ref) so the body code and drop
+            // registration work with the canonical value type.
+            if (recvIt != actorInfo.receiveFns.end() && pi < recvIt->paramTypes.size()) {
+              auto semanticType = recvIt->paramTypes[pi];
+              if (argsFieldTypes[pi + 1] != semanticType)
+                paramVal = coerceType(paramVal, semanticType, location);
+            }
             declareVariable(param.name, paramVal);
 
             // Register ActorRef<T> params for method dispatch
@@ -340,12 +374,46 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
               if (!actorName.empty())
                 actorVarTypes[param.name] = actorName;
             }
+
+            // Register drops for owned types (deep-copied into gen ctx args)
+            auto paramType = paramVal.getType();
+            if (mlir::isa<hew::StringRefType>(paramType))
+              registerDroppable(param.name, "hew_string_drop");
+            else if (mlir::isa<hew::VecType>(paramType))
+              registerDroppable(param.name, "hew_vec_free");
+            else if (mlir::isa<hew::HashMapType>(paramType))
+              registerDroppable(param.name, "hew_hashmap_free_impl");
+            else if (mlir::isa<hew::ClosureType>(paramType))
+              registerDroppable(param.name, "hew_rc_drop");
+            else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(paramType)) {
+              const auto kind = handleTy.getHandleKind();
+              if (kind == "HashSet")
+                registerDroppable(param.name, "hew_hashset_free");
+              else if (kind == "http.Request")
+                registerDroppable(param.name, "hew_http_request_free");
+              else if (kind == "http.Server")
+                registerDroppable(param.name, "hew_http_server_close");
+              else if (kind == "regex.Pattern")
+                registerDroppable(param.name, "hew_regex_free");
+            }
+
             ++pi;
           }
         }
 
         // Generate the receive fn body (yields will call hew_gen_yield)
         generateBlock(recv.body, /*statementPosition=*/true);
+
+        // Pop the param drop scope — emits drops for owned params at generator
+        // exhaustion (normal exit) or early return (via emitAllDrops).
+        popDropScope();
+        funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
+        funcLevelDropExcludeVars = std::move(prevBodyDropExcludeVars);
+        funcLevelDropExcludeValues = std::move(prevBodyDropExcludeValues);
+        funcLevelDropExcludeResolvedNames = std::move(prevBodyDropExcludeResolvedNames);
+        funcLevelEarlyReturnExcludeValues = std::move(prevBodyEarlyReturnExcludeValues);
+        funcLevelEarlyReturnExcludeResolvedNames =
+            std::move(prevBodyEarlyReturnExcludeResolvedNames);
 
         // Ensure terminator
         if (!hasRealTerminator(builder.getInsertionBlock()))
@@ -358,7 +426,14 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
       // ─── 2. Init handler: {i8,Y} ActorName_method(ptr self, params...) ───
       {
         // Build param types: { ptr self, param1, param2, ... }
-        llvm::SmallVector<mlir::Type, 4> initParamTypes(argsFieldTypes);
+        // Use semantic Hew types (not LLVM storage types) so the signature
+        // matches what the dispatcher and ReceiveOpLowering expect.
+        llvm::SmallVector<mlir::Type, 4> initParamTypes;
+        initParamTypes.push_back(ptrType); // self
+        if (recvIt != actorInfo.receiveFns.end()) {
+          for (auto ty : recvIt->paramTypes)
+            initParamTypes.push_back(ty);
+        }
         auto initFuncType = builder.getFunctionType(initParamTypes, {wrapperType});
         auto savedIP = builder.saveInsertionPoint();
         builder.setInsertionPointToEnd(module.getBody());
@@ -380,8 +455,14 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         mlir::Value argsStruct = mlir::LLVM::InsertValueOp::create(
             builder, location, argsUndef, selfPtr, llvm::ArrayRef<int64_t>{0});
         for (size_t pi = 0; pi < recv.params.size(); ++pi) {
+          mlir::Value arg = entryBlock->getArgument(pi + 1);
+          // Coerce pointer-like Hew params (string, vec, …) to their LLVM
+          // storage type (!llvm.ptr) before inserting into the args struct.
+          auto storageType = argsFieldTypes[pi + 1];
+          if (storageType != arg.getType())
+            arg = coerceType(arg, storageType, location);
           argsStruct = mlir::LLVM::InsertValueOp::create(
-              builder, location, argsStruct, entryBlock->getArgument(pi + 1),
+              builder, location, argsStruct, arg,
               llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
         }
         mlir::LLVM::StoreOp::create(builder, location, argsStruct, argsAlloca);

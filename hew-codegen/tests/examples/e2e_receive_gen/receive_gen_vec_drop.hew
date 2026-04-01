@@ -1,0 +1,24 @@
+// Regression test: generator receive fn with Vec<int> param must drop the param
+// when the generator body is exhausted (hew_vec_free at body exit).
+// Before this fix the Vec allocation was leaked.
+
+actor Iter {
+    receive gen fn each(items: Vec<int>) -> int {
+        var i: int = 0;
+        while i < items.len() {
+            yield items.get(i);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let it = spawn Iter;
+    let data: Vec<int> = [];
+    data.push(10);
+    data.push(20);
+    data.push(30);
+    for await val in it.each(data) {
+        println(val);
+    }
+}

@@ -210,3 +210,65 @@ pub(crate) unsafe fn test_cancelled(ch: *mut WasmReplyChannel) -> bool {
     // SAFETY: Test callers only pass live reply channels they own.
     unsafe { (*ch).cancelled }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_then_late_reply_cleans_up_channel() {
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: `ch` is a live reply channel for the duration of the test.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+
+            assert!(test_cancelled(ch));
+            assert_eq!(test_ref_count(ch), 3);
+
+            hew_reply_channel_free(ch);
+            assert_eq!(test_ref_count(ch), 2);
+
+            hew_reply(ch, ptr::null_mut(), 0);
+            assert_eq!(test_ref_count(ch), 1);
+            assert!(test_cancelled(ch));
+            assert!(!test_replied(ch));
+            assert!(!reply_ready(ch));
+
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn reply_then_cancel_preserves_value_until_owner_release() {
+        let ch = hew_reply_channel_new();
+        let value = 42_i32;
+
+        // SAFETY: `ch` remains live until the final owner release below.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply(
+                ch,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+
+            assert_eq!(test_ref_count(ch), 1);
+            assert!(test_replied(ch));
+            assert!(!test_cancelled(ch));
+            assert!(reply_ready(ch));
+
+            hew_reply_channel_cancel(ch);
+            assert!(test_cancelled(ch));
+
+            let reply = reply_take(ch).cast::<i32>();
+            assert!(!reply.is_null());
+            assert_eq!(*reply, 42);
+            libc::free(reply.cast());
+
+            hew_reply_channel_free(ch);
+        }
+    }
+}

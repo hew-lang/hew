@@ -1,0 +1,15 @@
+// Negative test: Vec<ActorRef<Counter>> via let binding must reject i64 from Node::lookup.
+// Exercises the generateArrayExpr Vec-shortcut path (pendingDeclaredType = Vec<T>).
+actor Counter {
+    let count: int;
+    receive fn ping() {}
+}
+
+fn main() {
+    Node::start("127.0.0.1:0");
+    let counter = spawn Counter;
+    Node::register("counter", counter);
+    let refs: Vec<ActorRef<Counter>> = [Node::lookup("counter")];
+    await close(counter);
+    Node::shutdown();
+}

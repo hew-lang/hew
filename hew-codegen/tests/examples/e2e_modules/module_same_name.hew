@@ -1,12 +1,8 @@
-// Tests behaviour when two flat imports define the same pub fn name.
-// With flat imports, the first definition registered wins (first import wins).
-// This test documents the current behaviour.
+// Negative test: flat file imports must reject duplicate public names.
 import "same_name_lib_a.hew";
 import "same_name_lib_b.hew";
 
 fn main() {
-    // Both libs define greet(). Since imports are flat, this calls
-    // the first definition registered (first import wins).
     let msg = greet();
     println(msg);
 }

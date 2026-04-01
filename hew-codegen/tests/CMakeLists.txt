@@ -450,6 +450,7 @@ add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
 # ── Reject tests in non-negative categories ───────────────────────────────────
 add_e2e_reject_test(machine_exhaustive e2e_machine machine_exhaustive_fail "does not handle event")
 add_e2e_reject_test(module_private     e2e_modules module_private_reject   "no function")
+add_e2e_reject_test(module_flat_import_collision e2e_modules module_same_name "is defined multiple times")
 
 # ── Warn tests (compile succeeds with expected warning, then run + compare) ───
 add_e2e_warn_test(coverage_shadowing_nested e2e_coverage shadowing_nested_warns "shadows a binding in an outer scope")

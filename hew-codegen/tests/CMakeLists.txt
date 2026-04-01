@@ -307,16 +307,12 @@ add_e2e_reject_test(stream_named_type    e2e_negative stream_named_type    "Stre
 add_e2e_reject_test(stream_bytes_lines_reject e2e_negative stream_bytes_lines_reject "lines()` is only supported on `Stream<String>`")
 add_e2e_reject_test(codegen_source_spans e2e_negative codegen_source_spans ":3:14): error: Vec::from expects an array literal argument")
 add_e2e_reject_test(wire_unsupported_field_type e2e_negative wire_unsupported_field_type "unsupported type")
-# bytes::from and Node::lookup coercion-rejection coverage.
-# Note: messages match current coerceType fallback ("no known conversion").
-# array_to_vec_actor_ref_reject is excluded here: current main only catches
-# the type mismatch at MLIR IR-verification time (not semantic coercion), so
-# no stable user-facing string exists yet — it needs a C++ coerceTypeForExactSink
-# call at the Vec element push site before it can become a first-class reject test.
 add_e2e_reject_test(bytes_from_string_element_reject e2e_negative bytes_from_string_element_reject "coerceType: no known conversion")
 add_e2e_reject_test(bytes_from_option_element_reject e2e_negative bytes_from_option_element_reject "coerceType: no known conversion")
 add_e2e_reject_test(node_lookup_var_init_reject e2e_negative node_lookup_var_init_reject "coerceType: no known conversion")
 add_e2e_reject_test(node_lookup_assign_reject e2e_negative node_lookup_assign_reject "coerceType: no known conversion")
+add_e2e_reject_test(array_to_vec_actor_ref_reject e2e_negative array_to_vec_actor_ref_reject "coerceType: no known conversion")
+add_e2e_reject_test(let_vec_actor_ref_reject      e2e_negative let_vec_actor_ref_reject      "coerceType: no known conversion")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

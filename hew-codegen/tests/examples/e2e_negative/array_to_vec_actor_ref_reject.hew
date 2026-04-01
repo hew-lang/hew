@@ -1,0 +1,17 @@
+// Negative test: Vec<ActorRef<Counter>> must reject raw i64 IDs from Node::lookup.
+// The element push site must use exact-sink coercion and emit a stable diagnostic.
+actor Counter {
+    let count: int;
+    receive fn ping() {}
+}
+
+fn takes_refs(refs: Vec<ActorRef<Counter>>) {}
+
+fn main() {
+    Node::start("127.0.0.1:0");
+    let counter = spawn Counter;
+    Node::register("counter", counter);
+    takes_refs([Node::lookup("counter")]);
+    await close(counter);
+    Node::shutdown();
+}

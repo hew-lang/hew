@@ -1991,6 +1991,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
             argUnsigned = true;
         }
         args[i] = coerceType(args[i], expectedType, location, argUnsigned);
+        if (!args[i])
+          return nullptr;
       }
     }
     auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
@@ -4405,6 +4407,14 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
       if (!val)
         return nullptr;
       val = coerceType(val, targetElemType, location);
+      if (!val)
+        return nullptr;
+      if (val.getType() != targetElemType) {
+        ++errorCount_;
+        emitError(location) << "coerceType: no known conversion from " << val.getType()
+                            << " to " << targetElemType;
+        break;
+      }
       hew::VecPushOp::create(builder, location, vec, val);
     }
     return vec;

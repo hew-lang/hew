@@ -8,7 +8,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn new_checker() -> hew_types::Checker {
+fn new_networking_demo_checker() -> hew_types::Checker {
     hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
         repo_root(),
     ]))
@@ -45,7 +45,7 @@ fn assert_typechecks(path: &Path, label: &str) {
         parse_result.errors
     );
 
-    let mut checker = new_checker();
+    let mut checker = new_networking_demo_checker();
     let output = checker.check_program(&parse_result.program);
     assert!(
         output.errors.is_empty(),
@@ -78,7 +78,8 @@ fn test_directory(dir: &Path, label: &str) {
         }
         parse_ok += 1;
 
-        let mut checker = new_checker();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
         if output.errors.is_empty() {
             tc_ok += 1;

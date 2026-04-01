@@ -1836,8 +1836,7 @@ impl Checker {
                     // Register default trait methods not overridden in this impl
                     if let Some(tb) = &id.trait_bound {
                         // Track which types implement which traits
-                        self.trait_impls_set
-                            .insert((type_name.clone(), tb.name.clone()));
+                        self.record_trait_impl(type_name, &tb.name);
 
                         let overridden: HashSet<&str> =
                             id.methods.iter().map(|m| m.name.as_str()).collect();
@@ -2170,6 +2169,11 @@ impl Checker {
             td.methods.insert(method.name.clone(), sig.clone());
         }
         sig
+    }
+
+    fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
+        self.trait_impls_set
+            .insert((type_name.to_string(), trait_name.to_string()));
     }
 
     fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
@@ -2533,8 +2537,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.trait_impls_set
-                            .insert((type_name.clone(), tb.name.clone()));
+                        self.record_trait_impl(type_name, &tb.name);
                     }
 
                     // Restore previous self type
@@ -2655,8 +2658,7 @@ impl Checker {
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
-                            self.trait_impls_set
-                                .insert((type_name.clone(), tb.name.clone()));
+                            self.record_trait_impl(type_name, &tb.name);
                         }
                     }
                 }
@@ -2806,8 +2808,7 @@ impl Checker {
                             self.register_impl_method(type_name, method, id.type_params.as_ref());
                         }
                         if let Some(tb) = &id.trait_bound {
-                            self.trait_impls_set
-                                .insert((type_name.clone(), tb.name.clone()));
+                            self.record_trait_impl(type_name, &tb.name);
                         }
 
                         // Restore previous self type
@@ -6324,29 +6325,31 @@ impl Checker {
                             .or_default()
                             .insert(key.clone());
                     }
+                    let (freshened_params, freshened_ret, resolved_type_args) =
+                        self.instantiate_fn_sig_for_call(&sig, None, span);
                     // Separate positional and named args
                     let positional_count = args.iter().take_while(|a| a.name().is_none()).count();
                     let positional_args = &args[..positional_count];
                     let named_args = &args[positional_count..];
 
                     // Arity check
-                    if !sig.accepts_kwargs && args.len() != sig.params.len() {
+                    if !sig.accepts_kwargs && args.len() != freshened_params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
                                 "expected {} arguments, found {}",
-                                sig.params.len(),
+                                freshened_params.len(),
                                 args.len()
                             ),
                         );
-                    } else if sig.accepts_kwargs && positional_count < sig.params.len() {
+                    } else if sig.accepts_kwargs && positional_count < freshened_params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
                                 "expected at least {} positional arguments, found {}",
-                                sig.params.len(),
+                                freshened_params.len(),
                                 positional_count
                             ),
                         );
@@ -6354,7 +6357,7 @@ impl Checker {
 
                     // Check positional args by index
                     for (i, arg) in positional_args.iter().enumerate() {
-                        if let Some(param_ty) = sig.params.get(i) {
+                        if let Some(param_ty) = freshened_params.get(i) {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, param_ty);
                         }
@@ -6364,7 +6367,7 @@ impl Checker {
                     for arg in named_args {
                         if let Some(arg_name) = arg.name() {
                             if let Some(idx) = sig.param_names.iter().position(|n| n == arg_name) {
-                                if let Some(param_ty) = sig.params.get(idx) {
+                                if let Some(param_ty) = freshened_params.get(idx) {
                                     let (expr, sp) = arg.expr();
                                     self.check_against(expr, sp, param_ty);
                                 }
@@ -6382,6 +6385,17 @@ impl Checker {
                             }
                         }
                     }
+                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
+
+                    if !sig.type_params.is_empty() {
+                        let concrete: Vec<Ty> = resolved_type_args
+                            .iter()
+                            .map(|ta| self.subst.resolve(ta))
+                            .collect();
+                        if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
+                            self.call_type_args.insert(SpanKey::from(span), concrete);
+                        }
+                    }
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
@@ -6389,7 +6403,7 @@ impl Checker {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
-                    return sig.return_type;
+                    return freshened_ret;
                 }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
@@ -10595,6 +10609,13 @@ fn main() {
 
     #[test]
     fn stdlib_import_registers_trait_impls_for_generic_bounds() {
+        let root_source = r"
+            import std::string;
+
+            fn main() -> String {
+                string.describe(string.make_label())
+            }
+        ";
         let module_source = r#"
             pub trait Describable {
                 fn describe(val: Self) -> String;
@@ -10619,6 +10640,24 @@ fn main() {
             }
         "#;
 
+        let mut root = hew_parser::parse(root_source);
+        assert!(
+            root.errors.is_empty(),
+            "root parse errors: {:?}",
+            root.errors
+        );
+        let call_span = root
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(fd) if fd.name == "main" => {
+                    fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
+                }
+                _ => None,
+            })
+            .expect("main trailing call should exist");
+
         let module = hew_parser::parse(module_source);
         assert!(
             module.errors.is_empty(),
@@ -10626,26 +10665,34 @@ fn main() {
             module.errors
         );
 
-        let import_decl = ImportDecl {
-            path: vec!["std".to_string(), "string".to_string()],
-            spec: None,
-            file_path: None,
-            resolved_items: Some(module.program.items.clone()),
-            resolved_item_source_paths: Vec::new(),
-            resolved_source_paths: Vec::new(),
-        };
-        let program = Program {
-            module_graph: None,
-            items: vec![(Item::Import(import_decl), 0..0)],
-            module_doc: None,
-        };
+        let import_decl = root
+            .program
+            .items
+            .iter_mut()
+            .find_map(|(item, _)| match item {
+                Item::Import(import) => Some(import),
+                _ => None,
+            })
+            .expect("root import should exist");
+        import_decl.resolved_items = Some(module.program.items.clone());
+
         let mut checker = Checker::new(test_registry());
-        let output = checker.check_program(&program);
+        let output = checker.check_program(&root.program);
 
         assert!(
             output.errors.is_empty(),
-            "stdlib import should register without type errors: {:?}",
+            "stdlib imported Hew impl should satisfy imported generic bounds: {:?}",
             output.errors
+        );
+        assert!(
+            output.fn_sigs.contains_key("string.describe"),
+            "module-qualified imported generic should be registered"
+        );
+        assert!(
+            output
+                .call_type_args
+                .contains_key(&SpanKey::from(&call_span)),
+            "stdlib imported generic call should record inferred type args"
         );
         assert!(
             checker

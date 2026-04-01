@@ -108,8 +108,8 @@ struct WireSerialIntegerBounds {
   int64_t max;
 };
 
-/// Return the valid JSON/YAML decode range for bounded integer wire types that
-/// are represented as i32 in the lowered struct storage.
+/// Return the valid decode range for bounded integer wire types that are
+/// represented as i32 in the lowered struct storage.
 static std::optional<WireSerialIntegerBounds> wireFromSerialIntegerBounds(
     const std::string &ty) {
   if (ty == "i8")
@@ -927,6 +927,28 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                     mlir::SymbolRefAttr::get(&context, "hew_wire_zigzag_decode"),
                     mlir::ValueRange{rawI64})
                     .getResult();
+        }
+        if (auto bounds = wireFromSerialIntegerBounds(field.ty)) {
+          auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
+          auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
+          auto belowMin =
+              mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+                                          val, minVal);
+          auto aboveMax =
+              mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sgt,
+                                          val, maxVal);
+          auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
+          auto outOfRangeIf =
+              mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
+          builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
+          auto msgPtr =
+              wireStringPtr(location,
+                            wireFromSerialIntegerDecodeErrorMessage("binary", field.name, field.ty,
+                                                                    *bounds));
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                     mlir::ValueRange{msgPtr});
+          builder.setInsertionPointAfter(outOfRangeIf);
         }
         decoded = (fty == i32Type)
                       ? mlir::arith::TruncIOp::create(builder, location, i32Type, val).getResult()

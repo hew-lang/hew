@@ -1,0 +1,8 @@
+// Negative test: a wire struct field with an unsupported type (not a wire
+// primitive and not a registered wire struct) must be rejected at codegen
+// rather than silently falling back to integer encoding.
+wire type BadWire {
+    value: UnsupportedType @1;
+}
+
+fn main() {}

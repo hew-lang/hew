@@ -253,6 +253,13 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
       // Nested wire struct reference: use getIdentified so forward references
       // work — the body will be set when that struct is processed.
       mlirTy = mlir::LLVM::LLVMStructType::getIdentified(&context, field.ty);
+    } else if (!isWirePrimitiveType(field.ty)) {
+      // Unknown type: not a wire struct and not a known primitive — fail closed.
+      ++errorCount_;
+      emitError(builder.getUnknownLoc())
+          << "wire struct '" << declName << "': field '" << field.name
+          << "' has unsupported type '" << field.ty << "'";
+      return;
     } else {
       mlirTy = wireTypeToMLIR(builder, field.ty);
     }
@@ -279,6 +286,14 @@ void MLIRGen::predeclareWireHelpers(const ast::WireDecl &decl) {
     return;
 
   const auto &name = decl.name;
+
+  // Fail closed: skip pre-declaration for structs with unsupported field types.
+  // preRegisterWireStructType already emitted the diagnostic; skip quietly here
+  // to avoid generating invalid opaque-struct function signatures.
+  for (const auto &field : decl.fields) {
+    if (!isWirePrimitiveType(field.ty) && !allWireStructNames_.count(field.ty))
+      return;
+  }
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i64Type = builder.getI64Type();
 
@@ -429,6 +444,21 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   // This allows the rest of the compiler to work with the struct.
   // Skip if already registered by preRegisterWireStructType (pass 1b2).
   const auto &declName = decl.name;
+
+  // Fail closed: reject any field whose type is neither a known wire primitive
+  // nor a registered wire struct name before generating any function bodies.
+  // preRegisterWireStructType already emits this error and skips registration;
+  // this guard catches the case where that path was not taken (e.g. TypeDecl
+  // wire metadata with a different registration flow).
+  for (const auto &field : decl.fields) {
+    if (!isWirePrimitiveType(field.ty) && !allWireStructNames_.count(field.ty)) {
+      ++errorCount_;
+      emitError(location) << "wire struct '" << declName << "': field '" << field.name
+                          << "' has unsupported type '" << field.ty << "'";
+      return;
+    }
+  }
+
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
   for (const auto &field : decl.fields) {
     fieldTypes.push_back(resolveWireFieldType(builder, field.ty, structTypes));
@@ -580,6 +610,11 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                    mlir::SymbolRefAttr::get(&context, "hew_wire_buf_destroy"),
                                    mlir::ValueRange{innerBuf});
+      } else {
+        ++errorCount_;
+        emitError(location) << "wire struct '" << declName << "': field '" << field.name
+                            << "' has unsupported type '" << field.ty << "' for binary encoding";
+        return;
       }
       ++encIdx;
     }
@@ -840,6 +875,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
         builder.setInsertionPointAfter(nestedIf);
         decoded = nestedIf.getResult(0);
+      } else if (!isWirePrimitiveType(field.ty)) {
+        // Unknown type: not a wire struct and not a known primitive — fail closed.
+        ++errorCount_;
+        emitError(location) << "wire struct '" << declName << "': field '" << field.name
+                            << "' has unsupported type '" << field.ty << "' for binary decoding";
+        return;
       } else {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                    mlir::SymbolRefAttr::get(&context, "hew_wire_decode_varint"),
@@ -1016,6 +1057,13 @@ void MLIRGen::generateWireToSerial(
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetString),
                                  mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (!isWirePrimitiveType(field.ty)) {
+      // Unknown type: not a wire struct and not a known primitive — fail closed.
+      ++errorCount_;
+      emitError(location) << "wire struct '" << decl.name << "': field '" << field.name
+                          << "' has unsupported type '" << field.ty
+                          << "' for " << format.str() << " serialization";
+      return;
     } else {
       // Integer types: extend to i64 (zero-extend unsigned, sign-extend signed)
       mlir::Value v64 = fv;
@@ -1139,6 +1187,13 @@ void MLIRGen::generateWireFromSerial(
                                            mlir::SymbolRefAttr::get(&context, rtGetString),
                                            mlir::ValueRange{fieldJval})
                     .getResult();
+    } else if (!isWirePrimitiveType(field.ty)) {
+      // Unknown type: not a wire struct and not a known primitive — fail closed.
+      ++errorCount_;
+      emitError(location) << "wire struct '" << decl.name << "': field '" << field.name
+                          << "' has unsupported type '" << field.ty
+                          << "' for " << format.str() << " deserialization";
+      return;
     } else {
       auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                mlir::SymbolRefAttr::get(&context, rtGetInt),

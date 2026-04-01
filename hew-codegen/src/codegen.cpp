@@ -1043,9 +1043,20 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
 
       // Convert Hew dialect types (e.g., !hew.result, !hew.option) to their
       // LLVM representation so the load uses a concrete LLVM type.
-      // Non-void: load the result from the reply pointer.
-      // hew_node_api_ask guarantees a non-null return for non-void asks
-      // (returns a zeroed allocation on timeout/failure).
+      // Non-void remote asks fail fast if the runtime reports a null
+      // failure sentinel instead of a reply buffer.
+      auto nullReplyPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      auto missingReply = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                     replyPtr, nullReplyPtr);
+      auto failIfOp = mlir::scf::IfOp::create(rewriter, loc, missingReply, /*withElseRegion=*/false);
+      rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
+      auto panicFuncType = rewriter.getFunctionType({}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                 mlir::ValueRange{});
+      rewriter.setInsertionPointAfter(failIfOp);
+
+      // Load the non-void result from the reply pointer.
       mlir::Value resultVal;
       if (llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
         auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);

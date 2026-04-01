@@ -2095,6 +2095,126 @@ fn main() -> int {
   PASS();
 }
 
+// ============================================================================
+// Test: remote actor asks panic on a null reply sentinel before loading
+// ============================================================================
+
+static void test_remote_actor_ask_panics_on_null_reply() {
+  TEST(remote_actor_ask_panics_on_null_reply);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn snapshot() -> int {
+        10
+    }
+}
+
+fn main() -> int {
+    let remote: Stats = Node::lookup("stats");
+    await remote.snapshot()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for remote actor ask null-reply panic test");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for remote actor ask null-reply panic test");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  llvm::CallBase *askCall = nullptr;
+  llvm::CallBase *panicCall = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee)
+        continue;
+      if (callee->getName() == "hew_node_api_ask")
+        askCall = call;
+      if (callee->getName() == "hew_panic")
+        panicCall = call;
+    }
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered remote ask to call hew_node_api_ask");
+    return;
+  }
+  if (!panicCall) {
+    FAIL("expected lowered remote ask to call hew_panic on null reply");
+    return;
+  }
+
+  llvm::ICmpInst *nullReplyCheck = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *icmp = llvm::dyn_cast<llvm::ICmpInst>(&inst);
+      if (!icmp || icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
+        continue;
+
+      auto *lhs = icmp->getOperand(0);
+      auto *rhs = icmp->getOperand(1);
+      bool comparesAskAgainstNull =
+          (lhs == askCall && llvm::isa<llvm::ConstantPointerNull>(rhs)) ||
+          (rhs == askCall && llvm::isa<llvm::ConstantPointerNull>(lhs));
+      if (comparesAskAgainstNull) {
+        nullReplyCheck = icmp;
+        break;
+      }
+    }
+    if (nullReplyCheck)
+      break;
+  }
+
+  if (!nullReplyCheck) {
+    FAIL("expected lowered remote ask to compare the reply pointer against null");
+    return;
+  }
+
+  bool nullCheckBranchesToPanic = false;
+  for (auto &block : *mainFn) {
+    auto *branch = llvm::dyn_cast<llvm::BranchInst>(block.getTerminator());
+    if (!branch || !branch->isConditional() || branch->getCondition() != nullReplyCheck)
+      continue;
+
+    for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
+      if (branch->getSuccessor(i) == panicCall->getParent()) {
+        nullCheckBranchesToPanic = true;
+        break;
+      }
+    }
+  }
+
+  if (!nullCheckBranchesToPanic) {
+    FAIL("expected the null reply check to branch to the hew_panic block");
+    return;
+  }
+
+  PASS();
+}
+
 
 
 int main() {
@@ -2132,6 +2252,7 @@ int main() {
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
   test_remote_actor_ask_passes_reply_size();
+  test_remote_actor_ask_panics_on_null_reply();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

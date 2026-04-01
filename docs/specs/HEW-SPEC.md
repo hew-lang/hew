@@ -4115,7 +4115,7 @@ if found != 0 {
 
 - Checks the local registry first, then the remote names learned via gossip
 - The return type is generic (`T`) — assign to a typed binding at the call site
-- Remote request-response (`await`) has a 5-second timeout; on timeout a zeroed reply is returned
+- Remote request-response (`await`) has a 5-second timeout; when the caller expects a reply value, timeout or other remote delivery failures surface as an explicit runtime failure instead of a synthesized zero/default reply
 
 #### 10.2.5 `Node::shutdown()`
 
@@ -4169,7 +4169,7 @@ let n = await remote_counter.get_count(); // request-response (routed to node A,
 - Each actor PID encodes a 16-bit node ID and a 48-bit actor index.
 - When the target node ID matches the local node, the message is delivered directly via the local scheduler.
 - When the target node ID differs, the message is serialized using HBF framing (4-byte little-endian length prefix + payload) and sent over the transport to the remote node.
-- Remote request-response (`await`) assigns a unique request ID, sends the request, and blocks the caller until the reply arrives (5-second timeout).
+- Remote request-response (`await`) assigns a unique request ID, sends the request, and blocks the caller until the reply arrives (5-second timeout). When a reply value is expected, remote ask failures surface as an explicit failure instead of fabricating a zero/default reply value.
 
 ### 10.4 Cross-node registry gossip
 

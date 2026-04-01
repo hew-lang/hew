@@ -1509,11 +1509,7 @@ mod tests {
         }
     }
 
-    // Regression test: fast-path mailbox teardown must retire queued
-    // reply-bearing nodes via hew_msg_node_free so that ask waiters are
-    // unblocked promptly rather than blocking until timeout.
-    #[test]
-    fn drain_and_free_unblocks_reply_waiter() {
+    unsafe fn assert_mailbox_free_unblocks_reply_waiter(mb: *mut HewMailbox) {
         use crate::reply_channel::{
             hew_reply_channel_free, hew_reply_channel_is_ready_for_test, hew_reply_channel_new,
             hew_reply_channel_retain, hew_reply_wait_timeout,
@@ -1524,9 +1520,6 @@ mod tests {
 
         // SAFETY: all raw pointers are valid; ownership is carefully tracked.
         unsafe {
-            // Create an unbounded fast-path mailbox (uses user_fast MpscQueue).
-            let mb = hew_mailbox_new();
-
             // Allocate a reply channel. refs=1 (owned by the waiter side).
             let ch = hew_reply_channel_new();
             assert!(!ch.is_null());
@@ -1588,6 +1581,32 @@ mod tests {
                 got_null,
                 "reply waiter must receive a null/empty reply when mailbox is freed with a queued ask node"
             );
+        }
+    }
+
+    // Regression test: fast-path mailbox teardown must retire queued
+    // reply-bearing nodes via hew_msg_node_free so that ask waiters are
+    // unblocked promptly rather than blocking until timeout.
+    #[test]
+    fn drain_and_free_unblocks_reply_waiter() {
+        // SAFETY: helper fully owns the mailbox pointer for the duration.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert!(
+                !(*mb).use_slow_path,
+                "unbounded mailbox should use fast path"
+            );
+            assert_mailbox_free_unblocks_reply_waiter(mb);
+        }
+    }
+
+    #[test]
+    fn slow_path_mailbox_free_unblocks_reply_waiter() {
+        // SAFETY: helper fully owns the mailbox pointer for the duration.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
+            assert!((*mb).use_slow_path, "DropOld mailbox should use slow path");
+            assert_mailbox_free_unblocks_reply_waiter(mb);
         }
     }
 

@@ -275,7 +275,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     for (const auto &receiveDecl : decl.receive_fns) {
       if (receiveDecl.name == baseName)
-        return firstBodyLoc(receiveDecl.body, loc(receiveDecl.span));
+        return loc(receiveDecl.span);
     }
     return actorLoc;
   };

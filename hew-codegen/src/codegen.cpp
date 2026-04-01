@@ -5135,7 +5135,7 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
   std::unordered_map<std::string, unsigned> functionDeclLines;
   if (opts.debug_info) {
     module.walk([&](mlir::func::FuncOp funcOp) {
-      if (auto fileLoc = mlir::dyn_cast<mlir::FileLineColLoc>(funcOp.getLoc()))
+      if (auto fileLoc = funcOp.getLoc()->findInstanceOf<mlir::FileLineColLoc>())
         functionDeclLines.try_emplace(funcOp.getName().str(), fileLoc.getLine());
     });
   }

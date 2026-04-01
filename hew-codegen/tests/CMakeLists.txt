@@ -257,6 +257,8 @@ function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
 endfunction()
 
 if(HEW_DWARFDUMP)
+  # Keep these expectations on declaration lines that differ from the first
+  # executable statement so the smoke test proves decl-line fallback behavior.
   add_test(
     NAME dwarf_generated_locations
     COMMAND ${CMAKE_COMMAND}
@@ -264,7 +266,7 @@ if(HEW_DWARFDUMP)
       -DDWARFDUMP=${HEW_DWARFDUMP}
       -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_generated_locations.hew
       -DOUT_OBJ=${CMAKE_CURRENT_BINARY_DIR}/dwarf_generated_locations${HEW_OBJ_SUFFIX}
-      -DEXPECTED_SYMBOL_LINES=Worker_init|5,Worker_ping|9,Worker_terminate|13,Worker_dispatch|9,Pool_init|17
+      -DEXPECTED_SYMBOL_LINES=Worker_ping|8,Worker_dispatch|8,Pool_init|18
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_smoke_test.cmake
   )
 else()

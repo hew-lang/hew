@@ -55,14 +55,17 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
 
     auto declLineIt = functionDeclLines.find(std::string(fn.getName()));
 
-    // Determine the function's start line from the first instruction that
-    // already carries a debug location (set by MLIR translation).
+    // Prefer the function declaration line when we captured one from MLIR.
+    // Fall back to the first instruction location only when the function did
+    // not carry a usable declaration line through lowering.
     unsigned startLine = declLineIt != functionDeclLines.end() ? declLineIt->second : 1;
-    for (const llvm::BasicBlock &bb : fn) {
-      for (const llvm::Instruction &inst : bb) {
-        if (const auto &dl = inst.getDebugLoc()) {
-          startLine = dl.getLine();
-          goto found_line; // break out of nested loops
+    if (declLineIt == functionDeclLines.end()) {
+      for (const llvm::BasicBlock &bb : fn) {
+        for (const llvm::Instruction &inst : bb) {
+          if (const auto &dl = inst.getDebugLoc()) {
+            startLine = dl.getLine();
+            goto found_line; // break out of nested loops
+          }
         }
       }
     }

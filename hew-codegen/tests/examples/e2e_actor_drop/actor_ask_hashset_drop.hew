@@ -1,0 +1,28 @@
+// Regression: HashSet<String> passed via ask must not be double-freed.
+//
+// Before the ask-path unregisterDroppable fix (PR #459), the sender's
+// DropScope retained a DropEntry for `hs`, so hew_hashset_free was called
+// by the sender at scope-exit AND by the receive handler at its scope-exit.
+// The second call hit corrupted memory and panicked in
+// hew-runtime/src/hashmap.rs with a misaligned pointer dereference.
+//
+// With the fix, unregisterDroppable removes the sender's DropEntry for `hs`
+// immediately after the ask, so only the receiver (Checker.check) drops it.
+
+actor Checker {
+    receive fn check(hs: HashSet<String>) -> int {
+        hs.len()
+        // `hs` freed here by receive-handler drop scope (hew_hashset_free)
+    }
+}
+
+fn main() {
+    let c = spawn Checker;
+    let hs: HashSet<String> = HashSet::new();
+    hs.insert("hello");
+    hs.insert("world");
+    // Ownership of `hs` transfers to Checker.check; sender must NOT drop.
+    let n = await c.check(hs);
+    println(n);
+    println("done");
+}

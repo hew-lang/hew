@@ -509,10 +509,18 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         else if (mlir::isa<hew::ClosureType>(argType))
           registerDroppable(param.name, "hew_rc_drop");
         else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(argType)) {
-          // HashSet is lowered to an opaque handle; the sender relinquishes
-          // ownership (see generateActorMethodSend), so the handler must free.
-          if (handleTy.getHandleKind() == "HashSet")
+          // Pointer-style handles whose sender relinquishes ownership at the
+          // actor message boundary (see generateActorMethodSend).  The
+          // receiver must free via the corresponding runtime function.
+          const auto kind = handleTy.getHandleKind();
+          if (kind == "HashSet")
             registerDroppable(param.name, "hew_hashset_free");
+          else if (kind == "http.Request")
+            registerDroppable(param.name, "hew_http_request_free");
+          else if (kind == "http.Server")
+            registerDroppable(param.name, "hew_http_server_close");
+          else if (kind == "regex.Pattern")
+            registerDroppable(param.name, "hew_regex_free");
         }
 
         ++pi;

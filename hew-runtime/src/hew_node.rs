@@ -1671,7 +1671,7 @@ mod tests {
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
         {
             // SAFETY: `ptr` comes from libc allocation APIs in this test module.
-            return unsafe { malloc_usable_size(ptr) };
+            unsafe { malloc_usable_size(ptr) }
         }
 
         #[cfg(target_os = "macos")]

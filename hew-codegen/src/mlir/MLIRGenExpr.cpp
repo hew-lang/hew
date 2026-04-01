@@ -1350,7 +1350,7 @@ mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
   auto someVal = hew::EnumConstructOp::create(
       builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-      mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+      mlir::ValueRange{payload}, /*payload_positions=*/builder.getI64ArrayAttr({1}));
   mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
   builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
   auto noneVal = hew::EnumConstructOp::create(
@@ -1741,7 +1741,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, optType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("Option"), mlir::ValueRange{argVal},
-            /*payload_positions=*/mlir::ArrayAttr{});
+            /*payload_positions=*/builder.getI64ArrayAttr({1}));
         return result;
       }
 
@@ -1770,7 +1770,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("__Result"), mlir::ValueRange{argVal},
-            /*payload_positions=*/mlir::ArrayAttr{});
+            /*payload_positions=*/builder.getI64ArrayAttr({1}));
         return result;
       }
 
@@ -1799,7 +1799,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, resultType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("__Result"), mlir::ValueRange{argVal},
-            /*payload_positions=*/mlir::ArrayAttr{});
+            /*payload_positions=*/builder.getI64ArrayAttr({2}));
         return result;
       }
 
@@ -2274,7 +2274,7 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
                                               tag, zeroTag);
 
     auto innerType = optType.getInnerType();
-    auto someFieldIndex = enumPayloadFieldIndex("__Option", /*variantIndex=*/1);
+    auto someFieldIndex = resolvePayloadFieldIndex("Some", /*payloadOrdinal=*/0);
 
     mlir::Type funcRetType;
     if (currentFunction && currentFunction.getResultTypes().size() == 1)
@@ -2314,8 +2314,8 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
 
   auto okType = resType.getOkType();
   auto errType = resType.getErrType();
-  auto okFieldIndex = enumPayloadFieldIndex("__Result", /*variantIndex=*/0);
-  auto errFieldIndex = enumPayloadFieldIndex("__Result", /*variantIndex=*/1);
+  auto okFieldIndex = resolvePayloadFieldIndex("Ok", /*payloadOrdinal=*/0);
+  auto errFieldIndex = resolvePayloadFieldIndex("Err", /*payloadOrdinal=*/0);
 
   mlir::Type funcRetType;
   if (currentFunction && currentFunction.getResultTypes().size() == 1)
@@ -2339,7 +2339,7 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
                                                     /*field_index=*/errFieldIndex);
     mlir::Value errResult = hew::EnumConstructOp::create(
         builder, location, funcRetType, static_cast<uint32_t>(1), llvm::StringRef("__Result"),
-        mlir::ValueRange{errVal}, /*payload_positions=*/mlir::ArrayAttr{});
+        mlir::ValueRange{errVal}, /*payload_positions=*/builder.getI64ArrayAttr({2}));
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{errResult});
   } else {
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
@@ -3058,7 +3058,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           hew::HashMapGetOp::create(builder, location, valueType, mapValue, key).getResult();
       auto someVal = hew::EnumConstructOp::create(
           builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-          mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
+          mlir::ValueRange{rawVal}, /*payload_positions=*/builder.getI64ArrayAttr({1}));
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
       auto noneVal = hew::EnumConstructOp::create(

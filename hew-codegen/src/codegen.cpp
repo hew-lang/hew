@@ -623,8 +623,6 @@ struct EnumConstructOpLowering : public mlir::OpConversionPattern<hew::EnumConst
       int64_t pos;
       if (positions) {
         pos = mlir::cast<mlir::IntegerAttr>((*positions)[i]).getInt();
-      } else if (op.getEnumName() == "__Result") {
-        pos = static_cast<int64_t>(variantIdx) + 1 + static_cast<int64_t>(i);
       } else {
         pos = static_cast<int64_t>(i) + 1;
       }

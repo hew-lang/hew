@@ -1074,7 +1074,7 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     if (payload && payload.getType() == dstOption.getInnerType()) {
       return hew::EnumConstructOp::create(
           builder, location, dstOption, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-          mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+          mlir::ValueRange{payload}, /*payload_positions=*/builder.getI64ArrayAttr({1}));
     }
     if (!payload)
       return nullptr;
@@ -2254,6 +2254,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     someV.name = "Some";
     someV.index = 1;
     someV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
+    someV.payloadPositions.push_back(1);
     optInfo.variants.push_back(someV);
     enumTypes["__Option"] = std::move(optInfo);
 
@@ -2264,11 +2265,13 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     okV.name = "Ok";
     okV.index = 0;
     okV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
+    okV.payloadPositions.push_back(1);
     resInfo.variants.push_back(okV);
     EnumVariantInfo errV;
     errV.name = "Err";
     errV.index = 1;
     errV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
+    errV.payloadPositions.push_back(2);
     resInfo.variants.push_back(errV);
     enumTypes["__Result"] = std::move(resInfo);
   }

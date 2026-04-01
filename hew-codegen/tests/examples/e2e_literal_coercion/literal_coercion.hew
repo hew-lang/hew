@@ -198,6 +198,36 @@ fn test_unsigned_return_coercion() {
     println(widen_aliased_unsigned_on_trailing());
 }
 
+fn call_unsigned_lambda(f: fn(u8) -> u16, value: u8) -> u16 {
+    f(value)
+}
+
+fn call_aliased_unsigned_lambda(f: fn(u8) -> Wide, value: u8) -> Wide {
+    f(value)
+}
+
+fn test_unsigned_lambda_return_coercion() {
+    println(call_unsigned_lambda((value: u8) -> u16 => value, 200));
+    println(call_aliased_unsigned_lambda((value: u8) -> Wide => value, 200));
+}
+
+actor UnsignedResponder {
+    receive fn widen_unsigned_on_return(value: u8) -> u16 {
+        return value;
+    }
+
+    receive fn widen_aliased_unsigned_on_trailing(value: u8) -> Wide {
+        let widened: u8 = value;
+        widened
+    }
+}
+
+fn test_actor_unsigned_return_coercion() {
+    let responder = spawn UnsignedResponder();
+    println(await responder.widen_unsigned_on_return(200));
+    println(await responder.widen_aliased_unsigned_on_trailing(200));
+}
+
 fn main() {
     test_i32_basics();
     test_i16();
@@ -214,4 +244,6 @@ fn main() {
     test_unsigned_if_tail_coercion();
     test_aliased_unsigned_as_cast_coercion();
     test_unsigned_return_coercion();
+    test_unsigned_lambda_return_coercion();
+    test_actor_unsigned_return_coercion();
 }

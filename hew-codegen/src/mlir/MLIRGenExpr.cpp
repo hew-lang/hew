@@ -5042,6 +5042,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   builder.setInsertionPointToStart(&entryBlock);
 
   FunctionGenerationScope funcScope(*this, funcOp);
+  if (lam.return_type.has_value())
+    currentFunctionReturnTypeExpr = &lam.return_type->value;
 
   SymbolTableScopeT scope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);

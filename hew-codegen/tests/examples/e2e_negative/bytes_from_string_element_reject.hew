@@ -1,0 +1,4 @@
+// Negative test: bytes::from must reject non-byte elements.
+fn main() {
+    bytes::from(["oops"]);
+}

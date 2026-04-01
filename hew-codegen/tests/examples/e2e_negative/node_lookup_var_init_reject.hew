@@ -1,0 +1,14 @@
+// Negative test: mutable actor-ref slots must reject raw Node::lookup IDs.
+actor Counter {
+    let count: int;
+    receive fn ping() {}
+}
+
+fn main() {
+    Node::start("127.0.0.1:0");
+    let counter = spawn Counter;
+    Node::register("counter", counter);
+    var remote: ActorRef<Counter> = Node::lookup("counter");
+    await close(counter);
+    Node::shutdown();
+}

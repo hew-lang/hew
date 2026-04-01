@@ -950,6 +950,7 @@ add_wasm_file_test(actor_orchestration        e2e_actors       actor_orchestrati
 add_wasm_file_test(actor_pipeline             e2e_actors       actor_pipeline)
 add_wasm_file_test(await_actor_ask            e2e_actors       await_actor_ask)
 add_wasm_file_test(actor_ask_ownership_unregister  e2e_actor_drop   actor_ask_ownership_unregister)
+add_wasm_file_test(actor_ask_hashset_drop          e2e_actor_drop   actor_ask_hashset_drop)
 add_wasm_file_test(ex_actor_lifecycle         e2e_examples     test_actor_lifecycle)
 add_wasm_file_test(ex_struct_spawn            e2e_examples     struct_spawn_test)
 add_wasm_file_test(ex_lambda_capture          e2e_examples     lambda_capture_basic)

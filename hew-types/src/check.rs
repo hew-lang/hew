@@ -16,7 +16,7 @@ use hew_parser::ast::{
     UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
@@ -188,6 +188,9 @@ pub struct Checker {
     fn_sigs: HashMap<String, FnSig>,
     /// Tracks the span where each function was first defined (for duplicate detection).
     fn_def_spans: HashMap<String, Span>,
+    /// Tracks public top-level names introduced by prior flat file imports so later
+    /// flat imports can reject collisions instead of silently overwriting them.
+    flat_file_import_pub_spans: HashMap<String, Span>,
     generic_ctx: Vec<HashMap<String, Ty>>,
     current_return_type: Option<Ty>,
     in_generator: bool,
@@ -467,6 +470,7 @@ impl Checker {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             fn_def_spans: HashMap::new(),
+            flat_file_import_pub_spans: HashMap::new(),
             generic_ctx: Vec::new(),
             current_return_type: None,
             in_generator: false,
@@ -2535,10 +2539,20 @@ impl Checker {
 
     /// Register items from a file-based import as top-level names (no module namespace).
     fn register_file_import_items(&mut self, items: &[Spanned<Item>]) {
-        for (item, _span) in items {
+        let mut current_import_pub_spans = HashMap::new();
+        let mut skipped_type_names = HashSet::new();
+
+        for (item, span) in items {
             match item {
                 Item::Function(fd) => {
                     if !fd.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_pub_name(
+                        &mut current_import_pub_spans,
+                        &fd.name,
+                        span,
+                    ) {
                         continue;
                     }
                     let sig = self.build_fn_sig_from_decl(fd);
@@ -2548,11 +2562,26 @@ impl Checker {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
+                    if !self.register_flat_file_import_pub_name(
+                        &mut current_import_pub_spans,
+                        &cd.name,
+                        span,
+                    ) {
+                        continue;
+                    }
                     let ty = self.resolve_type_expr(&cd.ty.0);
                     self.env.define(cd.name.clone(), ty, false);
                 }
                 Item::TypeDecl(td) => {
                     if !td.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_pub_name(
+                        &mut current_import_pub_spans,
+                        &td.name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(td.name.clone());
                         continue;
                     }
                     self.register_type_decl(td);
@@ -2562,10 +2591,27 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
+                    if !self.register_flat_file_import_pub_name(
+                        &mut current_import_pub_spans,
+                        &tr.name,
+                        span,
+                    ) {
+                        continue;
+                    }
                     let info = Self::trait_info_from_decl(tr);
                     self.trait_defs.insert(tr.name.clone(), info);
                 }
                 Item::Actor(ad) => {
+                    if !ad.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_pub_name(
+                        &mut current_import_pub_spans,
+                        &ad.name,
+                        span,
+                    ) {
+                        continue;
+                    }
                     self.register_actor_base(ad);
                 }
                 Item::Impl(id) => {
@@ -2573,6 +2619,9 @@ impl Checker {
                         name: type_name, ..
                     } = &id.target_type.0
                     {
+                        if skipped_type_names.contains(type_name) {
+                            continue;
+                        }
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;
@@ -2589,6 +2638,34 @@ impl Checker {
                 _ => {}
             }
         }
+
+        self.flat_file_import_pub_spans
+            .extend(current_import_pub_spans);
+    }
+
+    fn register_flat_file_import_pub_name(
+        &mut self,
+        current_import_pub_spans: &mut HashMap<String, Span>,
+        name: &str,
+        span: &Span,
+    ) -> bool {
+        if let Some(prev_span) = self.flat_file_import_pub_spans.get(name) {
+            self.errors.push(TypeError::duplicate_definition(
+                span.clone(),
+                name,
+                prev_span.clone(),
+            ));
+            return false;
+        }
+
+        match current_import_pub_spans.entry(name.to_string()) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(entry) => {
+                entry.insert(span.clone());
+            }
+        }
+
+        true
     }
 
     /// Register items from a user module under the module's namespace.

@@ -219,6 +219,16 @@ impl TypeError {
         .with_note(moved_at.clone(), "value was moved here")
     }
 
+    /// Create an unresolved-import error.
+    #[must_use]
+    pub fn unresolved_import(span: Span, module_path: &str, detail: &str) -> Self {
+        Self::new(
+            TypeErrorKind::UnresolvedImport,
+            span,
+            format!("cannot resolve import `{module_path}`: {detail}"),
+        )
+    }
+
     /// Create an actor reference cycle warning.
     #[must_use]
     pub fn actor_ref_cycle(span: Span, cycle_desc: &str) -> Self {
@@ -313,6 +323,8 @@ pub enum TypeErrorKind {
     PlatformLimitation,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
+    /// Import cannot be resolved: module not found or failed to parse
+    UnresolvedImport,
 }
 
 #[cfg(test)]

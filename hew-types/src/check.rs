@@ -2,7 +2,7 @@
 
 use crate::env::TypeEnv;
 use crate::error::{TypeError, TypeErrorKind};
-use crate::module_registry::ModuleRegistry;
+use crate::module_registry::{ModuleError, ModuleRegistry};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::unify::unify;
@@ -2310,95 +2310,107 @@ impl Checker {
     fn register_import(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
         let module_path = decl.path.join("::");
 
-        // Try to load module from registry (works for both stdlib and user modules)
-        if let Ok(info) = self.module_registry.load(&module_path) {
-            // Clone all data from ModuleInfo before mutating self, because
-            // info borrows from self.module_registry.
-            let functions = info.functions.clone();
-            let wrapper_fns = info.wrapper_fns.clone();
-            let clean_names = info.clean_names.clone();
-            let handle_types = info.handle_types.clone();
-            let drop_types = info.drop_types.clone();
+        // Try to load module from registry (works for both stdlib and user modules).
+        // We extract the error detail as an owned String so that the borrow on
+        // `self.module_registry` is released before we mutate `self.errors`.
+        let load_error_detail: Option<String> = match self.module_registry.load(&module_path) {
+            Ok(info) => {
+                // Clone all data from ModuleInfo before mutating self, because
+                // info borrows from self.module_registry.
+                let functions = info.functions.clone();
+                let wrapper_fns = info.wrapper_fns.clone();
+                let clean_names = info.clean_names.clone();
+                let handle_types = info.handle_types.clone();
+                let drop_types = info.drop_types.clone();
 
-            let short = module_path
-                .rsplit("::")
-                .next()
-                .unwrap_or(&module_path)
-                .to_string();
+                let short = module_path
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&module_path)
+                    .to_string();
 
-            // Register extern C function signatures
-            for (name, params, ret) in functions {
-                let accepts_kwargs = module_path == "std::misc::log"
-                    && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                let sig = FnSig {
-                    params,
-                    return_type: ret,
-                    accepts_kwargs,
-                    ..FnSig::default()
-                };
-                self.unsafe_functions.insert(name.clone());
-                self.fn_sigs.insert(name, sig);
-            }
+                // Register extern C function signatures
+                for (name, params, ret) in functions {
+                    let accepts_kwargs = module_path == "std::misc::log"
+                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                    let sig = FnSig {
+                        params,
+                        return_type: ret,
+                        accepts_kwargs,
+                        ..FnSig::default()
+                    };
+                    self.unsafe_functions.insert(name.clone());
+                    self.fn_sigs.insert(name, sig);
+                }
 
-            // Register wrapper pub fn signatures
-            for (name, params, ret) in wrapper_fns {
-                let accepts_kwargs = module_path == "std::misc::log"
-                    && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                let sig = FnSig {
-                    params,
-                    return_type: ret,
-                    accepts_kwargs,
-                    ..FnSig::default()
-                };
-                self.fn_sigs.insert(name, sig);
-            }
+                // Register wrapper pub fn signatures
+                for (name, params, ret) in wrapper_fns {
+                    let accepts_kwargs = module_path == "std::misc::log"
+                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                    let sig = FnSig {
+                        params,
+                        return_type: ret,
+                        accepts_kwargs,
+                        ..FnSig::default()
+                    };
+                    self.fn_sigs.insert(name, sig);
+                }
 
-            // Register module and clean names
-            self.modules.insert(short.clone());
-            if let Some(span) = import_span {
-                self.import_spans.insert(short.clone(), span.clone());
-            }
-            for (method, c_symbol) in &clean_names {
-                // Prefer the wrapper function's own signature (registered under
-                // the method name) over the extern C function's signature.
-                // E.g. `log.setup()` should have 0 params (the wrapper's sig),
-                // not 1 param (the extern `hew_log_set_level(level)` sig).
-                let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
-                let sig = wrapper_sig
-                    .clone()
-                    .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
-                if let Some(sig) = sig {
-                    let key = format!("{short}.{method}");
-                    self.fn_sigs.insert(key.clone(), sig);
-                    if wrapper_sig.is_none() {
-                        self.unsafe_functions.insert(key);
+                // Register module and clean names
+                self.modules.insert(short.clone());
+                if let Some(span) = import_span {
+                    self.import_spans.insert(short.clone(), span.clone());
+                }
+                for (method, c_symbol) in &clean_names {
+                    // Prefer the wrapper function's own signature (registered under
+                    // the method name) over the extern C function's signature.
+                    // E.g. `log.setup()` should have 0 params (the wrapper's sig),
+                    // not 1 param (the extern `hew_log_set_level(level)` sig).
+                    let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                    let sig = wrapper_sig
+                        .clone()
+                        .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                    if let Some(sig) = sig {
+                        let key = format!("{short}.{method}");
+                        self.fn_sigs.insert(key.clone(), sig);
+                        if wrapper_sig.is_none() {
+                            self.unsafe_functions.insert(key);
+                        }
                     }
                 }
-            }
 
-            // Register handle type names so they can be used in type annotations
-            for type_name in &handle_types {
-                self.known_types.insert(type_name.clone());
-            }
+                // Register handle type names so they can be used in type annotations
+                for type_name in &handle_types {
+                    self.known_types.insert(type_name.clone());
+                }
 
-            // Populate TraitRegistry with handle/drop types
-            for ht in &handle_types {
-                self.registry.register_handle_type(ht.clone());
-            }
-            for dt in &drop_types {
-                self.registry.register_drop_type(dt.clone());
-            }
+                // Populate TraitRegistry with handle/drop types
+                for ht in &handle_types {
+                    self.registry.register_handle_type(ht.clone());
+                }
+                for dt in &drop_types {
+                    self.registry.register_drop_type(dt.clone());
+                }
 
-            // Process resolved Hew source items (types, traits, impls) from stdlib
-            // modules that have .hew files alongside their C/Rust bindings.
-            // This enables trait methods like bench.Suite.add() to be visible.
-            if let Some(ref resolved_items) = decl.resolved_items {
-                self.register_stdlib_hew_items(&short, resolved_items);
+                // Process resolved Hew source items (types, traits, impls) from stdlib
+                // modules that have .hew files alongside their C/Rust bindings.
+                // This enables trait methods like bench.Suite.add() to be visible.
+                if let Some(ref resolved_items) = decl.resolved_items {
+                    self.register_stdlib_hew_items(&short, resolved_items);
+                }
+                return;
             }
-            return;
-        }
+            Err(ModuleError::NotFound { .. }) => {
+                Some("module not found in any search path".to_string())
+            }
+            Err(ModuleError::ParseError { ref file_path, .. }) => Some(format!(
+                "module file `{}` has parse errors",
+                file_path.display()
+            )),
+        };
+        // `self.module_registry` borrow is released here.
 
-        // --- User module path (unchanged) ---
+        // --- User module path ---
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.is_empty() {
                 // File-based import (`import "math_lib.hew"`) — register all
@@ -2412,6 +2424,15 @@ impl Checker {
                     self.import_spans.insert(short.clone(), span.clone());
                 }
                 self.register_user_module(&short, resolved_items, &decl.spec);
+            }
+        } else if !decl.path.is_empty() {
+            // Fail-closed: no resolved_items and registry load failed.  Emit a
+            // hard diagnostic so the user learns about the missing module rather
+            // than silently compiling a program with unresolved names.
+            if let Some(detail) = load_error_detail {
+                let span = import_span.cloned().unwrap_or(0..0);
+                self.errors
+                    .push(TypeError::unresolved_import(span, &module_path, &detail));
             }
         }
     }
@@ -9714,10 +9735,16 @@ mod tests {
         );
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
+        // Filter out the expected UnresolvedImport for the dummy stdlib import — the
+        // test is about local type naming, not module resolution.
+        let non_import_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.kind != TypeErrorKind::UnresolvedImport)
+            .collect();
         assert!(
-            output.errors.is_empty(),
-            "unexpected errors: {:?}",
-            output.errors
+            non_import_errors.is_empty(),
+            "unexpected errors: {non_import_errors:?}"
         );
         let sig = output
             .fn_sigs
@@ -11280,8 +11307,9 @@ fn main() {
     // -- Import with no resolved items (stdlib) still works --
 
     #[test]
-    fn import_without_resolved_items_treated_as_stdlib() {
-        // An import with resolved_items = None and no stdlib match should not panic
+    fn import_without_resolved_items_emits_unresolved_error() {
+        // An import with resolved_items = None and no stdlib match (empty registry)
+        // must now emit an UnresolvedImport error rather than silently dropping.
         let import = ImportDecl {
             path: vec!["unknown".to_string(), "pkg".to_string()],
             spec: None,
@@ -11291,8 +11319,31 @@ fn main() {
             resolved_source_paths: Vec::new(),
         };
         let output = check_items(vec![(Item::Import(import), 0..0)]);
-        // Should not register anything but should not crash
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UnresolvedImport),
+            "expected UnresolvedImport error, got: {errors:?}",
+            errors = output.errors
+        );
         assert!(!output.user_modules.contains("pkg"));
+    }
+
+    #[test]
+    fn import_with_resolved_items_no_error() {
+        // When resolved_items is provided the user-module path is taken and no
+        // UnresolvedImport diagnostic should be emitted.
+        let import = make_user_import(&["myapp", "util"], None, vec![]);
+        let output = check_items(vec![(Item::Import(import), 0..0)]);
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UnresolvedImport),
+            "unexpected UnresolvedImport error for user module with resolved_items"
+        );
+        assert!(output.user_modules.contains("util"));
     }
 
     // -- Empty module import --

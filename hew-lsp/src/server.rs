@@ -8,6 +8,7 @@ use hew_parser::ast::{
 };
 use hew_parser::ParseResult;
 use hew_types::error::TypeErrorKind;
+use hew_types::module_registry::build_module_search_paths;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
@@ -111,7 +112,9 @@ impl HewLanguageServer {
         let type_output = if has_parse_errors {
             None
         } else {
-            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
+                build_module_search_paths(),
+            ));
             Some(checker.check_program(&parse_result.program))
         };
 
@@ -954,6 +957,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
         TypeErrorKind::OrphanImpl => "OrphanImpl",
         TypeErrorKind::PlatformLimitation => "PlatformLimitation",
         TypeErrorKind::MachineExhaustivenessError => "MachineExhaustivenessError",
+        TypeErrorKind::UnresolvedImport => "UnresolvedImport",
     };
     serde_json::json!({
         "kind": kind_str,

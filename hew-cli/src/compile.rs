@@ -243,69 +243,12 @@ fn collect_new_inferred_type_diagnostics<'a>(
         .collect()
 }
 
-/// Run the full compilation pipeline for a `.hew` source file.
-///
-/// When `check_only` is `true` the pipeline stops after type-checking and no
-/// binary is produced.
-///
-/// # Errors
-///
 /// Build search paths for module resolution.
 ///
-/// The search order is:
-/// 1. `HEWPATH` environment variable (colon-separated parent-of-std directories)
-/// 2. `HEW_STD` environment variable (path to the `std/` directory itself)
-/// 3. FHS installed location: `../share/hew` relative to the compiler binary
-/// 4. Dev fallback: repo root (when `std/` exists next to the binary's grandparent)
+/// Delegates to the shared implementation in `hew_types::module_registry` so
+/// that the CLI and LSP always use the same search-path logic.
 fn build_module_search_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    // HEWPATH environment variable (colon-separated; each entry is the parent of std/)
-    if let Ok(hewpath) = std::env::var("HEWPATH") {
-        for p in hewpath.split(':') {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                paths.push(path);
-            }
-        }
-    }
-
-    // HEW_STD environment variable (points directly to the std/ directory;
-    // module loader needs its parent as the search root)
-    if let Ok(hew_std) = std::env::var("HEW_STD") {
-        let std_path = PathBuf::from(&hew_std);
-        if std_path.exists() {
-            if let Some(parent) = std_path.parent() {
-                let parent = parent.to_path_buf();
-                if !paths.contains(&parent) {
-                    paths.push(parent);
-                }
-            }
-        }
-    }
-
-    // FHS installed location: <prefix>/share/hew (parent of std/)
-    // e.g. /usr/local/bin/hew → /usr/local/share/hew → contains std/
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let share_hew = exe_dir.join("../share/hew");
-            if share_hew.join("std").exists() && !paths.contains(&share_hew) {
-                paths.push(share_hew);
-            }
-        }
-    }
-
-    // Dev fallback: repo root (when std/ exists two levels above the binary)
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let repo_root = exe_dir.join("../..");
-            if repo_root.join("std").exists() {
-                paths.push(repo_root);
-            }
-        }
-    }
-
-    paths
+    hew_types::module_registry::build_module_search_paths()
 }
 
 // ---------------------------------------------------------------------------

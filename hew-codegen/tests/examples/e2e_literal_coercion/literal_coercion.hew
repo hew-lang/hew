@@ -126,6 +126,35 @@ fn test_let_coercion() {
     println(c);
 }
 
+fn test_unsigned_widening_statement_coercion() {
+    let a: u8 = 200;
+
+    let b: u16 = a;
+    println(b);
+
+    var c: u16 = a;
+    println(c);
+
+    c = a;
+    println(c);
+}
+
+fn widen_unsigned_if_tail(flag: bool) -> u16 {
+    let then_value: u8 = 200;
+    let else_value: u8 = 201;
+
+    if flag {
+        then_value
+    } else {
+        else_value
+    }
+}
+
+fn test_unsigned_if_tail_coercion() {
+    println(widen_unsigned_if_tail(true));
+    println(widen_unsigned_if_tail(false));
+}
+
 fn main() {
     test_i32_basics();
     test_i16();
@@ -138,4 +167,6 @@ fn main() {
     test_const_coercion();
     test_comparison_coercion();
     test_let_coercion();
+    test_unsigned_widening_statement_coercion();
+    test_unsigned_if_tail_coercion();
 }

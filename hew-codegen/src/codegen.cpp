@@ -1093,6 +1093,20 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
       return mlir::success();
     }
 
+    // hew_actor_ask returns null when the local ask cannot be submitted.
+    auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+    auto askFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                replyPtr, nullPtr);
+    auto panicFuncType = rewriter.getFunctionType({}, {});
+    getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+    mlir::scf::IfOp::create(
+        rewriter, loc, askFailed,
+        [&](mlir::OpBuilder &b, mlir::Location l) {
+          mlir::func::CallOp::create(b, l, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+          mlir::scf::YieldOp::create(b, l);
+        },
+        nullptr);
+
     auto loadType = getTypeConverter()->convertType(resultType);
     if (!loadType)
       loadType = resultType;

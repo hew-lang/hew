@@ -2014,6 +2014,150 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: local non-void actor asks null-check reply pointers before loading
+// ============================================================================
+
+static void test_local_actor_non_void_ask_panics_on_null_reply_before_load() {
+  TEST(local_actor_non_void_ask_panics_on_null_reply_before_load);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    let value: int;
+    receive fn snapshot() -> int {
+        value
+    }
+}
+
+fn main() -> int {
+    let stats = spawn Stats(value: 42);
+    await stats.snapshot()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for local actor ask");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for local actor ask");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  llvm::CallBase *askCall = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (callee && callee->getName() == "hew_actor_ask") {
+        askCall = call;
+        break;
+      }
+    }
+    if (askCall)
+      break;
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered local ask to call hew_actor_ask");
+    return;
+  }
+
+  llvm::ICmpInst *nullGuard = nullptr;
+  llvm::BranchInst *guardBranch = nullptr;
+  for (llvm::User *user : askCall->users()) {
+    auto *icmp = llvm::dyn_cast<llvm::ICmpInst>(user);
+    if (!icmp || icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
+      continue;
+
+    bool comparesAskToNull =
+        (icmp->getOperand(0) == askCall &&
+         llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(1))) ||
+        (icmp->getOperand(1) == askCall &&
+         llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(0)));
+    if (!comparesAskToNull)
+      continue;
+
+    auto *branch = llvm::dyn_cast<llvm::BranchInst>(icmp->getParent()->getTerminator());
+    if (!branch || !branch->isConditional() || branch->getCondition() != icmp)
+      continue;
+
+    nullGuard = icmp;
+    guardBranch = branch;
+    break;
+  }
+
+  if (!nullGuard || !guardBranch) {
+    FAIL("expected lowered local ask to branch on a null reply check");
+    return;
+  }
+
+  if (guardBranch->getParent() != askCall->getParent() || !askCall->comesBefore(nullGuard)) {
+    FAIL("null reply guard should be emitted immediately after the ask call");
+    return;
+  }
+
+  bool hasPanicSuccessor = false;
+  for (unsigned i = 0; i < guardBranch->getNumSuccessors(); ++i) {
+    auto *successor = guardBranch->getSuccessor(i);
+    for (auto &inst : *successor) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_panic") {
+        hasPanicSuccessor = true;
+        break;
+      }
+    }
+    if (hasPanicSuccessor)
+      break;
+  }
+
+  if (!hasPanicSuccessor) {
+    FAIL("expected the null-reply branch to fail explicitly via hew_panic");
+    return;
+  }
+
+  llvm::LoadInst *replyLoad = nullptr;
+  for (llvm::User *user : askCall->users()) {
+    auto *load = llvm::dyn_cast<llvm::LoadInst>(user);
+    if (load && load->getPointerOperand() == askCall) {
+      replyLoad = load;
+      break;
+    }
+  }
+
+  if (!replyLoad) {
+    FAIL("expected lowered local ask to load the reply value");
+    return;
+  }
+
+  if (replyLoad->getParent() == guardBranch->getParent()) {
+    FAIL("reply load should be sequenced after the null-reply guard");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: remote actor asks pass an explicit reply size to hew_node_api_ask
 // ============================================================================
 
@@ -2131,6 +2275,7 @@ int main() {
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
+  test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_remote_actor_ask_passes_reply_size();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);

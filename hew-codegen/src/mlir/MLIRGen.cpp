@@ -5377,6 +5377,45 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
   // Auto-field-drop: struct has no user Drop but has owned fields (String,
   // Vec, etc.).  Just drop the fields directly — no function call needed.
   if (entry.dropFuncName == "__auto_field_drop") {
+    // Null-guard for zeroinit promoted-slot: when a function has an early
+    // return, the hoisted alloca is zeroinit if that path is taken before the
+    // struct variable is ever constructed.  Calling emitFieldDropsForUserStruct
+    // on a zeroinit struct would extract null pointers and pass them to drop
+    // functions (e.g. hew_string_drop(null)), causing a crash.
+    // Mirror the isUserDrop guard below: find the first pointer-like field
+    // (direct or one level nested) and skip the drop if it is null.
+    if (entry.promotedSlot) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
+      mlir::Value guardPtr;
+      if (auto stTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(val.getType())) {
+        for (unsigned i = 0; i < stTy.getBody().size() && !guardPtr; ++i) {
+          auto ft = stTy.getBody()[i];
+          if (mlir::isa<mlir::LLVM::LLVMPointerType>(ft)) {
+            guardPtr = mlir::LLVM::ExtractValueOp::create(builder, loc, ft, val, i);
+          } else if (auto nested = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(ft)) {
+            for (unsigned j = 0; j < nested.getBody().size(); ++j) {
+              auto nft = nested.getBody()[j];
+              if (mlir::isa<mlir::LLVM::LLVMPointerType>(nft)) {
+                auto nv = mlir::LLVM::ExtractValueOp::create(builder, loc, ft, val, i);
+                guardPtr = mlir::LLVM::ExtractValueOp::create(builder, loc, nft, nv, j);
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (guardPtr) {
+        auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+        auto isNotNull = mlir::LLVM::ICmpOp::create(
+            builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne, guardPtr, nullPtr);
+        auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        emitFieldDropsForUserStruct(val, loc);
+        builder.setInsertionPointAfter(guard);
+        return;
+      }
+    }
     emitFieldDropsForUserStruct(val, loc);
     return;
   }

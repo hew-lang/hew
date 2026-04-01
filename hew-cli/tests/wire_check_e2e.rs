@@ -60,3 +60,20 @@ fn wire_check_rejects_wire_enum_payload_changes() {
         "{stderr}",
     );
 }
+
+#[test]
+fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
+    let output = run_wire_check(
+        "wire enum Command { Data { new_value: String }; }\n",
+        "wire enum Command { Data { value: String }; }\n",
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "changed payload field name for `Command::Data` item 1: `value` -> `new_value`"
+        ),
+        "{stderr}",
+    );
+}

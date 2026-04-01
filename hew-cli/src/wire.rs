@@ -373,27 +373,57 @@ fn compare_wire_enum_variant_payload(
     baseline_variant: &VariantDecl,
     report: &mut CompatibilityReport,
 ) {
-    let current_payload = variant_payload_types(current_variant);
-    let baseline_payload = variant_payload_types(baseline_variant);
+    match (&current_variant.kind, &baseline_variant.kind) {
+        (VariantKind::Unit, VariantKind::Unit) => {}
+        (VariantKind::Tuple(current_fields), VariantKind::Tuple(baseline_fields)) => {
+            compare_wire_enum_payload_types(
+                wire_name,
+                &current_variant.name,
+                current_fields
+                    .iter()
+                    .map(|field| type_expr_to_string(&field.0)),
+                baseline_fields
+                    .iter()
+                    .map(|field| type_expr_to_string(&field.0)),
+                report,
+            );
+        }
+        (VariantKind::Struct(current_fields), VariantKind::Struct(baseline_fields)) => {
+            if current_fields.len() != baseline_fields.len() {
+                report.errors.push(format!(
+                    "changed payload arity for `{wire_name}::{}`: {} -> {}",
+                    current_variant.name,
+                    baseline_fields.len(),
+                    current_fields.len()
+                ));
+                return;
+            }
 
-    if current_payload.len() != baseline_payload.len() {
-        report.errors.push(format!(
-            "changed payload arity for `{wire_name}::{}`: {} -> {}",
-            current_variant.name,
-            baseline_payload.len(),
-            current_payload.len()
-        ));
-        return;
-    }
+            for (index, ((current_name, current_ty), (baseline_name, baseline_ty))) in
+                current_fields.iter().zip(baseline_fields).enumerate()
+            {
+                let payload_position = index + 1;
+                if current_name != baseline_name {
+                    report.errors.push(format!(
+                        "changed payload field name for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
+                        current_variant.name, baseline_name, current_name
+                    ));
+                }
 
-    for (index, (current_ty, baseline_ty)) in
-        current_payload.iter().zip(&baseline_payload).enumerate()
-    {
-        if current_ty != baseline_ty {
-            let payload_position = index + 1;
+                let current_ty = type_expr_to_string(&current_ty.0);
+                let baseline_ty = type_expr_to_string(&baseline_ty.0);
+                if current_ty != baseline_ty {
+                    report.errors.push(format!(
+                        "changed payload type for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
+                        current_variant.name, baseline_ty, current_ty
+                    ));
+                }
+            }
+        }
+        _ => {
             report.errors.push(format!(
-                "changed payload type for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
-                current_variant.name, baseline_ty, current_ty
+                "changed payload shape for `{wire_name}::{}`",
+                current_variant.name
             ));
         }
     }
@@ -431,17 +461,34 @@ fn describe_field_type(field: &WireFieldDecl) -> String {
     }
 }
 
-fn variant_payload_types(variant: &VariantDecl) -> Vec<String> {
-    match &variant.kind {
-        VariantKind::Unit => Vec::new(),
-        VariantKind::Tuple(fields) => fields
-            .iter()
-            .map(|field| type_expr_to_string(&field.0))
-            .collect(),
-        VariantKind::Struct(fields) => fields
-            .iter()
-            .map(|(_name, field)| type_expr_to_string(&field.0))
-            .collect(),
+fn compare_wire_enum_payload_types(
+    wire_name: &str,
+    variant_name: &str,
+    current_payload: impl Iterator<Item = String>,
+    baseline_payload: impl Iterator<Item = String>,
+    report: &mut CompatibilityReport,
+) {
+    let current_payload: Vec<String> = current_payload.collect();
+    let baseline_payload: Vec<String> = baseline_payload.collect();
+
+    if current_payload.len() != baseline_payload.len() {
+        report.errors.push(format!(
+            "changed payload arity for `{wire_name}::{variant_name}`: {} -> {}",
+            baseline_payload.len(),
+            current_payload.len()
+        ));
+        return;
+    }
+
+    for (index, (current_ty, baseline_ty)) in
+        current_payload.iter().zip(&baseline_payload).enumerate()
+    {
+        if current_ty != baseline_ty {
+            let payload_position = index + 1;
+            report.errors.push(format!(
+                "changed payload type for `{wire_name}::{variant_name}` item {payload_position}: `{baseline_ty}` -> `{current_ty}`"
+            ));
+        }
     }
 }
 

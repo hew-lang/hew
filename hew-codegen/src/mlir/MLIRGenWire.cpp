@@ -1321,12 +1321,24 @@ void MLIRGen::generateWireFromSerial(
                                                   mlir::ValueRange{parsed})
                            .getResult();
 
+    auto emitDecodePanic = [&](bool freeVariantString) {
+      if (freeVariantString) {
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtStringFree),
+                                   mlir::ValueRange{variantName});
+      }
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{parsed});
+      auto msgPtr = wireStringPtr(location, wireEnumFromSerialErrorMessage(format, declName));
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                 mlir::ValueRange{msgPtr});
+    };
+
     std::function<mlir::Value(size_t)> emitDispatch = [&](size_t index) -> mlir::Value {
       if (index >= decl.variants.size()) {
-        auto msgPtr = wireStringPtr(location, wireEnumFromSerialErrorMessage(format, declName));
-        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                                   mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
-                                   mlir::ValueRange{msgPtr});
+        emitDecodePanic(/*freeVariantString=*/true);
         return createIntConstant(builder, location, enumType, 0);
       }
 
@@ -1363,10 +1375,7 @@ void MLIRGen::generateWireFromSerial(
     mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{decoded});
 
     builder.setInsertionPointToStart(&decodeIf.getElseRegion().front());
-    auto msgPtr = wireStringPtr(location, wireEnumFromSerialErrorMessage(format, declName));
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                               mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
-                               mlir::ValueRange{msgPtr});
+    emitDecodePanic(/*freeVariantString=*/false);
     mlir::scf::YieldOp::create(builder, location,
                                mlir::ValueRange{createIntConstant(builder, location, enumType, 0)});
 

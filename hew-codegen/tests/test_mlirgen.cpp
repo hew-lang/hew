@@ -98,6 +98,15 @@ static int countCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
   return count;
 }
 
+static int countRuntimeCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
+  int count = 0;
+  op->walk([&](hew::RuntimeCallOp call) {
+    if (call.getCallee().str() == callee)
+      count++;
+  });
+  return count;
+}
+
 static int countPanicOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::PanicOp) { count++; });
@@ -1668,9 +1677,21 @@ fn main() -> int {
   auto fromJsonWrapper = lookupFuncBySuffix(module, "ReviewStatusF9from_json");
   auto toYamlWrapper = lookupFuncBySuffix(module, "ReviewStatusF7to_yaml");
   auto fromYamlWrapper = lookupFuncBySuffix(module, "ReviewStatusF9from_yaml");
+  auto fromJsonHelper = module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_from_json");
+  auto fromYamlHelper = module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_from_yaml");
 
-  if (!toJsonWrapper || !fromJsonWrapper || !toYamlWrapper || !fromYamlWrapper) {
+  if (!toJsonWrapper || !fromJsonWrapper || !toYamlWrapper || !fromYamlWrapper || !fromJsonHelper ||
+      !fromYamlHelper) {
     FAIL("expected wire enum method wrapper to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(fromJsonHelper, "hew_json_string_free") < 2 ||
+      countRuntimeCallsByCallee(fromJsonHelper, "hew_json_free") < 3 ||
+      countRuntimeCallsByCallee(fromYamlHelper, "hew_yaml_string_free") < 2 ||
+      countRuntimeCallsByCallee(fromYamlHelper, "hew_yaml_free") < 3) {
+    FAIL("expected wire enum decode helpers to clean up parse state on panic paths");
     module.getOperation()->destroy();
     return;
   }

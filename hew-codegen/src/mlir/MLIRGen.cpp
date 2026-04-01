@@ -1034,6 +1034,12 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
         auto coerced = coerceType(elem, elemType, location);
         if (!coerced)
           return nullptr;
+        if (coerced.getType() != elemType) {
+          ++errorCount_;
+          emitError(location) << "coerceType: no known conversion from " << coerced.getType()
+                              << " to " << elemType;
+          break;  // stop filling; errorCount_ > 0 prevents emission
+        }
         hew::VecPushOp::create(builder, location, vec, coerced);
       }
       return vec;

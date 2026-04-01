@@ -38,6 +38,8 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
     "AsyncGenerator",
     "Stream",
     "Sink",
+    "Sender",
+    "Receiver",
     "Send",
     "Frozen",
     "Copy",

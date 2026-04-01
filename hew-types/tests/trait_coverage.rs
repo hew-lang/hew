@@ -318,6 +318,34 @@ fn sink_not_copy() {
 }
 
 // ===========================================================================
+// Receiver type
+// ===========================================================================
+
+// Receiver is an opaque handle registered by the stdlib loader under
+// "channel.Receiver". is_handle_type_any() matches the unqualified "Receiver"
+// via the rsplit('.') fallback, granting Send/Copy/Clone/Debug — just like
+// other opaque handles (semaphore.Semaphore, json.Value, etc.).
+
+#[test]
+fn receiver_is_send_when_registered_as_handle_type() {
+    let mut reg = TraitRegistry::new();
+    reg.register_handle_type("channel.Receiver".to_string());
+    // Receiver<T> with args — the name alone drives the trait; args are opaque.
+    let rx = named_with("Receiver", vec![Ty::String]);
+    assert!(reg.implements_marker(&rx, MarkerTrait::Send));
+    assert!(reg.implements_marker(&rx, MarkerTrait::Sync));
+}
+
+#[test]
+fn receiver_without_handle_registration_is_not_send() {
+    // An empty registry has no handle types — verify the fallthrough is false,
+    // confirming that Send is gated on registration (i.e. not accidentally free).
+    let reg = TraitRegistry::new();
+    let rx = named_with("Receiver", vec![Ty::String]);
+    assert!(!reg.implements_marker(&rx, MarkerTrait::Send));
+}
+
+// ===========================================================================
 // Pointer type
 // ===========================================================================
 

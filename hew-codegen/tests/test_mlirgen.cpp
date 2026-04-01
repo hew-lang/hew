@@ -99,6 +99,15 @@ static int countCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
   return count;
 }
 
+static int countRuntimeCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
+  int count = 0;
+  op->walk([&](hew::RuntimeCallOp call) {
+    if (call.getCallee().str() == callee)
+      count++;
+  });
+  return count;
+}
+
 static int countPanicOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::PanicOp) { count++; });
@@ -1619,6 +1628,105 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Unit wire enums generate JSON/YAML helpers and dispatch through wrappers
+// ============================================================================
+static void test_wire_enum_unit_serial_helpers_and_dispatch() {
+  TEST(wire_enum_unit_serial_helpers_and_dispatch);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+#[json(camelCase)]
+wire enum ReviewStatus {
+    PendingReview;
+    ActiveNow;
+    Completed;
+}
+
+fn main() -> int {
+    let status = PendingReview;
+    let json = status.to_json();
+    let _roundtrip_json = ReviewStatus.from_json(json);
+    let yaml = status.to_yaml();
+    let _roundtrip_yaml = ReviewStatus.from_yaml(yaml);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  for (const char *fnName : {"ReviewStatus_to_json", "ReviewStatus_from_json", "ReviewStatus_to_yaml",
+                             "ReviewStatus_from_yaml"}) {
+    if (!module.lookupSymbol<mlir::func::FuncOp>(fnName)) {
+      FAIL("expected wire enum JSON/YAML helper function to be generated");
+      module.getOperation()->destroy();
+      return;
+    }
+  }
+
+  if (module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_encode") ||
+      module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_decode")) {
+    FAIL("unit wire enum should not synthesize binary encode/decode helpers");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto toJsonWrapper = lookupFuncBySuffix(module, "ReviewStatusF7to_json");
+  auto fromJsonWrapper = lookupFuncBySuffix(module, "ReviewStatusF9from_json");
+  auto toYamlWrapper = lookupFuncBySuffix(module, "ReviewStatusF7to_yaml");
+  auto fromYamlWrapper = lookupFuncBySuffix(module, "ReviewStatusF9from_yaml");
+  auto fromJsonHelper = module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_from_json");
+  auto fromYamlHelper = module.lookupSymbol<mlir::func::FuncOp>("ReviewStatus_from_yaml");
+
+  if (!toJsonWrapper || !fromJsonWrapper || !toYamlWrapper || !fromYamlWrapper || !fromJsonHelper ||
+      !fromYamlHelper) {
+    FAIL("expected wire enum method wrapper to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(fromJsonHelper, "hew_json_string_free") < 2 ||
+      countRuntimeCallsByCallee(fromJsonHelper, "hew_json_free") < 3 ||
+      countRuntimeCallsByCallee(fromYamlHelper, "hew_yaml_string_free") < 2 ||
+      countRuntimeCallsByCallee(fromYamlHelper, "hew_yaml_free") < 3) {
+    FAIL("expected wire enum decode helpers to clean up parse state on panic paths");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("expected main function");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn, toJsonWrapper.getName()) != 1 ||
+      countCallsByCallee(mainFn, fromJsonWrapper.getName()) != 1 ||
+      countCallsByCallee(mainFn, toYamlWrapper.getName()) != 1 ||
+      countCallsByCallee(mainFn, fromYamlWrapper.getName()) != 1) {
+    FAIL("expected enum method calls to dispatch through mangled wrappers");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn, "ReviewStatus_to_json") != 0 ||
+      countCallsByCallee(mainFn, "ReviewStatus_from_json") != 0 ||
+      countCallsByCallee(mainFn, "ReviewStatus_to_yaml") != 0 ||
+      countCallsByCallee(mainFn, "ReviewStatus_from_yaml") != 0) {
+    FAIL("main should call wire enum method wrappers, not helper bodies directly");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Unresolved generic substitution type fails MLIR generation
 // ============================================================================
 static void test_unresolved_generic_substitution_type_fails() {
@@ -2411,6 +2519,7 @@ int main() {
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_typedecl_preserves_variants();
   test_wire_enum_mixed_payload_match_positions();
+  test_wire_enum_unit_serial_helpers_and_dispatch();
   test_unresolved_generic_substitution_type_fails();
   test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();

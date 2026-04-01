@@ -3845,13 +3845,14 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
     return nullptr;
   }
 
-  // Wire type static methods: Point.from_json(json), Point.decode(buf), etc.
-  // When the receiver is an identifier naming a known struct type (not a
+  // Wire/static helper methods: Point.from_json(json), Status.from_yaml(str),
+  // etc. When the receiver is an identifier naming a known type (not a
   // variable or module), look up the mangled static method and call it.
-  auto structIt = structTypes.find(ident.name);
-  if (structIt != structTypes.end()) {
+  if (structTypes.count(ident.name) || enumTypes.count(ident.name)) {
     std::string funcName = mangleName(currentModulePath, ident.name, methodName);
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    if (!callee)
+      callee = lookupImportedFunc(ident.name, methodName);
     if (callee) {
       llvm::SmallVector<mlir::Value, 4> args;
       auto calleeFuncType = callee.getFunctionType();
@@ -4244,7 +4245,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (auto result = generateBuiltinMethodCall(mc, receiver, location))
     return *result;
 
-  // Determine type name from the receiver's MLIR type (struct or handle).
+  // Determine type name from the receiver's MLIR type (struct/enum or handle).
   auto receiverType = receiver.getType();
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
   std::string resolvedTypeName;
@@ -4254,8 +4255,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // Handle types (json.Value, ws.Conn, etc.) can have trait impl methods
     // registered under their handle kind name (e.g. "json.Value").
     resolvedTypeName = handleTy.getHandleKind().str();
-  } else {
-    emitError(location) << "method call on non-struct type"
+  } else if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+    auto candidate = typeExprToTypeName(*typeExpr);
+    if (!candidate.empty() && (structTypes.count(candidate) || enumTypes.count(candidate)))
+      resolvedTypeName = candidate;
+  }
+  if (resolvedTypeName.empty()) {
+    emitError(location) << "method call on non-struct/enum type"
                         << " (method='" << methodName << "'"
                         << ", receiver type: " << receiverType << ")";
     return nullptr;

@@ -1,0 +1,21 @@
+// Test: unit wire enums expose JSON/YAML helper methods and static dispatch.
+#[json(camelCase)]
+wire enum ReviewStatus {
+    PendingReview;
+    ActiveNow;
+    Completed;
+}
+
+fn main() {
+    let status = PendingReview;
+
+    let json = status.to_json();
+    println(json);
+    let from_json = ReviewStatus.from_json(json);
+    println(from_json.to_json());
+
+    let yaml = status.to_yaml();
+    print(yaml);
+    let from_yaml = ReviewStatus.from_yaml(yaml);
+    print(from_yaml.to_yaml());
+}

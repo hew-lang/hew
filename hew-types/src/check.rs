@@ -188,6 +188,8 @@ pub struct Checker {
     fn_sigs: HashMap<String, FnSig>,
     /// Tracks the span where each function was first defined (for duplicate detection).
     fn_def_spans: HashMap<String, Span>,
+    /// Tracks the span where each top-level type/trait namespace name was first defined.
+    type_def_spans: HashMap<String, Span>,
     /// Tracks public top-level names introduced by prior flat file imports so later
     /// flat imports can reject collisions instead of silently overwriting them.
     flat_file_import_pub_spans: HashMap<String, Span>,
@@ -470,6 +472,7 @@ impl Checker {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             fn_def_spans: HashMap::new(),
+            type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
             generic_ctx: Vec::new(),
             current_return_type: None,
@@ -848,16 +851,32 @@ impl Checker {
         for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
+                    if !self.register_type_namespace_name(&td.name, span) {
+                        continue;
+                    }
                     self.register_type_decl(td);
                     self.local_type_defs.insert(td.name.clone());
                 }
-                Item::Actor(ad) => self.register_actor_decl(ad),
-                Item::Wire(wd) => self.register_wire_decl(wd),
+                Item::Actor(ad) => {
+                    if !self.register_type_namespace_name(&ad.name, span) {
+                        continue;
+                    }
+                    self.register_actor_decl(ad);
+                }
+                Item::Wire(wd) => {
+                    if !self.register_type_namespace_name(&wd.name, span) {
+                        continue;
+                    }
+                    self.register_wire_decl(wd);
+                }
                 Item::TypeAlias(ta) => {
                     let resolved = self.resolve_type_expr(&ta.ty.0);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                 }
                 Item::Trait(td) => {
+                    if !self.register_type_namespace_name(&td.name, span) {
+                        continue;
+                    }
                     let info = Self::trait_info_from_decl(td);
                     self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
@@ -878,12 +897,29 @@ impl Checker {
                     self.supervisor_children.insert(sd.name.clone(), children);
                 }
                 Item::Machine(md) => {
+                    if !self.register_type_namespace_name(&md.name, span) {
+                        continue;
+                    }
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
                 }
                 _ => {}
             }
         }
+    }
+
+    fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
+        if let Some(prev_span) = self.type_def_spans.get(name) {
+            self.errors.push(TypeError::duplicate_definition(
+                span.clone(),
+                name,
+                prev_span.clone(),
+            ));
+            return false;
+        }
+
+        self.type_def_spans.insert(name.to_string(), span.clone());
+        true
     }
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
@@ -2471,10 +2507,13 @@ impl Checker {
     /// (e.g. bench.Suite.add) visible to the type checker.
     fn register_stdlib_hew_items(&mut self, module_short: &str, items: &[Spanned<Item>]) {
         // Pass 1: Register types, traits, and functions first
-        for (item, _span) in items {
+        for (item, span) in items {
             match item {
                 Item::TypeDecl(td) => {
                     if !td.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_type_namespace_name(&td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -2482,6 +2521,9 @@ impl Checker {
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_type_namespace_name(&tr.name, span) {
                         continue;
                     }
                     let info = Self::trait_info_from_decl(tr);
@@ -2500,6 +2542,9 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    if !self.register_type_namespace_name(&ad.name, span) {
+                        continue;
+                    }
                     self.register_actor_base(ad);
                 }
                 _ => {}
@@ -2604,7 +2649,7 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_flat_file_import_pub_name(
+                    if !self.register_flat_file_import_type_name(
                         &mut current_import_pub_spans,
                         &td.name,
                         span,
@@ -2619,7 +2664,7 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_flat_file_import_pub_name(
+                    if !self.register_flat_file_import_type_name(
                         &mut current_import_pub_spans,
                         &tr.name,
                         span,
@@ -2633,7 +2678,7 @@ impl Checker {
                     if !ad.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_flat_file_import_pub_name(
+                    if !self.register_flat_file_import_type_name(
                         &mut current_import_pub_spans,
                         &ad.name,
                         span,
@@ -2695,6 +2740,16 @@ impl Checker {
         true
     }
 
+    fn register_flat_file_import_type_name(
+        &mut self,
+        current_import_pub_spans: &mut HashMap<String, Span>,
+        name: &str,
+        span: &Span,
+    ) -> bool {
+        self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
+            && self.register_type_namespace_name(name, span)
+    }
+
     /// Register items from a user module under the module's namespace.
     #[expect(
         clippy::too_many_lines,
@@ -2732,6 +2787,9 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
+                    if !self.register_type_namespace_name(&td.name, span) {
+                        continue;
+                    }
                     self.register_type_decl(td);
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
@@ -2741,6 +2799,17 @@ impl Checker {
                         continue;
                     }
                     let info = Self::trait_info_from_decl(tr);
+                    let import_binding = if Self::should_import_name(&tr.name, spec) {
+                        let binding_name = Self::resolve_import_name(spec, &tr.name)
+                            .unwrap_or_else(|| tr.name.clone());
+                        if self.register_type_namespace_name(&binding_name, span) {
+                            Some(binding_name)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     // Register under qualified name (e.g. "mymod.Drawable")
                     let qualified = format!("{module_short}.{}", tr.name);
@@ -2751,17 +2820,13 @@ impl Checker {
                         let super_names: Vec<String> =
                             supers.iter().map(|s| s.name.clone()).collect();
                         self.trait_super.insert(qualified, super_names.clone());
-                        if Self::should_import_name(&tr.name, spec) {
-                            let binding_name = Self::resolve_import_name(spec, &tr.name)
-                                .unwrap_or_else(|| tr.name.clone());
-                            self.trait_super.insert(binding_name, super_names);
+                        if let Some(binding_name) = import_binding.as_ref() {
+                            self.trait_super.insert(binding_name.clone(), super_names);
                         }
                     }
 
                     // If glob or named import, also register unqualified (using alias if present)
-                    if Self::should_import_name(&tr.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &tr.name)
-                            .unwrap_or_else(|| tr.name.clone());
+                    if let Some(binding_name) = import_binding {
                         self.trait_defs.insert(binding_name.clone(), info.clone());
                         self.unqualified_to_module
                             .insert(binding_name, module_short.to_string());
@@ -2819,6 +2884,9 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    if !self.register_type_namespace_name(&ad.name, span) {
+                        continue;
+                    }
                     self.register_actor_base(ad);
                     self.register_qualified_type_alias(module_short, &ad.name);
                     // If named import or glob, also register unqualified

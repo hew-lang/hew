@@ -1558,7 +1558,7 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
       mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond, hasElse);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  generateBlock(stmt.then_block);
+  generateBlock(stmt.then_block, /*statementPosition=*/true);
   ensureYieldTerminator(location);
 
   if (hasElse) {
@@ -1568,7 +1568,7 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
       if (auto *innerIf = std::get_if<ast::StmtIf>(&elseBlock.if_stmt->value.kind))
         generateIfStmt(*innerIf);
     } else if (elseBlock.block) {
-      generateBlock(*elseBlock.block);
+      generateBlock(*elseBlock.block, /*statementPosition=*/true);
     }
     ensureYieldTerminator(location);
   }

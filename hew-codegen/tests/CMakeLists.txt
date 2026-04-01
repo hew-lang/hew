@@ -285,6 +285,10 @@ add_e2e_reject_test(codegen_source_spans e2e_negative codegen_source_spans ":3:1
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
+add_e2e_panic_test(wire_json_integer_range e2e_wire wire_json_integer_range_panic
+  "wire json decode error for field 'byte_value': expected byte in range [0, 255]")
+add_e2e_panic_test(wire_yaml_integer_range e2e_wire wire_yaml_integer_range_panic
+  "wire yaml decode error for field 'big_count': expected u32 in range [0, 4294967295]")
 
 # ── WASM target tests (compile with --target=wasm32-wasi, run with wasmtime) ──
 # These validate that Hew programs produce identical output on native and WASM.

@@ -103,6 +103,40 @@ static bool isUnsignedWireType(const std::string &ty) {
          ty == "uint" || ty == "usize" || ty == "byte" || ty == "char";
 }
 
+struct WireSerialIntegerBounds {
+  int64_t min;
+  int64_t max;
+};
+
+/// Return the valid JSON/YAML decode range for bounded integer wire types that
+/// are represented as i32 in the lowered struct storage.
+static std::optional<WireSerialIntegerBounds> wireFromSerialIntegerBounds(
+    const std::string &ty) {
+  if (ty == "i8")
+    return WireSerialIntegerBounds{-128, 127};
+  if (ty == "u8" || ty == "byte")
+    return WireSerialIntegerBounds{0, 255};
+  if (ty == "i16")
+    return WireSerialIntegerBounds{-32768, 32767};
+  if (ty == "u16")
+    return WireSerialIntegerBounds{0, 65535};
+  if (ty == "i32")
+    return WireSerialIntegerBounds{-2147483648LL, 2147483647LL};
+  if (ty == "u32")
+    return WireSerialIntegerBounds{0, 4294967295LL};
+  if (ty == "char")
+    return WireSerialIntegerBounds{0, 1114111};
+  return std::nullopt;
+}
+
+static std::string wireFromSerialIntegerDecodeErrorMessage(
+    llvm::StringRef format, llvm::StringRef fieldName, llvm::StringRef ty,
+    const WireSerialIntegerBounds &bounds) {
+  return "wire " + format.str() + " decode error for field '" + fieldName.str() +
+         "': expected " + ty.str() + " in range [" + std::to_string(bounds.min) + ", " +
+         std::to_string(bounds.max) + "]";
+}
+
 /// Check if a wire type uses varint encoding (as opposed to fixed-width or
 /// length-delimited).  Covers all integer primitives and their wire aliases.
 /// duration is encoded as a nanosecond i64 varint (always non-negative in
@@ -1092,8 +1126,8 @@ void MLIRGen::generateWireFromSerial(
 
   unsigned idx = 0;
   for (const auto &field : decl.fields) {
-    auto keyPtr =
-        wireStringPtr(location, wireSerialFieldName(field, fieldOverride(field), namingCase));
+    auto fieldName = wireSerialFieldName(field, fieldOverride(field), namingCase);
+    auto keyPtr = wireStringPtr(location, fieldName);
     auto fieldJval = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                                 mlir::SymbolRefAttr::get(&context, rtGetField),
                                                 mlir::ValueRange{objPtr, keyPtr})
@@ -1143,7 +1177,27 @@ void MLIRGen::generateWireFromSerial(
       auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                mlir::SymbolRefAttr::get(&context, rtGetInt),
                                                mlir::ValueRange{fieldJval})
-                        .getResult();
+                       .getResult();
+      if (auto bounds = wireFromSerialIntegerBounds(field.ty)) {
+        auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
+        auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
+        auto belowMin =
+            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+                                        rawI64, minVal);
+        auto aboveMax =
+            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sgt,
+                                        rawI64, maxVal);
+        auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
+        auto outOfRangeIf =
+            mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
+        builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
+        auto msgPtr = wireStringPtr(
+            location, wireFromSerialIntegerDecodeErrorMessage(format, fieldName, field.ty, *bounds));
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                   mlir::ValueRange{msgPtr});
+        builder.setInsertionPointAfter(outOfRangeIf);
+      }
       auto fieldType = wireTypeToMLIR(builder, field.ty);
       decoded = (fieldType == i32Type)
                     ? mlir::arith::TruncIOp::create(builder, location, i32Type, rawI64).getResult()

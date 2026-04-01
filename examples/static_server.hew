@@ -14,7 +14,7 @@ import std::os;
 import std::net::mime;
 
 fn resolve_path(root: String, url_path: String) -> String {
-    var path = root + url_path;
+    let path = root + url_path;
     if url_path.ends_with("/") {
         return path + "index.html";
     }
@@ -31,11 +31,11 @@ fn resolve_path(root: String, url_path: String) -> String {
 // Each request is handled by this actor, decoupling accept from serve.
 actor Handler {
     let root: String;
-    receive fn handle(req: Request, path: String) {
-        if path.contains("..") {
+    receive fn handle(req: Request, request_path: String) {
+        if request_path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {
-            let file_path = resolve_path(root, path);
+            let file_path = resolve_path(root, request_path);
             if fs.exists(file_path) {
                 let body = fs.read(file_path);
                 let content_type = mime.from_path(file_path);
@@ -65,7 +65,7 @@ fn main() {
     // Accept loop: dispatch each request to the handler actor
     loop {
         let req = server.accept();
-        let path = req.path();
-        handler.handle(req, path);
+        let request_path = req.path();
+        handler.handle(req, request_path);
     }
 }

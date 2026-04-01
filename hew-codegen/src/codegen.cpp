@@ -1093,46 +1093,50 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
       return mlir::success();
     }
 
+    auto loadType = getTypeConverter()->convertType(resultType);
+    if (!loadType)
+      loadType = resultType;
+
     // hew_actor_ask returns null when the local ask cannot be submitted.
     auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
     auto askFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
                                                 replyPtr, nullPtr);
     auto panicFuncType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
-    mlir::scf::IfOp::create(
-        rewriter, loc, askFailed,
-        [&](mlir::OpBuilder &b, mlir::Location l) {
-          mlir::func::CallOp::create(b, l, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
-          mlir::scf::YieldOp::create(b, l);
-        },
-        nullptr);
+    auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+    getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
 
-    auto loadType = getTypeConverter()->convertType(resultType);
-    if (!loadType)
-      loadType = resultType;
+    auto loadIfOp =
+        mlir::scf::IfOp::create(rewriter, loc, loadType, askFailed, /*withElseRegion=*/true);
 
-    mlir::Value resultVal;
+    rewriter.setInsertionPointToStart(&loadIfOp.getThenRegion().front());
+    mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+    auto panicResult = mlir::LLVM::UndefOp::create(rewriter, loc, loadType);
+    mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{panicResult.getResult()});
+
+    rewriter.setInsertionPointToStart(&loadIfOp.getElseRegion().front());
+    mlir::Value loadedValue;
     if (loadType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
-      resultVal = loaded.getResult();
+      loadedValue = loaded.getResult();
     } else if (loadType == i32Type || loadType == rewriter.getI64Type() ||
                llvm::isa<mlir::IntegerType>(loadType) || llvm::isa<mlir::FloatType>(loadType) ||
                llvm::isa<mlir::LLVM::LLVMStructType>(loadType)) {
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, loadType, replyPtr);
-      resultVal = loaded.getResult();
+      loadedValue = loaded.getResult();
     } else {
       // Custom types (e.g., !hew.string_ref): load as ptr, then cast
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
-      resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, loadType,
-                                                           mlir::ValueRange{loaded.getResult()})
-                      .getResult(0);
+      loadedValue = mlir::UnrealizedConversionCastOp::create(rewriter, loc, loadType,
+                                                             mlir::ValueRange{loaded.getResult()})
+                        .getResult(0);
     }
-
-    // Free the malloc'd reply buffer (allocated by hew_reply, returned by hew_actor_ask)
-    auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
-    getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
     mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
                                mlir::ValueRange{replyPtr});
+    mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{loadedValue});
+
+    rewriter.setInsertionPointAfter(loadIfOp);
+    auto resultVal = loadIfOp.getResult(0);
 
     rewriter.replaceOp(op, resultVal);
     return mlir::success();

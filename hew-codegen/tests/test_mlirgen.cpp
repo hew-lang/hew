@@ -12,6 +12,7 @@
 #include "hew/mlir/MLIRGen.h"
 #include "hew/msgpack_reader.h"
 
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -2115,42 +2116,65 @@ fn main() -> int {
     return;
   }
 
-  bool hasPanicSuccessor = false;
+  llvm::BasicBlock *panicBlock = nullptr;
+  llvm::BasicBlock *loadBlock = nullptr;
   for (unsigned i = 0; i < guardBranch->getNumSuccessors(); ++i) {
     auto *successor = guardBranch->getSuccessor(i);
+    bool containsPanic = false;
+    bool containsReplyLoad = false;
     for (auto &inst : *successor) {
       auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
       auto *callee = call ? call->getCalledFunction() : nullptr;
-      if (callee && callee->getName() == "hew_panic") {
-        hasPanicSuccessor = true;
-        break;
-      }
+      if (callee && callee->getName() == "hew_panic")
+        containsPanic = true;
+
+      auto *load = llvm::dyn_cast<llvm::LoadInst>(&inst);
+      if (load && load->getPointerOperand() == askCall)
+        containsReplyLoad = true;
     }
-    if (hasPanicSuccessor)
-      break;
+    if (containsPanic)
+      panicBlock = successor;
+    if (containsReplyLoad)
+      loadBlock = successor;
   }
 
-  if (!hasPanicSuccessor) {
-    FAIL("expected the null-reply branch to fail explicitly via hew_panic");
+  if (!panicBlock) {
+    FAIL("expected a null-reply successor block that fails via hew_panic");
     return;
   }
 
-  llvm::LoadInst *replyLoad = nullptr;
-  for (llvm::User *user : askCall->users()) {
-    auto *load = llvm::dyn_cast<llvm::LoadInst>(user);
-    if (load && load->getPointerOperand() == askCall) {
-      replyLoad = load;
-      break;
-    }
-  }
-
-  if (!replyLoad) {
-    FAIL("expected lowered local ask to load the reply value");
+  if (!loadBlock) {
+    FAIL("expected a non-null successor block that loads the reply value");
     return;
   }
 
-  if (replyLoad->getParent() == guardBranch->getParent()) {
-    FAIL("reply load should be sequenced after the null-reply guard");
+  if (panicBlock == loadBlock) {
+    FAIL("panic and reply-load paths must be in distinct successor blocks");
+    return;
+  }
+
+  int loadPredCount = 0;
+  bool loadPredIsGuard = false;
+  for (auto *pred : llvm::predecessors(loadBlock)) {
+    ++loadPredCount;
+    if (pred == guardBranch->getParent())
+      loadPredIsGuard = true;
+  }
+
+  if (loadPredCount != 1 || !loadPredIsGuard) {
+    FAIL("reply load must only be reachable from the non-null guard edge");
+    return;
+  }
+
+  for (auto *succ : llvm::successors(panicBlock)) {
+    if (succ == loadBlock) {
+      FAIL("panic path must not fall through into the reply-load block");
+      return;
+    }
+  }
+
+  if (!panicBlock->getTerminator()) {
+    FAIL("panic block should terminate explicitly");
     return;
   }
 

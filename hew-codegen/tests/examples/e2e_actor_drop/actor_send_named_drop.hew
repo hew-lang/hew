@@ -13,11 +13,15 @@ actor Echo {
     receive fn say(msg: String) {
         println(f"echo: {msg}");
     }
+
+    receive fn ping() -> int {
+        0
+    }
 }
 
 fn main() {
     let e = spawn Echo;
     let greeting = make_greeting("world");
     e.say(greeting);
-    sleep_ms(50);
+    await e.ping();
 }

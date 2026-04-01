@@ -11,6 +11,10 @@ actor Filter {
         println(allowed.len());
         // `allowed` is freed here via hew_hashset_free (registered drop)
     }
+
+    receive fn ping() -> int {
+        0
+    }
 }
 
 fn main() {
@@ -19,5 +23,5 @@ fn main() {
     allowed.insert("ok");
     allowed.insert("yes");
     f.check(allowed);
-    sleep_ms(50);
+    await f.ping();
 }

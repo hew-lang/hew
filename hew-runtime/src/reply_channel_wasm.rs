@@ -216,33 +216,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cancel_then_late_reply_cleans_up_channel() {
+    fn cancel_then_late_reply_does_not_resurrect_cancelled_channel() {
         let ch = hew_reply_channel_new();
+        let value = 7_i32;
 
         // SAFETY: `ch` is a live reply channel for the duration of the test.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply_channel_retain(ch);
             hew_reply_channel_cancel(ch);
 
             assert!(test_cancelled(ch));
-            assert_eq!(test_ref_count(ch), 3);
-
-            hew_reply_channel_free(ch);
             assert_eq!(test_ref_count(ch), 2);
+            assert!(!test_replied(ch));
+            assert!(!reply_ready(ch));
 
-            hew_reply(ch, ptr::null_mut(), 0);
+            hew_reply(
+                ch,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+
             assert_eq!(test_ref_count(ch), 1);
             assert!(test_cancelled(ch));
             assert!(!test_replied(ch));
             assert!(!reply_ready(ch));
+            assert!(
+                reply_take(ch).is_null(),
+                "late replies must not deposit a value after cancellation"
+            );
 
             hew_reply_channel_free(ch);
         }
     }
 
     #[test]
-    fn reply_then_cancel_preserves_value_until_owner_release() {
+    fn reply_then_cancel_preserves_ready_value_until_owner_releases() {
         let ch = hew_reply_channel_new();
         let value = 42_i32;
 
@@ -261,12 +269,16 @@ mod tests {
             assert!(reply_ready(ch));
 
             hew_reply_channel_cancel(ch);
+            assert_eq!(test_ref_count(ch), 1);
             assert!(test_cancelled(ch));
+            assert!(test_replied(ch));
+            assert!(reply_ready(ch));
 
             let reply = reply_take(ch).cast::<i32>();
             assert!(!reply.is_null());
             assert_eq!(*reply, 42);
             libc::free(reply.cast());
+            assert!(reply_take(ch).is_null());
 
             hew_reply_channel_free(ch);
         }

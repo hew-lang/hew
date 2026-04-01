@@ -60,14 +60,20 @@ public:
   /// Returns nullptr on failure.
   mlir::ModuleOp generate(const ast::Program &program);
 
-  /// Return true if the given TypeExpr refers to an unsigned integer type
+  /// Return true if the given name is a builtin unsigned integer type
   /// (u8, u16, u32, u64, uint, byte).
-  static bool isUnsignedTypeExpr(const ast::TypeExpr &type) {
-    if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
-      return named->name == "u8" || named->name == "u16" || named->name == "u32" ||
-             named->name == "u64" || named->name == "uint" || named->name == "byte";
-    }
-    return false;
+  static bool isBuiltinUnsignedIntegerName(llvm::StringRef name) {
+    return name == "u8" || name == "u16" || name == "u32" || name == "u64" || name == "uint" ||
+           name == "byte";
+  }
+
+  /// Return true if the given TypeExpr refers to an unsigned integer type
+  /// directly or through a type alias.
+  bool isUnsignedTypeExpr(const ast::TypeExpr &type) const {
+    auto *named = std::get_if<ast::TypeNamed>(&type.kind);
+    if (!named)
+      return false;
+    return isBuiltinUnsignedIntegerName(resolveTypeAlias(named->name));
   }
 
 private:

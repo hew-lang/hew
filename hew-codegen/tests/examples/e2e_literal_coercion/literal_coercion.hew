@@ -165,6 +165,12 @@ fn test_unsigned_if_tail_coercion() {
     println(widen_unsigned_if_tail(false));
 }
 
+fn test_aliased_unsigned_as_cast_coercion() {
+    let a: u8 = 200;
+    let cast_value: u16 = a as Wide;
+    println(cast_value);
+}
+
 fn main() {
     test_i32_basics();
     test_i16();
@@ -179,4 +185,5 @@ fn main() {
     test_let_coercion();
     test_unsigned_widening_statement_coercion();
     test_unsigned_if_tail_coercion();
+    test_aliased_unsigned_as_cast_coercion();
 }

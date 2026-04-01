@@ -284,6 +284,7 @@ add_e2e_reject_test(stream_int_reject    e2e_negative stream_int_reject    "Stre
 add_e2e_reject_test(stream_named_type    e2e_negative stream_named_type    "Stream<T> is currently only implemented for String and bytes")
 add_e2e_reject_test(stream_bytes_lines_reject e2e_negative stream_bytes_lines_reject "lines()` is only supported on `Stream<String>`")
 add_e2e_reject_test(codegen_source_spans e2e_negative codegen_source_spans ":3:14): error: Vec::from expects an array literal argument")
+add_e2e_reject_test(wire_unsupported_field_type e2e_negative wire_unsupported_field_type "unsupported type")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

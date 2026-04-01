@@ -6,11 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "hew/codegen.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
 #include "hew/msgpack_reader.h"
 
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Instructions.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1988,6 +1991,88 @@ fn main() {}
   PASS();
 }
 
+// ============================================================================
+// Test: remote actor asks pass an explicit reply size to hew_node_api_ask
+// ============================================================================
+
+static void test_remote_actor_ask_passes_reply_size() {
+  TEST(remote_actor_ask_passes_reply_size);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn snapshot() -> (int, int) {
+        (10, 20)
+    }
+}
+
+fn main() -> int {
+    let remote: Stats = Node::lookup("stats");
+    let snapshot = await remote.snapshot();
+    snapshot.0 + snapshot.1
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for remote actor ask");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for remote actor ask");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  llvm::CallBase *askCall = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (callee && callee->getName() == "hew_node_api_ask") {
+        askCall = call;
+        break;
+      }
+    }
+    if (askCall)
+      break;
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered remote ask to call hew_node_api_ask");
+    return;
+  }
+
+  if (askCall->arg_size() != 5) {
+    FAIL("remote ask should pass a fifth reply_size operand");
+    return;
+  }
+
+  auto *replySize = llvm::dyn_cast<llvm::ConstantInt>(askCall->getArgOperand(4));
+  if (!replySize || replySize->getZExtValue() != 16) {
+    FAIL("remote ask should pass the tuple reply size as the fifth operand");
+    return;
+  }
+
+  PASS();
+}
+
 
 
 int main() {
@@ -2024,6 +2109,7 @@ int main() {
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
+  test_remote_actor_ask_passes_reply_size();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

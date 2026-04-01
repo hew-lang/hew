@@ -872,6 +872,7 @@ add_wasm_file_test(drop_shadow_return         e2e_drop_scope       drop_shadow_r
 add_wasm_file_test(struct_owned_field_auto_drop e2e_drop_scope     struct_owned_field_no_drop_impl)
 add_wasm_file_test(struct_string_field_auto_drop e2e_drop_scope    struct_string_field_auto_drop)
 add_wasm_file_test(struct_early_return_auto_drop e2e_drop_scope    struct_early_return_auto_drop)
+add_wasm_file_test(struct_field_extraction_no_double_free e2e_drop_scope struct_field_extraction_no_double_free)
 add_wasm_file_test(drop_nested_struct         e2e_drop_trait       drop_nested_struct)
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
@@ -879,6 +880,9 @@ add_wasm_file_test(large_vec                  e2e_memory           large_vec_lif
 add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)
 add_wasm_file_test(deep_recursion             e2e_memory           deep_recursion)
 add_wasm_file_test(actor_str_owner            e2e_memory           actor_field_string_ownership)
+
+# Temp materialization
+add_wasm_file_test(borrowed_string_return     e2e_temp_materialization borrowed_string_return)
 
 # Types
 add_wasm_file_test(type_coverage              e2e_types            type_coverage)

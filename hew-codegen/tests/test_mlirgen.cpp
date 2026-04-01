@@ -1874,6 +1874,120 @@ fn main() -> int {
   PASS();
 }
 
+// ============================================================================
+// Test: actor receive handler with http.Request param emits hew_http_request_free
+// ============================================================================
+
+static void test_actor_receive_http_request_drop() {
+  TEST(actor_receive_http_request_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // The handler must NOT contain an explicit .free() call.  The drop is
+  // expected to be emitted automatically by the receive-handler param
+  // registration in generateActorDecl().
+  auto module = generateMLIR(ctx, R"(
+import std::net::http;
+
+actor Handler {
+    receive fn handle(req: http.Request) {
+        // req is owned by this handler; dropped via hew_http_request_free
+    }
+}
+
+fn main() {}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for http.Request receive handler");
+    return;
+  }
+
+  if (countCallsByCallee(module, "hew_http_request_free") < 1) {
+    FAIL("expected hew_http_request_free call in actor receive handler");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: actor receive handler with http.Server param emits hew_http_server_close
+// ============================================================================
+
+static void test_actor_receive_http_server_drop() {
+  TEST(actor_receive_http_server_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::net::http;
+
+actor ServerHolder {
+    receive fn hold(srv: http.Server) {
+        // srv is owned by this handler; dropped via hew_http_server_close
+    }
+}
+
+fn main() {}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for http.Server receive handler");
+    return;
+  }
+
+  if (countCallsByCallee(module, "hew_http_server_close") < 1) {
+    FAIL("expected hew_http_server_close call in actor receive handler");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: actor receive handler with regex.Pattern param emits hew_regex_free
+// ============================================================================
+
+static void test_actor_receive_regex_pattern_drop() {
+  TEST(actor_receive_regex_pattern_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::text::regex;
+
+actor Matcher {
+    receive fn check(pat: Pattern) {
+        // pat is owned by this handler; dropped via hew_regex_free
+    }
+}
+
+fn main() {}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for regex.Pattern receive handler");
+    return;
+  }
+
+  if (countCallsByCallee(module, "hew_regex_free") < 1) {
+    FAIL("expected hew_regex_free call in actor receive handler");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
 
 
 int main() {
@@ -1907,6 +2021,9 @@ int main() {
   test_select_emits_send_failure_cleanup();
   test_join_emits_send_failure_cleanup();
   test_generator_wrapped_yield_drop_exclusion();
+  test_actor_receive_http_request_drop();
+  test_actor_receive_http_server_drop();
+  test_actor_receive_regex_pattern_drop();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

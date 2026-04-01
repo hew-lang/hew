@@ -1217,15 +1217,17 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Builtin Result constructors omit explicit payload_positions
+// Test: Builtin Option/Result constructors carry explicit payload_positions
 // ============================================================================
-static void test_result_constructors_without_payload_positions() {
-  TEST(result_constructors_without_payload_positions);
+static void test_builtin_enum_constructors_use_explicit_payload_positions() {
+  TEST(builtin_enum_constructors_use_explicit_payload_positions);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
 fn main() -> int {
+    let maybe = Some(3);
+    maybe;
     Ok(7);
     Err(9);
     0
@@ -1237,23 +1239,43 @@ fn main() -> int {
     return;
   }
 
-  int resultConstructCount = 0;
-  bool hasExplicitPayloadPositions = false;
+  int optionSomeCount = 0;
+  int resultOkCount = 0;
+  int resultErrCount = 0;
+  bool optionSomeUsesFieldOne = false;
+  bool resultOkUsesFieldOne = false;
+  bool resultErrUsesFieldTwo = false;
   module.walk([&](hew::EnumConstructOp op) {
+    auto positions = op.getPayloadPositions();
+    if (!positions || positions->size() != 1)
+      return;
+
+    auto payloadField = mlir::cast<mlir::IntegerAttr>((*positions)[0]).getInt();
+    if (op.getEnumName() == "Option" && op.getVariantIndex() == 1) {
+      optionSomeCount++;
+      optionSomeUsesFieldOne |= payloadField == 1;
+      return;
+    }
     if (op.getEnumName() != "__Result")
       return;
-    resultConstructCount++;
-    if (op.getPayloadPositions())
-      hasExplicitPayloadPositions = true;
+    if (op.getVariantIndex() == 0) {
+      resultOkCount++;
+      resultOkUsesFieldOne |= payloadField == 1;
+      return;
+    }
+    if (op.getVariantIndex() == 1) {
+      resultErrCount++;
+      resultErrUsesFieldTwo |= payloadField == 2;
+    }
   });
 
-  if (resultConstructCount < 2) {
-    FAIL("expected at least 2 Result enum constructions");
+  if (optionSomeCount < 1 || resultOkCount < 1 || resultErrCount < 1) {
+    FAIL("expected explicit payload_positions on Some/Ok/Err constructors");
     module.getOperation()->destroy();
     return;
   }
-  if (hasExplicitPayloadPositions) {
-    FAIL("Result constructors should not require payload_positions");
+  if (!optionSomeUsesFieldOne || !resultOkUsesFieldOne || !resultErrUsesFieldTwo) {
+    FAIL("builtin enum constructors should use the expected payload field positions");
     module.getOperation()->destroy();
     return;
   }
@@ -2095,7 +2117,7 @@ int main() {
   test_function_calls();
   test_void_function();
   test_void_trailing_if_match_stmt_lowering();
-  test_result_constructors_without_payload_positions();
+  test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();
   test_wire_enum_mixed_payload_layout();

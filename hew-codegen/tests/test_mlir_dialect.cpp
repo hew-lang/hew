@@ -1676,6 +1676,56 @@ static void test_enum_extract_payload_fold() {
   PASS();
 }
 
+static void test_enum_extract_payload_fold_non_default_position() {
+  TEST(enum_extract_payload_fold_non_default_position);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto enumType = mlir::LLVM::LLVMStructType::getLiteral(&ctx, {i32Type, i64Type, i64Type});
+  auto funcType = builder.getFunctionType({i64Type}, {i64Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn_non_default_slot", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto payload = entryBlock->getArgument(0);
+  auto positionsAttr = builder.getArrayAttr({builder.getI64IntegerAttr(2)});
+  auto enumConstruct = hew::EnumConstructOp::create(builder, loc, enumType, uint32_t(1), "MyEnum",
+                                                    mlir::ValueRange{payload}, positionsAttr);
+
+  auto extractPayload = hew::EnumExtractPayloadOp::create(
+      builder, loc, i64Type, enumConstruct.getResult(), builder.getI64IntegerAttr(2));
+
+  auto foldResult = extractPayload.fold(hew::EnumExtractPayloadOp::FoldAdaptor({}, extractPayload));
+  auto foldedVal = llvm::dyn_cast<mlir::Value>(foldResult);
+  if (!foldedVal || foldedVal != payload) {
+    FAIL("EnumExtractPayloadOp should fold through explicit non-default payload positions");
+    module->destroy();
+    return;
+  }
+
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{extractPayload.getResult()});
+
+  if (mlir::failed(mlir::verify(module))) {
+    FAIL("Module verification failed");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
 //===----------------------------------------------------------------------===//
 // Test: Dead Vec NOT eliminated when vec has other uses
 //===----------------------------------------------------------------------===//
@@ -2959,6 +3009,7 @@ int main() {
   test_cast_identity_fold();
   test_cast_constant_fold();
   test_enum_extract_payload_fold();
+  test_enum_extract_payload_fold_non_default_position();
   test_dead_vec_not_eliminated_with_uses();
   test_dead_hashmap_not_eliminated_with_uses();
 

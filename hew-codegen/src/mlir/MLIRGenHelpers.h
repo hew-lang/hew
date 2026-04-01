@@ -210,16 +210,6 @@ inline mlir::Value createIntConstant(mlir::OpBuilder &builder, mlir::Location lo
   return mlir::arith::ConstantIntOp::create(builder, loc, type, value);
 }
 
-/// Return the struct field index where an enum payload is stored.
-/// Built-in Result<T,E> uses per-variant slots (Ok -> 1, Err -> 2),
-/// while Option<T> and user-defined enums use union-style slots starting at 1.
-inline int64_t enumPayloadFieldIndex(llvm::StringRef enumName, int32_t variantIndex,
-                                     int64_t payloadOrdinal = 0) {
-  if (enumName == "__Result")
-    return static_cast<int64_t>(variantIndex) + 1 + payloadOrdinal;
-  return 1 + payloadOrdinal;
-}
-
 /// Create a type-appropriate zero/default value (works for int, float, struct).
 inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location loc,
                                       mlir::Type type) {
@@ -274,7 +264,7 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
     auto okDefault = createDefaultValue(builder, loc, res.getOkType());
     return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
                                         llvm::StringRef("__Result"), mlir::ValueRange{okDefault},
-                                        /*payload_positions=*/mlir::ArrayAttr{});
+                                        /*payload_positions=*/builder.getI64ArrayAttr({1}));
   }
   // No valid default — this indicates a type we haven't handled.
   llvm::errs() << "MLIRGen: no default value for type: " << type << "\n";

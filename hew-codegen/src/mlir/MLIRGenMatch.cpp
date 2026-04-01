@@ -51,8 +51,9 @@ int64_t MLIRGen::resolvePayloadFieldIndex(llvm::StringRef variantName,
     }
   }
 
-  return enumPayloadFieldIndex(enumName, static_cast<int32_t>(variantIndex),
-                               static_cast<int64_t>(payloadOrdinal));
+  (void)enumName;
+  (void)variantIndex;
+  return 1 + static_cast<int64_t>(payloadOrdinal);
 }
 
 void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,

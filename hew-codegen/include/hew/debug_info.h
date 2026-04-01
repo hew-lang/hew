@@ -13,6 +13,7 @@
 #include "llvm/IR/Module.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace hew {
@@ -23,11 +24,14 @@ namespace hew {
 /// function in the module. Instructions that already have debug locations (from
 /// MLIR FileLineColLoc) are re-scoped under the correct DISubprogram; those
 /// without locations get a default location at the function's start line.
+/// `functionDeclLines` provides a per-function fallback start line when MLIR-to-
+/// LLVM translation drops the original instruction locations.
 ///
 /// After this call the module carries complete DWARF metadata and LLVM will
 /// emit .debug_info / .debug_line sections when writing an object file.
 void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
-                   const std::vector<size_t> &lineMap);
+                   const std::vector<size_t> &lineMap,
+                   const std::unordered_map<std::string, unsigned> &functionDeclLines = {});
 
 } // namespace hew
 

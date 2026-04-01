@@ -154,6 +154,7 @@ private:
   };
   struct ActorInfo {
     std::string name;
+    std::optional<mlir::Location> sourceLoc;
     mlir::LLVM::LLVMStructType stateType;     // state struct type
     std::vector<ActorReceiveInfo> receiveFns; // receive handlers in order
     std::vector<mlir::Type> fieldHewTypes;    // Hew MLIR types: [user fields..., init params...]

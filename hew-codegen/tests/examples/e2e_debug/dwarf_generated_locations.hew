@@ -1,0 +1,21 @@
+actor Worker {
+    let value: int;
+
+    init(seed: int) {
+        value = seed;
+    }
+
+    receive fn ping() {
+        println(value);
+    }
+
+    terminate {
+        println(value);
+    }
+}
+
+supervisor Pool {
+    child worker: Worker(7);
+}
+
+fn main() {}

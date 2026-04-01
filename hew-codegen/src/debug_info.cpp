@@ -21,7 +21,8 @@
 namespace hew {
 
 void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
-                   const std::vector<size_t> &lineMap) {
+                   const std::vector<size_t> &lineMap,
+                   const std::unordered_map<std::string, unsigned> &functionDeclLines) {
   llvm::DIBuilder dib(module);
 
   // Split source path into directory and filename.
@@ -52,9 +53,11 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
     if (fn.isDeclaration())
       continue;
 
+    auto declLineIt = functionDeclLines.find(std::string(fn.getName()));
+
     // Determine the function's start line from the first instruction that
     // already carries a debug location (set by MLIR translation).
-    unsigned startLine = 1;
+    unsigned startLine = declLineIt != functionDeclLines.end() ? declLineIt->second : 1;
     for (const llvm::BasicBlock &bb : fn) {
       for (const llvm::Instruction &inst : bb) {
         if (const auto &dl = inst.getDebugLoc()) {

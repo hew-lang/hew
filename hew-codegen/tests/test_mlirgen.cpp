@@ -816,6 +816,64 @@ fn main() {
 }
 
 // ============================================================================
+// Test: Nested statement-position if inside non-void function produces no
+//       resultful scf.if ops (regression for generateIfStmt statementPosition)
+// ============================================================================
+static void test_non_void_nested_stmt_if_no_results() {
+  TEST(non_void_nested_stmt_if_no_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn compute(flag: bool, x: int) -> int {
+    if flag {
+        if x > 0 {
+            println(1);
+        } else {
+            println(2);
+        }
+    } else {
+        if x > 0 {
+            println(3);
+        }
+    }
+    x
+}
+
+fn main() -> int {
+    compute(true, 42)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto computeFn = lookupFuncBySuffix(module, "F7compute");
+  if (!computeFn) {
+    FAIL("compute function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The only legitimate resultful scf.if in a non-void function is the final
+  // return-value materialization op.  Nested control-flow ifs (statement
+  // position) must produce no results.  The bug was that generateIfStmt did
+  // not pass statementPosition=true to its then/else generateBlock calls,
+  // causing the last StmtIf inside those blocks to be lowered via
+  // generateIfStmtAsExpr → unnecessary resultful scf.if.
+  if (countResultfulIfOps(computeFn) > 1) {
+    FAIL("nested statement-position if inside non-void function should not produce extra resultful scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -2504,6 +2562,7 @@ int main() {
   test_if_else_expr();
   test_statement_position_if_and_match_lower_without_results();
   test_unannotated_early_return_tail_if_match_lower_without_results();
+  test_non_void_nested_stmt_if_no_results();
   test_arithmetic();
   test_comparisons();
   test_return_stmt();

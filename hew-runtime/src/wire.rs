@@ -2114,6 +2114,65 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "wire format length bounded by protocol"
+    )]
+    fn envelope_decode_skips_unknown_varint_field() {
+        // SAFETY: test calls FFI functions with valid pointers managed by this test.
+        unsafe {
+            let payload = [9u8, 8, 7, 6];
+            let buf = hew_wire_buf_new();
+            assert!(!buf.is_null());
+            assert_eq!(hew_wire_encode_field_varint(buf, 1, 42), 0);
+            assert_eq!(hew_wire_encode_field_varint(buf, 2, 7), 0);
+            assert_eq!(hew_wire_encode_field_varint(buf, 7, 9999), 0);
+            assert_eq!(
+                hew_wire_encode_field_varint(buf, 3, hew_wire_zigzag_encode(10)),
+                0
+            );
+            assert_eq!(
+                hew_wire_encode_field_bytes(
+                    buf,
+                    4,
+                    payload.as_ptr().cast::<c_void>(),
+                    payload.len()
+                ),
+                0
+            );
+            assert_eq!(hew_wire_encode_field_varint(buf, 5, 12345), 0);
+            assert_eq!(hew_wire_encode_field_varint(buf, 6, 1), 0);
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+            assert_eq!(decoded_env.target_actor_id, 42);
+            assert_eq!(decoded_env.source_actor_id, 7);
+            assert_eq!(decoded_env.msg_type, 10);
+            assert_eq!(decoded_env.payload_size, payload.len() as u32);
+            assert_eq!(decoded_env.request_id, 12345);
+            assert_eq!(decoded_env.source_node_id, 1);
+            let decoded_payload = std::slice::from_raw_parts(
+                decoded_env.payload.cast_const(),
+                decoded_env.payload_size as usize,
+            );
+            assert_eq!(decoded_payload, payload);
+            assert_eq!(read_buf.read_pos, read_buf.len);
+        }
+    }
+
+    #[test]
     fn envelope_without_request_id_defaults_to_zero() {
         // SAFETY: test calls FFI functions with valid pointers managed by this test.
         unsafe {

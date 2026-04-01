@@ -15,12 +15,12 @@ import std::net::mime;
 
 actor Handler {
     let root: String;
-    receive fn serve(req: Request, path: String) {
-        if path.contains("..") {
+    receive fn serve(req: Request, request_path: String) {
+        if request_path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {
-            var file_path = root + path;
-            if path.ends_with("/") {
+            var file_path = root + request_path;
+            if request_path.ends_with("/") {
                 file_path = file_path + "index.html";
             }
             if fs.exists(file_path) {
@@ -60,7 +60,7 @@ fn main() {
     let srv = http.listen(addr);
     loop {
         let req = srv.accept();
-        let path = req.path();
-        handler.serve(req, path);
+        let request_path = req.path();
+        handler.serve(req, request_path);
     }
 }

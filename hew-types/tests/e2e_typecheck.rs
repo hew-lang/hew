@@ -1,24 +1,57 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+fn new_networking_demo_checker() -> hew_types::Checker {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
+        repo_root(),
+    ]))
+}
 
 #[test]
 fn typecheck_all_examples() {
-    let examples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("examples");
+    let examples_dir = repo_root().join("examples");
     test_directory(&examples_dir, "examples");
 }
 
 #[test]
 fn typecheck_all_codegen_examples() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
+    let dir = repo_root()
         .join("hew-codegen")
         .join("tests")
         .join("examples");
     test_directory(&dir, "hew-codegen/tests/examples");
+}
+
+#[test]
+fn typecheck_top_level_networking_demos() {
+    for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
+        assert_typechecks(&repo_root().join(relative), relative);
+    }
+}
+
+fn assert_typechecks(path: &Path, label: &str) {
+    let source = fs::read_to_string(path).unwrap();
+    let parse_result = hew_parser::parse(&source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "{label} should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+
+    let mut checker = new_networking_demo_checker();
+    let output = checker.check_program(&parse_result.program);
+    assert!(
+        output.errors.is_empty(),
+        "{label} should type-check cleanly, got: {:#?}",
+        output.errors
+    );
 }
 
 fn test_directory(dir: &Path, label: &str) {

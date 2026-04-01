@@ -946,6 +946,32 @@ void MLIRGen::registerDropsForVariable(
 
   bool isBorrowedGetString = false;
 
+  // When `let x = struct_var.field` extracts a String field from a user
+  // struct that has owned fields (and will free them via __auto_field_drop),
+  // registering a separate hew_string_drop for `x` creates an aliased
+  // pointer that gets freed twice: once by `x`'s drop and once by the
+  // struct's auto-field-drop.  Detect this pattern and suppress the
+  // hew_string_drop registration so the struct remains the sole owner.
+  //
+  // Restriction: only suppress when the source is a plain identifier
+  // (variable or function parameter).  For temporaries like `f().field`,
+  // the struct has no owner to free its fields, so `x` must keep its drop.
+  bool isFieldExtractionFromOwnedStruct = false;
+  if (stmtValue && *stmtValue) {
+    if (auto *fa = std::get_if<ast::ExprFieldAccess>(&(*stmtValue)->value.kind)) {
+      if (std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+        if (auto *srcTy = resolvedTypeOf(fa->object->span)) {
+          if (auto *named = std::get_if<ast::TypeNamed>(&srcTy->kind)) {
+            if (structTypes.count(named->name) &&
+                !userDropFuncs.count(named->name) &&
+                structHasOwnedFields(named->name))
+              isFieldExtractionFromOwnedStruct = true;
+          }
+        }
+      }
+    }
+  }
+
   // ── Type-annotation-based drops ────────────────────────────────────
   if (stmtTy && *stmtTy) {
     if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind)) {
@@ -982,7 +1008,7 @@ void MLIRGen::registerDropsForVariable(
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
             isBorrowed = (mc->method == "get");
         }
-        if (!isBorrowed)
+        if (!isBorrowed && !isFieldExtractionFromOwnedStruct)
           registerDroppable(varName, "hew_string_drop");
       } else {
         auto dropIt = userDropFuncs.find(typeName);
@@ -1025,10 +1051,11 @@ void MLIRGen::registerDropsForVariable(
               std::holds_alternative<ast::ExprLiteral>(vk))
             isOwned = true;
         }
-        if (isOwned)
+        if (isOwned && !isFieldExtractionFromOwnedStruct)
           registerDroppable(varName, "hew_string_drop");
       } else {
-        registerDroppable(varName, "hew_string_drop");
+        if (!isFieldExtractionFromOwnedStruct)
+          registerDroppable(varName, "hew_string_drop");
       }
     }
   }

@@ -960,8 +960,10 @@ impl Checker {
                     if !self.register_type_namespace_name(&ta.name, span) {
                         continue;
                     }
-                    let resolved = self.resolve_type_expr(&ta.ty.0);
+                    let mut hole_vars = Vec::new();
+                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty.0, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
+                    self.record_type_def_inference_holes(&ta.name, hole_vars);
                 }
                 Item::Trait(td) => {
                     if !self.register_type_namespace_name(&td.name, span) {
@@ -3355,20 +3357,18 @@ impl Checker {
                     }
                 }
                 Item::TypeAlias(type_alias) => {
-                    if self.type_def_spans.get(&type_alias.name) != Some(span) {
-                        continue;
-                    }
-                    // Fail closed only for user-written root `_` holes that stayed
-                    // unresolved; nested holes and other residual vars remain out of
-                    // scope in this lane.
+                    // Fail closed only for user-written root `_` holes; nested holes
+                    // remain out of scope in this lane.
                     if !matches!(type_alias.ty.0, TypeExpr::Infer) {
                         continue;
                     }
-                    let alias_still_unresolved = self
-                        .type_aliases
-                        .get(&type_alias.name)
-                        .is_some_and(|alias_ty| matches!(self.subst.resolve(alias_ty), Ty::Var(_)));
-                    if alias_still_unresolved {
+                    if lookup_scoped_item(
+                        &self.type_def_inference_holes,
+                        module_name,
+                        &type_alias.name,
+                    )
+                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
                         self.errors.push(TypeError::inference_failed(
                             type_alias.ty.1.clone(),
                             &format!("type alias `{}`", type_alias.name),

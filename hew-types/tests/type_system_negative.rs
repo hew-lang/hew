@@ -453,6 +453,48 @@ fn duplicate_definition_type_alias_collides_with_trait() {
     );
 }
 
+// ── 6m. InferenceFailed — unresolved top-level type alias hole ───────
+
+#[test]
+fn inference_failed_unresolved_type_alias_hole() {
+    let output = typecheck(
+        r"
+        type Foo = _;
+        fn main() {}
+    ",
+    );
+    let inference_failed_count = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .count();
+    assert_eq!(
+        inference_failed_count, 1,
+        "Expected exactly one InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6n. Narrow fix — nested type alias hole does not fail closed ─────
+
+#[test]
+fn nested_type_alias_hole_does_not_fail_closed() {
+    let output = typecheck(
+        r"
+        type Pair = (int, _);
+        fn main() {}
+    ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Nested type alias holes should not fail closed here, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 7. Shadowing — inner scope binding shadows outer scope ───────────
 // Nested/child scope shadowing emits a warning (not an error); only same-scope
 // rebinding and actor field shadowing are hard errors.

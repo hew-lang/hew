@@ -401,25 +401,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
             // Register drops for owned types (deep-copied into gen ctx args)
             auto paramType = paramVal.getType();
-            if (mlir::isa<hew::StringRefType>(paramType))
-              registerDroppable(param.name, "hew_string_drop");
-            else if (mlir::isa<hew::VecType>(paramType))
-              registerDroppable(param.name, "hew_vec_free");
-            else if (mlir::isa<hew::HashMapType>(paramType))
-              registerDroppable(param.name, "hew_hashmap_free_impl");
-            else if (mlir::isa<hew::ClosureType>(paramType))
-              registerDroppable(param.name, "hew_rc_drop");
-            else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(paramType)) {
-              const auto kind = handleTy.getHandleKind();
-              if (kind == "HashSet")
-                registerDroppable(param.name, "hew_hashset_free");
-              else if (kind == "http.Request")
-                registerDroppable(param.name, "hew_http_request_free");
-              else if (kind == "http.Server")
-                registerDroppable(param.name, "hew_http_server_close");
-              else if (kind == "regex.Pattern")
-                registerDroppable(param.name, "hew_regex_free");
-            }
+            if (auto dropFn = dropFuncForMLIRType(paramType); !dropFn.empty())
+              registerDroppable(param.name, dropFn);
 
             ++pi;
           }
@@ -607,28 +590,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         // Register drops for owned types (deep-copied at actor boundary)
         auto argType = argVal.getType();
-        if (mlir::isa<hew::StringRefType>(argType))
-          registerDroppable(param.name, "hew_string_drop");
-        else if (mlir::isa<hew::VecType>(argType))
-          registerDroppable(param.name, "hew_vec_free");
-        else if (mlir::isa<hew::HashMapType>(argType))
-          registerDroppable(param.name, "hew_hashmap_free_impl");
-        else if (mlir::isa<hew::ClosureType>(argType))
-          registerDroppable(param.name, "hew_rc_drop");
-        else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(argType)) {
-          // Pointer-style handles whose sender relinquishes ownership at the
-          // actor message boundary (see generateActorMethodSend).  The
-          // receiver must free via the corresponding runtime function.
-          const auto kind = handleTy.getHandleKind();
-          if (kind == "HashSet")
-            registerDroppable(param.name, "hew_hashset_free");
-          else if (kind == "http.Request")
-            registerDroppable(param.name, "hew_http_request_free");
-          else if (kind == "http.Server")
-            registerDroppable(param.name, "hew_http_server_close");
-          else if (kind == "regex.Pattern")
-            registerDroppable(param.name, "hew_regex_free");
-        }
+        if (auto dropFn = dropFuncForMLIRType(argType); !dropFn.empty())
+          registerDroppable(param.name, dropFn);
 
         ++pi;
       }

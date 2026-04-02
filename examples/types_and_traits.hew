@@ -1,35 +1,82 @@
-// Type system test: structs, enums, traits, impl blocks
+// Types, traits, and dynamic dispatch in Hew.
+//
+// Run:  hew run examples/types_and_traits.hew
+//
+// Covers:
+//   1. Struct definitions and field access
+//   2. Traits and impl blocks
+//   3. Dynamic dispatch via `dyn Trait`
+//
+// For static generic dispatch, see the trait-bounds pattern:
+//   fn show<T: Describe>(item: T) { println(item.describe()); }
+
+// ── 1. Structs ────────────────────────────────────────────────────────────────
+
 type Point {
-    x: i32;
-    y: i32;
+    x: int;
+    y: int;
 }
 
-fn make_point(x: i32, y: i32) -> Point {
-    Point { x: x, y: y }
-}
-
-fn point_sum(p: Point) -> i32 {
+fn point_sum(p: Point) -> int {
     p.x + p.y
 }
 
-fn test_struct() {
-    let p: Point = make_point(3, 4);
-    let sum = point_sum(p);
-    if sum == 7 {
-        println("PASS: struct creation and field access")
+// ── 2. Traits and impl blocks ─────────────────────────────────────────────────
+//
+// A trait declares a named contract.
+// impl blocks provide the concrete implementation for each type.
+
+trait Describe {
+    fn describe(val: Self) -> String;
+}
+
+type Circle {
+    radius: int;
+}
+
+type Rectangle {
+    width:  int;
+    height: int;
+}
+
+impl Describe for Circle {
+    fn describe(c: Circle) -> String {
+        "Circle"
     }
 }
 
-fn test_direct_init() {
-    let p = Point { x: 10, y: 20 };
-    if p.x == 10 {
-        println("PASS: direct struct init")
+impl Describe for Rectangle {
+    fn describe(r: Rectangle) -> String {
+        "Rectangle"
     }
 }
+
+// ── 3. Dynamic dispatch ───────────────────────────────────────────────────────
+//
+// `dyn Describe` accepts any value whose type implements Describe.
+// The concrete type is erased; dispatch goes through a vtable at runtime.
+
+fn print_shape(shape: dyn Describe) {
+    println(shape.describe());
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     println("=== Types and Traits ===");
-    test_struct();
-    test_direct_init();
+
+    // structs
+    let p = Point { x: 3, y: 4 };
+    if point_sum(p) == 7 {
+        println("PASS: struct field access");
+    }
+
+    // traits + impls via dynamic dispatch
+    println("--- traits and dynamic dispatch ---");
+    let c = Circle    { radius: 5 };
+    let r = Rectangle { width: 3, height: 4 };
+    print_shape(c);
+    print_shape(r);
+
     println("=== Done ===");
 }

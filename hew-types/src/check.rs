@@ -3157,6 +3157,7 @@ impl Checker {
         self.emit_dead_code_warnings();
 
         self.default_unconstrained_range_types(&expr_types);
+        self.report_unresolved_inference_holes(program);
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -3352,6 +3353,27 @@ impl Checker {
                                 ));
                             }
                         }
+                    }
+                }
+                Item::TypeAlias(type_alias) => {
+                    if self.type_def_spans.get(&type_alias.name) != Some(span) {
+                        continue;
+                    }
+                    // Fail closed only for user-written root `_` holes that stayed
+                    // unresolved; nested holes and other residual vars remain out of
+                    // scope in this lane.
+                    if !matches!(type_alias.ty.0, TypeExpr::Infer) {
+                        continue;
+                    }
+                    let alias_still_unresolved = self
+                        .type_aliases
+                        .get(&type_alias.name)
+                        .is_some_and(|alias_ty| matches!(self.subst.resolve(alias_ty), Ty::Var(_)));
+                    if alias_still_unresolved {
+                        self.errors.push(TypeError::inference_failed(
+                            type_alias.ty.1.clone(),
+                            &format!("type alias `{}`", type_alias.name),
+                        ));
                     }
                 }
                 Item::Actor(ad) => {

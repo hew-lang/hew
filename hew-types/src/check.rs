@@ -345,6 +345,14 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Maps a let-bound name to the (`TypeParam` name, `TypeVar`) pairs created
+    /// when that name was bound to a generic lambda expression.  Used to
+    /// populate `call_type_args` when the lambda is called later.
+    lambda_poly_type_var_map: HashMap<String, Vec<(String, TypeVar)>>,
+    /// Scratch field: set by `check_lambda` when it processes a generic lambda
+    /// (one with non-empty `type_params`).  Consumed immediately in the
+    /// enclosing `Stmt::Let` handler to populate `lambda_poly_type_var_map`.
+    last_lambda_generic_vars: Option<Vec<(String, TypeVar)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,6 +605,8 @@ impl Checker {
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
+            lambda_poly_type_var_map: HashMap::new(),
+            last_lambda_generic_vars: None,
         }
     }
 
@@ -4220,6 +4230,9 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                // If we just synthesized a generic lambda, capture the
+                // (TypeParam name, TypeVar) pairs that check_lambda stashed.
+                let generic_vars = self.last_lambda_generic_vars.take();
                 // For simple identifier patterns, track the definition span
                 if let Pattern::Identifier(name) = &pattern.0 {
                     if val_ty == Ty::Unit && value.is_some() {
@@ -4235,6 +4248,10 @@ impl Checker {
                     self.check_shadowing(name, &pattern.1);
                     self.env
                         .define_with_span(name.clone(), val_ty, false, pattern.1.clone());
+                    // Register generic lambda binding for call-site inference.
+                    if let Some(gvars) = generic_vars {
+                        self.lambda_poly_type_var_map.insert(name.clone(), gvars);
+                    }
                     // Track let-bound literals for numeric coercion at use sites.
                     // Only when there's no explicit type annotation (the value
                     // defaulted to i64/f64 from synthesis), so the literal can
@@ -6208,7 +6225,23 @@ impl Checker {
         // Then check if it's a variable with a function type (e.g., lambda parameters)
         if let Some(binding) = self.env.lookup(&func_name) {
             let func_ty = binding.ty.clone();
-            return self.check_call_with_type(&func_ty, args, span);
+            let ret = self.check_call_with_type(&func_ty, args, span);
+            // If this variable was bound to a generic lambda, extract the now-
+            // resolved concrete types for each type parameter and record them
+            // in call_type_args so the enricher can fill in the type_args field
+            // before the AST is serialised for the codegen.
+            if let Some(poly_vars) = self.lambda_poly_type_var_map.get(&func_name).cloned() {
+                if type_args.is_none() {
+                    let concrete: Vec<Ty> = poly_vars
+                        .iter()
+                        .map(|(_, tv)| self.subst.resolve(&Ty::Var(*tv)))
+                        .collect();
+                    if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
+                        self.call_type_args.insert(SpanKey::from(span), concrete);
+                    }
+                }
+            }
+            return ret;
         }
 
         // Qualified trait method call: e.g. `Measurable::measure(item)`.
@@ -7809,13 +7842,18 @@ impl Checker {
         self.lambda_capture_depth = Some(capture_depth);
 
         let mut generic_bindings = std::collections::HashMap::new();
+        let mut generic_var_pairs: Vec<(String, TypeVar)> = Vec::new();
         if let Some(tps) = type_params {
             for tp in tps {
-                generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+                let tv = TypeVar::fresh();
+                generic_bindings.insert(tp.name.clone(), Ty::Var(tv));
+                generic_var_pairs.push((tp.name.clone(), tv));
             }
         }
         if !generic_bindings.is_empty() {
             self.generic_ctx.push(generic_bindings);
+            // Record for the enclosing Stmt::Let to capture after we return.
+            self.last_lambda_generic_vars = Some(generic_var_pairs);
         }
 
         self.env.push_scope();
@@ -12323,6 +12361,95 @@ fn main() {
             "type check errors: {:?}",
             output.errors
         );
+    }
+
+    /// Slice-1 generic lambda regression test.
+    ///
+    /// Verifies that:
+    /// 1. A let-bound generic lambda type-checks cleanly.
+    /// 2. A direct call whose arguments make the type obvious resolves the
+    ///    return type correctly.
+    /// 3. `call_type_args` is populated for the call so the enricher can
+    ///    fill in explicit type arguments before serialisation to MLIR.
+    #[test]
+    fn generic_lambda_slice1_type_inference() {
+        let source = r"
+            fn main() {
+                let v: int = 30;
+                let r = <T>(a: T, b: T) -> T => a;
+                let q = r(v, v);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
+        );
+
+        // The call r(v, v) must have produced a call_type_args entry (T→int).
+        assert!(
+            !output.call_type_args.is_empty(),
+            "call_type_args should contain the inferred type for r(v,v)"
+        );
+        // The single entry should map to [int / i64].
+        let type_args: Vec<_> = output.call_type_args.values().collect();
+        assert_eq!(type_args.len(), 1);
+        assert_eq!(
+            type_args[0],
+            &vec![crate::ty::Ty::I64],
+            "T should be inferred as int (i64)"
+        );
+    }
+
+    /// Slice-1: two-type-param generic lambda, verify both params inferred.
+    #[test]
+    fn generic_lambda_slice1_two_type_params() {
+        let source = concat!(
+            "fn main() {\n",
+            r#"    let combine = <A, B>(a: A, b: B) -> A => a;"#,
+            "\n",
+            r#"    let x: int = 1;"#,
+            "\n",
+            r#"    let y: string = "hello";"#,
+            "\n",
+            r#"    let z = combine(x, y);"#,
+            "\n",
+            "}\n",
+        );
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
+        );
+
+        // Should have one call_type_args entry with two type args.
+        assert_eq!(
+            output.call_type_args.len(),
+            1,
+            "expected one call_type_args entry"
+        );
+        let args = output.call_type_args.values().next().unwrap();
+        assert_eq!(args.len(), 2, "expected two type args (A and B)");
     }
 
     #[test]

@@ -753,6 +753,10 @@ add_wasm_file_test(named_args           e2e_named_args main)
 add_wasm_file_test(cast_numeric         e2e_coverage cast_numeric)
 add_wasm_file_test(struct_field_set     e2e_coverage struct_field_set)
 
+# Generic lambda slice-1: env-bound generic lambdas with type inference
+add_e2e_file_test(generic_lambda_slice1   e2e_coverage generic_lambda_slice1)
+add_wasm_file_test(generic_lambda_slice1  e2e_coverage generic_lambda_slice1)
+
 # Example programs (non-actor subset)
 add_wasm_file_test(ex_fibonacci         e2e_examples fibonacci)
 add_wasm_file_test(ex_basic_types       e2e_examples test_basic_types)

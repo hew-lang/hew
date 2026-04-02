@@ -1,0 +1,20 @@
+// Regression test: slice-1 generic lambda — env-bound generic lambdas
+// with type inference at direct call sites.
+
+fn main() {
+    // Basic identity-style generic lambda: single type param, explicit return type.
+    let id = <T>(x: T) -> T => x;
+    let a: int = id(42);
+    println(a);
+
+    // Two-param generic lambda: both params share one type param.
+    let add_pair = <T>(a: T, b: T) -> T => a;
+    let v: int = 30;
+    let r = add_pair(v, v);
+    println(r);
+
+    // Return type inferred from body when not annotated.
+    let second = <A>(x: A) => x;
+    let q: int = second(99);
+    println(q);
+}

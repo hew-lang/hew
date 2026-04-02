@@ -577,6 +577,23 @@ void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
 
 void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   auto location = currentLoc;
+
+  // ── Generic lambda deferred registration ─────────────────────────────────
+  // If the RHS is a generic lambda (type_params present and non-empty), defer
+  // code generation until a concrete call site supplies the type arguments.
+  // Register the lambda under the binding name and return without emitting any
+  // IR.  The call path will specialise it via specializeGenericLambda().
+  if (stmt.value) {
+    if (auto *lam = std::get_if<ast::ExprLambda>(&stmt.value->value.kind)) {
+      if (lam->type_params.has_value() && !lam->type_params->empty()) {
+        if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
+          genericLambdas[identPat->name] = lam;
+          return;
+        }
+      }
+    }
+  }
+
   // Set the declared type so constructors (Vec::new, HashMap::new, None, Ok,
   // Err) can emit correctly typed results.
   // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is

@@ -1,0 +1,24 @@
+// Regression: generic struct constructor expressions in non-generic contexts
+// must compile and run correctly (previously failed with "unknown struct type").
+
+type Wrapper<T> { inner: T; }
+type Pair<A, B> { first: A; second: B; }
+
+// Case 1: constructor in main() — no explicit type annotation
+fn main() {
+    let w = Wrapper { inner: 42 };
+    println(w.inner);
+
+    let p = Pair { first: 10, second: 20 };
+    println(p.first);
+    println(p.second);
+
+    // Case 2: helper function with explicit return type annotation
+    let v = wrap_i32(99);
+    println(v.inner);
+}
+
+// Case 2: monomorphic helper with explicit return type (Wrapper<i32>)
+fn wrap_i32(x: i32) -> Wrapper<i32> {
+    Wrapper { inner: x }
+}

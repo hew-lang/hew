@@ -2,6 +2,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.next_if_eq(&'[').is_some() {
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -42,19 +59,17 @@ fn extern_type_codegen_errors_report_the_type_span() {
 
     assert!(!output.status.success());
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let location = format!("loc(\"{}\":2:21): error:", fixture.display());
-
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let location = format!("{}:2:21: error:", fixture.display());
     assert!(
         stderr.contains(&format!(
-            "{location} unsupported type expression in MLIR codegen"
+            "{location} cannot infer type for signature of extern function `bad_param`"
         )),
         "{stderr}",
     );
     assert!(
-        stderr.contains(&format!(
-            "{location} cannot resolve parameter type in extern function"
-        )),
+        stderr.contains("2 |     fn bad_param(x: _);")
+            && stderr.contains("|                     ^"),
         "{stderr}",
     );
 }

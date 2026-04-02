@@ -4324,11 +4324,8 @@ impl Checker {
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(binding) = self.env.lookup_ref(name) {
                         if !binding.is_mutable {
-                            self.report_error(
-                                TypeErrorKind::MutabilityError,
-                                span,
-                                format!("cannot assign to immutable variable `{name}`"),
-                            );
+                            self.errors
+                                .push(TypeError::mutability_error(span.clone(), name));
                         }
                     }
                     // Plain assignment (=) is a write-only, not a read.

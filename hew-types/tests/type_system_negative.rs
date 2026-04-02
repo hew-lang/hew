@@ -24,13 +24,15 @@ fn mutability_error_assign_to_let_binding() {
         }
     ",
     );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::MutabilityError)
+        .unwrap_or_else(|| panic!("Expected MutabilityError, got errors: {:?}", output.errors));
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::MutabilityError),
-        "Expected MutabilityError, got errors: {:?}",
-        output.errors
+        err.suggestions.iter().any(|s| s.contains("var x")),
+        "Expected `var` suggestion in MutabilityError, got: {:?}",
+        err.suggestions
     );
 }
 

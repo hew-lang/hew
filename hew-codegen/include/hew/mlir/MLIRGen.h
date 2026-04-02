@@ -1027,6 +1027,11 @@ private:
   // ── Generics monomorphization ──────────────────────────────────
   // Registry of generic (unspecialized) function declarations.
   std::unordered_map<std::string, const ast::FnDecl *> genericFunctions;
+  // Registry of let-bound generic lambda expressions keyed by binding name.
+  // Populated when a let statement binds an ExprLambda with non-empty
+  // type_params.  The lambda is specialized lazily when a call site with
+  // concrete type_args is encountered.
+  std::unordered_map<std::string, const ast::ExprLambda *> genericLambdas;
   // Registry of generic (unspecialized) struct declarations.
   std::unordered_map<std::string, const ast::TypeDecl *> genericStructs;
   // Set of already-specialized mangled names to avoid duplicate generation.
@@ -1044,6 +1049,10 @@ private:
   // Specialize and generate a generic function for the given concrete type args.
   mlir::func::FuncOp specializeGenericFunction(const std::string &baseName,
                                                const std::vector<std::string> &typeArgs);
+  // Specialize a let-bound generic lambda for the given concrete type args and
+  // return a concrete FuncOp that can be called directly (no env pointer).
+  mlir::func::FuncOp specializeGenericLambda(const std::string &varName,
+                                             const std::vector<std::string> &typeArgs);
   // Resolve a TypeExpr to a flat mangled name for generic substitutions.
   // Recursively handles nested generics: Pair<int> → "Pair_int".
   // Also triggers convertType to ensure nested generic structs are specialized.

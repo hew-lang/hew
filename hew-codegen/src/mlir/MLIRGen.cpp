@@ -5024,6 +5024,142 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
   return funcOp;
 }
 
+/// Specialise a let-bound generic lambda for concrete type arguments.
+///
+/// Unlike regular lambda lowering, there is no env/closure wrapper: generic
+/// lambdas in slice-1 are capture-free.  We emit a plain `func::FuncOp` with
+/// the lambda's parameters concretized through `typeParamSubstitutions`, then
+/// generate the body as a normal expression.  The FuncOp can be called
+/// directly from the call site with `func::CallOp`.
+mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
+                                                     const std::vector<std::string> &typeArgs) {
+  auto mangled = "__glambda_" + varName + "_" + mangleGenericName("", typeArgs).substr(1);
+  // mangleGenericName("", args) returns "_arg1_arg2…" so strip leading "_".
+  // Re-derive more simply:
+  mangled = "__glambda_" + varName;
+  for (const auto &ta : typeArgs)
+    mangled += "_" + ta;
+
+  if (specializedFunctions.count(mangled))
+    return module.lookupSymbol<mlir::func::FuncOp>(mangled);
+
+  auto lamIt = genericLambdas.find(varName);
+  if (lamIt == genericLambdas.end()) {
+    emitError(builder.getUnknownLoc()) << "unknown generic lambda '" << varName << "'";
+    return nullptr;
+  }
+  const ast::ExprLambda *lam = lamIt->second;
+
+  if (!lam->type_params.has_value() || lam->type_params->empty()) {
+    emitError(builder.getUnknownLoc())
+        << "generic lambda '" << varName << "' has no type params";
+    return nullptr;
+  }
+  const auto &tps = *lam->type_params;
+
+  if (typeArgs.size() != tps.size()) {
+    emitError(builder.getUnknownLoc())
+        << "generic lambda '" << varName << "' expects " << tps.size()
+        << " type argument(s), got " << typeArgs.size();
+    return nullptr;
+  }
+
+  // Install type parameter substitutions (e.g. "T" → "int").
+  auto prevSubstitutions = std::move(typeParamSubstitutions);
+  typeParamSubstitutions.clear();
+  for (size_t i = 0; i < tps.size(); ++i)
+    typeParamSubstitutions[tps[i].name] = typeArgs[i];
+
+  auto location = currentLoc;
+
+  // Resolve concrete parameter types.
+  llvm::SmallVector<mlir::Type, 4> paramTypes;
+  for (const auto &p : lam->params) {
+    if (!p.ty.has_value()) {
+      emitError(location) << "generic lambda '" << varName
+                          << "': parameter '" << p.name
+                          << "' has no type annotation";
+      typeParamSubstitutions = std::move(prevSubstitutions);
+      return nullptr;
+    }
+    auto t = convertType(p.ty->value);
+    if (!t) {
+      typeParamSubstitutions = std::move(prevSubstitutions);
+      return nullptr;
+    }
+    paramTypes.push_back(t);
+  }
+
+  // Resolve optional return type annotation.
+  mlir::Type retType = nullptr;
+  if (lam->return_type.has_value())
+    retType = convertType(lam->return_type->value);
+
+  auto funcType = retType
+                      ? mlir::FunctionType::get(&context, paramTypes, {retType})
+                      : mlir::FunctionType::get(&context, paramTypes, {});
+
+  auto savedIP = builder.saveInsertionPoint();
+  builder.setInsertionPointToEnd(module.getBody());
+
+  auto funcOp = mlir::func::FuncOp::create(builder, location, mangled, funcType);
+  funcOp.setVisibility(mlir::SymbolTable::Visibility::Private);
+
+  auto &entryBlock = *funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  FunctionGenerationScope funcScope(*this, funcOp);
+  SymbolTableScopeT scope(symbolTable);
+  MutableTableScopeT mutScope(mutableVars);
+
+  // Bind parameters.  Use mutableVars (with a fresh alloca per param) rather
+  // than symbolTable.insert so that each param shadows any outer-scope entry
+  // in mutableVars that shares the same name.  Without this, lookupVariable
+  // checks mutableVars first and may find an outer alloca (e.g. from the
+  // calling function) whose SSA value is defined in a different MLIR region.
+  for (size_t i = 0; i < lam->params.size(); ++i) {
+    auto paramName = intern(lam->params[i].name);
+    auto paramVal  = entryBlock.getArgument(i);
+    auto storageType = toSlotStorageType(paramVal.getType());
+    auto alloca = createHoistedAlloca(storageType, paramVal.getType());
+    mlir::memref::StoreOp::create(builder, location, paramVal, alloca);
+    mutableVars.insert(paramName, alloca);
+  }
+
+  // Generate body.
+  mlir::Value bodyVal = nullptr;
+  if (lam->body)
+    bodyVal = generateExpression(lam->body->value);
+
+  // Infer return type from body if not annotated.
+  if (!retType && bodyVal && bodyVal.getType() &&
+      !mlir::isa<mlir::NoneType>(bodyVal.getType())) {
+    retType = bodyVal.getType();
+    funcOp.setFunctionType(
+        mlir::FunctionType::get(&context, paramTypes, {retType}));
+  }
+
+  // Emit return.
+  auto *curBlock = builder.getInsertionBlock();
+  if (curBlock &&
+      (curBlock->empty() || !curBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
+    if (retType && bodyVal) {
+      bodyVal = coerceTypeForSink(bodyVal, retType, location);
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyVal});
+    } else if (retType) {
+      auto defVal = createDefaultValue(builder, location, retType);
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{defVal});
+    } else {
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+    }
+  }
+
+  builder.restoreInsertionPoint(savedIP);
+  typeParamSubstitutions = std::move(prevSubstitutions);
+  specializedFunctions.insert(mangled);
+  return funcOp;
+}
+
 mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
     const std::string &baseTypeName,
     const std::vector<std::string> &typeArgs,

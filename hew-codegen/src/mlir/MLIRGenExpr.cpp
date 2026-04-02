@@ -1567,12 +1567,42 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
 
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
+    std::vector<std::string> typeArgNames;
+    for (const auto &ta : *call.type_args)
+      typeArgNames.push_back(resolveTypeArgMangledName(ta.value));
+
+    // Named generic function (fn<T>(...) { ... }) path.
     auto genIt = genericFunctions.find(calleeName);
     if (genIt != genericFunctions.end()) {
-      std::vector<std::string> typeArgNames;
-      for (const auto &ta : *call.type_args)
-        typeArgNames.push_back(resolveTypeArgMangledName(ta.value));
       auto specializedFunc = specializeGenericFunction(calleeName, typeArgNames);
+      if (!specializedFunc)
+        return nullptr;
+      llvm::SmallVector<mlir::Value, 4> args;
+      for (const auto &arg : call.args) {
+        auto val = generateExpression(ast::callArgExpr(arg).value);
+        if (!val)
+          return nullptr;
+        args.push_back(val);
+      }
+      auto funcType = specializedFunc.getFunctionType();
+      for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
+        auto expectedType = funcType.getInput(i);
+        if (args[i].getType() != expectedType) {
+          args[i] = coerceType(args[i], expectedType, location);
+        }
+      }
+      auto callOp = mlir::func::CallOp::create(builder, location, specializedFunc, args);
+      if (call.is_tail_call)
+        callOp->setAttr("hew.tail_call", builder.getUnitAttr());
+      if (callOp.getNumResults() > 0)
+        return callOp.getResult(0);
+      return nullptr;
+    }
+
+    // Let-bound generic lambda (let r = <T>(...) => ...) path.
+    auto lamIt = genericLambdas.find(calleeName);
+    if (lamIt != genericLambdas.end()) {
+      auto specializedFunc = specializeGenericLambda(calleeName, typeArgNames);
       if (!specializedFunc)
         return nullptr;
       llvm::SmallVector<mlir::Value, 4> args;

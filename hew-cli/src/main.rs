@@ -399,9 +399,8 @@ fn cmd_init(a: &args::InitArgs) {
     }
 
     let main_content = "\
-fn main() -> i32 {
+fn main() {
     println(\"Hello, world!\");
-    0
 }
 ";
 

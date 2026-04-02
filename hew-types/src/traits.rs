@@ -57,6 +57,29 @@ impl std::fmt::Display for MarkerTrait {
     }
 }
 
+impl MarkerTrait {
+    /// Parse a trait name string into the corresponding `MarkerTrait`, if it is one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Send" => Some(Self::Send),
+            "Sync" => Some(Self::Sync),
+            "Frozen" => Some(Self::Frozen),
+            "Copy" => Some(Self::Copy),
+            "Clone" => Some(Self::Clone),
+            "Eq" => Some(Self::Eq),
+            "Ord" => Some(Self::Ord),
+            "Hash" => Some(Self::Hash),
+            "Display" => Some(Self::Display),
+            "Debug" => Some(Self::Debug),
+            "Drop" => Some(Self::Drop),
+            "Decode" => Some(Self::Decode),
+            "Encode" => Some(Self::Encode),
+            _ => None,
+        }
+    }
+}
+
 /// A method signature in a trait or impl.
 #[derive(Debug, Clone)]
 pub struct MethodSig {

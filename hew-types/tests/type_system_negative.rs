@@ -992,6 +992,62 @@ fn postfix_try_valid_in_option_function() {
     );
 }
 
+#[test]
+fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
+    // False-rejection regression: `?` inside a lambda with an annotated
+    // `-> Option<i32>` return must not be rejected just because the *outer*
+    // function returns `i32`.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn outer(x: i32) {
+            let _f = (v: i32) -> Option<i32> => {
+                let w = maybe(v)?;
+                Some(w)
+            };
+        }
+        fn main() { outer(3); }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for `?` inside Option-returning lambda in plain fn, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
+    // False-acceptance regression: `?` inside a lambda annotated `-> i32`
+    // must still be rejected even though the *outer* function returns Option.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn outer(x: i32) -> Option<i32> {
+            let _f = (v: i32) -> i32 => {
+                let w = maybe(v)?;
+                w
+            };
+            None
+        }
+        fn main() { outer(3); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `?` in i32-returning lambda, got: {:?}",
+        output.errors
+    );
+}
+
 // ── 23. BoundsNotSatisfied — type missing required trait ────────────
 
 #[test]

@@ -170,6 +170,46 @@ impl Default for FnSig {
     }
 }
 
+fn ty_has_unresolved_inference_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_has_unresolved_inference_var),
+        Ty::Array(elem, _) | Ty::Slice(elem) => ty_has_unresolved_inference_var(elem),
+        Ty::Named { args, .. } => args.iter().any(ty_has_unresolved_inference_var),
+        Ty::Function { params, ret } => {
+            params.iter().any(ty_has_unresolved_inference_var)
+                || ty_has_unresolved_inference_var(ret)
+        }
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params.iter().any(ty_has_unresolved_inference_var)
+                || ty_has_unresolved_inference_var(ret)
+                || captures.iter().any(ty_has_unresolved_inference_var)
+        }
+        Ty::Pointer { pointee, .. } => ty_has_unresolved_inference_var(pointee),
+        Ty::TraitObject { traits } => traits
+            .iter()
+            .any(|bound| bound.args.iter().any(ty_has_unresolved_inference_var)),
+        _ => false,
+    }
+}
+
+fn lookup_scoped_item<'a, T>(
+    items: &'a HashMap<String, T>,
+    module_name: Option<&str>,
+    name: &str,
+) -> Option<&'a T> {
+    if let Some(module_name) = module_name {
+        let qualified = format!("{module_name}.{name}");
+        items.get(&qualified).or_else(|| items.get(name))
+    } else {
+        items.get(name)
+    }
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -186,6 +226,8 @@ pub struct Checker {
     expr_types: HashMap<SpanKey, Ty>,
     type_defs: HashMap<String, TypeDef>,
     fn_sigs: HashMap<String, FnSig>,
+    type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
+    fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     /// Tracks the span where each function was first defined (for duplicate detection).
     fn_def_spans: HashMap<String, Span>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
@@ -471,6 +513,8 @@ impl Checker {
             expr_types: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            type_def_inference_holes: HashMap::new(),
+            fn_sig_inference_holes: HashMap::new(),
             fn_def_spans: HashMap::new(),
             type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
@@ -956,6 +1000,7 @@ impl Checker {
 
         let mut fields = HashMap::new();
         let mut variants = HashMap::new();
+        let mut hole_vars = Vec::new();
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
@@ -972,7 +1017,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_type_expr(&ty.0);
+                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -996,14 +1041,18 @@ impl Checker {
                         VariantKind::Tuple(fields) => {
                             let variant_tys: Vec<Ty> = fields
                                 .iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|(te, _)| {
+                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                })
                                 .collect();
                             variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
 
                             // Register variant constructor as function
                             let constructor_params: Vec<Ty> = fields
                                 .iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|(te, _)| {
+                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                })
                                 .collect();
                             self.fn_sigs.insert(
                                 variant.name.clone(),
@@ -1019,7 +1068,12 @@ impl Checker {
                         VariantKind::Struct(fields) => {
                             let variant_fields: Vec<(String, Ty)> = fields
                                 .iter()
-                                .map(|(name, (te, _))| (name.clone(), self.resolve_type_expr(te)))
+                                .map(|(name, (te, _))| {
+                                    (
+                                        name.clone(),
+                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                    )
+                                })
                                 .collect();
                             variants
                                 .insert(variant.name.clone(), VariantDef::Struct(variant_fields));
@@ -1054,6 +1108,7 @@ impl Checker {
         self.registry.register_type(td.name.clone(), field_types);
 
         self.type_defs.insert(td.name.clone(), type_def);
+        self.record_type_def_inference_holes(&td.name, hole_vars);
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
@@ -1291,6 +1346,10 @@ impl Checker {
     }
 
     /// Register a machine declaration as a type definition with variants and methods.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "machine registration covers states, events, and generated methods"
+    )]
     fn register_machine_decl(&mut self, md: &MachineDecl) {
         let machine_ty = Ty::Machine {
             name: md.name.clone(),
@@ -1303,6 +1362,7 @@ impl Checker {
 
         // Build state variants
         let mut variants = HashMap::new();
+        let mut machine_hole_vars = Vec::new();
         for state in &md.states {
             if state.fields.is_empty() {
                 variants.insert(state.name.clone(), VariantDef::Unit);
@@ -1319,7 +1379,15 @@ impl Checker {
                 let variant_fields: Vec<(String, Ty)> = state
                     .fields
                     .iter()
-                    .map(|(name, spanned_te)| (name.clone(), self.resolve_type_expr(&spanned_te.0)))
+                    .map(|(name, spanned_te)| {
+                        (
+                            name.clone(),
+                            self.resolve_type_expr_tracking_holes(
+                                &spanned_te.0,
+                                &mut machine_hole_vars,
+                            ),
+                        )
+                    })
                     .collect();
                 variants.insert(state.name.clone(), VariantDef::Struct(variant_fields));
             }
@@ -1347,10 +1415,12 @@ impl Checker {
             .register_type(md.name.clone(), all_field_types);
 
         self.type_defs.insert(md.name.clone(), type_def);
+        self.record_type_def_inference_holes(&md.name, machine_hole_vars);
         self.known_types.insert(md.name.clone());
 
         // Register the generated event companion enum
         let mut event_variants = HashMap::new();
+        let mut event_hole_vars = Vec::new();
         for event in &md.events {
             if event.fields.is_empty() {
                 event_variants.insert(event.name.clone(), VariantDef::Unit);
@@ -1358,7 +1428,15 @@ impl Checker {
                 let variant_fields: Vec<(String, Ty)> = event
                     .fields
                     .iter()
-                    .map(|(name, spanned_te)| (name.clone(), self.resolve_type_expr(&spanned_te.0)))
+                    .map(|(name, spanned_te)| {
+                        (
+                            name.clone(),
+                            self.resolve_type_expr_tracking_holes(
+                                &spanned_te.0,
+                                &mut event_hole_vars,
+                            ),
+                        )
+                    })
                     .collect();
                 event_variants.insert(event.name.clone(), VariantDef::Struct(variant_fields));
             }
@@ -1375,6 +1453,7 @@ impl Checker {
         };
         self.type_defs
             .insert(event_type_name.clone(), event_type_def);
+        self.record_type_def_inference_holes(&event_type_name, event_hole_vars);
         self.known_types.insert(event_type_name);
 
         // Register the step() method on the machine type
@@ -1565,8 +1644,9 @@ impl Checker {
 
     fn register_actor_decl(&mut self, ad: &ActorDecl) {
         let mut fields = HashMap::new();
+        let mut hole_vars = Vec::new();
         for field in &ad.fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
+            let field_ty = self.resolve_type_expr_tracking_holes(&field.ty.0, &mut hole_vars);
             fields.insert(field.name.clone(), field_ty);
         }
 
@@ -1585,6 +1665,7 @@ impl Checker {
         self.registry.register_actor(ad.name.clone());
 
         self.type_defs.insert(ad.name.clone(), type_def);
+        self.record_type_def_inference_holes(&ad.name, hole_vars);
     }
 
     fn register_wire_decl(&mut self, wd: &WireDecl) {
@@ -1599,6 +1680,7 @@ impl Checker {
         }
 
         let mut variants = HashMap::new();
+        let mut hole_vars = Vec::new();
         for variant in &wd.variants {
             match &variant.kind {
                 VariantKind::Unit => {
@@ -1607,14 +1689,19 @@ impl Checker {
                 VariantKind::Tuple(fields) => {
                     let variant_tys = fields
                         .iter()
-                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, &mut hole_vars))
                         .collect();
                     variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
                 }
                 VariantKind::Struct(fields) => {
                     let variant_fields: Vec<(String, Ty)> = fields
                         .iter()
-                        .map(|(name, (te, _))| (name.clone(), self.resolve_type_expr(te)))
+                        .map(|(name, (te, _))| {
+                            (
+                                name.clone(),
+                                self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                            )
+                        })
                         .collect();
                     variants.insert(variant.name.clone(), VariantDef::Struct(variant_fields));
                 }
@@ -1639,6 +1726,7 @@ impl Checker {
         self.registry.register_type(wd.name.clone(), field_types);
 
         self.type_defs.insert(wd.name.clone(), type_def);
+        self.record_type_def_inference_holes(&wd.name, hole_vars);
         self.register_wire_methods(&wd.name);
     }
 
@@ -2121,6 +2209,7 @@ impl Checker {
         } else {
             0
         };
+        let mut hole_vars = Vec::new();
         let param_names = fd
             .params
             .iter()
@@ -2131,12 +2220,11 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
             .collect();
-        let declared_return = fd
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
+            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        });
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
@@ -2162,6 +2250,7 @@ impl Checker {
         };
 
         self.fn_sigs.insert(name.to_string(), sig);
+        self.record_fn_sig_inference_holes(name, hole_vars);
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -2248,16 +2337,16 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
+        let mut hole_vars = Vec::new();
         let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
         let params = rf
             .params
             .iter()
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
             .collect();
-        let declared_return_type = rf
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
+            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        });
         let return_type = if rf.is_generator {
             Ty::stream(declared_return_type)
         } else {
@@ -2283,27 +2372,29 @@ impl Checker {
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
+        self.record_fn_sig_inference_holes(&method_name, hole_vars);
         self.fn_sigs.insert(method_name, sig);
     }
 
     fn register_extern_block(&mut self, eb: &ExternBlock) {
         for f in &eb.functions {
+            let mut hole_vars = Vec::new();
             let param_names = f.params.iter().map(|p| p.name.clone()).collect();
             let params = f
                 .params
                 .iter()
-                .map(|p| self.resolve_type_expr(&p.ty.0))
+                .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
                 .collect();
-            let return_type = f
-                .return_type
-                .as_ref()
-                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
+                self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+            });
             let sig = FnSig {
                 param_names,
                 params,
                 return_type,
                 ..FnSig::default()
             };
+            self.record_fn_sig_inference_holes(&f.name, hole_vars);
             self.fn_sigs.insert(f.name.clone(), sig);
             self.unsafe_functions.insert(f.name.clone());
         }
@@ -3043,12 +3134,24 @@ impl Checker {
                 })
                 .collect();
 
+        let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
+            .into_iter()
+            .map(|(name, type_def)| (name, self.resolve_type_def(&type_def)))
+            .collect();
+
+        let resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
+            .into_iter()
+            .map(|(name, sig)| (name, self.resolve_fn_sig(&sig)))
+            .collect();
+
+        self.report_unresolved_inference_holes(program);
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
-            type_defs: std::mem::take(&mut self.type_defs),
-            fn_sigs: std::mem::take(&mut self.fn_sigs),
+            type_defs: resolved_type_defs,
+            fn_sigs: resolved_fn_sigs,
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
@@ -3065,6 +3168,251 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
+        FnSig {
+            params: sig
+                .params
+                .iter()
+                .map(|param| self.subst.resolve(param))
+                .collect(),
+            return_type: self.subst.resolve(&sig.return_type),
+            ..sig.clone()
+        }
+    }
+
+    fn resolve_variant_def(&self, variant: &VariantDef) -> VariantDef {
+        match variant {
+            VariantDef::Unit => VariantDef::Unit,
+            VariantDef::Tuple(fields) => VariantDef::Tuple(
+                fields
+                    .iter()
+                    .map(|field| self.subst.resolve(field))
+                    .collect(),
+            ),
+            VariantDef::Struct(fields) => VariantDef::Struct(
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn resolve_type_def(&self, type_def: &TypeDef) -> TypeDef {
+        TypeDef {
+            fields: type_def
+                .fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                .collect(),
+            variants: type_def
+                .variants
+                .iter()
+                .map(|(name, variant)| (name.clone(), self.resolve_variant_def(variant)))
+                .collect(),
+            methods: type_def
+                .methods
+                .iter()
+                .map(|(name, sig)| (name.clone(), self.resolve_fn_sig(sig)))
+                .collect(),
+            ..type_def.clone()
+        }
+    }
+
+    fn record_type_def_inference_holes(&mut self, name: &str, hole_vars: Vec<TypeVar>) {
+        if !hole_vars.is_empty() {
+            self.type_def_inference_holes
+                .entry(name.to_string())
+                .or_default()
+                .extend(hole_vars);
+        }
+    }
+
+    fn record_fn_sig_inference_holes(&mut self, name: &str, hole_vars: Vec<TypeVar>) {
+        if !hole_vars.is_empty() {
+            self.fn_sig_inference_holes
+                .entry(name.to_string())
+                .or_default()
+                .extend(hole_vars);
+        }
+    }
+
+    fn inference_holes_still_unresolved(&self, hole_vars: &[TypeVar]) -> bool {
+        hole_vars
+            .iter()
+            .map(|var| self.subst.resolve(&Ty::Var(*var)))
+            .any(|ty| ty_has_unresolved_inference_var(&ty))
+    }
+
+    fn report_unresolved_inference_holes(&mut self, program: &Program) {
+        if let Some(module_graph) = &program.module_graph {
+            for module_id in &module_graph.topo_order {
+                if *module_id == module_graph.root {
+                    continue;
+                }
+                let Some(module) = module_graph.modules.get(module_id) else {
+                    continue;
+                };
+                let module_name = module_id.path.join(".");
+                self.report_unresolved_inference_in_items(
+                    &module.items,
+                    Some(module_name.as_str()),
+                );
+            }
+        }
+
+        self.report_unresolved_inference_in_items(&program.items, None);
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this walks all function-like and type-like item forms"
+    )]
+    fn report_unresolved_inference_in_items(
+        &mut self,
+        items: &[Spanned<Item>],
+        module_name: Option<&str>,
+    ) {
+        for (item, span) in items {
+            match item {
+                Item::Function(fd) => {
+                    if lookup_scoped_item(&self.fn_sig_inference_holes, module_name, &fd.name)
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
+                        self.errors.push(TypeError::inference_failed(
+                            span.clone(),
+                            &format!("signature of function `{}`", fd.name),
+                        ));
+                    }
+                }
+                Item::TypeDecl(td) => {
+                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &td.name)
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
+                        self.errors.push(TypeError::inference_failed(
+                            span.clone(),
+                            &format!("type `{}`", td.name),
+                        ));
+                    }
+
+                    for body_item in &td.body {
+                        if let TypeBodyItem::Method(method) = body_item {
+                            let method_name = format!("{}::{}", td.name, method.name);
+                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
+                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
+                            ) {
+                                self.errors.push(TypeError::inference_failed(
+                                    span.clone(),
+                                    &format!("signature of method `{method_name}`"),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Item::Actor(ad) => {
+                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &ad.name)
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
+                        self.errors.push(TypeError::inference_failed(
+                            span.clone(),
+                            &format!("actor `{}`", ad.name),
+                        ));
+                    }
+
+                    for method in &ad.methods {
+                        let method_name = format!("{}::{}", ad.name, method.name);
+                        if self
+                            .fn_sig_inference_holes
+                            .get(&method_name)
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of method `{method_name}`"),
+                            ));
+                        }
+                    }
+
+                    for receive_fn in &ad.receive_fns {
+                        let receive_name = format!("{}::{}", ad.name, receive_fn.name);
+                        if self
+                            .fn_sig_inference_holes
+                            .get(&receive_name)
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            self.errors.push(TypeError::inference_failed(
+                                receive_fn.span.clone(),
+                                &format!("signature of receive function `{receive_name}`"),
+                            ));
+                        }
+                    }
+                }
+                Item::Wire(wd) => {
+                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &wd.name)
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
+                        self.errors.push(TypeError::inference_failed(
+                            span.clone(),
+                            &format!("wire type `{}`", wd.name),
+                        ));
+                    }
+                }
+                Item::Machine(md) => {
+                    let event_type_name = format!("{}Event", md.name);
+                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &md.name)
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                        || lookup_scoped_item(
+                            &self.type_def_inference_holes,
+                            module_name,
+                            &event_type_name,
+                        )
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    {
+                        self.errors.push(TypeError::inference_failed(
+                            span.clone(),
+                            &format!("machine `{}`", md.name),
+                        ));
+                    }
+                }
+                Item::ExternBlock(eb) => {
+                    for function in &eb.functions {
+                        if self.fn_sig_inference_holes.get(&function.name).is_some_and(
+                            |hole_vars| self.inference_holes_still_unresolved(hole_vars),
+                        ) {
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of extern function `{}`", function.name),
+                            ));
+                        }
+                    }
+                }
+                Item::Impl(id) => {
+                    if let TypeExpr::Named {
+                        name: type_name, ..
+                    } = &id.target_type.0
+                    {
+                        for method in &id.methods {
+                            let method_name = format!("{type_name}::{}", method.name);
+                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
+                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
+                            ) {
+                                self.errors.push(TypeError::inference_failed(
+                                    span.clone(),
+                                    &format!("signature of method `{method_name}`"),
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Default unconstrained Range type variables to i64.  When both range
@@ -8274,11 +8622,20 @@ impl Checker {
         }
     }
 
+    fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
+        let mut ignored_hole_vars = Vec::new();
+        self.resolve_type_expr_tracking_holes(te, &mut ignored_hole_vars)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "generic instantiation requires many cases"
     )]
-    fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
+    fn resolve_type_expr_tracking_holes(
+        &mut self,
+        te: &TypeExpr,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> Ty {
         match te {
             TypeExpr::Named { name, type_args } => {
                 // Handle `Self` type
@@ -8317,7 +8674,7 @@ impl Checker {
                 // Non-primitive: resolve generics, aliases, special types
                 let args = type_args.as_ref().map_or(vec![], |ta| {
                     ta.iter()
-                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
                         .collect()
                 });
                 // Check if it's a generic type parameter
@@ -8386,44 +8743,51 @@ impl Checker {
                 }
             }
             TypeExpr::Result { ok, err } => Ty::result(
-                self.resolve_type_expr(&ok.0),
-                self.resolve_type_expr(&err.0),
+                self.resolve_type_expr_tracking_holes(&ok.0, hole_vars),
+                self.resolve_type_expr_tracking_holes(&err.0, hole_vars),
             ),
-            TypeExpr::Option(inner) => Ty::option(self.resolve_type_expr(&inner.0)),
+            TypeExpr::Option(inner) => {
+                Ty::option(self.resolve_type_expr_tracking_holes(&inner.0, hole_vars))
+            }
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems
                     .iter()
-                    .map(|(te, _)| self.resolve_type_expr(te))
+                    .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
                     .collect(),
             ),
-            TypeExpr::Array { element, size } => {
-                Ty::Array(Box::new(self.resolve_type_expr(&element.0)), *size)
-            }
-            TypeExpr::Slice(inner) => Ty::Slice(Box::new(self.resolve_type_expr(&inner.0))),
+            TypeExpr::Array { element, size } => Ty::Array(
+                Box::new(self.resolve_type_expr_tracking_holes(&element.0, hole_vars)),
+                *size,
+            ),
+            TypeExpr::Slice(inner) => Ty::Slice(Box::new(
+                self.resolve_type_expr_tracking_holes(&inner.0, hole_vars),
+            )),
             TypeExpr::Function {
                 params,
                 return_type,
             } => Ty::Function {
                 params: params
                     .iter()
-                    .map(|(te, _)| self.resolve_type_expr(te))
+                    .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
                     .collect(),
-                ret: Box::new(self.resolve_type_expr(&return_type.0)),
+                ret: Box::new(self.resolve_type_expr_tracking_holes(&return_type.0, hole_vars)),
             },
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(self.resolve_type_expr(&pointee.0)),
+                pointee: Box::new(self.resolve_type_expr_tracking_holes(&pointee.0, hole_vars)),
             },
             TypeExpr::TraitObject(bounds) => {
                 let traits = bounds
                     .iter()
                     .map(|bound| {
                         let args = bound.type_args.as_ref().map_or(vec![], |ta| {
-                            ta.iter().map(|t| self.resolve_type_expr(&t.0)).collect()
+                            ta.iter()
+                                .map(|t| self.resolve_type_expr_tracking_holes(&t.0, hole_vars))
+                                .collect()
                         });
                         crate::ty::TraitObjectBound {
                             trait_name: bound.name.clone(),
@@ -8433,7 +8797,11 @@ impl Checker {
                     .collect();
                 Ty::TraitObject { traits }
             }
-            TypeExpr::Infer => Ty::Var(TypeVar::fresh()),
+            TypeExpr::Infer => {
+                let var = TypeVar::fresh();
+                hole_vars.push(var);
+                Ty::Var(var)
+            }
         }
     }
 

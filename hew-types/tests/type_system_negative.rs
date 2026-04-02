@@ -816,6 +816,61 @@ fn machine_exhaustiveness_duplicate_wildcard() {
     );
 }
 
+#[test]
+fn inference_hole_function_parameter_signature_is_rejected() {
+    let output = typecheck(
+        r"
+        fn f(x: _) {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inference_hole_function_return_signature_is_resolved() {
+    let output = typecheck(
+        r"
+        fn f() -> _ {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.fn_sigs.get("f").map(|sig| &sig.return_type),
+        Some(&hew_types::Ty::Unit)
+    );
+}
+
+#[test]
+fn inference_hole_type_field_is_rejected() {
+    let output = typecheck(
+        r"
+        type Box { value: _; }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 21. MachineExhaustivenessError — duplicate explicit transition ──
 
 #[test]

@@ -5364,7 +5364,8 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
   return "";
 }
 
-std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
+std::string MLIRGen::dropFuncForMLIRType(mlir::Type type,
+                                          bool includeStructTypes) const {
   if (mlir::isa<hew::StringRefType>(type))
     return "hew_string_drop";
   if (mlir::isa<hew::VecType>(type))
@@ -5373,6 +5374,19 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
     return "hew_hashmap_free_impl";
   if (mlir::isa<hew::ClosureType>(type))
     return "hew_rc_drop";
+  if (auto handleTy = mlir::dyn_cast<hew::HandleType>(type)) {
+    const auto kind = handleTy.getHandleKind();
+    if (kind == "HashSet")
+      return "hew_hashset_free";
+    if (kind == "http.Request")
+      return "hew_http_request_free";
+    if (kind == "http.Server")
+      return "hew_http_server_close";
+    if (kind == "regex.Pattern")
+      return "hew_regex_free";
+  }
+  if (!includeStructTypes)
+    return "";
   if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type)) {
     if (structTy.isIdentified()) {
       // HashSet uses identified struct "HewHashSet"

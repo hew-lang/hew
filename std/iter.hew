@@ -404,7 +404,10 @@ pub fn sum_f64(v: Vec<f64>) -> f64 {
 pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
     let out: Vec<int> = Vec::new();
     var limit = n;
-    if v.len() < n {
+    if n < 0 {
+        limit = 0;
+    }
+    if v.len() < limit {
         limit = v.len();
     }
     for i in 0..limit {
@@ -472,7 +475,10 @@ pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
 pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
     let out: Vec<String> = Vec::new();
     var limit = n;
-    if v.len() < n {
+    if n < 0 {
+        limit = 0;
+    }
+    if v.len() < limit {
         limit = v.len();
     }
     for i in 0..limit {
@@ -540,7 +546,10 @@ pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
 pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
     var limit = n;
-    if v.len() < n {
+    if n < 0 {
+        limit = 0;
+    }
+    if v.len() < limit {
         limit = v.len();
     }
     for i in 0..limit {

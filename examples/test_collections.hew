@@ -15,18 +15,18 @@ fn test_vec_basic() -> i32 {
             if second == 20 {
                 if third == 30 {
                     println("PASS: vec basic ops");
-                    1
+                    1 as i32
                 } else {
-                    0
+                    0 as i32
                 }
             } else {
-                0
+                0 as i32
             }
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 
@@ -41,12 +41,12 @@ fn test_vec_pop() -> i32 {
     if popped == 3 {
         if len_after == 2 {
             println("PASS: vec pop");
-            1
+            1 as i32
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 
@@ -61,12 +61,12 @@ fn test_vec_many_elements() -> i32 {
     if len == 100 {
         if last == 99 {
             println("PASS: vec 100 elements");
-            1
+            1 as i32
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 
@@ -83,15 +83,15 @@ fn test_hashmap_basic() -> i32 {
         if has_two {
             if len == 3 {
                 println("PASS: hashmap basic ops");
-                1
+                1 as i32
             } else {
-                0
+                0 as i32
             }
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 
@@ -104,12 +104,12 @@ fn test_hashmap_contains() -> i32 {
     if has_key1 {
         if !has_key2 {
             println("PASS: hashmap contains_key");
-            1
+            1 as i32
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 
@@ -124,12 +124,12 @@ fn test_hashmap_remove() -> i32 {
     if before == 2 {
         if after == 1 {
             println("PASS: hashmap remove");
-            1
+            1 as i32
         } else {
-            0
+            0 as i32
         }
     } else {
-        0
+        0 as i32
     }
 }
 

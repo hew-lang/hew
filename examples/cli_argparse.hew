@@ -7,7 +7,7 @@
 //   cli_argparse -v -h
 import std::os;
 
-fn print_help() -> i32 {
+fn print_help() {
     println("Usage: cli_argparse [OPTIONS] [FILES...]");
     println("");
     println("Options:");
@@ -17,19 +17,17 @@ fn print_help() -> i32 {
     println("  --port=PORT      Set port number");
     println("");
     println("Positional arguments are collected as input files.");
-    0
 }
 
-fn print_flags(flags: Vec<String>) -> i32 {
+fn print_flags(flags: Vec<String>) {
     println("Flags:");
     for i in 0..flags.len() {
         print("  ");
         println(flags.get(i));
     }
-    0
 }
 
-fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) -> i32 {
+fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) {
     println("Options:");
     for i in 0..opt_keys.len() {
         print("  ");
@@ -37,16 +35,14 @@ fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) -> i32 {
         print(" = ");
         println(opt_vals.get(i));
     }
-    0
 }
 
-fn print_positional(positional: Vec<String>) -> i32 {
+fn print_positional(positional: Vec<String>) {
     println("Positional:");
     for i in 0..positional.len() {
         print("  ");
         println(positional.get(i));
     }
-    0
 }
 
 fn main() {

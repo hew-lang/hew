@@ -1,0 +1,7 @@
+import "drop_lib.hew";
+
+fn main() {
+    {
+        let _token = make_token(1);
+    }
+}

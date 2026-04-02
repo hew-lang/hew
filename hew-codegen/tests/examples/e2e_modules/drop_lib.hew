@@ -1,0 +1,13 @@
+pub type Token {
+    id: int;
+}
+
+pub fn make_token(id: int) -> Token {
+    Token { id: id }
+}
+
+impl Drop for Token {
+    fn drop(token: Token) {
+        println("drop");
+    }
+}

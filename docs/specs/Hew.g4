@@ -181,7 +181,7 @@ traitBound
 // ----------------------------------------------------------------
 
 whereClause
-    : 'where' wherePredicate ( ',' wherePredicate )*
+    : 'where' wherePredicate ( ',' wherePredicate )* ','?
     ;
 
 wherePredicate

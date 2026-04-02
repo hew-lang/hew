@@ -3063,6 +3063,14 @@ impl<'src> Parser<'src> {
             if !self.eat(&Token::Comma) {
                 break;
             }
+            // Allow a trailing comma: stop when the next token can't begin a
+            // new predicate (e.g. `{` opens a body, `;` closes an extern decl).
+            if matches!(
+                self.peek(),
+                None | Some(Token::LeftBrace | Token::Semicolon)
+            ) {
+                break;
+            }
         }
 
         Some(WhereClause { predicates })
@@ -5045,6 +5053,55 @@ mod tests {
             assert_eq!(wc.predicates[0].bounds[0].name, "Display");
         } else {
             panic!("expected actor item");
+        }
+    }
+
+    #[test]
+    fn parse_where_clause_trailing_comma_fn() {
+        // A standalone function with a trailing comma after the last predicate.
+        let source = "fn foo<T, U>(a: T, b: U) where T: Display, U: Clone, { }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Function(f) = &result.program.items[0].0 {
+            let wc = f.where_clause.as_ref().expect("expected where_clause");
+            assert_eq!(wc.predicates.len(), 2);
+            assert_eq!(wc.predicates[0].bounds[0].name, "Display");
+            assert_eq!(wc.predicates[1].bounds[0].name, "Clone");
+        } else {
+            panic!("expected function item");
+        }
+    }
+
+    #[test]
+    fn parse_where_clause_trailing_comma_receive_fn() {
+        // A receive fn with a trailing comma — multiline style inlined here.
+        let source =
+            "actor Foo { receive fn bar<T, U>(x: T) -> T where T: Display, U: Clone, { x } }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Actor(actor) = &result.program.items[0].0 {
+            let rf = &actor.receive_fns[0];
+            let wc = rf.where_clause.as_ref().expect("expected where_clause");
+            assert_eq!(wc.predicates.len(), 2);
+            assert_eq!(wc.predicates[0].bounds[0].name, "Display");
+            assert_eq!(wc.predicates[1].bounds[0].name, "Clone");
+        } else {
+            panic!("expected actor item");
+        }
+    }
+
+    #[test]
+    fn parse_where_clause_single_trailing_comma() {
+        // Single predicate with trailing comma is the minimal reproduction case.
+        let source = "fn foo<T>(a: T) where T: Display, { }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Function(f) = &result.program.items[0].0 {
+            let wc = f.where_clause.as_ref().expect("expected where_clause");
+            assert_eq!(wc.predicates.len(), 1);
+            assert_eq!(wc.predicates[0].bounds[0].name, "Display");
+        } else {
+            panic!("expected function item");
         }
     }
 

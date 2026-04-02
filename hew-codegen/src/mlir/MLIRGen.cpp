@@ -4726,8 +4726,6 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     // variable is declared in an outer block but yielded from an inner loop or
     // branch, ensuring the enclosing scope's popDropScope correctly excludes it.
     {
-      using ExcludeSet = std::set<std::pair<std::string, size_t>>;
-
       auto recordYieldIdent = [&](const std::string &name, size_t depth) {
         for (size_t d = 0; d <= depth; ++d)
           funcLevelDropExcludeVars.insert({name, d});

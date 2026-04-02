@@ -29,8 +29,118 @@
 
 #include <cctype>
 #include <functional>
+#include <unordered_map>
 
 namespace hew {
+
+// ============================================================================
+// WireTypeInfo — single source of truth for primitive wire type attributes
+// ============================================================================
+//
+// Each entry captures the four boolean predicates that were previously
+// duplicated across needsZigzag / isUnsignedWireType / isVarintType /
+// isWirePrimitiveType.  All entries in this table are primitives by definition.
+//
+// Key invariants encoded here:
+//   • "int" and "Int" are BOTH listed as zigzag-signed (both map to i64).
+//   • "duration" is varint but neither zigzag nor unsigned (nanosecond i64,
+//     always non-negative in practice — zigzag would be wrong).
+//   • "bytes" is distinct from "String"/"string"/"str" at the wire level even
+//     though they share JSON behaviour; the dispatch helpers (wireKindOf,
+//     encodeFunc) still handle bytes/string separately for wire encoding.
+//
+// To add a new type alias: add ONE row here.  No other predicate needs changing.
+
+struct WireTypeInfo {
+  bool zigzag;    ///< signed integer needing zigzag encoding
+  bool isUnsigned; ///< unsigned integer (zero-extend to i64 for JSON output)
+  bool isVarint;  ///< varint wire encoding (not fixed-width, not length-delimited)
+};
+
+/// Lookup table for all known primitive wire type names.
+/// Non-primitive (user-defined struct) names are NOT present; callers that
+/// need to distinguish primitives from structs can check for nullptr return.
+static const std::unordered_map<std::string, WireTypeInfo> &wireTypeInfoTable() {
+  // clang-format off
+  static const std::unordered_map<std::string, WireTypeInfo> kTable = {
+    // name         zigzag  unsigned  varint
+    { "bool",     { false,  false,    true  } },
+    { "i8",       { true,   false,    true  } },
+    { "u8",       { false,  true,     true  } },
+    { "i16",      { true,   false,    true  } },
+    { "u16",      { false,  true,     true  } },
+    { "i32",      { true,   false,    true  } },
+    { "u32",      { false,  true,     true  } },
+    { "i64",      { true,   false,    true  } },
+    { "u64",      { false,  true,     true  } },
+    { "f32",      { false,  false,    false } },
+    { "f64",      { false,  false,    false } },
+    { "String",   { false,  false,    false } },
+    { "string",   { false,  false,    false } },
+    { "str",      { false,  false,    false } },
+    { "bytes",    { false,  false,    false } },
+    // Hew type aliases — must mirror the semantics of the canonical types above.
+    { "int",      { true,   false,    true  } }, // alias for i64 (signed)
+    { "Int",      { true,   false,    true  } }, // alias for i64 (capital form)
+    { "uint",     { false,  true,     true  } }, // alias for u64
+    { "float",    { false,  false,    false } }, // alias for f64
+    { "byte",     { false,  true,     true  } }, // alias for u8
+    { "char",     { false,  true,     true  } }, // unicode codepoint, always >= 0
+    { "duration", { false,  false,    true  } }, // nanosecond i64 varint, no zigzag
+    { "usize",    { false,  true,     true  } }, // alias for u64
+    { "isize",    { true,   false,    true  } }, // alias for i64
+  };
+  // clang-format on
+  return kTable;
+}
+
+/// Returns a pointer to the WireTypeInfo for a known primitive type name, or
+/// nullptr if the name is not a primitive (i.e. it is a user-defined struct).
+static const WireTypeInfo *lookupWireType(const std::string &ty) {
+  const auto &table = wireTypeInfoTable();
+  auto it = table.find(ty);
+  return it != table.end() ? &it->second : nullptr;
+}
+
+// ============================================================================
+// Predicate helpers — now driven from wireTypeInfoTable
+// ============================================================================
+
+/// Check if a wire type name is a primitive scalar wire type.
+/// Type names that are NOT primitives are treated as nested wire struct
+/// references and require a struct-type lookup via structTypes.
+static bool isWirePrimitiveType(const std::string &ty) {
+  return lookupWireType(ty) != nullptr;
+}
+
+/// Check if a wire type is a signed integer needing zigzag encoding.
+/// Covers i8/i16/i32/i64 and their wire-level aliases: int/Int map to i64 in
+/// the type checker; isize is treated as i64 by the codegen (wireTypeToMLIR).
+static bool needsZigzag(const std::string &ty) {
+  const WireTypeInfo *info = lookupWireType(ty);
+  return info && info->zigzag;
+}
+
+/// Check if a wire type is an unsigned integer (zero-extend when widening to
+/// i64 for JSON integer output).
+/// byte → u8, char → unicode codepoint (always non-negative), uint/usize → u64.
+static bool isUnsignedWireType(const std::string &ty) {
+  const WireTypeInfo *info = lookupWireType(ty);
+  return info && info->isUnsigned;
+}
+
+/// Check if a wire type uses varint encoding (as opposed to fixed-width or
+/// length-delimited).  Covers all integer primitives and their wire aliases.
+/// duration is encoded as a nanosecond i64 varint (always non-negative in
+/// practice, so no zigzag).
+static bool isVarintType(const std::string &ty) {
+  const WireTypeInfo *info = lookupWireType(ty);
+  return info && info->isVarint;
+}
+
+// ============================================================================
+// Dispatch helpers — keep explicit fallthrough/default for safety
+// ============================================================================
 
 /// Classifies a wire type for JSON/YAML serialization.
 /// Resolves the semantic kind from the type name string.
@@ -95,22 +205,6 @@ static std::string encodeFunc(const std::string &ty) {
   return "hew_wire_encode_field_varint";
 }
 
-/// Check if a wire type is a signed integer needing zigzag encoding.
-/// Covers i8/i16/i32/i64 and their wire-level aliases: int/Int map to i64 in
-/// the type checker; isize is treated as i64 by the codegen (wireTypeToMLIR).
-static bool needsZigzag(const std::string &ty) {
-  return ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64" ||
-         ty == "int" || ty == "Int" || ty == "isize";
-}
-
-/// Check if a wire type is an unsigned integer (zero-extend when widening to
-/// i64 for JSON integer output).
-/// byte → u8, char → unicode codepoint (always non-negative), uint/usize → u64.
-static bool isUnsignedWireType(const std::string &ty) {
-  return ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" ||
-         ty == "uint" || ty == "usize" || ty == "byte" || ty == "char";
-}
-
 struct WireSerialIntegerBounds {
   int64_t min;
   int64_t max;
@@ -145,31 +239,6 @@ static std::string wireFromSerialIntegerDecodeErrorMessage(
          std::to_string(bounds.max) + "]";
 }
 
-/// Check if a wire type uses varint encoding (as opposed to fixed-width or
-/// length-delimited).  Covers all integer primitives and their wire aliases.
-/// duration is encoded as a nanosecond i64 varint (always non-negative in
-/// practice, so no zigzag).
-static bool isVarintType(const std::string &ty) {
-  return ty == "bool" || ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "i8" ||
-         ty == "i16" || ty == "i32" || ty == "i64" ||
-         ty == "int" || ty == "Int" || ty == "isize" ||
-         ty == "uint" || ty == "usize" ||
-         ty == "byte" || ty == "char" || ty == "duration";
-}
-
-/// Check if a wire type name is a primitive scalar wire type.
-/// Type names that are NOT primitives are treated as nested wire struct
-/// references and require a struct-type lookup via structTypes.
-/// Includes Hew type aliases so they are not misclassified as struct names.
-static bool isWirePrimitiveType(const std::string &ty) {
-  return ty == "bool" || ty == "i8" || ty == "u8" || ty == "i16" || ty == "u16" ||
-         ty == "i32" || ty == "u32" || ty == "i64" || ty == "u64" ||
-         ty == "f32" || ty == "f64" || ty == "String" || ty == "bytes" ||
-         // Hew type aliases:
-         ty == "int" || ty == "Int" || ty == "uint" || ty == "float" ||
-         ty == "byte" || ty == "char" || ty == "duration" || ty == "usize" || ty == "isize" ||
-         ty == "string" || ty == "str";
-}
 
 /// Resolve the MLIR type for a wire field.  For non-primitive type names
 /// (user-defined wire struct references), returns a (possibly forward-declared)

@@ -415,8 +415,8 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
         ),
         manifest::ManifestTemplate::Actor => (
             "main.hew",
-            "actor Counter {\n    count: i32;\n\n    receive fn increment() {\n        \
-             self.count = self.count + 1;\n        println(self.count);\n    }\n}\n\n\
+            "actor Counter {\n    let count: i32;\n\n    receive fn increment() {\n        \
+             count = count + 1;\n        println(count);\n    }\n}\n\n\
              fn main() {\n    let c = spawn Counter(count: 0);\n    c.increment();\n    \
              c.increment();\n    c.increment();\n}\n"
                 .to_string(),
@@ -2310,6 +2310,14 @@ mod tests {
         assert!(
             src.contains("actor Counter"),
             "should contain actor definition"
+        );
+        assert!(
+            src.contains("let count: i32"),
+            "actor state field must use `let` keyword"
+        );
+        assert!(
+            !src.contains("self."),
+            "actor template must not use legacy `self.` syntax"
         );
         assert!(
             src.contains("receive fn increment()"),

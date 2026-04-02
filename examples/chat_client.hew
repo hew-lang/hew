@@ -56,7 +56,7 @@ fn main() {
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     let read_timeout_result = conn.set_read_timeout(-1);
     if read_timeout_result < 0 {
-        let err = f"[client] failed to connect to {addr} within {connect_timeout_sec}s";
+        let err = f"[client] failed to set read timeout on connection to {addr}";
         panic(err);
     }
     println("=== Hew TCP Chat Client ===");

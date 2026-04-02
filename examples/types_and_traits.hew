@@ -1,4 +1,4 @@
-// Types, traits, and generics in Hew.
+// Types, traits, and dynamic dispatch in Hew.
 //
 // Run:  hew run examples/types_and_traits.hew
 //

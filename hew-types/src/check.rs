@@ -8476,7 +8476,15 @@ impl Checker {
             Ty::TraitObject { traits } => traits.iter().any(|t| {
                 t.trait_name == trait_name || self.trait_extends(&t.trait_name, trait_name)
             }),
-            _ => false,
+            // For primitives and other built-in types, delegate to the marker-trait table which
+            // already knows which built-ins satisfy which markers (e.g. i32 satisfies Ord).
+            _ => {
+                if let Some(marker) = MarkerTrait::from_name(trait_name) {
+                    self.registry.implements_marker(ty, marker)
+                } else {
+                    false
+                }
+            }
         }
     }
 

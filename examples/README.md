@@ -49,6 +49,6 @@ hew build examples/fibonacci.hew -o fibonacci
 | Async/Streams | `async_demo`, `scope_demo`, `scope_minimal`                               |
 | Stress Tests  | `stress_*` (8 examples for actors, mailboxes, scheduling, supervision)    |
 | Self-Hosting  | `selfhost_lexer_v2`                                                       |
-| Types         | `enum_test`, `enums_and_options`, `types_and_traits`, `type_inference`    |
+| Types         | `enum_test`, `enums_and_options`, `types_and_traits` (structs · traits · impl blocks · dyn dispatch), `type_inference` |
 | Strings       | `string_escapes`, `string_ops_test`, `string_test`                        |
 | Utilities     | `hew_grep`, `regex_demo`, `file_reader`, `cli_argparse`                   |

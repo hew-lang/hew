@@ -145,10 +145,16 @@ fn test_mutability_error() {
         }
     ",
     );
-    assert!(output
+    let err = output
         .errors
         .iter()
-        .any(|e| e.kind == TypeErrorKind::MutabilityError));
+        .find(|e| e.kind == TypeErrorKind::MutabilityError)
+        .expect("Expected MutabilityError");
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("var x")),
+        "Expected `var x` suggestion, got: {:?}",
+        err.suggestions
+    );
 }
 
 #[test]

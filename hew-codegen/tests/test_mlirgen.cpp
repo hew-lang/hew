@@ -11,6 +11,7 @@
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
 #include "hew/msgpack_reader.h"
+#include "test_utils.h"
 
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
@@ -27,23 +28,7 @@
 
 #include <cassert>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <string>
 #include <utility>
-#include <vector>
-
-#ifdef _WIN32
-#include <fcntl.h>
-#include <io.h>
-#include <process.h>
-#define getpid _getpid
-#else
-#include <unistd.h>
-#endif
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -135,143 +120,6 @@ static bool allSelectAddsReturnI32(mlir::Operation *op) {
     ok = ok && add->getNumResults() == 1 && add->getResult(0).getType().isInteger(32);
   });
   return ok;
-}
-
-static std::string captureStderr(const std::function<void()> &fn) {
-  fflush(stderr);
-  auto capturePath = std::filesystem::current_path() /
-                     ("test_mlirgen_stderr_" + std::to_string(getpid()) + ".log");
-  FILE *capture = std::fopen(capturePath.string().c_str(), "wb");
-  if (!capture)
-    return {};
-
-#ifdef _WIN32
-  const int stderrFd = _fileno(stderr);
-  const int savedStderr = _dup(stderrFd);
-  if (savedStderr < 0) {
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-  if (_dup2(_fileno(capture), stderrFd) < 0) {
-    _close(savedStderr);
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-#else
-  const int stderrFd = fileno(stderr);
-  const int savedStderr = dup(stderrFd);
-  if (savedStderr < 0) {
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-  if (dup2(fileno(capture), stderrFd) < 0) {
-    close(savedStderr);
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-#endif
-
-  fn();
-  fflush(stderr);
-
-#ifdef _WIN32
-  _dup2(savedStderr, stderrFd);
-  _close(savedStderr);
-#else
-  dup2(savedStderr, stderrFd);
-  close(savedStderr);
-#endif
-  std::fclose(capture);
-
-  std::ifstream captured(capturePath, std::ios::binary);
-  std::string output((std::istreambuf_iterator<char>(captured)), {});
-  std::filesystem::remove(capturePath);
-  return output;
-}
-
-// ---------------------------------------------------------------------------
-// Helper: find hew CLI binary (used as frontend for parsing)
-// ---------------------------------------------------------------------------
-static std::string findHewCli() {
-  // Prefer the HEW_CLI environment variable (set by CMake)
-  if (const char *env = std::getenv("HEW_CLI"))
-    return env;
-  // Check relative to the test binary's likely build location
-#ifdef _WIN32
-  constexpr const char *hewName = "hew.exe";
-#else
-  constexpr const char *hewName = "hew";
-#endif
-  for (auto candidate : {
-           std::filesystem::path("../../../target/release") / hewName,
-           std::filesystem::path("../../../target/debug") / hewName,
-           std::filesystem::path("../../target/release") / hewName,
-           std::filesystem::path("../../target/debug") / hewName,
-       }) {
-    if (std::filesystem::exists(candidate))
-      return std::filesystem::canonical(candidate).string();
-  }
-  // Fall back to PATH
-  return "hew";
-}
-
-static std::vector<uint8_t> hewToMsgpack(const std::string &source) {
-  std::string tmpPath = (std::filesystem::temp_directory_path() /
-                         ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
-                            .string();
-  {
-    std::ofstream tmp(tmpPath);
-    if (!tmp)
-      return {};
-    tmp << source;
-  }
-
-  std::string astPath = (std::filesystem::temp_directory_path() /
-                         ("test_mlirgen_" + std::to_string(getpid()) + ".msgpack"))
-                            .string();
-
-  static std::string hewCli = findHewCli();
-#ifdef _WIN32
-  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
-                    "\" --emit-msgpack 2>NUL\"";
-#else
-  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
-                    "\" --emit-msgpack 2>/dev/null";
-#endif
-  int rc = std::system(cmd.c_str());
-  std::filesystem::remove(tmpPath);
-
-  std::vector<uint8_t> astData;
-  if (rc == 0 && std::filesystem::exists(astPath)) {
-    std::ifstream astFile(astPath, std::ios::binary);
-    astData.assign(std::istreambuf_iterator<char>(astFile), {});
-  }
-
-  std::filesystem::remove(astPath);
-  return astData;
-}
-
-static int replaceMsgpackFixStr(std::vector<uint8_t> &data, const char *from, const char *to) {
-  const auto fromLen = std::strlen(from);
-  if (fromLen != std::strlen(to) || fromLen == 0 || fromLen > 31)
-    return 0;
-
-  const uint8_t tag = static_cast<uint8_t>(0xa0 | fromLen);
-  int replacements = 0;
-  for (size_t i = 0; i + 1 + fromLen <= data.size(); ++i) {
-    if (data[i] != tag)
-      continue;
-    if (std::memcmp(data.data() + i + 1, from, fromLen) != 0)
-      continue;
-    std::memcpy(data.data() + i + 1, to, fromLen);
-    ++replacements;
-    i += fromLen;
-  }
-  return replacements;
 }
 
 // ---------------------------------------------------------------------------

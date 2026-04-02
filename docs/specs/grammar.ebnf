@@ -78,7 +78,7 @@ TraitBounds    = TraitBound { "+" TraitBound } ;
 TraitBound     = Ident TypeArgs? ;
 
 (* Where clauses for complex bounds *)
-WhereClause    = "where" WherePredicate { "," WherePredicate } ;
+WhereClause    = "where" WherePredicate { "," WherePredicate } [ "," ] ;
 WherePredicate = Type ":" TraitBounds ;
 
 TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;

@@ -10,10 +10,10 @@ use crate::unify::unify;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
     ActorDecl, ActorInit, ActorTerminate, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr,
-    ExternBlock, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal,
-    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart,
-    TraitDecl, TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam,
-    UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
+    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
+    LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span,
+    Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
@@ -208,6 +208,49 @@ fn lookup_scoped_item<'a, T>(
     } else {
         items.get(name)
     }
+}
+
+fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Option<Span> {
+    match &type_expr.0 {
+        TypeExpr::Infer => Some(type_expr.1.clone()),
+        TypeExpr::Named { type_args, .. } => type_args
+            .as_ref()
+            .and_then(|args| args.iter().find_map(first_infer_span_in_type_expr)),
+        TypeExpr::Result { ok, err } => {
+            first_infer_span_in_type_expr(ok).or_else(|| first_infer_span_in_type_expr(err))
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Array { element: inner, .. }
+        | TypeExpr::Pointer { pointee: inner, .. } => first_infer_span_in_type_expr(inner),
+        TypeExpr::Tuple(elems) => elems.iter().find_map(first_infer_span_in_type_expr),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => params
+            .iter()
+            .find_map(first_infer_span_in_type_expr)
+            .or_else(|| first_infer_span_in_type_expr(return_type)),
+        TypeExpr::TraitObject(bounds) => bounds.iter().find_map(|bound| {
+            bound
+                .type_args
+                .as_ref()
+                .and_then(|args| args.iter().find_map(first_infer_span_in_type_expr))
+        }),
+    }
+}
+
+fn first_infer_span_in_extern_fn(function: &ExternFnDecl) -> Option<Span> {
+    function
+        .params
+        .iter()
+        .find_map(|param| first_infer_span_in_type_expr(&param.ty))
+        .or_else(|| {
+            function
+                .return_type
+                .as_ref()
+                .and_then(first_infer_span_in_type_expr)
+        })
 }
 
 /// The main type checker.
@@ -3385,8 +3428,10 @@ impl Checker {
                         if self.fn_sig_inference_holes.get(&function.name).is_some_and(
                             |hole_vars| self.inference_holes_still_unresolved(hole_vars),
                         ) {
+                            let error_span = first_infer_span_in_extern_fn(function)
+                                .unwrap_or_else(|| span.clone());
                             self.errors.push(TypeError::inference_failed(
-                                span.clone(),
+                                error_span,
                                 &format!("signature of extern function `{}`", function.name),
                             ));
                         }

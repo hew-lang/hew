@@ -2871,6 +2871,18 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     auto location = currentLoc;
     auto tupleType = mlir::cast<hew::HewTupleType>(collection.getType());
     auto elemType = tupleType.getElementTypes()[0];
+    bool rangeIsUnsigned = false;
+    if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind)) {
+        if (resolveTypeAlias(named->name) == "Range" && named->type_args &&
+            !named->type_args->empty()) {
+          rangeIsUnsigned = isUnsignedTypeExpr((*named->type_args)[0].value);
+        }
+      } else if (auto *tuple = std::get_if<ast::TypeTuple>(&typeExpr->kind)) {
+        if (!tuple->elements.empty())
+          rangeIsUnsigned = isUnsignedTypeExpr(tuple->elements.front().value);
+      }
+    }
 
     // Extract start/end from the range tuple
     auto startVal = hew::TupleExtractOp::create(builder, location, elemType, collection, 0);
@@ -2889,8 +2901,13 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     mlir::Value lbI64 = startVal;
     mlir::Value ubI64 = endVal;
     if (elemType != i64Type) {
-      lbI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, startVal);
-      ubI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, endVal);
+      if (rangeIsUnsigned) {
+        lbI64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, startVal);
+        ubI64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, endVal);
+      } else {
+        lbI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, startVal);
+        ubI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, endVal);
+      }
     }
 
     // Index alloca
@@ -2911,7 +2928,9 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     auto isActive =
         mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
     auto curIdx = mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
-    auto cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+    auto cond = mlir::arith::CmpIOp::create(builder, location,
+                                            rangeIsUnsigned ? mlir::arith::CmpIPredicate::ult
+                                                            : mlir::arith::CmpIPredicate::slt,
                                             curIdx, ubI64);
     mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
     combinedCond = andNotReturned(combinedCond, location);

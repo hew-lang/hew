@@ -961,6 +961,57 @@ fn main() -> int {
   PASS();
 }
 
+static void test_materialized_unsigned_range_uses_unsigned_compare() {
+  TEST(materialized_unsigned_range_uses_unsigned_compare);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn count(lo: u64, hi: u64) -> int {
+    let r: Range<u64> = lo..hi;
+    var n: int = 0;
+    for _ in r {
+        n = n + 1;
+    }
+    n
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto countFn = lookupFuncBySuffix(module, "count");
+  if (!countFn) {
+    FAIL("count function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasUnsignedRangeCompare = false;
+  bool hasSignedRangeCompare = false;
+  countFn.walk([&](mlir::arith::CmpIOp cmp) {
+    hasUnsignedRangeCompare |= cmp.getPredicate() == mlir::arith::CmpIPredicate::ult;
+    hasSignedRangeCompare |= cmp.getPredicate() == mlir::arith::CmpIPredicate::slt;
+  });
+
+  if (!hasUnsignedRangeCompare) {
+    FAIL("expected materialized Range<u64> loop to use arith.cmpi ult");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (hasSignedRangeCompare) {
+    FAIL("materialized Range<u64> loop should not use arith.cmpi slt");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
 // ============================================================================
 // Test: Return statement
 // ============================================================================
@@ -2628,6 +2679,7 @@ int main() {
   test_non_void_nested_stmt_if_no_results();
   test_arithmetic();
   test_comparisons();
+  test_materialized_unsigned_range_uses_unsigned_compare();
   test_return_stmt();
   test_logical_ops();
   test_unary_ops();

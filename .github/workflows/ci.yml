@@ -141,14 +141,21 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
+      # Include hew-codegen C++ sources in the cache key so that a stale cmake
+      # build dir inside target/ is never reused when codegen source files change.
+      # Without this, build.rs restores a cached $OUT_DIR/hew-codegen-cmake whose
+      # CMakeCache.txt may contain stale LLVM paths, causing cmake re-configure to
+      # fail and hew-cli to link with missing symbols.
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: build-test-${{ runner.os }}-
+          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: |
+            build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            build-test-${{ runner.os }}-
 
       - name: Cache hew-codegen build
         uses: actions/cache@v4
@@ -156,6 +163,22 @@ jobs:
           path: hew-codegen/build
           key: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+
+      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
+      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
+      # working LLVM cmake configure.  Running the explicit cmake steps first
+      # ensures the hew-codegen/build tree is populated on every cache miss, and
+      # exercises the cmake configure path before cargo attempts to link.
+      - name: Configure hew-codegen
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
+
+      - name: Build hew-codegen
+        run: cmake --build hew-codegen/build -j"$(nproc)"
 
       - name: Build Rust runtime and frontend (release)
         run: cargo build -p hew-cli -p hew-runtime -p hew-serialize -p hew-lsp --release
@@ -175,17 +198,6 @@ jobs:
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-
-      - name: Configure hew-codegen
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
-
-      - name: Build hew-codegen
-        run: cmake --build hew-codegen/build -j"$(nproc)"
 
       - name: Build libhew.a (runtime + stdlib)
         run: cargo build -p hew-lib --release
@@ -371,8 +383,12 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: build-test-${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: build-test-${{ runner.os }}-arm64-
+          # Include hew-codegen C++ sources in the cache key so that a stale cmake
+          # build dir inside target/ is never reused when codegen source files change.
+          key: build-test-${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: |
+            build-test-${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock') }}
+            build-test-${{ runner.os }}-arm64-
 
       - name: Install LLVM/MLIR
         run: |
@@ -392,20 +408,11 @@ jobs:
           key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-
 
-      - name: Run Rust workspace tests
-        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
-        run: >
-          cargo nextest run --workspace --exclude hew-wasm
-          --profile ci
-
-      - name: Build libhew.a (runtime + stdlib)
-        run: cargo build -p hew-lib --release
-
-      - name: Build frontend (release + debug)
-        run: |
-          cargo build -p hew-cli -p hew-serialize --release
-          cargo build -p hew-cli
-
+      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
+      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
+      # working LLVM cmake configure.  Running the explicit cmake steps first
+      # ensures the hew-codegen/build tree is populated on every cache miss, and
+      # exercises the cmake configure path before cargo attempts to link.
       - name: Configure hew-codegen
         run: |
           cd hew-codegen
@@ -421,6 +428,20 @@ jobs:
 
       - name: Build hew-codegen
         run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Run Rust workspace tests
+        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
+        run: >
+          cargo nextest run --workspace --exclude hew-wasm
+          --profile ci
+
+      - name: Build libhew.a (runtime + stdlib)
+        run: cargo build -p hew-lib --release
+
+      - name: Build frontend (release + debug)
+        run: |
+          cargo build -p hew-cli -p hew-serialize --release
+          cargo build -p hew-cli
 
       - name: Run codegen unit tests
         run: >

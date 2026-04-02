@@ -2028,7 +2028,8 @@ impl Checker {
                     // Register default trait methods not overridden in this impl
                     if let Some(tb) = &id.trait_bound {
                         // Track which types implement which traits
-                        self.record_trait_impl(type_name, &tb.name);
+                        self.trait_impls_set
+                            .insert((type_name.clone(), tb.name.clone()));
 
                         let overridden: HashSet<&str> =
                             id.methods.iter().map(|m| m.name.as_str()).collect();
@@ -2362,11 +2363,6 @@ impl Checker {
             td.methods.insert(method.name.clone(), sig.clone());
         }
         sig
-    }
-
-    fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
-        self.trait_impls_set
-            .insert((type_name.to_string(), trait_name.to_string()));
     }
 
     fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
@@ -2741,7 +2737,8 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.record_trait_impl(type_name, &tb.name);
+                        self.trait_impls_set
+                            .insert((type_name.clone(), tb.name.clone()));
                     }
 
                     // Restore previous self type
@@ -2862,7 +2859,8 @@ impl Checker {
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.name);
+                            self.trait_impls_set
+                                .insert((type_name.clone(), tb.name.clone()));
                         }
                     }
                 }
@@ -3032,7 +3030,8 @@ impl Checker {
                             self.register_impl_method(type_name, method, id.type_params.as_ref());
                         }
                         if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.name);
+                            self.trait_impls_set
+                                .insert((type_name.clone(), tb.name.clone()));
                         }
 
                         // Restore previous self type
@@ -11144,6 +11143,7 @@ fn main() {
             pub fn describe<T: Describable>(item: T) -> String {
                 item.describe()
             }
+
         "#;
 
         let mut root = hew_parser::parse(root_source);
@@ -11163,7 +11163,6 @@ fn main() {
                 _ => None,
             })
             .expect("main trailing call should exist");
-
         let module = hew_parser::parse(module_source);
         assert!(
             module.errors.is_empty(),
@@ -11186,19 +11185,24 @@ fn main() {
         let output = checker.check_program(&root.program);
 
         assert!(
+            !output.user_modules.contains("string"),
+            "stdlib Hew import should not go through the user-module import path"
+        );
+        assert!(
             output.errors.is_empty(),
             "stdlib imported Hew impl should satisfy imported generic bounds: {:?}",
             output.errors
         );
-        assert!(
-            output.fn_sigs.contains_key("string.describe"),
-            "module-qualified imported generic should be registered"
-        );
-        assert!(
-            output
-                .call_type_args
-                .contains_key(&SpanKey::from(&call_span)),
-            "stdlib imported generic call should record inferred type args"
+        let inferred = output
+            .call_type_args
+            .get(&SpanKey::from(&call_span))
+            .expect("stdlib imported generic call should record inferred type args");
+        assert_eq!(
+            inferred,
+            &vec![Ty::Named {
+                name: "Label".to_string(),
+                args: vec![],
+            }]
         );
         assert!(
             checker

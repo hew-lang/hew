@@ -830,7 +830,12 @@ private:
   std::string dropFuncForType(const ast::TypeExpr &ty) const;
   /// Infer the drop function for an MLIR-typed value (used for match pattern
   /// bindings where only the MLIR type is available, not the AST type).
-  std::string dropFuncForMLIRType(mlir::Type type) const;
+  /// When \p includeStructTypes is false the LLVMStructType branch is skipped,
+  /// keeping receive-path registration limited to the original narrow set
+  /// (String, Vec, HashMap, Closure, Handle).  Callers that own a full type
+  /// context (field-drop codegen, match bindings) pass the default \c true.
+  std::string dropFuncForMLIRType(mlir::Type type,
+                                   bool includeStructTypes = true) const;
   /// Returns true if the named struct has at least one owned field (String,
   /// Vec, HashMap, etc.) that requires drop at scope exit.
   bool structHasOwnedFields(const std::string &name) const;

@@ -785,6 +785,9 @@ private:
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
+  /// Defining-module-mangled user Drop symbols already processed. Prevents
+  /// flattened root-module clones from re-generating imported Drop impls.
+  std::unordered_set<std::string> generatedUserDropImpls;
   /// Mangled function/method symbols whose String result is just a borrowed
   /// alias of an owned field on a caller-owned struct parameter/receiver.
   std::unordered_set<std::string> borrowedFieldReturnCallees;

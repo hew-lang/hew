@@ -3701,6 +3701,8 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
     return;
   }
 
+  std::string traitName = decl.trait_bound ? decl.trait_bound->name : "";
+
   // Use the module where the type was DEFINED for mangling, not the
   // current (possibly importing) module. This prevents duplicate generation
   // when an importing module re-processes the impl from an imported module.
@@ -3709,6 +3711,17 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   auto savedModulePath = currentModulePath;
   if (typeDefModulePath.count(typeName)) {
     currentModulePath = typeDefModulePath[typeName];
+  }
+
+  std::string dropFuncName;
+  if (traitName == "Drop") {
+    dropFuncName = mangleName(currentModulePath, typeName, "drop");
+    // Quoted-file imports currently clone imported impls onto the root module.
+    // Only emit the canonical user Drop body once.
+    if (!generatedUserDropImpls.insert(dropFuncName).second) {
+      currentModulePath = savedModulePath;
+      return;
+    }
   }
 
   // Set Self substitution so bare self parameters resolve to the target type
@@ -3723,7 +3736,6 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   }
 
   // Generate default method bodies from the trait for methods not overridden
-  std::string traitName = decl.trait_bound ? decl.trait_bound->name : "";
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
@@ -3745,7 +3757,7 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   }
 
   if (traitName == "Drop") {
-    userDropFuncs[typeName] = mangleName(currentModulePath, typeName, "drop");
+    userDropFuncs[typeName] = dropFuncName;
   }
 
   typeParamSubstitutions.erase("Self");

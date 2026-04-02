@@ -322,6 +322,9 @@ pub fn last_str(v: Vec<String>) -> Option<String> {
 /// println(vec.min_i32(v));  // 1
 /// ```
 pub fn min_i32(v: Vec<i32>) -> i32 {
+    if v.len() == 0 {
+        panic("vec::min_i32: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();
@@ -337,6 +340,9 @@ pub fn min_i32(v: Vec<i32>) -> i32 {
 
 /// Return the smallest element in `v`. Panics if `v` is empty.
 pub fn min_i64(v: Vec<i64>) -> i64 {
+    if v.len() == 0 {
+        panic("vec::min_i64: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();
@@ -353,6 +359,9 @@ pub fn min_i64(v: Vec<i64>) -> i64 {
 /// Return the smallest element in `v`. Panics if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
 pub fn min_f64(v: Vec<f64>) -> f64 {
+    if v.len() == 0 {
+        panic("vec::min_f64: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();
@@ -382,6 +391,9 @@ pub fn min_f64(v: Vec<f64>) -> f64 {
 /// println(vec.max_i32(v));  // 3
 /// ```
 pub fn max_i32(v: Vec<i32>) -> i32 {
+    if v.len() == 0 {
+        panic("vec::max_i32: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();
@@ -397,6 +409,9 @@ pub fn max_i32(v: Vec<i32>) -> i32 {
 
 /// Return the largest element in `v`. Panics if `v` is empty.
 pub fn max_i64(v: Vec<i64>) -> i64 {
+    if v.len() == 0 {
+        panic("vec::max_i64: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();
@@ -413,6 +428,9 @@ pub fn max_i64(v: Vec<i64>) -> i64 {
 /// Return the largest element in `v`. Panics if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
 pub fn max_f64(v: Vec<f64>) -> f64 {
+    if v.len() == 0 {
+        panic("vec::max_f64: called on empty vector");
+    }
     var m = v.get(0);
     var i = 1;
     let n = v.len();

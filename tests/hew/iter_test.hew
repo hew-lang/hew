@@ -574,3 +574,39 @@ fn test_skip_f64_negative_n_returns_all() {
     testing.assert_eq(result.len(), 3);
     testing.assert_true(result.get(0) == 1.0);
 }
+
+// ── take_* negative-n clamp tests ─────────────────────────────────────────
+// Negative n should behave like n=0 (return empty vector), mirroring the
+// skip_* negative-clamp behaviour already present on that family.
+
+#[test]
+fn test_take_int_negative_n_returns_empty() {
+    let v: Vec<int> = Vec::new();
+    v.push(1); v.push(2); v.push(3);
+    let result = iter.take_int(v, -1);
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_take_int_negative_large_returns_empty() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    let result = iter.take_int(v, -100);
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_take_str_negative_n_returns_empty() {
+    let v: Vec<String> = Vec::new();
+    v.push("a"); v.push("b");
+    let result = iter.take_str(v, -5);
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_take_f64_negative_n_returns_empty() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.0); v.push(2.0); v.push(3.0);
+    let result = iter.take_f64(v, -99);
+    testing.assert_eq(result.len(), 0);
+}

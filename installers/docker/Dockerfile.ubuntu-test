@@ -49,7 +49,8 @@ ENV HEW_STD=/usr/local/share/hew/std
 
 WORKDIR /work
 COPY installers/docker/test-stdlib.hew /work/test.hew
-COPY installers/docker/test-install.sh /work/test-install.sh
-RUN chmod +x /work/test-install.sh
+COPY scripts/lib/timeout.sh                        /work/scripts/lib/timeout.sh
+COPY installers/docker/test-install.sh             /work/installers/docker/test-install.sh
+RUN chmod +x /work/installers/docker/test-install.sh
 
-CMD ["/bin/bash", "/work/test-install.sh"]
+CMD ["/bin/bash", "/work/installers/docker/test-install.sh"]

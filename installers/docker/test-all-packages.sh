@@ -100,32 +100,8 @@ done
 
 _should_test() { [[ -z "${ONLY}" ]] || [[ ",${ONLY}," == *",$1,"* ]]; }
 
-_pick_timeout_cmd() {
-    local bin
-    for bin in timeout gtimeout; do
-        command -v "$bin" >/dev/null 2>&1 || continue
-        if "$bin" --kill-after=1 10 true 2>/dev/null; then
-            TIMEOUT_CMD=("$bin" --kill-after=5)
-            return 0
-        fi
-    done
-    for bin in timeout gtimeout; do
-        command -v "$bin" >/dev/null 2>&1 || continue
-        TIMEOUT_CMD=("$bin")
-        return 0
-    done
-    echo "error: timeout or gtimeout is required for bounded execution" >&2
-    exit 1
-}
-TIMEOUT_CMD=()
-_pick_timeout_cmd
-unset -f _pick_timeout_cmd
-
-run_with_timeout() {
-    local seconds="$1"
-    shift
-    "${TIMEOUT_CMD[@]}" "$seconds" "$@"
-}
+# shellcheck disable=SC1091  # dynamic path resolved at runtime via REPO_DIR
+source "${REPO_DIR}/scripts/lib/timeout.sh"
 
 # ── Version detection ─────────────────────────────────────────────────────────
 if [[ -z "${VERSION}" ]]; then
@@ -146,6 +122,7 @@ esac
 
 # ── Package paths ─────────────────────────────────────────────────────────────
 DEB_PKG="${DIST_DIR}/hew_${VERSION}-1_${DEB_ARCH}.deb"
+# shellcheck disable=SC2012,SC2086  # ls glob+VERSION for RPM dist-tag wildcard; find doesn't handle this pattern
 RPM_PKG="$(ls "${DIST_DIR}"/hew-${VERSION}-1.*.rpm 2>/dev/null | head -1)"
 ARCH_PKG="${DIST_DIR}/hew-bin-${VERSION}-1-${TARGET_ARCH}.pkg.tar.zst"
 APK_PKG="${DIST_DIR}/hew-${VERSION}.apk"
@@ -186,6 +163,7 @@ else
 fi
 
 # Locate RPM package (dist tag suffix varies: .fc41, .el9, etc.)
+# shellcheck disable=SC2012,SC2086  # ls glob+VERSION for RPM dist-tag wildcard; find doesn't handle this pattern
 RPM_PKG="$(ls "${DIST_DIR}"/hew-${VERSION}-1.*.rpm 2>/dev/null | head -1 || true)"
 
 # ── Smoke-test helper ─────────────────────────────────────────────────────────
@@ -211,10 +189,12 @@ _run_test() {
         -v "${tmpdir}:/pkg" \
         "${image}" \
         bash -c "${install_cmds}" 2>&1); then
+        # shellcheck disable=SC2001  # sed indent keeps multi-line docker output legible
         echo "${output}" | sed 's/^/    /'
         _pass "${label}" "hew run succeeded"
     else
         status=$?
+        # shellcheck disable=SC2001  # sed indent keeps multi-line docker output legible
         echo "${output}" | sed 's/^/    /'
         if [[ "${status}" -eq 124 || "${status}" -eq 137 ]]; then
             _fail "${label}" "timed out after ${TEST_TIMEOUT}s"
@@ -337,6 +317,7 @@ if [[ "${FAILED}" -gt 0 ]]; then
     exit 1
 fi
 if [[ "${PASSED}" -eq 0 ]]; then
+    # shellcheck disable=SC2059  # colour variables in printf format string are intentional
     printf "${YELLOW}No tests ran${RESET} — check --only filter or build packages first.\n\n"
     exit 1
 fi

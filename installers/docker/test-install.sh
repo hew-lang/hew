@@ -34,32 +34,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-_pick_timeout_cmd() {
-    local bin
-    for bin in timeout gtimeout; do
-        command -v "$bin" >/dev/null 2>&1 || continue
-        if "$bin" --kill-after=1 10 true 2>/dev/null; then
-            TIMEOUT_CMD=("$bin" --kill-after=5)
-            return 0
-        fi
-    done
-    for bin in timeout gtimeout; do
-        command -v "$bin" >/dev/null 2>&1 || continue
-        TIMEOUT_CMD=("$bin")
-        return 0
-    done
-    echo "error: timeout or gtimeout is required for bounded execution" >&2
-    exit 1
-}
-TIMEOUT_CMD=()
-_pick_timeout_cmd
-unset -f _pick_timeout_cmd
-
-run_with_timeout() {
-    local seconds="$1"
-    shift
-    "${TIMEOUT_CMD[@]}" "$seconds" "$@"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091  # dynamic path resolved at runtime via BASH_SOURCE
+source "${SCRIPT_DIR}/../../scripts/lib/timeout.sh"
 
 echo "==> Verifying hew installation on Ubuntu 24.04"
 echo ""

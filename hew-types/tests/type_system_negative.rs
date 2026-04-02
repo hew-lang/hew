@@ -463,12 +463,14 @@ fn inference_failed_unresolved_type_alias_hole() {
         fn main() {}
     ",
     );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
-        "Expected InferenceFailed, got errors: {:?}",
+    let inference_failed_count = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .count();
+    assert_eq!(
+        inference_failed_count, 1,
+        "Expected exactly one InferenceFailed, got errors: {:?}",
         output.errors
     );
 }

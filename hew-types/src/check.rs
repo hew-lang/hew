@@ -3157,7 +3157,6 @@ impl Checker {
         self.emit_dead_code_warnings();
 
         self.default_unconstrained_range_types(&expr_types);
-        self.report_unresolved_inference_holes(program);
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "hew/codegen_capi.h"
+#include "test_utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -16,22 +17,9 @@
 
 #include <cassert>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <string>
-#include <vector>
 
-#ifdef _WIN32
-#include <fcntl.h>
-#include <io.h>
-#include <process.h>
-#define getpid _getpid
-#else
+#ifndef _WIN32
 #include <sys/wait.h>
-#include <unistd.h>
 #endif
 
 namespace hew::codegen_detail {
@@ -57,142 +45,6 @@ static int tests_passed = 0;
   do {                                                                                             \
     printf("FAILED: %s\n", msg);                                                                   \
   } while (0)
-
-// ---------------------------------------------------------------------------
-// Helper: find hew CLI binary
-// ---------------------------------------------------------------------------
-static std::string findHewCli() {
-  if (const char *env = std::getenv("HEW_CLI"))
-    return env;
-#ifdef _WIN32
-  constexpr const char *hewName = "hew.exe";
-#else
-  constexpr const char *hewName = "hew";
-#endif
-  for (auto candidate : {
-           std::filesystem::path("../../../target/release") / hewName,
-           std::filesystem::path("../../../target/debug") / hewName,
-           std::filesystem::path("../../target/release") / hewName,
-           std::filesystem::path("../../target/debug") / hewName,
-       }) {
-    if (std::filesystem::exists(candidate))
-      return std::filesystem::canonical(candidate).string();
-  }
-  return "hew";
-}
-
-// ---------------------------------------------------------------------------
-// Helper: compile Hew source to msgpack AST via hew CLI
-// ---------------------------------------------------------------------------
-static std::vector<uint8_t> hewToMsgpack(const std::string &source) {
-  std::string pid = std::to_string(getpid());
-  auto tmpDir = std::filesystem::temp_directory_path();
-  std::string srcPath = (tmpDir / ("test_capi_" + pid + ".hew")).string();
-  std::string astPath = (tmpDir / ("test_capi_" + pid + ".msgpack")).string();
-
-  {
-    std::ofstream f(srcPath);
-    f << source;
-  }
-
-  static std::string hewCli = findHewCli();
-#ifdef _WIN32
-  std::string cmd = "\"\"" + hewCli + "\" build \"" + srcPath + "\" -o \"" + astPath +
-                    "\" --emit-msgpack 2>NUL\"";
-#else
-  std::string cmd =
-      "\"" + hewCli + "\" build \"" + srcPath + "\" -o \"" + astPath + "\" --emit-msgpack 2>/dev/null";
-#endif
-  int rc = std::system(cmd.c_str());
-  std::filesystem::remove(srcPath);
-
-  std::vector<uint8_t> data;
-  if (rc == 0 && std::filesystem::exists(astPath)) {
-    std::ifstream f(astPath, std::ios::binary);
-    f.seekg(0, std::ios::end);
-    auto sz = f.tellg();
-    f.seekg(0, std::ios::beg);
-    data.resize(static_cast<size_t>(sz));
-    f.read(reinterpret_cast<char *>(data.data()), sz);
-    std::filesystem::remove(astPath);
-  }
-  return data;
-}
-
-static std::string captureStderr(const std::function<void()> &fn) {
-  fflush(stderr);
-  auto capturePath = std::filesystem::current_path() /
-                     ("test_codegen_capi_stderr_" + std::to_string(getpid()) + ".log");
-  FILE *capture = std::fopen(capturePath.string().c_str(), "wb");
-  if (!capture)
-    return {};
-
-#ifdef _WIN32
-  const int stderrFd = _fileno(stderr);
-  const int savedStderr = _dup(stderrFd);
-  if (savedStderr < 0) {
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-  if (_dup2(_fileno(capture), stderrFd) < 0) {
-    _close(savedStderr);
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-#else
-  const int stderrFd = fileno(stderr);
-  const int savedStderr = dup(stderrFd);
-  if (savedStderr < 0) {
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-  if (dup2(fileno(capture), stderrFd) < 0) {
-    close(savedStderr);
-    std::fclose(capture);
-    std::filesystem::remove(capturePath);
-    return {};
-  }
-#endif
-
-  fn();
-  fflush(stderr);
-
-#ifdef _WIN32
-  _dup2(savedStderr, stderrFd);
-  _close(savedStderr);
-#else
-  dup2(savedStderr, stderrFd);
-  close(savedStderr);
-#endif
-  std::fclose(capture);
-
-  std::ifstream captured(capturePath, std::ios::binary);
-  std::string output((std::istreambuf_iterator<char>(captured)), {});
-  std::filesystem::remove(capturePath);
-  return output;
-}
-
-static int replaceMsgpackFixStr(std::vector<uint8_t> &data, const char *from, const char *to) {
-  const auto fromLen = std::strlen(from);
-  if (fromLen != std::strlen(to) || fromLen == 0 || fromLen > 31)
-    return 0;
-
-  const uint8_t tag = static_cast<uint8_t>(0xa0 | fromLen);
-  int replacements = 0;
-  for (size_t i = 0; i + 1 + fromLen <= data.size(); ++i) {
-    if (data[i] != tag)
-      continue;
-    if (std::memcmp(data.data() + i + 1, from, fromLen) != 0)
-      continue;
-    std::memcpy(data.data() + i + 1, to, fromLen);
-    ++replacements;
-    i += fromLen;
-  }
-  return replacements;
-}
 
 static HewCodegenOptions makeOptions(HewCodegenMode mode) {
   HewCodegenOptions opts{};

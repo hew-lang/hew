@@ -1,0 +1,23 @@
+fn direct_count(lo: u64, hi: u64) -> int {
+    var n: int = 0;
+    for _ in lo..hi {
+        n = n + 1;
+    }
+    n
+}
+
+fn materialized_count(lo: u64, hi: u64) -> int {
+    let r: Range<u64> = lo..hi;
+    var n: int = 0;
+    for _ in r {
+        n = n + 1;
+    }
+    n
+}
+
+fn main() {
+    let lo: u64 = ((1 as u64) << 63) - 1;
+    let hi: u64 = lo + 2;
+    println(direct_count(lo, hi));
+    println(materialized_count(lo, hi));
+}

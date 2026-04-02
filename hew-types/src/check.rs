@@ -4755,10 +4755,37 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
-                if let Some(inner) = ty.as_option() {
-                    inner.clone()
+                // Build an error message if the enclosing function's return type
+                // cannot propagate via `?`.  Computed before any mutable borrow.
+                let bad_ctx_msg: Option<String> =
+                    self.current_return_type.as_ref().and_then(|ret| {
+                        let r = self.subst.resolve(ret);
+                        if r.as_option().is_some()
+                            || r.as_result().is_some()
+                            || matches!(r, Ty::Var(_) | Ty::Error)
+                        {
+                            None
+                        } else {
+                            Some(format!(
+                                "`?` cannot be used in a function returning `{r}`; \
+                                 the enclosing function must return `Option` or `Result`"
+                            ))
+                        }
+                    });
+                if let Some(inner_ty) = ty.as_option() {
+                    if let Some(msg) = bad_ctx_msg {
+                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
+                        Ty::Error
+                    } else {
+                        inner_ty.clone()
+                    }
                 } else if let Some((ok, _)) = ty.as_result() {
-                    ok.clone()
+                    if let Some(msg) = bad_ctx_msg {
+                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
+                        Ty::Error
+                    } else {
+                        ok.clone()
+                    }
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

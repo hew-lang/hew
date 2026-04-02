@@ -941,7 +941,58 @@ fn machine_exhaustiveness_duplicate_explicit() {
     );
 }
 
-// ── 22. BoundsNotSatisfied — type missing required trait ────────────
+// ── 22. InvalidOperation — `?` in non-Option/Result function ────────
+
+#[test]
+fn postfix_try_in_non_option_result_function() {
+    // Regression: `?` on an Option inside a function that returns a plain
+    // type must be rejected at typecheck time, not silently emitted as bad IR.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn plain(x: i32) -> i32 {
+            let v = maybe(x)?;
+            v * 2
+        }
+        fn main() { plain(5); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `?` in non-Option/Result function, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn postfix_try_valid_in_option_function() {
+    // Sanity: `?` on an Option inside a function that also returns Option is fine.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn double_maybe(x: i32) -> Option<i32> {
+            let v = maybe(x)?;
+            Some(v * 2)
+        }
+        fn main() { double_maybe(5); }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for valid `?` in Option-returning function, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 23. BoundsNotSatisfied — type missing required trait ────────────
 
 #[test]
 fn bounds_not_satisfied_missing_trait_impl() {

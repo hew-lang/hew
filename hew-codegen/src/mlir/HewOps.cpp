@@ -480,16 +480,23 @@ mlir::OpFoldResult hew::CastOp::fold(FoldAdaptor adaptor) {
 
   auto resultType = getResult().getType();
 
-  // Int to wider int (sign extend)
+  // Int to int or int to float constant fold.
+  // Use zero-extension for unsigned casts, sign-extension for signed ones.
+  bool isUnsigned =
+      (*this)->hasAttr("is_unsigned") &&
+      mlir::cast<mlir::BoolAttr>((*this)->getAttr("is_unsigned")).getValue();
+
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(inputAttr)) {
     if (auto intResultType = mlir::dyn_cast<mlir::IntegerType>(resultType)) {
-      auto val = intAttr.getValue().getSExtValue();
+      auto val = isUnsigned ? static_cast<int64_t>(intAttr.getValue().getZExtValue())
+                            : intAttr.getValue().getSExtValue();
       return mlir::IntegerAttr::get(intResultType, val);
     }
     // Int to float
     if (auto floatResultType = mlir::dyn_cast<mlir::FloatType>(resultType)) {
-      auto val = intAttr.getValue().getSExtValue();
-      return mlir::FloatAttr::get(floatResultType, static_cast<double>(val));
+      auto val = isUnsigned ? static_cast<double>(intAttr.getValue().getZExtValue())
+                            : static_cast<double>(intAttr.getValue().getSExtValue());
+      return mlir::FloatAttr::get(floatResultType, val);
     }
   }
 
@@ -509,6 +516,28 @@ mlir::OpFoldResult hew::CastOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 namespace {
+static bool hasUnsignedCastAttr(hew::CastOp op) {
+  return op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+         op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
+}
+
+static bool isLosslessCastForChainFold(hew::CastOp op) {
+  auto srcType = op.getInput().getType();
+  auto dstType = op.getType();
+
+  if (auto srcInt = mlir::dyn_cast<mlir::IntegerType>(srcType)) {
+    auto dstInt = mlir::dyn_cast<mlir::IntegerType>(dstType);
+    return dstInt && dstInt.getWidth() >= srcInt.getWidth();
+  }
+
+  if (auto srcFloat = mlir::dyn_cast<mlir::FloatType>(srcType)) {
+    auto dstFloat = mlir::dyn_cast<mlir::FloatType>(dstType);
+    return dstFloat && dstFloat.getWidth() >= srcFloat.getWidth();
+  }
+
+  return false;
+}
+
 struct FoldCastChain : public mlir::OpRewritePattern<hew::CastOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -517,6 +546,10 @@ struct FoldCastChain : public mlir::OpRewritePattern<hew::CastOp> {
     // cast(cast(x, A), B) → cast(x, B)
     auto innerCast = op.getInput().getDefiningOp<hew::CastOp>();
     if (!innerCast)
+      return mlir::failure();
+    if (hasUnsignedCastAttr(op) || hasUnsignedCastAttr(innerCast))
+      return mlir::failure();
+    if (!isLosslessCastForChainFold(innerCast))
       return mlir::failure();
     rewriter.replaceOpWithNewOp<hew::CastOp>(op, op.getResult().getType(), innerCast.getInput());
     return mlir::success();

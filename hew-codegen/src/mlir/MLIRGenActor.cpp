@@ -401,7 +401,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
             // Register drops for owned types (deep-copied into gen ctx args)
             auto paramType = paramVal.getType();
-            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/false); !dropFn.empty())
+            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true); !dropFn.empty())
               registerDroppable(param.name, dropFn);
 
             ++pi;
@@ -590,7 +590,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         // Register drops for owned types (deep-copied at actor boundary)
         auto argType = argVal.getType();
-        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/false); !dropFn.empty())
+        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/true); !dropFn.empty())
           registerDroppable(param.name, dropFn);
 
         ++pi;

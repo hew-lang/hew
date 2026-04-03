@@ -531,6 +531,41 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
         auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, convArg.getType());
         mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, loadOp.getAddr());
       }
+    } else if (auto structTy =
+                   mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType())) {
+      // Identified structs may contain owned fields (String, Vec, HashMap).
+      // Use the hew.struct_clone_fields module attribute emitted by MLIRGen
+      // to find which fields need deep-copying.
+      if (structTy.isIdentified()) {
+        auto cloneAttr =
+            module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+        mlir::ArrayAttr fieldClones;
+        if (cloneAttr)
+          fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
+        if (fieldClones && !fieldClones.empty()) {
+          mlir::Value rebuilt = convArg;
+          for (auto entry : fieldClones) {
+            auto pair = mlir::cast<mlir::ArrayAttr>(entry);
+            auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
+            auto cloneFunc = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
+            auto fieldVal = mlir::LLVM::ExtractValueOp::create(
+                rewriter, loc, rebuilt, llvm::ArrayRef<int64_t>{fieldIdx});
+            auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+            getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);
+            auto clonedField = mlir::func::CallOp::create(
+                rewriter, loc, cloneFunc, mlir::TypeRange{ptrType},
+                mlir::ValueRange{fieldVal});
+            rebuilt = mlir::LLVM::InsertValueOp::create(
+                rewriter, loc, rebuilt, clonedField.getResult(0),
+                llvm::ArrayRef<int64_t>{fieldIdx});
+          }
+          result.push_back(rebuilt);
+        } else {
+          result.push_back(convArg);
+        }
+      } else {
+        result.push_back(convArg);
+      }
     } else {
       result.push_back(convArg);
     }
@@ -1717,20 +1752,30 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto handlerType = handlerFunc.getFunctionType();
       auto numHandlerArgs = handlerType.getNumInputs();
 
+      // Ensure param/result types are lowered to LLVM types via the
+      // type converter — the handler func.func may not have been
+      // signature-converted yet when this pattern fires.
+      auto *tc = getTypeConverter();
+      auto lowerType = [&](mlir::Type t) -> mlir::Type {
+        if (auto c = tc->convertType(t))
+          return c;
+        return t;
+      };
+
       if (numHandlerArgs > 1) {
         // Handler has message parameters (beyond the state pointer)
         auto numMsgParams = numHandlerArgs - 1;
 
         if (numMsgParams == 1) {
           // Single param: data points directly to the value
-          auto paramType = handlerType.getInput(1);
+          auto paramType = lowerType(handlerType.getInput(1));
           auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, paramType, dataVal);
           callArgs.push_back(loaded);
         } else {
           // Multiple params: data points to a packed struct
           llvm::SmallVector<mlir::Type, 4> fieldTypes;
           for (unsigned pi = 1; pi < numHandlerArgs; ++pi) {
-            fieldTypes.push_back(handlerType.getInput(pi));
+            fieldTypes.push_back(lowerType(handlerType.getInput(pi)));
           }
           auto packType = mlir::LLVM::LLVMStructType::getLiteral(rewriter.getContext(), fieldTypes);
 
@@ -1743,6 +1788,11 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         }
       }
 
+      // Build the lowered result types for the call.
+      llvm::SmallVector<mlir::Type, 1> loweredResults;
+      for (auto rt : handlerType.getResults())
+        loweredResults.push_back(lowerType(rt));
+
       // Ensure handler function is declared
       getOrInsertFuncDecl(module, rewriter, handlerName, handlerType);
 
@@ -1752,11 +1802,12 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto getReplyFuncType = rewriter.getFunctionType({}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_get_reply_channel", getReplyFuncType);
 
-      bool hasReturnType = handlerType.getNumResults() > 0;
+      bool hasReturnType = !loweredResults.empty();
       if (hasReturnType) {
-        // Call handler and capture return value
+        // Call handler and capture return value (use lowered result types
+        // so AllocaOp/emitSizeOf always receive LLVM-legal types).
         auto callOp = mlir::func::CallOp::create(rewriter, loc, handlerName,
-                                                 handlerType.getResults(), callArgs);
+                                                 loweredResults, callArgs);
         auto resultVal = callOp.getResult(0);
         auto resultType = resultVal.getType();
 

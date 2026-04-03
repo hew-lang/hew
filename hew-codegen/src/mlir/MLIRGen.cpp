@@ -3159,6 +3159,42 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
 
   structTypes[declName] = std::move(info);
 
+  // Emit module-level metadata for struct fields that need deep-copying at
+  // actor message boundaries.  The lowering pass (deepCopyOwnedArgs) reads
+  // this to clone owned fields (String, Vec, HashMap) inside struct payloads.
+  {
+    const auto &regInfo = structTypes[declName];
+    llvm::SmallVector<mlir::Attribute, 4> cloneEntries;
+    for (const auto &field : regInfo.fields) {
+      llvm::StringRef cloneFunc;
+      if (mlir::isa<hew::StringRefType>(field.semanticType))
+        cloneFunc = "strdup";
+      else if (mlir::isa<hew::VecType>(field.semanticType))
+        cloneFunc = "hew_vec_clone";
+      else if (mlir::isa<hew::HashMapType>(field.semanticType))
+        cloneFunc = "hew_hashmap_clone_impl";
+      else if (mlir::isa<hew::ClosureType>(field.semanticType))
+        cloneFunc = "hew_rc_clone";
+      if (!cloneFunc.empty()) {
+        cloneEntries.push_back(mlir::ArrayAttr::get(&context, {
+            builder.getI64IntegerAttr(field.index),
+            builder.getStringAttr(cloneFunc)}));
+      }
+    }
+    if (!cloneEntries.empty()) {
+      auto existing =
+          module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+      llvm::SmallVector<mlir::NamedAttribute> entries;
+      if (existing)
+        for (auto &named : existing)
+          entries.push_back(named);
+      entries.push_back(builder.getNamedAttr(
+          declName, mlir::ArrayAttr::get(&context, cloneEntries)));
+      module->setAttr("hew.struct_clone_fields",
+                      builder.getDictionaryAttr(entries));
+    }
+  }
+
   // Generate serialization functions for struct types with all-encodable fields.
   // Wire types handle their own serialization; skip actors and generic templates.
   if (decl.kind == ast::TypeDeclKind::Struct && !decl.wire.has_value() &&

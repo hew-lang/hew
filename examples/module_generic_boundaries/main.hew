@@ -1,0 +1,5 @@
+import myapp::widgets::*;
+
+fn main() {
+    println(describe(Label { text: "hello" }));
+}

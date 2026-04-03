@@ -35,8 +35,8 @@ fn main() {
         w.work();
         workers.push(w);
     }
-    for i in 0..workers.len() {
-        await close(workers.get(i));
+    for w in workers {
+        await close(w);
     }
     let count = await collector.get_count();
     println(count);

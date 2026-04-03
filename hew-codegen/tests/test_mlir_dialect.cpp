@@ -1619,6 +1619,102 @@ static void test_cast_constant_fold() {
 }
 
 //===----------------------------------------------------------------------===//
+// Test: CastOp unsigned constant fold — zero-extend, not sign-extend
+//===----------------------------------------------------------------------===//
+
+// Regression test for: CastOp::fold used getSExtValue() unconditionally,
+// causing unsigned int-to-int/int-to-float casts to sign-extend instead of
+// zero-extend (e.g. 255u8 → u32 would yield 4294967295 instead of 255).
+static void test_cast_unsigned_constant_fold() {
+  TEST(cast_unsigned_constant_fold);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i8Type  = builder.getIntegerType(8);
+  auto i32Type = builder.getI32Type();
+  auto f64Type = builder.getF64Type();
+  auto funcType = builder.getFunctionType({}, {i32Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  // 255 stored as i8 has the bit-pattern 0xFF.
+  // As a signed i8 that is -1; as an unsigned u8 it is 255.
+  mlir::Attribute src = mlir::IntegerAttr::get(i8Type, 255);
+  llvm::ArrayRef<mlir::Attribute> operands(src);
+
+  // ---- Test 1: unsigned u8(255) → u32  must zero-extend to 255 ----
+  auto castUnsigned = hew::CastOp::create(builder, loc, i32Type,
+      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  castUnsigned->setAttr("is_unsigned", builder.getBoolAttr(true));
+
+  auto fold1 = castUnsigned.fold(hew::CastOp::FoldAdaptor(operands, castUnsigned));
+  auto attr1 = llvm::dyn_cast<mlir::Attribute>(fold1);
+  if (!attr1) {
+    FAIL("unsigned cast(255u8, u32) should constant-fold");
+    module->destroy();
+    return;
+  }
+  auto intAttr1 = llvm::dyn_cast<mlir::IntegerAttr>(attr1);
+  if (!intAttr1 || intAttr1.getInt() != 255) {
+    FAIL("unsigned cast(255u8, u32) should zero-extend to 255, not sign-extend to -1");
+    module->destroy();
+    return;
+  }
+
+  // ---- Test 2: signed i8(255/-1) → i32  must sign-extend to -1 ----
+  auto castSigned = hew::CastOp::create(builder, loc, i32Type,
+      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  // No is_unsigned attribute → signed path.
+
+  auto fold2 = castSigned.fold(hew::CastOp::FoldAdaptor(operands, castSigned));
+  auto attr2 = llvm::dyn_cast<mlir::Attribute>(fold2);
+  if (!attr2) {
+    FAIL("signed cast(-1i8, i32) should constant-fold");
+    module->destroy();
+    return;
+  }
+  auto intAttr2 = llvm::dyn_cast<mlir::IntegerAttr>(attr2);
+  if (!intAttr2 || intAttr2.getInt() != -1) {
+    FAIL("signed cast(-1i8, i32) should sign-extend to -1");
+    module->destroy();
+    return;
+  }
+
+  // ---- Test 3: unsigned u8(255) → f64  must convert as 255.0, not -1.0 ----
+  auto castToFloat = hew::CastOp::create(builder, loc, f64Type,
+      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  castToFloat->setAttr("is_unsigned", builder.getBoolAttr(true));
+
+  auto fold3 = castToFloat.fold(hew::CastOp::FoldAdaptor(operands, castToFloat));
+  auto attr3 = llvm::dyn_cast<mlir::Attribute>(fold3);
+  if (!attr3) {
+    FAIL("unsigned cast(255u8, f64) should constant-fold");
+    module->destroy();
+    return;
+  }
+  auto floatAttr3 = llvm::dyn_cast<mlir::FloatAttr>(attr3);
+  if (!floatAttr3 || floatAttr3.getValueAsDouble() != 255.0) {
+    FAIL("unsigned cast(255u8, f64) should fold to 255.0, not -1.0");
+    module->destroy();
+    return;
+  }
+
+  mlir::func::ReturnOp::create(builder, loc,
+      mlir::ValueRange{castUnsigned.getResult()});
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Test: EnumExtractPayloadOp fold through enum.construct
 //===----------------------------------------------------------------------===//
 
@@ -3113,6 +3209,7 @@ int main() {
   test_string_concat_identity_lhs_empty();
   test_cast_identity_fold();
   test_cast_constant_fold();
+  test_cast_unsigned_constant_fold();
   test_enum_extract_payload_fold();
   test_enum_extract_payload_fold_non_default_position();
   test_enum_construct_err_implicit_slot_verifier_rejects();

@@ -480,16 +480,23 @@ mlir::OpFoldResult hew::CastOp::fold(FoldAdaptor adaptor) {
 
   auto resultType = getResult().getType();
 
-  // Int to wider int (sign extend)
+  // Int to int or int to float constant fold.
+  // Use zero-extension for unsigned casts, sign-extension for signed ones.
+  bool isUnsigned =
+      (*this)->hasAttr("is_unsigned") &&
+      mlir::cast<mlir::BoolAttr>((*this)->getAttr("is_unsigned")).getValue();
+
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(inputAttr)) {
     if (auto intResultType = mlir::dyn_cast<mlir::IntegerType>(resultType)) {
-      auto val = intAttr.getValue().getSExtValue();
+      auto val = isUnsigned ? static_cast<int64_t>(intAttr.getValue().getZExtValue())
+                            : intAttr.getValue().getSExtValue();
       return mlir::IntegerAttr::get(intResultType, val);
     }
     // Int to float
     if (auto floatResultType = mlir::dyn_cast<mlir::FloatType>(resultType)) {
-      auto val = intAttr.getValue().getSExtValue();
-      return mlir::FloatAttr::get(floatResultType, static_cast<double>(val));
+      auto val = isUnsigned ? static_cast<double>(intAttr.getValue().getZExtValue())
+                            : static_cast<double>(intAttr.getValue().getSExtValue());
+      return mlir::FloatAttr::get(floatResultType, val);
     }
   }
 

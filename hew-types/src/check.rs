@@ -4567,13 +4567,33 @@ impl Checker {
                 pattern,
                 iterable,
                 body,
-                ..
+                is_await,
             } => {
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
-                // Infer element type from iterable
+                // Infer element type from iterable, and enforce `for await` restrictions.
                 let elem_ty = match &iter_ty {
-                    Ty::Array(inner, _) | Ty::Slice(inner) => (**inner).clone(),
+                    Ty::Array(inner, _) | Ty::Slice(inner) => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over an Array or Slice; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        (**inner).clone()
+                    }
                     Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a Range; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
                         args[0].clone()
                     }
                     Ty::Named { name, args }
@@ -4582,9 +4602,27 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args } if name == "Vec" => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a Vec; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
                         args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()))
                     }
                     Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a HashMap; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
                     Ty::Named { name, args }
@@ -4597,7 +4635,11 @@ impl Checker {
                         if (name == "Receiver" || name == "channel.Receiver")
                             && !args.is_empty() =>
                     {
-                        args[0].clone()
+                        let inner = args[0].clone();
+                        if *is_await {
+                            self.check_receiver_element_type_for_await(&inner, &iterable.1);
+                        }
+                        inner
                     }
                     _ => Ty::Var(TypeVar::fresh()),
                 };
@@ -9460,6 +9502,22 @@ impl Checker {
                 "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
             ],
         });
+    }
+
+    /// Validates that a `Receiver<T>` element type is supported for `for await`.
+    /// Emits `InvalidOperation` if the resolved type is unsupported (not String/int/unknown var).
+    fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {
+        let resolved = self.subst.resolve(inner);
+        if !matches!(resolved, Ty::Var(_) | Ty::String) && !resolved.is_integer() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "Channel<{resolved}> is not supported in `for await`; \
+                     only Channel<String> and Channel<int> are currently supported"
+                ),
+            );
+        }
     }
 
     fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {

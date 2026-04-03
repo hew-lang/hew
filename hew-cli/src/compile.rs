@@ -1383,10 +1383,9 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 
     let mut needed: Vec<Vec<String>> = Vec::new();
 
-    // Detect regex literals via source text. The `re"` prefix is the regex
-    // literal syntax and is unambiguous; a false positive (e.g. inside a
-    // comment) only adds an unused import — harmless.
-    if source.contains("re\"") {
+    // Detect regex literals from lexer tokens so comments and docstrings do not
+    // trigger phantom imports.
+    if source_contains_regex_literal(source) {
         let path = ["std", "text", "regex"];
         let key = path.join("::");
         if !existing.contains(&key) {
@@ -1412,6 +1411,11 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
             ));
         }
     }
+}
+
+fn source_contains_regex_literal(source: &str) -> bool {
+    hew_lexer::Lexer::new(source)
+        .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
 #[cfg(test)]
@@ -1443,6 +1447,22 @@ mod tests {
             resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
+    }
+
+    fn implicit_import_paths_for(source: &str) -> Vec<Vec<String>> {
+        let mut program = parse_source(source, "test.hew").expect("source should parse");
+        inject_implicit_imports(&mut program.items, source);
+        program
+            .items
+            .iter()
+            .filter_map(|(item, _)| {
+                if let Item::Import(decl) = item {
+                    Some(decl.path.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn empty_tco() -> TypeCheckOutput {
@@ -1524,6 +1544,40 @@ mod tests {
         assert!(
             errs.is_empty(),
             "local imports should be exempt from manifest validation"
+        );
+    }
+
+    #[test]
+    fn inject_implicit_imports_ignores_regex_text_in_comments_and_docstrings() {
+        let source = r#"//! Module docs mentioning re"[0-9]+"
+/// Function docs mentioning re"[a-z]+"
+fn main() {
+    // Comment mentioning re"foo"
+}
+"#;
+
+        let imports = implicit_import_paths_for(source);
+        assert!(
+            !imports
+                .iter()
+                .any(|path| path == &["std".to_string(), "text".to_string(), "regex".to_string()]),
+            "comments and docstrings should not trigger regex auto-imports"
+        );
+    }
+
+    #[test]
+    fn inject_implicit_imports_adds_regex_import_for_regex_literals() {
+        let source = r#"fn main() {
+    let digits = re"[0-9]+";
+}
+"#;
+
+        let imports = implicit_import_paths_for(source);
+        assert!(
+            imports
+                .iter()
+                .any(|path| path == &["std".to_string(), "text".to_string(), "regex".to_string()]),
+            "regex literals should still trigger regex auto-imports"
         );
     }
 

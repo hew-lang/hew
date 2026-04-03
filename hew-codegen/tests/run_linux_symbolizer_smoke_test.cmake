@@ -54,7 +54,7 @@ endfunction()
 
 function(assert_symbolized_location SYMBOL_NAME EXPECTED_LINE)
   escape_regex("${SYMBOL_NAME}" SYMBOL_NAME_REGEX)
-  string(REGEX MATCH "(^|\\n)[ \t]*([0-9A-Fa-f]+)[ \t]+[A-Za-z][ \t]+${SYMBOL_NAME_REGEX}(\\n|$)" SYMBOL_MATCH "${NM_OUTPUT}")
+  string(REGEX MATCH "(^|\n)[ \t]*([0-9A-Fa-f]+)[ \t]+[A-Za-z][ \t]+${SYMBOL_NAME_REGEX}(\n|$)" SYMBOL_MATCH "${NM_OUTPUT}")
   if(NOT SYMBOL_MATCH)
     message(FATAL_ERROR
       "Failed to find symbol `${SYMBOL_NAME}` in nm output.\n"
@@ -92,7 +92,7 @@ function(assert_symbolized_location SYMBOL_NAME EXPECTED_LINE)
     )
   endif()
 
-  string(REGEX MATCH "(^|\\n).*/?${HEW_BASENAME_REGEX}:${EXPECTED_LINE}(:[0-9]+)?(\\n|$)" LOCATION_MATCH "${SYMBOLIZER_OUTPUT}")
+  string(REGEX MATCH "(^|\n).*/?${HEW_BASENAME_REGEX}:${EXPECTED_LINE}(:[0-9]+)?(\n|$)" LOCATION_MATCH "${SYMBOLIZER_OUTPUT}")
   if(NOT LOCATION_MATCH)
     message(FATAL_ERROR
       "Expected ${SYMBOLIZER_MODE} to resolve ${SYMBOL_NAME} @ 0x${SYMBOL_ADDRESS} "

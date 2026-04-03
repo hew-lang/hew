@@ -60,13 +60,17 @@ pub fn hover(
     best.map(|(span_key, ty)| {
         let snippet = &source[span_key.start..span_key.end];
         let value = if let Ty::Function { params, ret } = ty {
-            let param_list: Vec<String> = params.iter().map(ToString::to_string).collect();
+            let param_list: Vec<String> = params
+                .iter()
+                .map(|ty| ty.user_facing().to_string())
+                .collect();
             format!(
-                "```hew\nfn {snippet}({}) -> {ret}\n```",
-                param_list.join(", ")
+                "```hew\nfn {snippet}({}) -> {}\n```",
+                param_list.join(", "),
+                ret.user_facing()
             )
         } else {
-            format!("```hew\n{snippet}: {ty}\n```")
+            format!("```hew\n{snippet}: {}\n```", ty.user_facing())
         };
         HoverResult {
             contents: value,
@@ -86,7 +90,7 @@ pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String 
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
-        format!(" -> {}", sig.return_type)
+        format!(" -> {}", sig.return_type.user_facing())
     };
     format!(
         "{pure_prefix}{async_prefix}fn {name}({}){ret}",
@@ -95,8 +99,13 @@ pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String 
 }
 
 /// Format a function signature in a markdown code block for hover display.
+#[must_use]
 pub fn format_fn_signature(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
+    let params: Vec<String> = sig
+        .params
+        .iter()
+        .map(|ty| ty.user_facing().to_string())
+        .collect();
     let code = format!("```hew\n{}\n```", format_fn_sig_line(name, &params, sig));
     if let Some(doc) = &sig.doc_comment {
         format!("{doc}\n\n---\n\n{code}")
@@ -106,12 +115,18 @@ pub fn format_fn_signature(name: &str, sig: &FnSig) -> String {
 }
 
 /// Format a function signature as a single inline line (for embedding in type hover).
+#[must_use]
 pub fn format_fn_signature_inline(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
+    let params: Vec<String> = sig
+        .params
+        .iter()
+        .map(|ty| ty.user_facing().to_string())
+        .collect();
     format_fn_sig_line(name, &params, sig)
 }
 
 /// Format a type definition for hover display.
+#[must_use]
 pub fn format_type_def_hover(type_def: &TypeDef) -> String {
     use std::fmt::Write;
     let kind_str = match type_def.kind {
@@ -132,7 +147,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
     if has_body {
         parts.push_str(" {\n");
         for (field_name, field_ty) in &type_def.fields {
-            let _ = writeln!(parts, "    {field_name}: {field_ty},");
+            let _ = writeln!(parts, "    {field_name}: {},", field_ty.user_facing());
         }
         for (variant_name, payload) in &type_def.variants {
             match payload {
@@ -140,12 +155,17 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
                     let _ = writeln!(parts, "    {variant_name},");
                 }
                 VariantDef::Tuple(types) => {
-                    let types: Vec<String> = types.iter().map(ToString::to_string).collect();
+                    let types: Vec<String> = types
+                        .iter()
+                        .map(|ty| ty.user_facing().to_string())
+                        .collect();
                     let _ = writeln!(parts, "    {variant_name}({}),", types.join(", "));
                 }
                 VariantDef::Struct(fields) => {
-                    let fields: Vec<String> =
-                        fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+                    let fields: Vec<String> = fields
+                        .iter()
+                        .map(|(n, t)| format!("{n}: {}", t.user_facing()))
+                        .collect();
                     let _ = writeln!(parts, "    {variant_name} {{ {} }},", fields.join(", "));
                 }
             }
@@ -396,5 +416,34 @@ mod tests {
         assert!(result.is_some(), "should find hover via expr_types");
         let hr = result.unwrap();
         assert!(hr.contents.contains("i32"), "should show expression type");
+    }
+
+    #[test]
+    fn hover_uses_int_alias_for_user_facing_types() {
+        let source = "fn main() {\n    let count = 42;\n}";
+        let pr = hew_parser::parse(source);
+        let count_offset = source.find("count").unwrap();
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey {
+                start: count_offset,
+                end: count_offset + "count".len(),
+            },
+            Ty::I64,
+        );
+        let tc = TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
+        assert!(result.contents.contains("count: int"));
+        assert!(!result.contents.contains("i64"));
     }
 }

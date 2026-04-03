@@ -114,7 +114,7 @@ fn try_dot_completions(
         items.push(CompletionItem {
             label: field_name.clone(),
             kind: CompletionKind::Field,
-            detail: Some(field_ty.to_string()),
+            detail: Some(field_ty.user_facing().to_string()),
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,

@@ -26,7 +26,7 @@ pub fn build_signature_help(
     // Build parameter infos with byte-offset ranges within the label string.
     let mut params = Vec::new();
     for (name, ty) in sig.param_names.iter().zip(&sig.params) {
-        let param_text = format!("{name}: {ty}");
+        let param_text = format!("{name}: {}", ty.user_facing());
         if let Some(start) = label.find(&param_text) {
             params.push(ParameterInfo {
                 label_start: start as u32,
@@ -141,7 +141,7 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
         .param_names
         .iter()
         .zip(&sig.params)
-        .map(|(n, t)| format!("{n}: {t}"))
+        .map(|(n, t)| format!("{n}: {}", t.user_facing()))
         .collect();
     let display_name = name
         .rsplit(['.', ':'])
@@ -248,5 +248,13 @@ mod tests {
                 "parameter label should have non-zero length"
             );
         }
+    }
+
+    #[test]
+    fn sig_help_uses_int_alias() {
+        let source = "sum(";
+        let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
+        let result = build_signature_help(source, &tc, source.len()).unwrap();
+        assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
     }
 }

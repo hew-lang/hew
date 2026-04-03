@@ -31,6 +31,33 @@ hew eval
 
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
+### Language Basics
+
+**`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — Hew has no macro system; these are ordinary built-in functions that are auto-imported into every file:
+
+```hew
+fn main() {
+    print("hello ");     // no trailing newline
+    println("world");    // appends newline
+    println(42);         // works with any type that implements Display
+}
+```
+
+To use modules beyond the builtins, add an `import` statement at the top of your file:
+
+```hew
+import std::fs;
+import std::encoding::json;
+
+fn main() {
+    let data = fs::read_to_string("config.json");
+    let obj = json::parse(data);
+    println(obj);
+}
+```
+
+See [`std/README.md`](std/README.md) for the full module list.
+
 ### Distributed Actors
 
 Actors communicate across nodes with the same syntax used locally. The runtime handles transport, registry gossip, and remote dispatch transparently.

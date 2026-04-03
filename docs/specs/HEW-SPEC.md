@@ -4030,7 +4030,118 @@ mailbox 100 overflow coalesce(request_id);
 
 ---
 
-## 10. Distributed computing and the Node API
+## 10. Debugging, profiling, and observability
+
+Hew ships built-in tooling for debugging and profiling actor programs without
+requiring external agents or separate SDK instrumentation.
+
+### 10.1 `hew debug` — interactive debugger
+
+`hew debug file.hew [-- args...]` compiles the program with full debug
+information (no optimisation, no stripping) and launches it immediately under
+the system debugger:
+
+- **macOS / Linux with LLDB:** uses `lldb -- <binary> [args]`
+- **Linux with GDB:** uses `gdb --args <binary> [args]`
+
+If a Hew helper script (`hew_lldb.py` / `hew-gdb.py`) is found in
+`share/hew/` next to the installed `hew` binary (or in `scripts/debug/`
+relative to the development checkout), it is loaded automatically. These
+scripts improve pretty-printing of Hew types inside the debugger.
+
+```sh
+hew debug myapp.hew -- --config prod.toml
+```
+
+### 10.2 Built-in runtime profiler (`HEW_PPROF`)
+
+Every compiled Hew binary includes a dormant profiler that activates when the
+`HEW_PPROF` environment variable is set:
+
+| `HEW_PPROF` value | Behaviour |
+|---|---|
+| `auto` or `1` (Unix) | Binds a per-user unix domain socket; auto-discovered by `hew-observe` |
+| `:6060` or `host:port` | Binds a TCP listener on the given address |
+| *(unset)* | Profiler is disabled; zero overhead |
+
+The profiler exposes a live HTTP JSON API with scheduler metrics, per-actor
+mailbox depths, memory allocation stats, and time-series history. It runs on
+a dedicated OS thread and does not interfere with the actor scheduler.
+
+The easiest way to enable it is via `hew run --profile`:
+
+```sh
+hew run myapp.hew --profile
+```
+
+This sets `HEW_PPROF=auto` on the compiled child process (unless the variable
+is already set in the environment).
+
+For an already-compiled binary:
+
+```sh
+HEW_PPROF=auto ./myapp          # unix socket, auto-discovered
+HEW_PPROF=:6060 ./myapp         # TCP on port 6060
+```
+
+### 10.3 Profile file output (`HEW_PROF_OUTPUT`)
+
+Set `HEW_PROF_OUTPUT` to write a profile file on program exit:
+
+| Value | File written |
+|---|---|
+| `pprof` | `hew-profile.pb.gz` (pprof protobuf, compatible with `go tool pprof`) |
+| `flat` | `hew-profile.txt` (human-readable flat profile) |
+| `both` | Both files |
+
+```sh
+HEW_PPROF=auto HEW_PROF_OUTPUT=pprof ./myapp
+go tool pprof hew-profile.pb.gz
+```
+
+### 10.4 `hew-observe` — live TUI dashboard
+
+`hew-observe` is a terminal UI that attaches to a running program's profiler
+endpoint and displays real-time data:
+
+- Live actor count and message throughput
+- Per-actor mailbox depth and processing latency
+- Actor group hierarchy and supervisor trees
+- Memory allocation stats
+- Crash logs
+
+**Auto-discovery (Unix):** when `HEW_PPROF=auto`, `hew-observe` finds the
+running program automatically via the unix socket discovery directory:
+
+```sh
+# Terminal 1
+hew run myapp.hew --profile
+
+# Terminal 2
+hew-observe
+```
+
+**Explicit TCP address:**
+
+```sh
+hew-observe --addr localhost:6060
+```
+
+**List running profilers:**
+
+```sh
+hew-observe --list
+```
+
+**Multi-node observation:**
+
+```sh
+hew-observe --addr node1:6060 --node node2:6060 --node node3:6060
+```
+
+---
+
+## 11. Distributed computing and the Node API
 
 Hew provides built-in distributed computing through the `Node` API. Actors on different nodes communicate transparently — message sends to a remote actor use the same syntax as local sends. The runtime handles serialization, transport, and routing automatically.
 
@@ -4240,7 +4351,7 @@ fn main() {
 
 ---
 
-## 11. Syntax and EBNF (audited for v0.2.0)
+## 12. Syntax and EBNF (audited for v0.2.0)
 
 The complete formal grammar is maintained in two files:
 
@@ -4443,7 +4554,7 @@ above shows their surface spelling.
 
 ---
 
-## 12. Self-Hosting Roadmap
+## 13. Self-Hosting Roadmap
 
 Hew is designed with self-hosting as a long-term goal. This section outlines the strategy and requirements for the Hew compiler to be written in Hew itself.
 
@@ -4615,7 +4726,7 @@ Benefits:
 
 ---
 
-## 13. "Researched outcomes" (what to build first to make Hew real)
+## 14. "Researched outcomes" (what to build first to make Hew real)
 
 1. **Actor + type safety baseline**: proven feasible and performant (Pony demonstrates the capability-typed actor approach can be implemented efficiently). ([tutorial.ponylang.io][1])
 2. **Supervision semantics**: OTP restart categories are well-defined and battle-tested; encode them as primitives. ([Erlang.org][6])
@@ -4624,7 +4735,7 @@ Benefits:
 
 ---
 
-## 14. Minimum viable Hew (implementation plan aligned to this spec)
+## 15. Minimum viable Hew (implementation plan aligned to this spec)
 
 - **Phase A (compiler front-end)**: lexer/parser → AST → typecheck (Send/Frozen rules)
 - **Phase B (runtime)**: scheduler, actor mailboxes, bounded channels, timers, TCP

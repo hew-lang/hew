@@ -12,11 +12,25 @@ Connects to a running Hew program's built-in profiler endpoint and displays:
 ## Usage
 
 ```sh
-# Start your Hew program with profiling enabled
+# Start your Hew program with profiling enabled (auto unix-socket discovery)
 hew run myapp.hew --profile
 
-# In another terminal, attach the observer
+# In another terminal, attach the observer (auto-discovers on Unix)
 hew-observe
+
+# Or target a specific TCP address
+hew-observe --addr localhost:6060
+
+# List all discovered profiler processes (Unix only)
+hew-observe --list
+```
+
+You can also run an already-compiled binary directly without `hew run`:
+
+```sh
+HEW_PPROF=auto ./myapp      # Unix: per-user socket, auto-discovered
+HEW_PPROF=:6060 ./myapp     # TCP on port 6060
+hew-observe                 # or: hew-observe --addr localhost:6060
 ```
 
 ## Part of the Hew compiler

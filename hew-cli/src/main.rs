@@ -158,10 +158,19 @@ fn cmd_run(a: &args::RunArgs) {
 
     // Run the compiled binary, holding a Child handle so signals sent directly
     // to `hew run` also terminate the compiled program instead of orphaning it.
-    let mut child = match std::process::Command::new(&tmp_bin)
-        .args(&a.program_args)
-        .spawn()
-    {
+    let mut cmd = std::process::Command::new(&tmp_bin);
+    cmd.args(&a.program_args);
+
+    // --profile: enable the built-in runtime profiler by setting HEW_PPROF
+    // on the child process if the caller hasn't already set it explicitly.
+    if a.profile && std::env::var_os("HEW_PPROF").is_none() {
+        // "auto" on Unix → per-user unix socket + auto-discovery for hew-observe.
+        // On non-Unix platforms the runtime falls back to localhost:6060.
+        cmd.env("HEW_PPROF", "auto");
+        eprintln!("[hew] profiler enabled — run `hew-observe` in another terminal to attach");
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: cannot run compiled binary: {e}");

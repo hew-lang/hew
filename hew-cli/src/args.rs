@@ -150,6 +150,12 @@ pub struct RunArgs {
     /// Build with debug info (no optimization, no stripping).
     #[arg(long, short = 'g')]
     pub debug: bool,
+    /// Enable the built-in runtime profiler (sets `HEW_PPROF=auto` if not already set).
+    /// On Unix this exposes a unix socket that `hew-observe` auto-discovers;
+    /// on other platforms it defaults to TCP on :6060.
+    /// Override the address with the `HEW_PPROF` environment variable directly.
+    #[arg(long)]
+    pub profile: bool,
     /// Pass an extra library or linker argument to the native link step.
     #[arg(long = "link-lib", value_name = "PATH")]
     pub link_libs: Vec<String>,

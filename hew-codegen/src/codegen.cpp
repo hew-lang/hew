@@ -560,12 +560,23 @@ static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter,
     auto pair = mlir::cast<mlir::ArrayAttr>(entry);
     auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
     auto tag = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
-    if (tag != "__handle_transfer")
-      continue;
-    // GEP to the handle field inside the source struct and store null.
     auto fieldPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, ptrType, structTy, structAddr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
+    if (tag == "__recurse") {
+      auto bodyTypes = structTy.getBody();
+      if (fieldIdx < 0 || static_cast<size_t>(fieldIdx) >= bodyTypes.size())
+        continue;
+      auto nestedStructTy =
+          mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyTypes[fieldIdx]);
+      if (!nestedStructTy || !nestedStructTy.isIdentified())
+        continue;
+      nullOutStructHandleFields(rewriter, loc, fieldPtr, nestedStructTy, cloneAttr);
+      continue;
+    }
+    if (tag != "__handle_transfer")
+      continue;
+    // GEP to the handle field inside the source struct and store null.
     auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
     mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, fieldPtr);
   }
@@ -1840,6 +1851,9 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       // signature-converted yet when this pattern fires.
       auto *tc = getTypeConverter();
       auto lowerType = [&](mlir::Type t) -> mlir::Type {
+        if (mlir::isa<mlir::LLVM::LLVMPointerType, mlir::LLVM::LLVMStructType,
+                      mlir::IntegerType, mlir::FloatType, mlir::IndexType>(t))
+          return t;
         if (auto c = tc->convertType(t))
           return c;
         return t;

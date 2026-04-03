@@ -5713,12 +5713,13 @@ bool MLIRGen::structHasOwnedFields(const std::string &name) const {
   if (it == structTypes.end())
     return false;
   for (const auto &field : it->second.fields) {
-    // Recursive check: use a simplified test — only check Hew-level heap types,
-    // not nested structs (those are handled by recursive field drops).
+    // Recursive check for any field that carries ownership/drop semantics at
+    // actor message boundaries, including transferred handles.
     if (mlir::isa<hew::StringRefType>(field.semanticType) ||
         mlir::isa<hew::VecType>(field.semanticType) ||
         mlir::isa<hew::HashMapType>(field.semanticType) ||
-        mlir::isa<hew::ClosureType>(field.semanticType))
+        mlir::isa<hew::ClosureType>(field.semanticType) ||
+        mlir::isa<hew::HandleType>(field.semanticType))
       return true;
     if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
       if (fst.isIdentified()) {
@@ -5993,6 +5994,66 @@ void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location 
     if (fieldIsUserDrop)
       emitFieldDropsForUserStruct(fieldVal, loc);
   }
+}
+
+mlir::Value MLIRGen::nullTransferredHandlesInStructValue(mlir::Value structVal,
+                                                         mlir::Location loc) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified())
+    return structVal;
+  auto it = structTypes.find(structTy.getName().str());
+  if (it == structTypes.end())
+    return structVal;
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  mlir::Value rebuilt = structVal;
+  for (const auto &field : it->second.fields) {
+    if (mlir::isa<hew::HandleType>(field.semanticType)) {
+      auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          builder, loc, rebuilt, nullPtr, llvm::ArrayRef<int64_t>{field.index});
+      continue;
+    }
+    if (auto nested = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
+      if (!nested.isIdentified() || !structHasOwnedFields(nested.getName().str()))
+        continue;
+      auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, rebuilt,
+                                              builder.getStringAttr(field.name),
+                                              builder.getI64IntegerAttr(field.index));
+      auto cleared = nullTransferredHandlesInStructValue(fieldVal, loc);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          builder, loc, rebuilt, cleared, llvm::ArrayRef<int64_t>{field.index});
+    }
+  }
+  return rebuilt;
+}
+
+void MLIRGen::nullOutTransferredHandleFields(const std::string &varName,
+                                             mlir::Location loc) {
+  mlir::Value slot = getMutableVarSlot(varName);
+  if (!slot) {
+    for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend() && !slot; ++scopeIt) {
+      for (auto &entry : *scopeIt) {
+        if (entry.varName == varName && entry.promotedSlot) {
+          slot = entry.promotedSlot;
+          break;
+        }
+      }
+    }
+  }
+  if (!slot)
+    return;
+
+  auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(slot.getType());
+  if (!memrefTy)
+    return;
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(memrefTy.getElementType());
+  if (!structTy || !structTy.isIdentified())
+    return;
+
+  auto loaded = mlir::memref::LoadOp::create(builder, loc, slot);
+  auto cleared = nullTransferredHandlesInStructValue(loaded, loc);
+  mlir::memref::StoreOp::create(builder, loc, cleared, slot, mlir::ValueRange{});
 }
 
 void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {

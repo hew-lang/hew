@@ -401,8 +401,16 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
             // Register drops for owned types (deep-copied into gen ctx args)
             auto paramType = paramVal.getType();
-            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true); !dropFn.empty())
-              registerDroppable(param.name, dropFn);
+            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);
+                !dropFn.empty()) {
+              bool isUserDrop = false;
+              if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(paramType);
+                  structTy && structTy.isIdentified()) {
+                isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
+              }
+              if (!isUserDrop)
+                registerDroppable(param.name, dropFn, false);
+            }
 
             ++pi;
           }
@@ -590,8 +598,16 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         // Register drops for owned types (deep-copied at actor boundary)
         auto argType = argVal.getType();
-        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/true); !dropFn.empty())
-          registerDroppable(param.name, dropFn);
+        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/true);
+            !dropFn.empty()) {
+          bool isUserDrop = false;
+          if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+              structTy && structTy.isIdentified()) {
+            isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
+          }
+          if (!isUserDrop)
+            registerDroppable(param.name, dropFn, false);
+        }
 
         ++pi;
       }
@@ -1550,8 +1566,10 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       // Structs with owned fields are deep-copied at the boundary;
       // the sender retains the originals and must still drop them.
       if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
-        if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str()))
+        if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
+          nullOutTransferredHandleFields(identExpr->name, location);
           continue;
+        }
       unregisterDroppable(identExpr->name);
     }
   }
@@ -1616,8 +1634,10 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     // Structs with owned fields are deep-copied at the boundary;
     // the sender retains the originals and must still drop them.
     if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
-      if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str()))
+      if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
+        nullOutTransferredHandleFields(identExpr->name, location);
         continue;
+      }
     unregisterDroppable(identExpr->name);
   }
 
@@ -1694,8 +1714,10 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
                     hew::ClosureType>(msgType);
       if (!senderRetains) {
         if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType))
-          senderRetains = structTy.isIdentified() &&
-                          structHasOwnedFields(structTy.getName().str());
+          if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
+            senderRetains = true;
+            nullOutTransferredHandleFields(identExpr->name, location);
+          }
       }
       if (!senderRetains)
         unregisterDroppable(identExpr->name);

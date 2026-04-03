@@ -10,9 +10,12 @@ actor Runner {
     let last: int;
 
     receive fn run(job: Job) {
-        let f = job.action;
-        last = f(job.id);
-        println(last);
+        {
+            let f = job.action;
+            println(f(job.id));
+        };
+        let g = job.action;
+        last = g(job.id);
     }
 
     receive fn get_last() -> int {

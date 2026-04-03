@@ -1,0 +1,78 @@
+import std::net::quic;
+
+// End-to-end test for the QUICStream send_string / recv_string helpers.
+// Mirrors the byte-level quic_loopback.hew structure but exercises the
+// text surface so callers do not need to reach for raw FFI or manual
+// bytes conversion.
+
+fn main() {
+    let server = quic.new_server("127.0.0.1:0");
+    let server_endpoint = server.observe();
+    let dial_addr = server_endpoint.local_addr;
+
+    scope |s| {
+        s.spawn {
+            let conn = server.accept();
+            let connected = server.on_event();
+            assert_eq(connected.kind(), 0);
+            connected.free();
+
+            let stream = conn.accept_stream();
+            let opened = conn.on_event();
+            assert_eq(opened.kind(), 2);
+            opened.free();
+
+            // Receive as string, echo it back.
+            let msg = stream.recv_string();
+            assert_eq(stream.send_string(msg), 0);
+            assert_eq(stream.finish(), 0);
+            assert_eq(stream.close(), 0);
+
+            // Wait for stream-closed then peer-disconnected before tearing
+            // down.  Calling conn.disconnect() too early races delivery.
+            let ev1 = conn.on_event();
+            assert_eq(ev1.kind(), 3);
+            ev1.free();
+
+            let ev2 = conn.on_event();
+            assert_eq(ev2.kind(), 1);
+            ev2.free();
+
+            assert_eq(conn.disconnect(), 0);
+            server.close();
+        };
+
+        let client = quic.new_client();
+        let conn = client.connect(dial_addr, "localhost");
+        let connected = client.on_event();
+        assert_eq(connected.kind(), 0);
+        connected.free();
+
+        let stream = conn.open_stream();
+        let opened = conn.on_event();
+        assert_eq(opened.kind(), 2);
+        opened.free();
+
+        assert_eq(stream.send_string("hello string quic"), 0);
+        // Receive the echo from the server and print it to produce the
+        // expected output line.  The assertion guards correctness; if it
+        // fails the test fails before reaching println.
+        let reply = stream.recv_string();
+        assert_eq(reply, "hello string quic");
+        println(reply);
+
+        assert_eq(stream.finish(), 0);
+        // Drain to EOF before close so the server's STREAM_FIN has been
+        // delivered and we do not race the connection teardown.
+        let eof = stream.recv();
+        assert_eq(eof.len(), 0);
+
+        assert_eq(stream.close(), 0);
+        let closed = conn.on_event();
+        assert_eq(closed.kind(), 3);
+        closed.free();
+
+        assert_eq(conn.disconnect(), 0);
+        client.close();
+    }
+}

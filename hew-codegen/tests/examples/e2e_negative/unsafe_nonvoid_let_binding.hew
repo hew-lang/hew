@@ -1,0 +1,29 @@
+// Codegen regression: let x = unsafe { … }; expr2 in a *non-void* function.
+//
+// MLIRGenStmt.cpp generateBlock fires useReturnGuards for the inline unsafe
+// block (its MLIR parent op is still the enclosing FuncOp), stores the result
+// directly into returnSlot, and returns nullptr.  generateLetStmt receives
+// nullptr and exits without binding the variable; the next use of the name
+// produces "undeclared variable".
+//
+// Affected: hew-codegen ≤ current HEAD.  Confirmed on both i32 and bytes
+// return types.  std/net/quic/quic.hew works around this with single-expr
+// private helpers (_quic_string_to_bytes etc.).
+//
+// When this test starts FAILING (i.e. the code compiles successfully), the
+// codegen bug is fixed.  At that point:
+//   1. Delete this file and its CMakeLists.txt entry.
+//   2. Remove the private helpers in std/net/quic/quic.hew and use the
+//      direct `let data = unsafe { ffi(…) }; …` form instead.
+extern "C" {
+    fn abs(n: i32) -> i32;
+}
+
+fn double_abs(n: i32) -> i32 {
+    let a = unsafe { abs(n) };
+    a + a
+}
+
+fn main() {
+    println(double_abs(-7));
+}

@@ -331,6 +331,14 @@ pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> Q
     unsafe { hew_quic_new_server_with_tls(addr, cert_pem, key_pem) }
 }
 
+/// Return the last constructor/setup error observed on this thread.
+///
+/// Failed calls to `new_client*()` and `new_server*()` update this string.
+/// Successful constructors clear it.
+pub fn last_error() -> String {
+    unsafe { hew_quic_last_error() }
+}
+
 // Keep observation assembly in module-level wrappers so imported
 // `handle.observe()` calls rewrite during AST enrichment.
 pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
@@ -373,6 +381,7 @@ extern "C" {
     fn hew_quic_new_client_with_ca(ca_pem: String) -> QUICEndpoint;
     fn hew_quic_new_server(addr: String) -> QUICEndpoint;
     fn hew_quic_new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint;
+    fn hew_quic_last_error() -> String;
 
     // Endpoint methods
     fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;

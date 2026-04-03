@@ -39,6 +39,23 @@ const EVENT_STREAM_OPENED: i32 = 2;
 const EVENT_STREAM_CLOSED: i32 = 3;
 const EVENT_ERROR: i32 = -1;
 
+std::thread_local! {
+    static LAST_CONSTRUCTOR_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_constructor_last_error(msg: impl Into<String>) {
+    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_constructor_last_error() {
+    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_constructor_last_error() -> String {
+    LAST_CONSTRUCTOR_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
 #[derive(Debug, Default)]
 struct EventQueue {
     queue: Mutex<VecDeque<i32>>,
@@ -226,35 +243,30 @@ fn resolve_connect_addr(addr: &str) -> Option<SocketAddr> {
     connect_addr.to_socket_addrs().ok()?.next()
 }
 
-fn build_runtime() -> Option<Arc<Runtime>> {
+fn build_runtime() -> Result<Arc<Runtime>, String> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .ok()
         .map(Arc::new)
+        .map_err(|err| format!("failed to build QUIC runtime: {err}"))
 }
 
-fn build_client_endpoint(client_config: ClientConfig) -> *mut HewQuicEndpoint {
-    let Some(rt) = build_runtime() else {
-        return std::ptr::null_mut();
-    };
+fn build_client_endpoint(client_config: ClientConfig) -> Result<*mut HewQuicEndpoint, String> {
+    let rt = build_runtime()?;
     // "0.0.0.0:0" is a valid address literal — parse cannot fail.
     let bind: SocketAddr = "0.0.0.0:0".parse().expect("valid address literal");
     let endpoint = rt.block_on(async {
         match Endpoint::client(bind) {
             Ok(mut ep) => {
                 ep.set_default_client_config(client_config);
-                Some(ep)
+                Ok(ep)
             }
-            Err(e) => {
-                eprintln!("hew_quic: failed to bind client socket: {e}");
-                None
-            }
+            Err(err) => Err(format!("failed to bind client socket: {err}")),
         }
     });
-    match endpoint {
-        Some(endpoint) => Box::into_raw(Box::new(HewQuicEndpoint {
+    endpoint.map(|endpoint| {
+        Box::into_raw(Box::new(HewQuicEndpoint {
             rt,
             observation: Mutex::new(EndpointObservationState {
                 local_addr: endpoint_local_addr_string(&endpoint),
@@ -262,31 +274,27 @@ fn build_client_endpoint(client_config: ClientConfig) -> *mut HewQuicEndpoint {
             }),
             endpoint,
             events: Arc::new(EventQueue::default()),
-        })),
-        None => std::ptr::null_mut(),
-    }
+        }))
+    })
 }
 
 fn build_server_endpoint(
     bind_addr: SocketAddr,
     server_config: ServerConfig,
-) -> *mut HewQuicEndpoint {
-    let Some(rt) = build_runtime() else {
-        return std::ptr::null_mut();
-    };
-    let endpoint = rt.block_on(async { Endpoint::server(server_config, bind_addr).ok() });
-    match endpoint {
-        Some(endpoint) => Box::into_raw(Box::new(HewQuicEndpoint {
-            rt,
-            observation: Mutex::new(EndpointObservationState {
-                local_addr: endpoint_local_addr_string(&endpoint),
-                ..EndpointObservationState::default()
-            }),
-            endpoint,
-            events: Arc::new(EventQueue::default()),
-        })),
-        None => std::ptr::null_mut(),
-    }
+) -> Result<*mut HewQuicEndpoint, String> {
+    let rt = build_runtime()?;
+    let endpoint = rt
+        .block_on(async { Endpoint::server(server_config, bind_addr) })
+        .map_err(|err| format!("failed to bind server socket: {err}"))?;
+    Ok(Box::into_raw(Box::new(HewQuicEndpoint {
+        rt,
+        observation: Mutex::new(EndpointObservationState {
+            local_addr: endpoint_local_addr_string(&endpoint),
+            ..EndpointObservationState::default()
+        }),
+        endpoint,
+        events: Arc::new(EventQueue::default()),
+    })))
 }
 
 fn endpoint_local_addr_string(endpoint: &Endpoint) -> String {
@@ -439,10 +447,23 @@ pub struct HewQuicEvent {
 
 #[no_mangle]
 pub extern "C" fn hew_quic_new_client() -> *mut HewQuicEndpoint {
-    let Ok(client_config) = insecure_client_config() else {
-        return std::ptr::null_mut();
+    let client_config = match insecure_client_config() {
+        Ok(client_config) => client_config,
+        Err(err) => {
+            set_constructor_last_error(format!("failed to configure insecure client: {err}"));
+            return std::ptr::null_mut();
+        }
     };
-    build_client_endpoint(client_config)
+    match build_client_endpoint(client_config) {
+        Ok(endpoint) => {
+            clear_constructor_last_error();
+            endpoint
+        }
+        Err(err) => {
+            set_constructor_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[no_mangle]
@@ -458,12 +479,26 @@ pub unsafe extern "C" fn hew_quic_new_client_with_ca(
     // SAFETY: if non-null, `ca_pem` points to a caller-owned C string that
     // remains valid for the duration of this call.
     let Some(ca_pem) = (unsafe { cstr_to_str(ca_pem) }) else {
+        set_constructor_last_error("invalid CA bundle");
         return std::ptr::null_mut();
     };
-    let Ok(client_config) = client_config_with_ca(ca_pem) else {
-        return std::ptr::null_mut();
+    let client_config = match client_config_with_ca(ca_pem) {
+        Ok(client_config) => client_config,
+        Err(err) => {
+            set_constructor_last_error(format!("failed to configure client CA bundle: {err}"));
+            return std::ptr::null_mut();
+        }
     };
-    build_client_endpoint(client_config)
+    match build_client_endpoint(client_config) {
+        Ok(endpoint) => {
+            clear_constructor_last_error();
+            endpoint
+        }
+        Err(err) => {
+            set_constructor_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[no_mangle]
@@ -478,15 +513,30 @@ pub unsafe extern "C" fn hew_quic_new_server(addr: *const c_char) -> *mut HewQui
     // SAFETY: if non-null, `addr` points to a caller-owned C string that
     // remains valid for the duration of this call.
     let Some(addr_str) = (unsafe { cstr_to_str(addr) }) else {
+        set_constructor_last_error("invalid bind address");
         return std::ptr::null_mut();
     };
     let Some(bind_addr) = resolve_bind_addr(addr_str) else {
+        set_constructor_last_error(format!("could not resolve bind address `{addr_str}`"));
         return std::ptr::null_mut();
     };
-    let Ok(server_config) = self_signed_server_config() else {
-        return std::ptr::null_mut();
+    let server_config = match self_signed_server_config() {
+        Ok(server_config) => server_config,
+        Err(err) => {
+            set_constructor_last_error(format!("failed to configure self-signed TLS: {err}"));
+            return std::ptr::null_mut();
+        }
     };
-    build_server_endpoint(bind_addr, server_config)
+    match build_server_endpoint(bind_addr, server_config) {
+        Ok(endpoint) => {
+            clear_constructor_last_error();
+            endpoint
+        }
+        Err(err) => {
+            set_constructor_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[no_mangle]
@@ -504,25 +554,48 @@ pub unsafe extern "C" fn hew_quic_new_server_with_tls(
     // SAFETY: if non-null, `addr` points to a caller-owned C string that
     // remains valid for the duration of this call.
     let Some(addr_str) = (unsafe { cstr_to_str(addr) }) else {
+        set_constructor_last_error("invalid bind address");
         return std::ptr::null_mut();
     };
     // SAFETY: if non-null, `cert_pem` points to a caller-owned C string that
     // remains valid for the duration of this call.
     let Some(cert_pem) = (unsafe { cstr_to_str(cert_pem) }) else {
+        set_constructor_last_error("invalid TLS certificate PEM");
         return std::ptr::null_mut();
     };
     // SAFETY: if non-null, `key_pem` points to a caller-owned C string that
     // remains valid for the duration of this call.
     let Some(key_pem) = (unsafe { cstr_to_str(key_pem) }) else {
+        set_constructor_last_error("invalid TLS private key PEM");
         return std::ptr::null_mut();
     };
     let Some(bind_addr) = resolve_bind_addr(addr_str) else {
+        set_constructor_last_error(format!("could not resolve bind address `{addr_str}`"));
         return std::ptr::null_mut();
     };
-    let Ok(server_config) = server_config_from_pem(cert_pem, key_pem) else {
-        return std::ptr::null_mut();
+    let server_config = match server_config_from_pem(cert_pem, key_pem) {
+        Ok(server_config) => server_config,
+        Err(err) => {
+            set_constructor_last_error(format!("failed to configure server TLS: {err}"));
+            return std::ptr::null_mut();
+        }
     };
-    build_server_endpoint(bind_addr, server_config)
+    match build_server_endpoint(bind_addr, server_config) {
+        Ok(endpoint) => {
+            clear_constructor_last_error();
+            endpoint
+        }
+        Err(err) => {
+            set_constructor_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+/// Return the last constructor/setup error for the current thread.
+pub extern "C" fn hew_quic_last_error() -> *mut c_char {
+    str_to_malloc(&get_constructor_last_error())
 }
 
 // ── Endpoint methods ──────────────────────────────────────────────────────────
@@ -1623,6 +1696,7 @@ mod tests {
 
     #[test]
     fn new_client_with_ca_null_returns_null() {
+        clear_constructor_last_error();
         // SAFETY: null is explicitly handled.
         let ep = unsafe { hew_quic_new_client_with_ca(std::ptr::null()) };
         assert!(ep.is_null());
@@ -1665,6 +1739,7 @@ mod tests {
 
     #[test]
     fn new_server_with_tls_null_returns_null() {
+        clear_constructor_last_error();
         // SAFETY: null is explicitly handled.
         let ep = unsafe {
             hew_quic_new_server_with_tls(std::ptr::null(), std::ptr::null(), std::ptr::null())
@@ -1674,9 +1749,72 @@ mod tests {
 
     #[test]
     fn new_server_null_addr() {
+        clear_constructor_last_error();
         // SAFETY: null is explicitly handled.
         let ep = unsafe { hew_quic_new_server(std::ptr::null()) };
         assert!(ep.is_null());
+    }
+
+    #[test]
+    fn quic_last_error_is_empty_by_default() {
+        clear_constructor_last_error();
+        // SAFETY: the getter returns an owned malloc string for this thread.
+        assert!(unsafe { take_string(hew_quic_last_error()) }.is_empty());
+    }
+
+    #[test]
+    fn new_server_null_addr_sets_constructor_last_error() {
+        clear_constructor_last_error();
+
+        // SAFETY: null is explicitly handled.
+        let ep = unsafe { hew_quic_new_server(std::ptr::null()) };
+        assert!(ep.is_null());
+        assert_eq!(
+            // SAFETY: the getter returns an owned malloc string for this thread.
+            unsafe { take_string(hew_quic_last_error()) },
+            "invalid bind address"
+        );
+    }
+
+    #[test]
+    fn new_client_with_ca_invalid_pem_sets_constructor_last_error() {
+        clear_constructor_last_error();
+
+        let pem = c"not a pem bundle";
+        // SAFETY: pem is a valid C string literal.
+        let ep = unsafe { hew_quic_new_client_with_ca(pem.as_ptr()) };
+        assert!(ep.is_null());
+        // SAFETY: the getter returns an owned malloc string for this thread.
+        let error = unsafe { take_string(hew_quic_last_error()) };
+        assert!(
+            error.contains("failed to configure client CA bundle"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn successful_constructor_clears_constructor_last_error() {
+        clear_constructor_last_error();
+
+        let bad_addr = c"not-an-address";
+        // SAFETY: bad_addr is a valid C string literal.
+        let ep = unsafe { hew_quic_new_server(bad_addr.as_ptr()) };
+        assert!(ep.is_null());
+        // SAFETY: the getter returns an owned malloc string for this thread.
+        assert!(unsafe { take_string(hew_quic_last_error()) }
+            .contains("could not resolve bind address"),);
+
+        let good_addr = c":0";
+        // SAFETY: good_addr is a valid C string literal.
+        let ep = unsafe { hew_quic_new_server(good_addr.as_ptr()) };
+        assert!(
+            !ep.is_null(),
+            "expected successful constructor to clear error"
+        );
+        // SAFETY: the getter returns an owned malloc string for this thread.
+        assert!(unsafe { take_string(hew_quic_last_error()) }.is_empty());
+        // SAFETY: ep was just created.
+        unsafe { hew_quic_endpoint_close(ep) };
     }
 
     #[test]

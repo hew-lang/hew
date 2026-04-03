@@ -1,0 +1,23 @@
+import std::net::quic;
+
+fn main() {
+    assert_eq(quic.last_error(), "");
+
+    let _ = quic.new_server("not-an-address");
+    let bind_error = quic.last_error();
+    assert(bind_error.contains("could not resolve bind address"));
+
+    let _ = quic.new_client_with_ca("not a pem bundle");
+    let ca_error = quic.last_error();
+    assert(ca_error.contains("failed to configure client CA bundle"));
+
+    let client = quic.new_client();
+    assert_eq(quic.last_error(), "");
+    client.close();
+
+    let server = quic.new_server(":0");
+    assert_eq(quic.last_error(), "");
+    server.close();
+
+    println("ok");
+}

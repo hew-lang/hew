@@ -4765,48 +4765,10 @@ impl<'src> Parser<'src> {
                 Pattern::Literal(Literal::Bool(false))
             }
             // Contextual keywords used as identifiers in patterns
-            Some(
-                Token::After
-                | Token::From
-                | Token::Init
-                | Token::Child
-                | Token::Restart
-                | Token::Budget
-                | Token::Strategy
-                | Token::Permanent
-                | Token::Transient
-                | Token::Temporary
-                | Token::OneForOne
-                | Token::OneForAll
-                | Token::RestForOne
-                | Token::Wire
-                | Token::Optional
-                | Token::Deprecated
-                | Token::Reserved,
-            ) => {
-                let name = match self.peek().unwrap() {
-                    Token::After => "after",
-                    Token::From => "from",
-                    Token::Init => "init",
-                    Token::Child => "child",
-                    Token::Restart => "restart",
-                    Token::Budget => "budget",
-                    Token::Strategy => "strategy",
-                    Token::Permanent => "permanent",
-                    Token::Transient => "transient",
-                    Token::Temporary => "temporary",
-                    Token::OneForOne => "one_for_one",
-                    Token::OneForAll => "one_for_all",
-                    Token::RestForOne => "rest_for_one",
-                    Token::Wire => "wire",
-                    Token::Optional => "optional",
-                    Token::Deprecated => "deprecated",
-                    Token::Reserved => "reserved",
-                    _ => unreachable!(),
-                }
-                .to_string();
+            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
+                let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
                 self.advance();
-                Pattern::Identifier(name)
+                Pattern::Identifier(name.to_string())
             }
             _ => {
                 let found = match self.peek() {
@@ -5295,6 +5257,59 @@ mod tests {
         };
         assert_eq!(*value, -1);
         assert_eq!(*radix, IntRadix::Decimal);
+    }
+
+    #[test]
+    fn parse_pattern_contextual_keywords() {
+        // All contextual keywords that can appear as identifiers in patterns.
+        // state/event/on/when/join were previously missing from the inline list.
+        let keywords = [
+            "after",
+            "from",
+            "init",
+            "child",
+            "restart",
+            "budget",
+            "strategy",
+            "permanent",
+            "transient",
+            "temporary",
+            "one_for_one",
+            "one_for_all",
+            "rest_for_one",
+            "wire",
+            "optional",
+            "deprecated",
+            "reserved",
+            "state",
+            "event",
+            "on",
+            "when",
+            "join",
+        ];
+        for kw in &keywords {
+            let source = format!("fn check(x: i32) -> i32 {{ match x {{ {kw} => 1, _ => 0, }} }}");
+            let result = parse(&source);
+            assert!(
+                result.errors.is_empty(),
+                "contextual keyword '{kw}' should be usable as pattern identifier, \
+                 but got errors: {:?}",
+                result.errors,
+            );
+            let Item::Function(func) = &result.program.items[0].0 else {
+                panic!("expected function for keyword '{kw}'");
+            };
+            let Stmt::Match { arms, .. } = &func.body.stmts[0].0 else {
+                panic!("expected match for keyword '{kw}'");
+            };
+            let (Pattern::Identifier(name), _) = &arms[0].pattern else {
+                panic!(
+                    "expected identifier pattern for '{kw}', got {:?}",
+                    arms[0].pattern
+                );
+            };
+            assert_eq!(name, *kw, "pattern name mismatch for keyword '{kw}'");
+        }
     }
 
     #[test]

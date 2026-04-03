@@ -1,6 +1,29 @@
 # Hew Standard Library
 
-The Hew standard library provides core types, data structures, networking, encoding, and utilities. Modules are imported with `import std::module::path`.
+The Hew standard library provides core types, data structures, networking, encoding, and utilities.
+
+## Builtins — auto-imported, plain function calls
+
+`println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.
+
+```hew
+fn main() {
+    print("count: ");    // no newline
+    println(42);         // newline appended; works with any Display type
+}
+```
+
+All other standard library modules require an explicit import at the top of the file:
+
+```hew
+import std::fs;           // single module
+import std::encoding::json;
+
+fn main() {
+    let raw = fs.read("data.json");
+    println(json.parse(raw));
+}
+```
 
 ## Module Overview
 

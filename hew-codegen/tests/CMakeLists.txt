@@ -120,6 +120,9 @@ endif()
 
 find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
 find_program(HEW_LLDB NAMES lldb)
+find_program(HEW_ADDR2LINE NAMES addr2line llvm-addr2line)
+find_program(HEW_LLVM_SYMBOLIZER NAMES llvm-symbolizer)
+find_program(HEW_NM NAMES llvm-nm nm)
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
@@ -307,6 +310,41 @@ if(HEW_LLDB)
   )
 else()
   message(STATUS "Skipping LLDB smoke test — lldb not found")
+endif()
+
+if(UNIX AND NOT APPLE)
+  set(HEW_LINUX_SYMBOLIZER "")
+  set(HEW_LINUX_SYMBOLIZER_MODE "")
+  if(HEW_ADDR2LINE)
+    set(HEW_LINUX_SYMBOLIZER ${HEW_ADDR2LINE})
+    set(HEW_LINUX_SYMBOLIZER_MODE addr2line)
+  elseif(HEW_LLVM_SYMBOLIZER)
+    set(HEW_LINUX_SYMBOLIZER ${HEW_LLVM_SYMBOLIZER})
+    set(HEW_LINUX_SYMBOLIZER_MODE llvm-symbolizer)
+  endif()
+
+  if(HEW_NM AND HEW_LINUX_SYMBOLIZER)
+    # Linux native symbolizer smoke: resolve known linked-binary entry
+    # addresses back to Hew source lines without leaning on dwarfdump.
+    # Use raw symbol-table names for address discovery since nm does not
+    # demangle Hew symbols.
+    add_test(
+      NAME linux_symbolizer_smoke_linked_binary
+      COMMAND ${CMAKE_COMMAND}
+        -DHEW_CLI=${HEW_CLI}
+        -DNM=${HEW_NM}
+        -DSYMBOLIZER=${HEW_LINUX_SYMBOLIZER}
+        -DSYMBOLIZER_MODE=${HEW_LINUX_SYMBOLIZER_MODE}
+        -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+        -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/linux_symbolizer_smoke_linked_binary${HEW_EXE_SUFFIX}
+        -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|10,_HM19dwarf_linked_binaryF3add|16,main|20
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_linux_symbolizer_smoke_test.cmake
+    )
+  else()
+    message(STATUS "Skipping Linux symbolizer smoke test — nm or symbolizer not found")
+  endif()
+elseif(APPLE)
+  message(STATUS "Skipping Linux symbolizer smoke test — non-Linux host")
 endif()
 
 # ── Negative tests (verify compile-time error detection) ─────────────────────

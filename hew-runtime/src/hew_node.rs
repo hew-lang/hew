@@ -2122,6 +2122,7 @@ mod tests {
         if ch.is_null() {
             return;
         }
+        // SAFETY: the reply channel comes from the scheduler and is valid for a void reply here.
         unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
     }
 
@@ -2142,11 +2143,14 @@ mod tests {
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
         let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(313, &node1_bind) };
         drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node2 = unsafe { TestNode::new(314, &node2_bind) };
         assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
 
+        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
             thread::sleep(Duration::from_millis(50));
@@ -2160,21 +2164,27 @@ mod tests {
         );
 
         crate::pid::hew_pid_set_local_node(314);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
         let void_actor = unsafe {
             crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(void_ask_probe_dispatch))
         };
         crate::pid::hew_pid_set_local_node(313);
         assert!(!void_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
         let actor_pid = unsafe { (*void_actor).id };
         assert_eq!(crate::pid::hew_pid_node(actor_pid), 314);
 
         let connect_addr = CString::new(format!("314@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
         unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
         let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
         assert_eq!(reply_ptr, remote_void_reply_sentinel());
 
+        // SAFETY: the actor and nodes were allocated in this test and are still valid here.
         unsafe {
             let _ = crate::actor::hew_actor_free(void_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
@@ -2288,11 +2298,14 @@ mod tests {
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
         let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(315, &node1_bind) };
         drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node2 = unsafe { TestNode::new(316, &node2_bind) };
         assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
 
+        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
             thread::sleep(Duration::from_millis(50));
@@ -2306,18 +2319,23 @@ mod tests {
         );
 
         crate::pid::hew_pid_set_local_node(316);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
         let blocked_actor = unsafe {
             crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
         };
         crate::pid::hew_pid_set_local_node(315);
         assert!(!blocked_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
         let actor_pid = unsafe { (*blocked_actor).id };
         assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
 
         let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
         unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
             hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>()) as usize
         });
@@ -2340,6 +2358,7 @@ mod tests {
         );
 
         let stop_started = std::time::Instant::now();
+        // SAFETY: node1 remains valid here and stopping it is the behavior under test.
         unsafe {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         }
@@ -2353,6 +2372,7 @@ mod tests {
             "pending remote ask should wake promptly when the node stops"
         );
 
+        // SAFETY: the actor and node2 were allocated in this test and remain valid here.
         unsafe {
             let _ = crate::actor::hew_actor_free(blocked_actor);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);

@@ -212,22 +212,17 @@ fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
+            // Primitive types never take type args; delegate entirely to the
+            // canonical alias table so aliases like `str`, `uint`, `float`,
+            // `Float`, `byte`, `Bool`, `Char`, `Bytes`, `Duration` are
+            // recognised instead of falling through to module-qualification.
+            let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
+            if !has_args {
+                if let Some(prim) = Ty::from_name(name.as_str()) {
+                    return prim;
+                }
+            }
             match name.as_str() {
-                "String" | "string" => Ty::String,
-                "i8" => Ty::I8,
-                "i16" => Ty::I16,
-                "i32" => Ty::I32,
-                "i64" | "int" | "Int" => Ty::I64,
-                "u8" => Ty::U8,
-                "u16" => Ty::U16,
-                "u32" => Ty::U32,
-                "u64" => Ty::U64,
-                "f32" => Ty::F32,
-                "f64" => Ty::F64,
-                "bool" => Ty::Bool,
-                "char" => Ty::Char,
-                "bytes" => Ty::Bytes,
-                "duration" => Ty::Duration,
                 // Option<T> → Ty::option() helper
                 "Option" => {
                     if let Some(args) = type_args {
@@ -699,6 +694,73 @@ mod tests {
             "fs.IoError enum should not be a handle type, got: {:?}",
             info.handle_types
         );
+    }
+
+    /// Directly exercises `type_expr_to_ty` for every alias that was previously
+    /// missing from the partial local table and would have been mis-qualified.
+    #[test]
+    fn primitive_aliases_delegate_to_from_name() {
+        use hew_parser::ast::TypeExpr;
+
+        let module = "test";
+        let cases: &[(&str, Ty)] = &[
+            // aliases present in Ty::from_name but absent from the old local table
+            ("str", Ty::String),
+            ("uint", Ty::U64),
+            ("float", Ty::F64),
+            ("Float", Ty::F64),
+            ("byte", Ty::U8),
+            ("Bool", Ty::Bool),
+            ("Char", Ty::Char),
+            ("Bytes", Ty::Bytes),
+            ("Duration", Ty::Duration),
+            // canonical names that were already handled — must still work
+            ("string", Ty::String),
+            ("String", Ty::String),
+            ("i64", Ty::I64),
+            ("int", Ty::I64),
+            ("Int", Ty::I64),
+            ("u64", Ty::U64),
+            ("f64", Ty::F64),
+            ("bool", Ty::Bool),
+            ("char", Ty::Char),
+            ("bytes", Ty::Bytes),
+            ("duration", Ty::Duration),
+        ];
+
+        for (alias, expected) in cases {
+            let texpr = TypeExpr::Named {
+                name: alias.to_string(),
+                type_args: None,
+            };
+            let got = type_expr_to_ty(&texpr, module);
+            assert_eq!(
+                got, *expected,
+                "alias `{alias}` should resolve to {expected:?}, got {got:?}"
+            );
+        }
+    }
+
+    /// Aliases must NOT be module-qualified: `str` → `Ty::String`, not
+    /// `Ty::Named("test.str")`.
+    #[test]
+    fn primitive_aliases_are_not_module_qualified() {
+        use hew_parser::ast::TypeExpr;
+
+        let aliases = [
+            "str", "uint", "float", "Float", "byte", "Bool", "Char", "Bytes", "Duration",
+        ];
+        for alias in aliases {
+            let texpr = TypeExpr::Named {
+                name: alias.to_string(),
+                type_args: None,
+            };
+            let got = type_expr_to_ty(&texpr, "mymod");
+            assert!(
+                !matches!(got, Ty::Named { .. }),
+                "alias `{alias}` must not become a Named type (was mis-qualified before fix), got {got:?}"
+            );
+        }
     }
 
     #[test]

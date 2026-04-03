@@ -179,7 +179,8 @@ pub struct HewConnMgr {
     reconnect_enabled: AtomicBool,
     /// Default maximum retries for newly configured reconnecting connections.
     reconnect_max_retries: AtomicU32,
-    /// Global shutdown signal shared with reconnect workers.
+    /// Global shutdown signal shared with reconnect workers and stop-time
+    /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
     /// Background reconnect worker handles.
     reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
@@ -1018,6 +1019,24 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
     }
 }
 
+pub(crate) unsafe fn hew_connmgr_mark_stopping(mgr: *mut HewConnMgr) {
+    if mgr.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    mgr_ref.reconnect_shutdown.store(true, Ordering::Release);
+}
+
+pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<Arc<AtomicBool>> {
+    if mgr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    Some(Arc::clone(&mgr_ref.reconnect_shutdown))
+}
+
 /// Configure manager-wide reconnect policy.
 ///
 /// Reconnect is disabled by default; call with `enabled=1` to opt in.
@@ -1757,7 +1776,6 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[cfg(feature = "profiler")]
     #[test]
     fn snapshot_connections_json_emits_expected_array() {

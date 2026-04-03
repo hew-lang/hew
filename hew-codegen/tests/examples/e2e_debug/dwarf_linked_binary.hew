@@ -1,0 +1,24 @@
+type Pair {
+    x: int;
+    y: int;
+}
+
+trait PairOps {
+    fn sum(p: Pair) -> int;
+}
+
+impl PairOps for Pair {
+    fn sum(p: Pair) -> int {
+        p.x + p.y
+    }
+}
+
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+fn main() {
+    let p = Pair { x: 3, y: 4 };
+    let result = add(p.sum(), 1);
+    println(result);
+}

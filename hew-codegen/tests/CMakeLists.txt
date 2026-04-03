@@ -269,6 +269,23 @@ if(HEW_DWARFDUMP)
       -DEXPECTED_SYMBOL_LINES=Worker_ping|8,Worker_dispatch|8,Pool_init|18
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_smoke_test.cmake
   )
+
+  # Linked-binary DWARF test: verifies debug info survives linking (and dSYM
+  # generation on macOS).  Exercises three demangling paths:
+  #   Pair.sum  — Type.method  (from _H...T4PairF3sum)
+  #   add       — bare function (from _H...F3add)
+  #   main      — unmangled passthrough
+  # If mangleName() or demangleHewName() drift, these assertions break.
+  add_test(
+    NAME dwarf_linked_binary
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DDWARFDUMP=${HEW_DWARFDUMP}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_linked_binary${HEW_EXE_SUFFIX}
+      -DEXPECTED_SYMBOL_LINES=Pair.sum|10,add|16,main|20
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
+  )
 else()
   message(STATUS "Skipping DWARF smoke test — dwarfdump not found")
 endif()

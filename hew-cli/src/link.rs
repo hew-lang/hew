@@ -148,7 +148,50 @@ pub fn link_executable(
         return Err("linking failed".into());
     }
 
+    // On macOS, debug info in linked binaries requires a separate dSYM bundle.
+    // The linker writes a "debug map" referencing the object file, and dsymutil
+    // pulls the actual DWARF from the object into a .dSYM bundle.  Without this
+    // step the debugger sees no Hew debug info in the linked binary.
+    #[cfg(target_os = "macos")]
+    if debug {
+        run_dsymutil(&safe_output);
+    }
+
     Ok(())
+}
+
+/// Run `dsymutil` on a linked binary to produce a `.dSYM` bundle.
+///
+/// On macOS the linker embeds a "debug map" that references the original object
+/// file's DWARF sections.  `dsymutil` reads that map and copies the DWARF into
+/// a standalone `.dSYM` bundle next to the binary.  If the object file has
+/// already been deleted (e.g. a temp file), the DWARF is lost — so we call
+/// this immediately after a successful link while the object is still alive.
+///
+/// Failure is non-fatal: the binary is still usable, just without rich debug
+/// info in the dSYM bundle.
+#[cfg(target_os = "macos")]
+fn run_dsymutil(binary_path: &str) {
+    let tool = if has_tool("dsymutil") {
+        "dsymutil"
+    } else if has_tool("llvm-dsymutil") {
+        "llvm-dsymutil"
+    } else {
+        eprintln!("warning: dsymutil not found — .dSYM bundle not generated");
+        return;
+    };
+
+    let status = std::process::Command::new(tool).arg(binary_path).status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("warning: dsymutil exited with status {s} — .dSYM may be incomplete");
+        }
+        Err(e) => {
+            eprintln!("warning: failed to run dsymutil: {e}");
+        }
+    }
 }
 
 /// Link a WASM object file using `wasm-ld`.

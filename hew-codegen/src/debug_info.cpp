@@ -20,6 +20,59 @@
 
 namespace hew {
 
+/// Demangle a Hew mangled name into a human-readable form.
+///
+/// Hew mangling scheme: _H [M<len>module]* [T<len>type] F<len>func
+/// Example: _HM4mainT6WorkerF4ping  →  Worker.ping
+///
+/// Returns the original name unchanged when it does not start with "_H"
+/// (e.g. "main" which is kept unmangled).
+static std::string demangleHewName(llvm::StringRef mangled) {
+  if (!mangled.starts_with("_H"))
+    return mangled.str();
+
+  llvm::StringRef rest = mangled.drop_front(2); // skip "_H"
+  std::string typeName;
+  std::string funcName;
+
+  auto parseSegment = [](llvm::StringRef &s) -> std::string {
+    // Skip the tag character (M, T, or F), then read decimal length, then text.
+    s = s.drop_front(1); // skip tag
+    size_t numLen = 0;
+    while (numLen < s.size() && s[numLen] >= '0' && s[numLen] <= '9')
+      ++numLen;
+    if (numLen == 0)
+      return {};
+    unsigned len = 0;
+    s.substr(0, numLen).getAsInteger(10, len);
+    s = s.drop_front(numLen);
+    if (len > s.size())
+      return {};
+    std::string result = s.substr(0, len).str();
+    s = s.drop_front(len);
+    return result;
+  };
+
+  while (!rest.empty()) {
+    if (rest.starts_with("M")) {
+      parseSegment(rest); // skip module segments for now
+    } else if (rest.starts_with("T")) {
+      typeName = parseSegment(rest);
+    } else if (rest.starts_with("F")) {
+      funcName = parseSegment(rest);
+      break; // function name is the last segment
+    } else {
+      return mangled.str(); // unrecognised tag — return as-is
+    }
+  }
+
+  if (funcName.empty())
+    return mangled.str();
+  if (typeName.empty())
+    return funcName;
+  return typeName + "." + funcName;
+}
+
 void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
                    const std::vector<size_t> &lineMap,
                    const std::unordered_map<std::string, unsigned> &functionDeclLines) {
@@ -72,14 +125,18 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
   found_line:
 
     // Create the subprogram.
+    // DW_AT_name gets the human-readable demangled form so debuggers show
+    // e.g. "Worker.ping" instead of "_HM4mainT6WorkerF4ping".
+    // DW_AT_linkage_name keeps the mangled symbol for addr2line / profilers.
+    std::string humanName = demangleHewName(fn.getName());
     llvm::DISubprogram *sp =
-        dib.createFunction(diFile,       // scope — the file
-                           fn.getName(), // name
-                           fn.getName(), // linkage name
-                           diFile,       // file
-                           startLine,    // line number
-                           funcTy,       // subroutine type
-                           startLine,    // scope line (same as start)
+        dib.createFunction(diFile,                     // scope — the file
+                           humanName,                  // name (DW_AT_name)
+                           fn.getName(),               // linkage name (DW_AT_linkage_name)
+                           diFile,                     // file
+                           startLine,                  // line number
+                           funcTy,                     // subroutine type
+                           startLine,                  // scope line (same as start)
                            llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
 
     fn.setSubprogram(sp);

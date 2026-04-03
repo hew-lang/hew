@@ -199,3 +199,156 @@ fn channel_dot_receiver_annotation_typechecks() {
         output.errors
     );
 }
+
+// ===========================================================================
+// for-await fail-closed tests
+// These cover the typechecker's new is_await validation in Stmt::For.
+// ===========================================================================
+
+/// `for await item in rx` over `Receiver<String>` must typecheck cleanly.
+#[test]
+fn for_await_receiver_string_ok() {
+    let output = typecheck_inline(
+        r#"
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx) = channel.new(4);
+            tx.send("hello");
+            tx.close();
+            for await msg in rx {
+                println(msg);
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "for await over Receiver<String> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await val in rx` over `Receiver<int>` must typecheck cleanly.
+#[test]
+fn for_await_receiver_int_ok() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx) = channel.new(4);
+            tx.send(42);
+            tx.close();
+            for await val in rx {
+                println(val);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "for await over Receiver<int> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in rx` over `Receiver<Foo>` (unsupported struct) must error.
+#[test]
+fn for_await_receiver_unsupported_type_errors() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        type Foo { x: int }
+
+        fn make_foo() -> Foo { Foo { x: 1 } }
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = channel.new(4);
+            for await item in rx {
+                println(item.x);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("not supported in `for await`")
+        ),
+        "expected InvalidOperation for Receiver<Foo> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in vec` must error — Vec is a sync iterable.
+#[test]
+fn for_await_over_vec_errors() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let v: Vec<int> = Vec::new();
+            for await item in v {
+                println(item);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`for await`")
+        ),
+        "expected InvalidOperation for `for await` over Vec, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await i in 0..10` must error — Range is a sync iterable.
+#[test]
+fn for_await_over_range_errors() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            for await i in 0..10 {
+                println(i);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`for await`")
+        ),
+        "expected InvalidOperation for `for await` over Range, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Plain `for item in rx` (no await) over `Receiver<Foo>` should NOT trigger
+/// the for-await guard (a different validation may apply elsewhere).
+#[test]
+fn for_no_await_over_receiver_no_for_await_error() {
+    let output = typecheck_inline(
+        r"
+        import std::channel;
+
+        fn consume(rx: channel.Receiver<String>) {
+            for msg in rx {
+                println(msg);
+            }
+        }
+        ",
+    );
+    // The for-await guard must NOT fire on a plain `for` loop.
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !e.message.contains("not supported in `for await`")),
+        "for-await guard must not fire on plain `for`, got errors: {:#?}",
+        output.errors
+    );
+}

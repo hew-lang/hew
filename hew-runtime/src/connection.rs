@@ -804,6 +804,7 @@ unsafe fn upgrade_noise(
 fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
     let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
     if unexpected_drop {
+        crate::hew_node::fail_remote_replies_for_connection(conn_id);
         // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
         let reconnect_plan = unsafe {
             if mgr.is_null() {

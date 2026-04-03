@@ -122,6 +122,59 @@ pub unsafe extern "C" fn hew_yaml_type(val: *const HewYamlValue) -> i32 {
 
 /// Get the boolean value from a [`HewYamlValue`].
 ///
+/// Returns 1 if `val` is a YAML boolean, 0 otherwise (including null).
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_is_bool(val: *const HewYamlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, serde_yaml::Value::Bool(_)))
+}
+
+/// Returns 1 if `val` is a YAML integer-valued number, 0 otherwise.
+///
+/// Matches the values that [`hew_yaml_get_int`] can extract without coercion.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_is_int(val: *const HewYamlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    match &v.inner {
+        serde_yaml::Value::Number(n) if n.is_i64() || n.is_u64() => 1,
+        _ => 0,
+    }
+}
+
+/// Returns 1 if `val` is any YAML number (integer or float), 0 otherwise.
+///
+/// Matches the values that [`hew_yaml_get_float`] can extract — YAML, like
+/// JSON, does not distinguish integer-valued floats at the value level.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_is_float(val: *const HewYamlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, serde_yaml::Value::Number(_)))
+}
+
 /// Returns 1 for `true`, 0 for `false` or if the value is not a boolean.
 ///
 /// # Safety

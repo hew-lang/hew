@@ -14,6 +14,16 @@
 //   - Foo_to_yaml(enum) -> !llvm.ptr
 //   - Foo_from_yaml(!llvm.ptr) -> enum
 //
+// For non-wire structs with all-primitive fields (see generateStructEncodeWrappers):
+//   - Foo_to_json(struct) -> !llvm.ptr
+//   - Foo_from_json(!llvm.ptr) -> !hew.result<struct, !hew.string_ref>
+//   - Foo_to_yaml(struct) -> !llvm.ptr
+//   - Foo_from_yaml(!llvm.ptr) -> !hew.result<struct, !hew.string_ref>
+//   - Foo_to_toml(struct) -> !llvm.ptr
+//   - Foo_from_toml(!llvm.ptr) -> !hew.result<struct, !hew.string_ref>
+// The non-wire from_* functions return Ok(struct) on success or Err(message)
+// when hew_{format}_parse returns null (invalid input document).
+//
 //===----------------------------------------------------------------------===//
 
 #include "hew/mlir/HewOps.h"
@@ -1948,8 +1958,18 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
   auto i32Type = builder.getI32Type();
   auto i64Type = builder.getI64Type();
   auto f64Type = builder.getF64Type();
+  auto strRefType = hew::StringRefType::get(&context);
 
-  // Function: (!llvm.ptr) -> struct
+  // Function: (!llvm.ptr) -> !hew.result<struct, !hew.string_ref>
+  //
+  // Fail-closed on all structural and type errors:
+  //   1. Top-level parse failure: hew_{fmt}_parse returns null → Err.
+  //   2. Missing field: hew_{fmt}_get_field returns null → Err with field name.
+  //   3. String field wrong type: hew_{fmt}_get_string returns null → Err.
+  //   4. Scalar field wrong type: hew_{fmt}_is_bool/is_int/is_float returns 0 → Err.
+  //      Each predicate encapsulates format-specific type-code mapping and the
+  //      JSON/YAML integer-valued-float coercion rule so codegen stays format-agnostic.
+  auto resultEnumType = hew::ResultEnumType::get(&context, info.mlirType, strRefType);
   std::string mangledName = mangleName(currentModulePath, typeName, "from_" + format.str());
 
   auto savedIP = builder.saveInsertionPoint();
@@ -1957,7 +1977,7 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
   if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(mangledName))
     existing.erase();
 
-  auto fnType = mlir::FunctionType::get(&context, {ptrType}, {info.mlirType});
+  auto fnType = mlir::FunctionType::get(&context, {ptrType}, {resultEnumType});
   auto fn = mlir::func::FuncOp::create(builder, location, mangledName, fnType);
   auto *entry = fn.addEntryBlock();
   builder.setInsertionPointToStart(entry);
@@ -1971,68 +1991,265 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
   std::string rtGetInt = "hew_" + format.str() + "_get_int";
   std::string rtFree = "hew_" + format.str() + "_free";
 
-  // obj = hew_{format}_parse(str)
+  // obj = hew_{format}_parse(str) — returns null on invalid input
   auto objPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                            mlir::SymbolRefAttr::get(&context, rtParse),
                                            mlir::ValueRange{entry->getArgument(0)})
                     .getResult();
 
-  mlir::Value result = mlir::LLVM::UndefOp::create(builder, location, info.mlirType);
+  // Branch on null: null → Err("failed to parse ..."), non-null → Ok(struct)
+  auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+  auto isNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq,
+                                           objPtr, nullPtr);
+  auto ifOp = mlir::scf::IfOp::create(builder, location, resultEnumType, isNull,
+                                       /*withElseRegion=*/true);
 
-  for (const auto &field : info.fields) {
-    auto keyPtr = wireStringPtr(location, field.name);
-    auto fieldJval = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                                mlir::SymbolRefAttr::get(&context, rtGetField),
-                                                mlir::ValueRange{objPtr, keyPtr})
-                         .getResult();
-
-    mlir::Value decoded;
-    auto jkind = jsonKindOfMLIR(field.type);
-    if (jkind == WireJsonKind::Bool) {
-      auto raw = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                                            mlir::SymbolRefAttr::get(&context, rtGetBool),
-                                            mlir::ValueRange{fieldJval})
-                     .getResult();
-      // Truncate i32 → i1 for bool
-      decoded = mlir::arith::TruncIOp::create(builder, location, builder.getI1Type(), raw);
-    } else if (jkind == WireJsonKind::Float32) {
-      auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
-                                             mlir::SymbolRefAttr::get(&context, rtGetFloat),
-                                             mlir::ValueRange{fieldJval})
-                      .getResult();
-      decoded = mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
-    } else if (jkind == WireJsonKind::Float64) {
-      decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
-                                           mlir::SymbolRefAttr::get(&context, rtGetFloat),
-                                           mlir::ValueRange{fieldJval})
-                    .getResult();
-    } else if (jkind == WireJsonKind::String) {
-      decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                           mlir::SymbolRefAttr::get(&context, rtGetString),
-                                           mlir::ValueRange{fieldJval})
-                    .getResult();
-    } else {
-      auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
-                                               mlir::SymbolRefAttr::get(&context, rtGetInt),
-                                               mlir::ValueRange{fieldJval})
-                        .getResult();
-      if (field.type != i64Type)
-        decoded = mlir::arith::TruncIOp::create(builder, location, field.type, rawI64).getResult();
-      else
-        decoded = rawI64;
-    }
-
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                               mlir::SymbolRefAttr::get(&context, rtFree),
-                               mlir::ValueRange{fieldJval});
-
-    result = mlir::LLVM::InsertValueOp::create(builder, location, result, decoded, field.index);
+  // Then branch (null / parse failed): return Err("failed to parse {format}: invalid input")
+  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  {
+    auto errSym = getOrCreateGlobalString("failed to parse " + format.str() + ": invalid input");
+    auto errStrRef =
+        hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
+            .getResult();
+    auto errResult = hew::EnumConstructOp::create(
+        builder, location, resultEnumType, /*variantIndex=*/1u,
+        llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
+        /*payload_positions=*/builder.getI64ArrayAttr({2}));
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errResult});
   }
 
-  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                             mlir::SymbolRefAttr::get(&context, rtFree), mlir::ValueRange{objPtr});
+  // Else branch (non-null / parse succeeded): extract fields, return Ok(struct).
+  //
+  // Uses a recursive chain of scf::IfOp nodes (one per field) that each yield
+  // the final resultEnumType.  Avoids mutable flag storage: if a field's
+  // get_field call returns null (missing key / wrong container kind) that
+  // branch immediately frees the document and returns Err; the else branch
+  // decodes the scalar, frees the field node, and delegates to the next field.
+  // Once all fields succeed, the innermost branch builds Ok(struct).
+  //
+  // The pattern mirrors the wire enum serial dispatch at the top of this file.
+  builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+  {
+    auto emitFieldErr = [&](llvm::StringRef fieldName) -> mlir::Value {
+      // Free the document, then return Err("missing field: <name>").
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{objPtr});
+      auto errSym = getOrCreateGlobalString("failed to parse " + format.str() +
+                                            ": missing field: " + fieldName.str());
+      auto errStrRef =
+          hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
+              .getResult();
+      return hew::EnumConstructOp::create(builder, location, resultEnumType, /*variantIndex=*/1u,
+                                          llvm::StringRef("__Result"),
+                                          mlir::ValueRange{errStrRef},
+                                          builder.getI64ArrayAttr({2}));
+    };
 
-  mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{result});
+    // Recursive lambda: processes fields[fieldIdx..] given a partial struct
+    // value; returns a resultEnumType SSA value (Ok or Err).
+    std::function<mlir::Value(size_t, mlir::Value)> processFields =
+        [&](size_t fieldIdx, mlir::Value currentStruct) -> mlir::Value {
+      if (fieldIdx >= info.fields.size()) {
+        // All fields decoded successfully.
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{objPtr});
+        return hew::EnumConstructOp::create(builder, location, resultEnumType,
+                                            /*variantIndex=*/0u, llvm::StringRef("__Result"),
+                                            mlir::ValueRange{currentStruct},
+                                            builder.getI64ArrayAttr({1}));
+      }
+
+      const auto &field = info.fields[fieldIdx];
+      auto keyPtr = wireStringPtr(location, field.name);
+      auto fieldJval =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                     mlir::SymbolRefAttr::get(&context, rtGetField),
+                                     mlir::ValueRange{objPtr, keyPtr})
+              .getResult();
+
+      // If get_field returned null the key was missing or the document is not
+      // an object — treat as a structural error.
+      auto isFieldNull =
+          mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, fieldJval,
+                                     nullPtr);
+      auto fieldIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, isFieldNull,
+                                                /*withElseRegion=*/true);
+
+      // Then: field missing — free doc and return Err.
+      builder.setInsertionPointToStart(&fieldIfOp.getThenRegion().front());
+      mlir::scf::YieldOp::create(builder, location,
+                                 mlir::ValueRange{emitFieldErr(field.name)});
+
+      // Else: field present — decode scalar, free field node, recurse.
+      //
+      // Fail-closed coverage:
+      //   - Missing field (get_field returned null): handled above via emitFieldErr.
+      //   - String field wrong type (get_string returns null): handled below.
+      //   - Non-string scalar wrong type: checked via hew_{fmt}_type before decoding.
+      builder.setInsertionPointToStart(&fieldIfOp.getElseRegion().front());
+      auto jkind = jsonKindOfMLIR(field.type);
+
+      if (jkind == WireJsonKind::String) {
+        // String case is handled entirely here: the getter returns null when the
+        // field is present but is not a string — we must not put a null pointer
+        // into the struct or we risk a crash downstream.  Both branches (wrong
+        // type and correct type) manage free/insert/recurse themselves so we
+        // can return early without hitting the common scalar path below.
+        auto strPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                 mlir::SymbolRefAttr::get(&context, rtGetString),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+        auto strIsNull =
+            mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, strPtr,
+                                       nullPtr);
+        auto strTypeIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, strIsNull,
+                                                    /*withElseRegion=*/true);
+
+        // Then: wrong type — free field node, free document, return Err.
+        builder.setInsertionPointToStart(&strTypeIfOp.getThenRegion().front());
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{objPtr});
+        {
+          auto errSym = getOrCreateGlobalString(
+              "failed to parse " + format.str() + ": field '" + field.name + "' is not a string");
+          auto errStrRef =
+              hew::ConstantOp::create(builder, location, strRefType,
+                                      builder.getStringAttr(errSym))
+                  .getResult();
+          auto errVal = hew::EnumConstructOp::create(
+              builder, location, resultEnumType, /*variantIndex=*/1u,
+              llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
+              builder.getI64ArrayAttr({2}));
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errVal});
+        }
+
+        // Else: correct type — free field node, insert, recurse.
+        builder.setInsertionPointToStart(&strTypeIfOp.getElseRegion().front());
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        {
+          auto nextStruct = mlir::LLVM::InsertValueOp::create(builder, location, currentStruct,
+                                                              strPtr, field.index);
+          auto innerResult = processFields(fieldIdx + 1, nextStruct);
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerResult});
+        }
+
+        builder.setInsertionPointAfter(strTypeIfOp);
+        mlir::scf::YieldOp::create(builder, location,
+                                   mlir::ValueRange{strTypeIfOp.getResult(0)});
+        builder.setInsertionPointAfter(fieldIfOp);
+        return fieldIfOp.getResult(0);
+      }
+
+      // Non-string scalars: validate field type using the format-specific
+      // is_bool / is_int / is_float predicates before decoding.  Each predicate
+      // encapsulates the per-format type-code mapping (JSON/YAML and TOML use
+      // different codes, and JSON/YAML is_float accepts integer-valued numbers
+      // while TOML is_float does not), so the codegen never depends on raw codes.
+      std::string rtIsPred;
+      if (jkind == WireJsonKind::Bool)
+        rtIsPred = "hew_" + format.str() + "_is_bool";
+      else if (jkind == WireJsonKind::Float32 || jkind == WireJsonKind::Float64)
+        rtIsPred = "hew_" + format.str() + "_is_float";
+      else // Integer (i8/i16/i32/i64 variants)
+        rtIsPred = "hew_" + format.str() + "_is_int";
+
+      auto typeOkI32 =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                     mlir::SymbolRefAttr::get(&context, rtIsPred),
+                                     mlir::ValueRange{fieldJval})
+              .getResult();
+      auto typeOk =
+          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                      typeOkI32,
+                                      createIntConstant(builder, location, i32Type, 0));
+
+      auto typeCheckIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, typeOk,
+                                                    /*withElseRegion=*/true);
+
+      // Then: correct type — decode scalar, free field node, recurse.
+      builder.setInsertionPointToStart(&typeCheckIfOp.getThenRegion().front());
+      {
+        mlir::Value decoded;
+        if (jkind == WireJsonKind::Bool) {
+          auto raw = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                                mlir::SymbolRefAttr::get(&context, rtGetBool),
+                                                mlir::ValueRange{fieldJval})
+                         .getResult();
+          decoded = mlir::arith::TruncIOp::create(builder, location, builder.getI1Type(), raw);
+        } else if (jkind == WireJsonKind::Float32) {
+          auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                                 mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+          decoded =
+              mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
+        } else if (jkind == WireJsonKind::Float64) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                               mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+        } else {
+          auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                                   mlir::SymbolRefAttr::get(&context, rtGetInt),
+                                                   mlir::ValueRange{fieldJval})
+                            .getResult();
+          decoded = (field.type != i64Type)
+                        ? mlir::arith::TruncIOp::create(builder, location, field.type, rawI64)
+                              .getResult()
+                        : rawI64;
+        }
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        auto nextStruct = mlir::LLVM::InsertValueOp::create(builder, location, currentStruct,
+                                                            decoded, field.index);
+        auto innerResult = processFields(fieldIdx + 1, nextStruct);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerResult});
+      }
+
+      // Else: wrong type — free field node, free document, return Err.
+      builder.setInsertionPointToStart(&typeCheckIfOp.getElseRegion().front());
+      {
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{objPtr});
+        auto errSym = getOrCreateGlobalString("failed to parse " + format.str() +
+                                              ": field '" + field.name + "' has wrong type");
+        auto errStrRef =
+            hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
+                .getResult();
+        auto errVal = hew::EnumConstructOp::create(
+            builder, location, resultEnumType, /*variantIndex=*/1u,
+            llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
+            builder.getI64ArrayAttr({2}));
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errVal});
+      }
+
+      builder.setInsertionPointAfter(typeCheckIfOp);
+      mlir::scf::YieldOp::create(builder, location,
+                                 mlir::ValueRange{typeCheckIfOp.getResult(0)});
+      builder.setInsertionPointAfter(fieldIfOp);
+      return fieldIfOp.getResult(0);
+    };
+
+    mlir::Value initialStruct = mlir::LLVM::UndefOp::create(builder, location, info.mlirType);
+    mlir::Value finalResult = processFields(0, initialStruct);
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{finalResult});
+  }
+
+  builder.setInsertionPointAfter(ifOp);
+  mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{ifOp.getResult(0)});
   builder.restoreInsertionPoint(savedIP);
 }
 

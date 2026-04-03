@@ -1,0 +1,33 @@
+// Regression: non-wire struct.from_json() with wrong-typed string field
+// returns Err(...), not a struct with a null pointer.
+
+type Record {
+    name: String;
+    value: int;
+}
+
+fn main() {
+    // Both fields correct — roundtrip succeeds.
+    let r = Record { name: "hello", value: 42 };
+    let json = r.to_json();
+    match Record.from_json(json) {
+        Ok(decoded) => {
+            println(decoded.name);
+            println(decoded.value);
+        },
+        Err(_) => println("unexpected error"),
+    }
+
+    // name field is an integer, not a string — should be Err.
+    match Record.from_json("{\"name\":99,\"value\":1}") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println("string type error caught"),
+    }
+
+    // value field is a string where int is expected — hew_json_is_int
+    // rejects the mismatch and returns Err, not Ok({value: 0}).
+    match Record.from_json("{\"name\":\"hi\",\"value\":\"bad\"}") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println("int type error caught"),
+    }
+}

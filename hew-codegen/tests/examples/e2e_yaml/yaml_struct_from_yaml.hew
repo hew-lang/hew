@@ -1,0 +1,33 @@
+// Regression: non-wire struct.from_yaml() returns Result<Self, String>.
+// Covers: valid round-trip, unparseable input, missing field, wrong scalar type.
+
+type Config {
+    width: int;
+    height: int;
+}
+
+fn main() {
+    let c = Config { width: 1920, height: 1080 };
+    let yaml = c.to_yaml();
+
+    match Config.from_yaml(yaml) {
+        Ok(decoded) => { println(decoded.width); println(decoded.height) },
+        Err(_) => println("unexpected error"),
+    }
+
+    match Config.from_yaml(": invalid ::: yaml") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println("parse error caught"),
+    }
+
+    match Config.from_yaml("width: 800") {
+        Ok(_) => println("unexpected ok on missing field"),
+        Err(_) => println("missing field caught"),
+    }
+
+    // 'width' is a string where int is expected
+    match Config.from_yaml("width: \"not_a_number\"\nheight: 1080") {
+        Ok(_) => println("unexpected ok on wrong type"),
+        Err(_) => println("wrong type caught"),
+    }
+}

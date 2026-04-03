@@ -1,0 +1,33 @@
+// Regression: non-wire struct.from_toml() returns Result<Self, String>.
+// Covers: valid round-trip, unparseable input, missing field, wrong scalar type.
+
+type Settings {
+    threads: int;
+    timeout: int;
+}
+
+fn main() {
+    let s = Settings { threads: 4, timeout: 30 };
+    let toml = s.to_toml();
+
+    match Settings.from_toml(toml) {
+        Ok(decoded) => { println(decoded.threads); println(decoded.timeout) },
+        Err(_) => println("unexpected error"),
+    }
+
+    match Settings.from_toml("not = [valid toml") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println("parse error caught"),
+    }
+
+    match Settings.from_toml("threads = 2") {
+        Ok(_) => println("unexpected ok on missing field"),
+        Err(_) => println("missing field caught"),
+    }
+
+    // 'threads' is a string where int is expected (TOML distinguishes types)
+    match Settings.from_toml("threads = \"not_a_number\"\ntimeout = 30") {
+        Ok(_) => println("unexpected ok on wrong type"),
+        Err(_) => println("wrong type caught"),
+    }
+}

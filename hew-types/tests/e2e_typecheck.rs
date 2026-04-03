@@ -157,6 +157,27 @@ fn stream_dot_sink_annotation_typechecks() {
 }
 
 #[test]
+fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        fn close_numbers(s: stream.Stream<int>) {
+            s.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("`Stream<int>` is not supported")
+                && !e.message.contains("Stream<i64>")
+        }),
+        "expected Stream<int> diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn channel_dot_receiver_annotation_typechecks() {
     // A function whose parameter is explicitly spelled `channel.Receiver<String>`.
     // Proves: the qualified spelling resolves to the canonical Receiver<String>

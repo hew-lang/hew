@@ -6842,8 +6842,9 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`{type_name}<{inner}>` is not supported; \
-                     {type_name}<T> is currently only implemented for String and bytes"
+                    "`{type_name}<{}>` is not supported; \
+                     {type_name}<T> is currently only implemented for String and bytes",
+                    inner.user_facing()
                 ),
             );
             return None;
@@ -8923,7 +8924,8 @@ impl Checker {
                     TypeErrorKind::BoundsNotSatisfied,
                     span,
                     format!(
-                        "type `{resolved_arg}` does not implement trait `{bound}` required by `{param_name}`"
+                        "type `{}` does not implement trait `{bound}` required by `{param_name}`",
+                        resolved_arg.user_facing()
                     ),
                 );
             }

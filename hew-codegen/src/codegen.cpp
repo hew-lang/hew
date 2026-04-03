@@ -471,6 +471,84 @@ static mlir::Value emitEntryAlloca(mlir::ConversionPatternRewriter &rewriter, ml
 /// the message buffer holds independently-owned data. Without this, the
 /// sender's scope-exit drops would free memory while the receiver still holds
 /// dangling references.
+
+/// Recursively deep-copy owned fields inside an identified LLVM struct,
+/// using the hew.struct_clone_fields module attribute emitted by MLIRGen.
+/// Returns the struct value with all owned fields replaced by fresh clones.
+/// Handle fields are kept as-is (ownership transfer); the caller is
+/// responsible for nulling them in the source memory if needed.
+static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewriter,
+                                        mlir::Location loc, mlir::ModuleOp module,
+                                        mlir::Value structVal,
+                                        mlir::DictionaryAttr cloneAttr) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified() || !cloneAttr)
+    return structVal;
+  auto fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
+  if (!fieldClones || fieldClones.empty())
+    return structVal;
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  mlir::Value rebuilt = structVal;
+  for (auto entry : fieldClones) {
+    auto pair = mlir::cast<mlir::ArrayAttr>(entry);
+    auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
+    auto cloneFunc = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
+
+    if (cloneFunc == "__handle_transfer") {
+      // Handle fields transfer ownership without cloning — the pointer
+      // goes to the receiver as-is.  Source null-out happens after the
+      // full struct is rebuilt (see deepCopyOwnedArgs).
+      continue;
+    }
+
+    auto fieldVal = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, rebuilt, llvm::ArrayRef<int64_t>{fieldIdx});
+
+    if (cloneFunc == "__recurse") {
+      auto clonedField = deepCopyStructFields(rewriter, loc, module, fieldVal, cloneAttr);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, rebuilt, clonedField, llvm::ArrayRef<int64_t>{fieldIdx});
+    } else {
+      auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);
+      auto clonedField = mlir::func::CallOp::create(
+          rewriter, loc, cloneFunc, mlir::TypeRange{ptrType}, mlir::ValueRange{fieldVal});
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, rebuilt, clonedField.getResult(0),
+          llvm::ArrayRef<int64_t>{fieldIdx});
+    }
+  }
+  return rebuilt;
+}
+
+/// Null out handle fields inside a struct value stored at a memory
+/// address, so the sender's drop becomes a no-op for transferred handles.
+static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter,
+                                      mlir::Location loc, mlir::Value structAddr,
+                                      mlir::LLVM::LLVMStructType structTy,
+                                      mlir::DictionaryAttr cloneAttr) {
+  if (!cloneAttr)
+    return;
+  auto fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
+  if (!fieldClones)
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  for (auto entry : fieldClones) {
+    auto pair = mlir::cast<mlir::ArrayAttr>(entry);
+    auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
+    auto tag = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
+    if (tag != "__handle_transfer")
+      continue;
+    // GEP to the handle field inside the source struct and store null.
+    auto fieldPtr = mlir::LLVM::GEPOp::create(
+        rewriter, loc, ptrType, structTy, structAddr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
+    auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+    mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, fieldPtr);
+  }
+}
+
 static llvm::SmallVector<mlir::Value, 4>
 deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
                   mlir::ModuleOp module, mlir::ValueRange originalArgs,
@@ -533,36 +611,19 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
       }
     } else if (auto structTy =
                    mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType())) {
-      // Identified structs may contain owned fields (String, Vec, HashMap).
-      // Use the hew.struct_clone_fields module attribute emitted by MLIRGen
-      // to find which fields need deep-copying.
+      // Identified structs may contain owned fields (String, Vec, HashMap)
+      // and/or nested structs with owned fields.  Use the module attribute
+      // emitted by MLIRGen and the recursive deepCopyStructFields helper.
       if (structTy.isIdentified()) {
         auto cloneAttr =
             module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
-        mlir::ArrayAttr fieldClones;
-        if (cloneAttr)
-          fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
-        if (fieldClones && !fieldClones.empty()) {
-          mlir::Value rebuilt = convArg;
-          for (auto entry : fieldClones) {
-            auto pair = mlir::cast<mlir::ArrayAttr>(entry);
-            auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
-            auto cloneFunc = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
-            auto fieldVal = mlir::LLVM::ExtractValueOp::create(
-                rewriter, loc, rebuilt, llvm::ArrayRef<int64_t>{fieldIdx});
-            auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
-            getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);
-            auto clonedField = mlir::func::CallOp::create(
-                rewriter, loc, cloneFunc, mlir::TypeRange{ptrType},
-                mlir::ValueRange{fieldVal});
-            rebuilt = mlir::LLVM::InsertValueOp::create(
-                rewriter, loc, rebuilt, clonedField.getResult(0),
-                llvm::ArrayRef<int64_t>{fieldIdx});
-          }
-          result.push_back(rebuilt);
-        } else {
-          result.push_back(convArg);
-        }
+        auto cloned = deepCopyStructFields(rewriter, loc, module, convArg, cloneAttr);
+        result.push_back(cloned);
+        // If the struct contains handle fields, null them out in the
+        // sender's backing memory so the sender's drop is a no-op for
+        // those transferred handles.
+        if (auto loadOp = convArg.getDefiningOp<mlir::LLVM::LoadOp>())
+          nullOutStructHandleFields(rewriter, loc, loadOp.getAddr(), structTy, cloneAttr);
       } else {
         result.push_back(convArg);
       }

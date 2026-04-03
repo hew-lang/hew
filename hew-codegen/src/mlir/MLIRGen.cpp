@@ -3161,7 +3161,8 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
 
   // Emit module-level metadata for struct fields that need deep-copying at
   // actor message boundaries.  The lowering pass (deepCopyOwnedArgs) reads
-  // this to clone owned fields (String, Vec, HashMap) inside struct payloads.
+  // this to clone owned fields (String, Vec, HashMap) inside struct payloads,
+  // recurse into nested structs, and transfer handle ownership.
   {
     const auto &regInfo = structTypes[declName];
     llvm::SmallVector<mlir::Attribute, 4> cloneEntries;
@@ -3175,6 +3176,13 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         cloneFunc = "hew_hashmap_clone_impl";
       else if (mlir::isa<hew::ClosureType>(field.semanticType))
         cloneFunc = "hew_rc_clone";
+      else if (mlir::isa<hew::HandleType>(field.semanticType))
+        cloneFunc = "__handle_transfer";
+      else if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(
+                   field.semanticType)) {
+        if (fst.isIdentified() && structHasOwnedFields(fst.getName().str()))
+          cloneFunc = "__recurse";
+      }
       if (!cloneFunc.empty()) {
         cloneEntries.push_back(mlir::ArrayAttr::get(&context, {
             builder.getI64IntegerAttr(field.index),

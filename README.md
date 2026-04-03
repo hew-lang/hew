@@ -33,7 +33,7 @@ See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
 ### Language Basics
 
-**`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — Hew has no macro system; these are ordinary built-in functions that are auto-imported into every file:
+**`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:
 
 ```hew
 fn main() {
@@ -50,8 +50,8 @@ import std::fs;
 import std::encoding::json;
 
 fn main() {
-    let data = fs::read_to_string("config.json");
-    let obj = json::parse(data);
+    let data = fs.read("config.json");
+    let obj = json.parse(data);
     println(obj);
 }
 ```

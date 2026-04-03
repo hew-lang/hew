@@ -4,7 +4,7 @@ The Hew standard library provides core types, data structures, networking, encod
 
 ## Builtins — auto-imported, plain function calls
 
-`println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — there is no macro system and no `!` suffix.
+`println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.
 
 ```hew
 fn main() {
@@ -20,8 +20,8 @@ import std::fs;           // single module
 import std::encoding::json;
 
 fn main() {
-    let raw = fs::read_to_string("data.json");
-    println(json::parse(raw));
+    let raw = fs.read("data.json");
+    println(json.parse(raw));
 }
 ```
 

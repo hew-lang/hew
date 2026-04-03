@@ -171,6 +171,27 @@ fn remote_void_reply_sentinel() -> *mut c_void {
         .cast::<c_void>()
 }
 
+fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void {
+    if reply_data.is_empty() {
+        return if reply_size == 0 {
+            remote_void_reply_sentinel()
+        } else {
+            ptr::null_mut()
+        };
+    }
+
+    // SAFETY: malloc for reply buffer.
+    let result = unsafe { libc::malloc(reply_data.len()) };
+    if result.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: result was just allocated with reply_data.len() bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(reply_data.as_ptr(), result.cast::<u8>(), reply_data.len());
+    }
+    result
+}
+
 /// Route a message to a remote actor via the current node.
 ///
 /// # Safety
@@ -1321,8 +1342,10 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 ///
 /// Returns a `malloc`'d reply buffer on success. Remote failures return
 /// `NULL` instead of fabricating a zero/default reply value. Successful
-/// remote asks for `void` return a non-null internal sentinel pointer. The
-/// caller must `free` only heap-allocated non-null reply buffers.
+/// remote asks for `void` (`reply_size == 0`) return a non-null internal
+/// sentinel pointer. Successful empty replies for non-void asks fail closed
+/// with `NULL`. The caller must `free` only heap-allocated non-null reply
+/// buffers.
 ///
 /// # Safety
 ///
@@ -1335,7 +1358,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
     msg_type: i32,
     data: *mut c_void,
     size: usize,
-    _reply_size: usize,
+    reply_size: usize,
 ) -> *mut c_void {
     let target_node_id = crate::pid::hew_pid_node(pid);
     let local_node_id = crate::pid::hew_pid_local_node();
@@ -1449,24 +1472,10 @@ pub unsafe extern "C" fn hew_node_api_ask(
         data: Vec::new(),
     });
     drop(outcome_guard);
-
     if reply.status == ReplyStatus::Failed {
         return ptr::null_mut();
     }
-    if reply.data.is_empty() {
-        return remote_void_reply_sentinel();
-    }
-
-    // SAFETY: malloc for reply buffer.
-    let result = unsafe { libc::malloc(reply.data.len()) };
-    if result.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: result was just allocated with reply.data.len() bytes.
-    unsafe {
-        ptr::copy_nonoverlapping(reply.data.as_ptr(), result.cast::<u8>(), reply.data.len());
-    }
-    result
+    remote_reply_data_to_ptr(&reply.data, reply_size)
 }
 
 #[cfg(test)]
@@ -2126,6 +2135,20 @@ mod tests {
         unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
     }
 
+    unsafe extern "C" fn empty_reply_probe_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        // SAFETY: the reply channel comes from the scheduler and is valid for an empty reply here.
+        unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
+    }
+
     unsafe extern "C" fn blocked_ask_probe_dispatch(
         _state: *mut c_void,
         _msg_type: i32,
@@ -2283,6 +2306,70 @@ mod tests {
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
             let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_remote_nonvoid_empty_reply_returns_null() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(317, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(318, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(318);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let empty_reply_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(empty_reply_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(317);
+        assert!(!empty_reply_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*empty_reply_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+
+        let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+        };
+        assert!(
+            reply_ptr.is_null(),
+            "non-void remote ask should return null on an empty reply payload"
+        );
+
+        // SAFETY: the actor and nodes were allocated in this test and are still valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(empty_reply_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }

@@ -50,8 +50,23 @@ struct ReplyOutcome {
     data: Vec<u8>,
 }
 
-struct PendingReply {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ConnectionKey {
+    conn_mgr: usize,
     conn_id: c_int,
+}
+
+impl ConnectionKey {
+    fn new(conn_mgr: *const HewConnMgr, conn_id: c_int) -> Self {
+        Self {
+            conn_mgr: conn_mgr.cast::<()>() as usize,
+            conn_id,
+        }
+    }
+}
+
+struct PendingReply {
+    connection: ConnectionKey,
     outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
 }
@@ -75,10 +90,10 @@ impl ReplyRoutingTable {
     }
 
     /// Allocate a new request ID and register a pending reply slot.
-    fn register(&self, conn_id: c_int) -> (u64, Arc<PendingReply>) {
+    fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(PendingReply {
-            conn_id,
+            connection,
             outcome: Mutex::new(None),
             cond: Condvar::new(),
         });
@@ -136,7 +151,7 @@ impl ReplyRoutingTable {
     }
 
     /// Fail every pending reply tied to the given connection.
-    fn fail_connection(&self, conn_id: c_int) {
+    fn fail_connection(&self, connection: ConnectionKey) {
         let pending = {
             let mut map = self
                 .pending
@@ -145,7 +160,7 @@ impl ReplyRoutingTable {
             let request_ids = map
                 .iter()
                 .filter_map(|(&request_id, pending)| {
-                    (pending.conn_id == conn_id).then_some(request_id)
+                    (pending.connection == connection).then_some(request_id)
                 })
                 .collect::<Vec<_>>();
             request_ids
@@ -194,8 +209,8 @@ pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
     REPLY_TABLE.complete(request_id, payload.to_vec())
 }
 
-pub(crate) fn fail_remote_replies_for_connection(conn_id: c_int) {
-    REPLY_TABLE.fail_connection(conn_id);
+pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
+    REPLY_TABLE.fail_connection(ConnectionKey::new(conn_mgr, conn_id));
 }
 
 fn remote_void_reply_sentinel() -> *mut c_void {
@@ -1432,7 +1447,8 @@ pub unsafe extern "C" fn hew_node_api_ask(
     };
 
     // Register a pending reply slot.
-    let (request_id, pending) = REPLY_TABLE.register(conn_id);
+    let (request_id, pending) =
+        REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
 
     // Encode the ask envelope with request_id and source_node_id.
     #[expect(
@@ -1776,9 +1792,13 @@ mod tests {
     #[test]
     fn reply_table_register_and_complete() {
         let table = ReplyRoutingTable::new();
-        let (id, pending) = table.register(7);
+        let key = ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 7,
+        };
+        let (id, pending) = table.register(key);
         assert!(id > 0);
-        assert_eq!(pending.conn_id, 7);
+        assert_eq!(pending.connection, key);
 
         // Complete the pending reply.
         let payload = vec![1, 2, 3, 4];
@@ -1803,7 +1823,10 @@ mod tests {
     #[test]
     fn reply_table_remove_prevents_completion() {
         let table = ReplyRoutingTable::new();
-        let (id, _pending) = table.register(0);
+        let (id, _pending) = table.register(ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 0,
+        });
         table.remove(id);
         assert!(!table.complete(id, vec![99]));
     }
@@ -1811,7 +1834,10 @@ mod tests {
     #[test]
     fn reply_table_concurrent_complete_wakes_waiter() {
         let table = Arc::new(ReplyRoutingTable::new());
-        let (id, pending) = table.register(11);
+        let (id, pending) = table.register(ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 11,
+        });
         let pending_clone = Arc::clone(&pending);
         let table_clone = Arc::clone(&table);
 
@@ -1847,7 +1873,10 @@ mod tests {
     #[test]
     fn reply_table_fail_marks_failure() {
         let table = ReplyRoutingTable::new();
-        let (id, pending) = table.register(13);
+        let (id, pending) = table.register(ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 13,
+        });
 
         assert!(table.finish(
             id,
@@ -1869,7 +1898,10 @@ mod tests {
     #[test]
     fn reply_table_fail_all_wakes_waiter() {
         let table = Arc::new(ReplyRoutingTable::new());
-        let (_id, pending) = table.register(17);
+        let (_id, pending) = table.register(ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 17,
+        });
         let pending_clone = Arc::clone(&pending);
         let table_clone = Arc::clone(&table);
 
@@ -1901,10 +1933,17 @@ mod tests {
     #[test]
     fn reply_table_fail_connection_only_wakes_matching_waiters() {
         let table = ReplyRoutingTable::new();
-        let (_failed_id, failed_pending) = table.register(21);
-        let (_unrelated_id, unrelated_pending) = table.register(22);
+        let failed_key = ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 21,
+        };
+        let (_failed_id, failed_pending) = table.register(failed_key);
+        let (_unrelated_id, unrelated_pending) = table.register(ConnectionKey {
+            conn_mgr: 2,
+            conn_id: 21,
+        });
 
-        table.fail_connection(21);
+        table.fail_connection(failed_key);
 
         let failed_guard = failed_pending
             .outcome
@@ -2526,6 +2565,11 @@ mod tests {
             accepted_conn_id >= 0,
             "responder accepted connection missing"
         );
+        // SAFETY: node1 remains valid here and its connection manager stays alive until teardown below.
+        let outbound_key = ConnectionKey::new(
+            unsafe { (*node1.as_ptr()).conn_mgr.cast_const() },
+            outbound_conn_id,
+        );
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
@@ -2539,7 +2583,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let seen = guard
                 .values()
-                .any(|pending| pending.conn_id == outbound_conn_id);
+                .any(|pending| pending.connection == outbound_key);
             drop(guard);
             if !seen {
                 thread::sleep(Duration::from_millis(10));
@@ -2601,7 +2645,10 @@ mod tests {
             assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
 
-        let (request_id, pending) = REPLY_TABLE.register(0);
+        let (request_id, pending) = REPLY_TABLE.register(ConnectionKey {
+            conn_mgr: 1,
+            conn_id: 0,
+        });
 
         // SAFETY: node2 remains valid here and stopping it is the behavior under test.
         unsafe {

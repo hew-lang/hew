@@ -1,0 +1,12 @@
+// Two generic params that both collide with outer local names.
+fn swap<A, B>(A: A, B: B) -> (B, A) {
+    (B, A)
+}
+
+fn main() {
+    let A = 1;
+    let B = "hello";
+    let (x, y) = swap<int, String>(A, B);
+    println(x);
+    println(y);
+}

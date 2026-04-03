@@ -1,0 +1,14 @@
+// Mutable outer binding with the same name as a generic param.
+// The fix specifically guards mutableVars.lookup to prevent the
+// specialized callee from capturing the caller's alloca.
+fn identity<T>(T: T) -> T {
+    T
+}
+
+fn main() {
+    var T = 10;
+    let y = identity<int>(T);
+    T = 99;
+    println(y);
+    println(T);
+}

@@ -1,0 +1,16 @@
+// Nested generic calls where the inner and outer functions share a
+// type-param name. Ensures specialization of the inner call does not
+// capture the outer function's parameter binding.
+fn wrap<T>(x: T) -> T {
+    identity<T>(x)
+}
+
+fn identity<T>(T: T) -> T {
+    T
+}
+
+fn main() {
+    let T = 7;
+    let result = wrap<int>(T);
+    println(result);
+}

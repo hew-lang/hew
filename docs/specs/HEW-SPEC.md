@@ -4074,8 +4074,13 @@ The easiest way to enable it is via `hew run --profile`:
 hew run myapp.hew --profile
 ```
 
-This sets `HEW_PPROF=auto` on the compiled child process (unless the variable
-is already set in the environment).
+This injects `HEW_PPROF` into the compiled child process (no-op if already
+set). The value is platform-dependent:
+
+- **Unix:** `HEW_PPROF=auto` — per-user unix socket, auto-discovered by
+  `hew-observe`
+- **Non-Unix:** `HEW_PPROF=:6060` — TCP listener on port 6060 (`auto` is not
+  supported on non-Unix; the runtime would silently skip the profiler)
 
 For an already-compiled binary:
 

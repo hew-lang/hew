@@ -38,15 +38,30 @@ hew debug myapp.hew -- arg1 arg2   # debug myapp, passing args to the program
 ## Profiling and observability
 
 `hew run --profile` enables the built-in runtime profiler on the compiled
-program by setting `HEW_PPROF=auto` in its environment. On Unix this binds a
-per-user unix socket that `hew-observe` discovers automatically:
+program. The value injected into `HEW_PPROF` is platform-dependent:
+
+| Platform | `HEW_PPROF` value set | How to attach |
+|---|---|---|
+| Unix (Linux, macOS) | `auto` | `hew-observe` (auto-discovers unix socket) |
+| Other (Windows, …) | `:6060` | `hew-observe --addr localhost:6060` |
+
+If `HEW_PPROF` is already set in your environment, `--profile` is a no-op and
+your value is used as-is.
 
 ```sh
+# Unix — hew-observe auto-discovers the unix socket
 # Terminal 1
 hew run myapp.hew --profile
 
 # Terminal 2
 hew-observe
+
+# Non-Unix — profiler binds TCP on :6060
+# Terminal 1
+hew run myapp.hew --profile
+
+# Terminal 2
+hew-observe --addr localhost:6060
 ```
 
 You can also set `HEW_PPROF` directly on an already-compiled binary to choose

@@ -162,12 +162,21 @@ fn cmd_run(a: &args::RunArgs) {
     cmd.args(&a.program_args);
 
     // --profile: enable the built-in runtime profiler by setting HEW_PPROF
-    // on the child process if the caller hasn't already set it explicitly.
+    // on the child process. Only injected when HEW_PPROF is not already set.
+    // "auto" on Unix → per-user unix socket + auto-discovery for hew-observe.
+    // ":6060" on non-Unix → TCP listener; "auto" is rejected by the runtime on
+    // non-Unix (returns None / no-op), so we must use an explicit address there.
     if a.profile && std::env::var_os("HEW_PPROF").is_none() {
-        // "auto" on Unix → per-user unix socket + auto-discovery for hew-observe.
-        // On non-Unix platforms the runtime falls back to localhost:6060.
-        cmd.env("HEW_PPROF", "auto");
-        eprintln!("[hew] profiler enabled — run `hew-observe` in another terminal to attach");
+        #[cfg(unix)]
+        {
+            cmd.env("HEW_PPROF", "auto");
+            eprintln!("[hew] profiler enabled (unix socket) — run `hew-observe` to attach");
+        }
+        #[cfg(not(unix))]
+        {
+            cmd.env("HEW_PPROF", ":6060");
+            eprintln!("[hew] profiler enabled on :6060 — run `hew-observe --addr localhost:6060` to attach");
+        }
     }
 
     let mut child = match cmd.spawn() {

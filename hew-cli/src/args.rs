@@ -150,10 +150,11 @@ pub struct RunArgs {
     /// Build with debug info (no optimization, no stripping).
     #[arg(long, short = 'g')]
     pub debug: bool,
-    /// Enable the built-in runtime profiler (sets `HEW_PPROF=auto` if not already set).
-    /// On Unix this exposes a unix socket that `hew-observe` auto-discovers;
-    /// on other platforms it defaults to TCP on :6060.
-    /// Override the address with the `HEW_PPROF` environment variable directly.
+    /// Enable the built-in runtime profiler.
+    /// On Unix sets `HEW_PPROF=auto` (per-user unix socket, auto-discovered by `hew-observe`).
+    /// On other platforms sets `HEW_PPROF=:6060` (TCP listener on port 6060).
+    /// Has no effect if `HEW_PPROF` is already set in the environment.
+    /// Override the address by setting `HEW_PPROF` directly instead of using this flag.
     #[arg(long)]
     pub profile: bool,
     /// Pass an extra library or linker argument to the native link step.

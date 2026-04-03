@@ -239,11 +239,19 @@ fn build_client_endpoint(client_config: ClientConfig) -> *mut HewQuicEndpoint {
     let Some(rt) = build_runtime() else {
         return std::ptr::null_mut();
     };
+    // "0.0.0.0:0" is a valid address literal — parse cannot fail.
+    let bind: SocketAddr = "0.0.0.0:0".parse().expect("valid address literal");
     let endpoint = rt.block_on(async {
-        let bind: SocketAddr = "0.0.0.0:0".parse().ok()?;
-        let mut ep = Endpoint::client(bind).ok()?;
-        ep.set_default_client_config(client_config);
-        Some(ep)
+        match Endpoint::client(bind) {
+            Ok(mut ep) => {
+                ep.set_default_client_config(client_config);
+                Some(ep)
+            }
+            Err(e) => {
+                eprintln!("hew_quic: failed to bind client socket: {e}");
+                None
+            }
+        }
     });
     match endpoint {
         Some(endpoint) => Box::into_raw(Box::new(HewQuicEndpoint {
@@ -1624,6 +1632,25 @@ mod tests {
     fn new_client_null_safe_close() {
         // SAFETY: null is explicitly handled.
         unsafe { hew_quic_endpoint_close(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn insecure_client_config_succeeds() {
+        let cfg = insecure_client_config();
+        assert!(
+            cfg.is_ok(),
+            "insecure_client_config() should succeed: {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_bind_addr_rejects_garbage() {
+        assert!(resolve_bind_addr("not-an-address").is_none());
+    }
+
+    #[test]
+    fn resolve_connect_addr_rejects_garbage() {
+        assert!(resolve_connect_addr("not-an-address").is_none());
     }
 
     #[test]

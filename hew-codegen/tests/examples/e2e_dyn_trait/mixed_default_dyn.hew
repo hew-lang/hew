@@ -1,0 +1,23 @@
+trait A {
+    fn value(val: Self) -> int { 111 }
+}
+
+trait B {
+    fn value(val: Self) -> int { 222 }
+}
+
+type Point {
+    x: int;
+}
+
+impl A for Point {}
+impl B for Point {}
+
+fn use_dyn(obj: dyn B) -> int {
+    return obj.value();
+}
+
+fn main() {
+    let p = Point { x: 1 };
+    println(use_dyn(p));
+}

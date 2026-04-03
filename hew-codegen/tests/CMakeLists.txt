@@ -709,6 +709,7 @@ add_wasm_file_test(dyn_dispatch_string  e2e_dyn_trait dyn_dispatch_string)
 add_wasm_file_test(dyn_dispatch_args    e2e_dyn_trait dyn_dispatch_args)
 add_wasm_file_test(dyn_dispatch_void        e2e_dyn_trait dyn_dispatch_void)
 add_wasm_file_test(mixed_generic_dyn        e2e_dyn_trait mixed_generic_dyn)
+add_wasm_file_test(mixed_default_dyn        e2e_dyn_trait mixed_default_dyn)
 add_wasm_file_test(trait_inherit        e2e_trait_inherit trait_inherit)
 
 # Closures

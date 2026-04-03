@@ -3766,12 +3766,20 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
     overriddenMethods.insert(method.name);
   }
 
-  // Generate default method bodies from the trait for methods not overridden
+  // Generate default method bodies from the trait for methods not overridden.
+  // Apply the same collision-aware naming as explicit methods: if another trait
+  // already registered a full body under the base name, qualify with the trait.
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
       if (tm->body && overriddenMethods.find(tm->name) == overriddenMethods.end()) {
-        std::string mangledDefault = mangleName(currentModulePath, typeName, tm->name);
+        std::string baseDefault = mangleName(currentModulePath, typeName, tm->name);
+        bool defaultCollision = false;
+        if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(baseDefault))
+          defaultCollision = !existing.isDeclaration();
+        std::string mangledDefault = defaultCollision
+            ? mangleName(currentModulePath, typeName, traitName + "__" + tm->name)
+            : baseDefault;
         generateTraitDefaultMethod(*tm, typeName, mangledDefault, fallbackLoc);
       }
     }

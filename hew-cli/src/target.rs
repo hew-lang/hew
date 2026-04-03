@@ -278,20 +278,23 @@ fn host_os() -> TargetOs {
     }
 }
 
+#[cfg(target_env = "gnu")]
 fn host_env() -> Option<&'static str> {
-    #[cfg(target_env = "gnu")]
-    {
-        return Some("gnu");
-    }
-    #[cfg(target_env = "msvc")]
-    {
-        return Some("msvc");
-    }
-    #[cfg(target_env = "musl")]
-    {
-        return Some("musl");
-    }
+    Some("gnu")
+}
 
+#[cfg(target_env = "msvc")]
+fn host_env() -> Option<&'static str> {
+    Some("msvc")
+}
+
+#[cfg(target_env = "musl")]
+fn host_env() -> Option<&'static str> {
+    Some("musl")
+}
+
+#[cfg(not(any(target_env = "gnu", target_env = "msvc", target_env = "musl")))]
+fn host_env() -> Option<&'static str> {
     None
 }
 

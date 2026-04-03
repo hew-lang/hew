@@ -4752,10 +4752,37 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
-                if let Some(inner) = ty.as_option() {
-                    inner.clone()
+                // Build an error message if the enclosing function's return type
+                // cannot propagate via `?`.  Computed before any mutable borrow.
+                let bad_ctx_msg: Option<String> =
+                    self.current_return_type.as_ref().and_then(|ret| {
+                        let r = self.subst.resolve(ret);
+                        if r.as_option().is_some()
+                            || r.as_result().is_some()
+                            || matches!(r, Ty::Var(_) | Ty::Error)
+                        {
+                            None
+                        } else {
+                            Some(format!(
+                                "`?` cannot be used in a function returning `{r}`; \
+                                 the enclosing function must return `Option` or `Result`"
+                            ))
+                        }
+                    });
+                if let Some(inner_ty) = ty.as_option() {
+                    if let Some(msg) = bad_ctx_msg {
+                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
+                        Ty::Error
+                    } else {
+                        inner_ty.clone()
+                    }
                 } else if let Some((ok, _)) = ty.as_result() {
-                    ok.clone()
+                    if let Some(msg) = bad_ctx_msg {
+                        self.report_error(TypeErrorKind::InvalidOperation, span, msg);
+                        Ty::Error
+                    } else {
+                        ok.clone()
+                    }
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -7914,17 +7941,28 @@ impl Checker {
             param_tys.push(ty);
         }
 
+        // Save enclosing return type and install the lambda's own return type so
+        // that PostfixTry (`?`) context checks see the lambda's return type,
+        // not the outer function's.
+        let prev_return_type = self.current_return_type.take();
+
         let ret_ty = if let Some((te, _)) = return_type {
             let expected_ret = self.resolve_type_expr(te);
+            self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, &expected_ret);
             expected_ret
         } else if let Some((_, expected_ret)) = expected {
+            self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, expected_ret);
             expected_ret.clone()
         } else {
+            // Return type is fully inferred: leave current_return_type as None
+            // (already taken above) so `?` is not validated against a stale
+            // outer return type during synthesis.
             self.synthesize(&body.0, &body.1)
         };
 
+        self.current_return_type = prev_return_type;
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
 

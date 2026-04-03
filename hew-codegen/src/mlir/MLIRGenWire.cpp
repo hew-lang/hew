@@ -1961,7 +1961,14 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
   auto strRefType = hew::StringRefType::get(&context);
 
   // Function: (!llvm.ptr) -> !hew.result<struct, !hew.string_ref>
-  // Returns Ok(struct) on success, Err(message) if the input is not valid.
+  //
+  // Fail-closed on all structural and type errors:
+  //   1. Top-level parse failure: hew_{fmt}_parse returns null → Err.
+  //   2. Missing field: hew_{fmt}_get_field returns null → Err with field name.
+  //   3. String field wrong type: hew_{fmt}_get_string returns null → Err.
+  //   4. Scalar field wrong type: hew_{fmt}_type mismatch before calling getter → Err.
+  //      Float fields in JSON/YAML accept both the integer and float type codes
+  //      because JSON does not distinguish integer-valued floats at the value level.
   auto resultEnumType = hew::ResultEnumType::get(&context, info.mlirType, strRefType);
   std::string mangledName = mangleName(currentModulePath, typeName, "from_" + format.str());
 
@@ -2079,12 +2086,8 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
       //
       // Fail-closed coverage:
       //   - Missing field (get_field returned null): handled above via emitFieldErr.
-      //   - String field with wrong type (get_string returns null): handled below
-      //     via an explicit null check on the returned pointer.
-      //   - Non-string scalar field with wrong type: get_int/get_bool/get_float
-      //     return 0/false/0.0 on a null or wrong-typed node.  These cases
-      //     silently coerce; catching them would require per-format type-code
-      //     checks and is deferred as a separate lane.
+      //   - String field wrong type (get_string returns null): handled below.
+      //   - Non-string scalar wrong type: checked via hew_{fmt}_type before decoding.
       builder.setInsertionPointToStart(&fieldIfOp.getElseRegion().front());
       auto jkind = jsonKindOfMLIR(field.type);
 
@@ -2145,46 +2148,118 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
         return fieldIfOp.getResult(0);
       }
 
-      // Non-string scalars: decode via getter (returns 0/false/0.0 on null or
-      // wrong-typed input — the coercion gap noted above).
-      mlir::Value decoded;
+      // Non-string scalars: validate the runtime type code before decoding.
+      //
+      // Type codes (from hew_{fmt}_type):
+      //   JSON/YAML: -1=null_ptr, 1=bool, 2=int, 3=float, 4=string
+      //   TOML:      -1=null_ptr, 3=bool, 1=int, 2=float, 0=string
+      //
+      // Float fields accept either the integer or float code in JSON/YAML
+      // because JSON does not distinguish integer-valued floats (e.g. 1 vs 1.0)
+      // at the value level — as_f64() coerces both correctly.  TOML keeps them
+      // distinct, so only the float code is accepted there.
+      std::string rtGetType = "hew_" + format.str() + "_type";
+      bool isToml = (format == "toml");
+
+      int32_t primaryCode = -1, secondaryCode = -1;
       if (jkind == WireJsonKind::Bool) {
-        auto raw = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                                              mlir::SymbolRefAttr::get(&context, rtGetBool),
-                                              mlir::ValueRange{fieldJval})
-                       .getResult();
-        decoded = mlir::arith::TruncIOp::create(builder, location, builder.getI1Type(), raw);
-      } else if (jkind == WireJsonKind::Float32) {
-        auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+        primaryCode = isToml ? 3 : 1;
+      } else if (jkind == WireJsonKind::Float32 || jkind == WireJsonKind::Float64) {
+        primaryCode = isToml ? 2 : 3;
+        if (!isToml)
+          secondaryCode = 2; // integer-valued float in JSON/YAML is also fine
+      } else {               // Integer (i8/i16/i32/i64 variants)
+        primaryCode = isToml ? 1 : 2;
+      }
+
+      auto actualTypeCode =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                     mlir::SymbolRefAttr::get(&context, rtGetType),
+                                     mlir::ValueRange{fieldJval})
+              .getResult();
+
+      auto isPrimary =
+          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                      actualTypeCode,
+                                      createIntConstant(builder, location, i32Type, primaryCode));
+      mlir::Value typeOk;
+      if (secondaryCode != -1) {
+        auto isSecondary = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::eq, actualTypeCode,
+            createIntConstant(builder, location, i32Type, secondaryCode));
+        typeOk = mlir::arith::OrIOp::create(builder, location, isPrimary, isSecondary);
+      } else {
+        typeOk = isPrimary;
+      }
+
+      auto typeCheckIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, typeOk,
+                                                    /*withElseRegion=*/true);
+
+      // Then: correct type — decode scalar, free field node, recurse.
+      builder.setInsertionPointToStart(&typeCheckIfOp.getThenRegion().front());
+      {
+        mlir::Value decoded;
+        if (jkind == WireJsonKind::Bool) {
+          auto raw = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                                mlir::SymbolRefAttr::get(&context, rtGetBool),
+                                                mlir::ValueRange{fieldJval})
+                         .getResult();
+          decoded = mlir::arith::TruncIOp::create(builder, location, builder.getI1Type(), raw);
+        } else if (jkind == WireJsonKind::Float32) {
+          auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                                 mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+          decoded =
+              mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
+        } else if (jkind == WireJsonKind::Float64) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
                                                mlir::SymbolRefAttr::get(&context, rtGetFloat),
                                                mlir::ValueRange{fieldJval})
                         .getResult();
-        decoded = mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
-      } else if (jkind == WireJsonKind::Float64) {
-        decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
-                                             mlir::SymbolRefAttr::get(&context, rtGetFloat),
-                                             mlir::ValueRange{fieldJval})
-                      .getResult();
-      } else {
-        auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
-                                                 mlir::SymbolRefAttr::get(&context, rtGetInt),
-                                                 mlir::ValueRange{fieldJval})
-                          .getResult();
-        if (field.type != i64Type)
-          decoded =
-              mlir::arith::TruncIOp::create(builder, location, field.type, rawI64).getResult();
-        else
-          decoded = rawI64;
+        } else {
+          auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                                   mlir::SymbolRefAttr::get(&context, rtGetInt),
+                                                   mlir::ValueRange{fieldJval})
+                            .getResult();
+          decoded = (field.type != i64Type)
+                        ? mlir::arith::TruncIOp::create(builder, location, field.type, rawI64)
+                              .getResult()
+                        : rawI64;
+        }
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        auto nextStruct = mlir::LLVM::InsertValueOp::create(builder, location, currentStruct,
+                                                            decoded, field.index);
+        auto innerResult = processFields(fieldIdx + 1, nextStruct);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerResult});
       }
-      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                                 mlir::SymbolRefAttr::get(&context, rtFree),
-                                 mlir::ValueRange{fieldJval});
 
-      auto nextStruct = mlir::LLVM::InsertValueOp::create(builder, location, currentStruct,
-                                                          decoded, field.index);
-      auto innerResult = processFields(fieldIdx + 1, nextStruct);
-      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerResult});
+      // Else: wrong type — free field node, free document, return Err.
+      builder.setInsertionPointToStart(&typeCheckIfOp.getElseRegion().front());
+      {
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{fieldJval});
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{objPtr});
+        auto errSym = getOrCreateGlobalString("failed to parse " + format.str() +
+                                              ": field '" + field.name + "' has wrong type");
+        auto errStrRef =
+            hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
+                .getResult();
+        auto errVal = hew::EnumConstructOp::create(
+            builder, location, resultEnumType, /*variantIndex=*/1u,
+            llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
+            builder.getI64ArrayAttr({2}));
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errVal});
+      }
 
+      builder.setInsertionPointAfter(typeCheckIfOp);
+      mlir::scf::YieldOp::create(builder, location,
+                                 mlir::ValueRange{typeCheckIfOp.getResult(0)});
       builder.setInsertionPointAfter(fieldIfOp);
       return fieldIfOp.getResult(0);
     };

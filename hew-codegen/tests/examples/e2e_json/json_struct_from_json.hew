@@ -1,8 +1,9 @@
 // Regression: non-wire struct.from_json() returns Result<Self, String>.
-// Covers three cases:
-//   1. Valid JSON with all fields present     -> Ok(struct)
-//   2. Unparseable JSON                       -> Err (parse failure)
-//   3. Valid JSON but a required field absent -> Err (missing field)
+// Covers four cases:
+//   1. Valid JSON with all fields present             -> Ok(struct)
+//   2. Unparseable JSON                               -> Err (parse failure)
+//   3. Valid JSON but a required field absent         -> Err (missing field)
+//   4. Valid JSON but a field has wrong scalar type   -> Err (wrong type)
 
 type Point {
     x: int;
@@ -29,5 +30,11 @@ fn main() {
     match Point.from_json("{\"x\":5}") {
         Ok(_) => println("unexpected ok on missing field"),
         Err(_) => println("missing field caught"),
+    }
+
+    // Case 4: field present but wrong scalar type ('x' is a string, not int)
+    match Point.from_json("{\"x\":\"not_a_number\",\"y\":7}") {
+        Ok(_) => println("unexpected ok on wrong type"),
+        Err(_) => println("wrong type caught"),
     }
 }

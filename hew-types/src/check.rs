@@ -1288,8 +1288,11 @@ impl Checker {
     /// Adds `to_json`, `to_yaml`, `to_toml` instance methods and
     /// `from_json`, `from_yaml`, `from_toml` static methods.
     ///
-    /// The `from_*` static methods return `Result<Self, String>` so that invalid
-    /// input is surfaced as a typed error rather than a runtime panic.
+    /// The `from_*` static methods return `Result<Self, String>`.  Errors are
+    /// returned for: (1) top-level parse failure, (2) missing required field,
+    /// (3) a string field that is not a string at runtime, and (4) a scalar
+    /// (int/bool/float) field whose runtime type code does not match the
+    /// expected kind for the format.
     fn register_encode_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
             name: type_name.to_string(),

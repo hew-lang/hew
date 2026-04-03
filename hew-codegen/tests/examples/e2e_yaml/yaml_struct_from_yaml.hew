@@ -1,5 +1,5 @@
 // Regression: non-wire struct.from_yaml() returns Result<Self, String>.
-// Covers: valid round-trip, unparseable input, missing field.
+// Covers: valid round-trip, unparseable input, missing field, wrong scalar type.
 
 type Config {
     width: int;
@@ -23,5 +23,11 @@ fn main() {
     match Config.from_yaml("width: 800") {
         Ok(_) => println("unexpected ok on missing field"),
         Err(_) => println("missing field caught"),
+    }
+
+    // 'width' is a string where int is expected
+    match Config.from_yaml("width: \"not_a_number\"\nheight: 1080") {
+        Ok(_) => println("unexpected ok on wrong type"),
+        Err(_) => println("wrong type caught"),
     }
 }

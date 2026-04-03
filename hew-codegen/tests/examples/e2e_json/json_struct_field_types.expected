@@ -1,5 +1,4 @@
 hello
 42
 string type error caught
-int coercion gap: value=
-0
+int type error caught

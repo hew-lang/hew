@@ -111,6 +111,60 @@ pub unsafe extern "C" fn hew_json_type(val: *const HewJsonValue) -> i32 {
 
 /// Get the boolean value from a [`HewJsonValue`].
 ///
+/// Returns 1 if `val` is a JSON boolean, 0 otherwise (including null).
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_is_bool(val: *const HewJsonValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, serde_json::Value::Bool(_)))
+}
+
+/// Returns 1 if `val` is a JSON integer-valued number, 0 otherwise.
+///
+/// Matches the values that [`hew_json_get_int`] can extract without coercion.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_is_int(val: *const HewJsonValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    match &v.inner {
+        serde_json::Value::Number(n) if n.is_i64() || n.is_u64() => 1,
+        _ => 0,
+    }
+}
+
+/// Returns 1 if `val` is any JSON number (integer or float), 0 otherwise.
+///
+/// Matches the values that [`hew_json_get_float`] can extract — JSON does not
+/// distinguish integer-valued floats at the value level, so both integer and
+/// float numbers are accepted.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_is_float(val: *const HewJsonValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, serde_json::Value::Number(_)))
+}
+
 /// Returns 1 for `true`, 0 for `false` or if the value is not a boolean.
 ///
 /// # Safety

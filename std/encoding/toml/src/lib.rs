@@ -85,6 +85,58 @@ pub unsafe extern "C" fn hew_toml_type(val: *const HewTomlValue) -> i32 {
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
 #[no_mangle]
+pub unsafe extern "C" fn hew_toml_is_bool(val: *const HewTomlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, toml::Value::Boolean(_)))
+}
+
+/// Returns 1 if `val` is a TOML integer, 0 otherwise (including null).
+///
+/// Matches the values that [`hew_toml_get_int`] can extract without coercion.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_is_int(val: *const HewTomlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, toml::Value::Integer(_)))
+}
+
+/// Returns 1 if `val` is a TOML float, 0 otherwise (including null).
+///
+/// TOML keeps float and integer types strictly separate, so only
+/// `toml::Value::Float` is accepted — unlike JSON/YAML, integer-valued TOML
+/// numbers are not coerced by [`hew_toml_get_float`].
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_is_float(val: *const HewTomlValue) -> i32 {
+    if val.is_null() {
+        return 0;
+    }
+    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    i32::from(matches!(v.inner, toml::Value::Float(_)))
+}
+
+/// Returns a `malloc`-allocated NUL-terminated C string. The caller must
+/// free it with `libc::free`. Returns null if `val` is null or not a string.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
+#[no_mangle]
 pub unsafe extern "C" fn hew_toml_get_string(val: *const HewTomlValue) -> *mut c_char {
     if val.is_null() {
         return std::ptr::null_mut();

@@ -1966,9 +1966,9 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
   //   1. Top-level parse failure: hew_{fmt}_parse returns null → Err.
   //   2. Missing field: hew_{fmt}_get_field returns null → Err with field name.
   //   3. String field wrong type: hew_{fmt}_get_string returns null → Err.
-  //   4. Scalar field wrong type: hew_{fmt}_type mismatch before calling getter → Err.
-  //      Float fields in JSON/YAML accept both the integer and float type codes
-  //      because JSON does not distinguish integer-valued floats at the value level.
+  //   4. Scalar field wrong type: hew_{fmt}_is_bool/is_int/is_float returns 0 → Err.
+  //      Each predicate encapsulates format-specific type-code mapping and the
+  //      JSON/YAML integer-valued-float coercion rule so codegen stays format-agnostic.
   auto resultEnumType = hew::ResultEnumType::get(&context, info.mlirType, strRefType);
   std::string mangledName = mangleName(currentModulePath, typeName, "from_" + format.str());
 
@@ -2148,49 +2148,28 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
         return fieldIfOp.getResult(0);
       }
 
-      // Non-string scalars: validate the runtime type code before decoding.
-      //
-      // Type codes (from hew_{fmt}_type):
-      //   JSON/YAML: -1=null_ptr, 1=bool, 2=int, 3=float, 4=string
-      //   TOML:      -1=null_ptr, 3=bool, 1=int, 2=float, 0=string
-      //
-      // Float fields accept either the integer or float code in JSON/YAML
-      // because JSON does not distinguish integer-valued floats (e.g. 1 vs 1.0)
-      // at the value level — as_f64() coerces both correctly.  TOML keeps them
-      // distinct, so only the float code is accepted there.
-      std::string rtGetType = "hew_" + format.str() + "_type";
-      bool isToml = (format == "toml");
+      // Non-string scalars: validate field type using the format-specific
+      // is_bool / is_int / is_float predicates before decoding.  Each predicate
+      // encapsulates the per-format type-code mapping (JSON/YAML and TOML use
+      // different codes, and JSON/YAML is_float accepts integer-valued numbers
+      // while TOML is_float does not), so the codegen never depends on raw codes.
+      std::string rtIsPred;
+      if (jkind == WireJsonKind::Bool)
+        rtIsPred = "hew_" + format.str() + "_is_bool";
+      else if (jkind == WireJsonKind::Float32 || jkind == WireJsonKind::Float64)
+        rtIsPred = "hew_" + format.str() + "_is_float";
+      else // Integer (i8/i16/i32/i64 variants)
+        rtIsPred = "hew_" + format.str() + "_is_int";
 
-      int32_t primaryCode = -1, secondaryCode = -1;
-      if (jkind == WireJsonKind::Bool) {
-        primaryCode = isToml ? 3 : 1;
-      } else if (jkind == WireJsonKind::Float32 || jkind == WireJsonKind::Float64) {
-        primaryCode = isToml ? 2 : 3;
-        if (!isToml)
-          secondaryCode = 2; // integer-valued float in JSON/YAML is also fine
-      } else {               // Integer (i8/i16/i32/i64 variants)
-        primaryCode = isToml ? 1 : 2;
-      }
-
-      auto actualTypeCode =
+      auto typeOkI32 =
           hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                                     mlir::SymbolRefAttr::get(&context, rtGetType),
+                                     mlir::SymbolRefAttr::get(&context, rtIsPred),
                                      mlir::ValueRange{fieldJval})
               .getResult();
-
-      auto isPrimary =
-          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
-                                      actualTypeCode,
-                                      createIntConstant(builder, location, i32Type, primaryCode));
-      mlir::Value typeOk;
-      if (secondaryCode != -1) {
-        auto isSecondary = mlir::arith::CmpIOp::create(
-            builder, location, mlir::arith::CmpIPredicate::eq, actualTypeCode,
-            createIntConstant(builder, location, i32Type, secondaryCode));
-        typeOk = mlir::arith::OrIOp::create(builder, location, isPrimary, isSecondary);
-      } else {
-        typeOk = isPrimary;
-      }
+      auto typeOk =
+          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                      typeOkI32,
+                                      createIntConstant(builder, location, i32Type, 0));
 
       auto typeCheckIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, typeOk,
                                                     /*withElseRegion=*/true);

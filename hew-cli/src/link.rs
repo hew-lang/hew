@@ -2,13 +2,7 @@
 //! the final binary from the object file emitted by Hew's embedded codegen
 //! backend and the combined Hew library (`libhew.a`).
 
-fn hew_lib_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "hew.lib"
-    } else {
-        "libhew.a"
-    }
-}
+use crate::target::TargetSpec;
 
 /// Link an object file with the combined Hew library into a native executable
 /// (or `.wasm` binary when the target triple indicates a WASM platform).
@@ -22,15 +16,19 @@ fn hew_lib_name() -> &'static str {
 pub fn link_executable(
     object_path: &str,
     output_path: &str,
-    target: Option<&str>,
+    target: &TargetSpec,
     extra_libs: &[String],
     debug: bool,
 ) -> Result<(), String> {
-    if target.is_some_and(|t| t.starts_with("wasm32")) {
-        return link_wasm(object_path, output_path, target.unwrap());
+    if target.is_wasm() {
+        return link_wasm(object_path, output_path, target.normalized_triple());
     }
 
-    let hew_lib = find_hew_lib(hew_lib_name())?;
+    if !target.can_link_with_host_tools() {
+        return Err(target.unsupported_native_link_error());
+    }
+
+    let hew_lib = find_hew_lib(target.hew_lib_name())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
     let safe_output = if output_path.starts_with('-') {

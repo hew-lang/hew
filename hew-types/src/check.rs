@@ -2039,9 +2039,7 @@ impl Checker {
 
                     // Register default trait methods not overridden in this impl
                     if let Some(tb) = &id.trait_bound {
-                        // Track which types implement which traits
-                        self.trait_impls_set
-                            .insert((type_name.clone(), tb.name.clone()));
+                        self.record_trait_impl(type_name, &tb.name);
 
                         let overridden: HashSet<&str> =
                             id.methods.iter().map(|m| m.name.as_str()).collect();
@@ -2375,6 +2373,11 @@ impl Checker {
             td.methods.insert(method.name.clone(), sig.clone());
         }
         sig
+    }
+
+    fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
+        self.trait_impls_set
+            .insert((type_name.to_string(), trait_name.to_string()));
     }
 
     fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
@@ -2749,8 +2752,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.trait_impls_set
-                            .insert((type_name.clone(), tb.name.clone()));
+                        self.record_trait_impl(type_name, &tb.name);
                     }
 
                     // Restore previous self type
@@ -2871,8 +2873,7 @@ impl Checker {
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
-                            self.trait_impls_set
-                                .insert((type_name.clone(), tb.name.clone()));
+                            self.record_trait_impl(type_name, &tb.name);
                         }
                     }
                 }
@@ -3042,8 +3043,7 @@ impl Checker {
                             self.register_impl_method(type_name, method, id.type_params.as_ref());
                         }
                         if let Some(tb) = &id.trait_bound {
-                            self.trait_impls_set
-                                .insert((type_name.clone(), tb.name.clone()));
+                            self.record_trait_impl(type_name, &tb.name);
                         }
 
                         // Restore previous self type

@@ -16,8 +16,7 @@ impl Drop for HttpReq {
 
 actor Handler {
     receive fn handle(req: HttpReq, sink: Sink<String>) {
-        let path = req.path;
-        sink.write(f"handled: {path}");
+        sink.write(f"handled: {req.path}");
         sink.close();
         // req is automatically freed by Drop here
     }

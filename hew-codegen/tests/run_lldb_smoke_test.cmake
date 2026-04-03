@@ -32,6 +32,7 @@ endif()
 
 get_filename_component(HEW_BASENAME ${HEW_FILE} NAME)
 string(REPLACE "." "\\." HEW_BASENAME_REGEX "${HEW_BASENAME}")
+math(EXPR NEXT_LINE "${BREAKPOINT_LINE} + 1")
 
 execute_process(
   COMMAND ${LLDB}
@@ -82,6 +83,6 @@ assert_lldb_output(
   "source listing for Hew main()"
 )
 assert_lldb_output(
-  "21[ \t]+let p = Pair"
+  "${NEXT_LINE}[ \t]+let p = Pair"
   "visible Hew source context around the breakpoint"
 )

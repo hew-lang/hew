@@ -300,7 +300,6 @@ pub struct HewNode {
     /// Node state (starting/running/stopping/stopped)
     pub state: AtomicU8,
     bind_addr_owned: *mut c_char,
-    conn_by_node: Mutex<HashMap<u16, c_int>>,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Mutex<Option<JoinHandle<()>>>,
     next_peer_node: AtomicU16,
@@ -429,8 +428,7 @@ fn handle_inbound_ask(
 /// Encode and send a reply envelope back to the source node.
 ///
 /// Uses `conn_mgr` directly so the reply is routed via the connection that
-/// received the original ask. This makes reply routing work on the accepting
-/// side, where `CURRENT_NODE.conn_by_node` is not populated.
+/// received the original ask.
 fn send_reply_envelope(
     target_node_id: u16,
     request_id: u64,
@@ -671,7 +669,6 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         registry,
         state: AtomicU8::new(NODE_STATE_STOPPED),
         bind_addr_owned: bind_copy,
-        conn_by_node: Mutex::new(HashMap::new()),
         accept_stop: Arc::new(AtomicBool::new(false)),
         accept_thread: Mutex::new(None),
         next_peer_node: AtomicU16::new(1),
@@ -948,11 +945,6 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         node.transport_ops = ptr::null();
     }
 
-    {
-        let mut guard = node.conn_by_node.lock_or_recover();
-        guard.clear();
-    }
-
     node.state.store(NODE_STATE_STOPPED, Ordering::Release);
     0
 }
@@ -1139,15 +1131,9 @@ pub unsafe extern "C" fn hew_node_send(
         return -1;
     }
     // SAFETY: routing table pointer is valid while node is running.
-    let mut conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
+    let conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
     if conn_id < 0 {
-        conn_id = {
-            let map = node.conn_by_node.lock_or_recover();
-            let Some(conn_id) = map.get(&target_node_id) else {
-                return -1;
-            };
-            *conn_id
-        };
+        return -1;
     }
 
     // SAFETY: conn_mgr and conn_id were validated above.
@@ -1232,11 +1218,6 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             0,
         )
     };
-
-    {
-        let mut map = node.conn_by_node.lock_or_recover();
-        map.insert(peer_node_id, conn_id);
-    }
 
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid if non-null.
@@ -1454,20 +1435,12 @@ pub unsafe extern "C" fn hew_node_api_ask(
         return ptr::null_mut();
     }
 
-    // Look up the connection for the target node.
-    let conn_id = {
-        let mut cid =
-            // SAFETY: routing_table is valid while node is running.
-            unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
-        if cid < 0 {
-            let map = node.conn_by_node.lock_or_recover();
-            match map.get(&target_node_id) {
-                Some(&id) => cid = id,
-                None => return ptr::null_mut(),
-            }
-        }
-        cid
-    };
+    // Look up the connection for the target node via the routing table.
+    // SAFETY: routing_table is valid while node is running.
+    let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
+    if conn_id < 0 {
+        return ptr::null_mut();
+    }
 
     // Register a pending reply slot.
     let (request_id, pending) =
@@ -2384,7 +2357,7 @@ mod tests {
         // Remote ask from node1 (CURRENT_NODE, LOCAL_NODE_ID=311) to actor on node2.
         //
         // Routing: target_node_id=312 ≠ local_node_id=311 → remote path.
-        // node1.conn_by_node[312] provides the outbound conn_id.
+        // routing_table[312] provides the outbound conn_id (populated during handshake).
         // On node2 the inbound router fires handle_inbound_ask with conn_mgr=node2.conn_mgr;
         // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
         // connection whose peer_node_id == 311, enabling the reply to flow back to node1.

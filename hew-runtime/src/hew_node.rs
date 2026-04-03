@@ -38,8 +38,20 @@ static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
 // ---------------------------------------------------------------------------
 
 /// A single pending remote ask waiting for its reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplyStatus {
+    Success,
+    Failed,
+}
+
+#[derive(Debug)]
+struct ReplyOutcome {
+    status: ReplyStatus,
+    data: Vec<u8>,
+}
+
 struct PendingReply {
-    data: Mutex<Option<Vec<u8>>>,
+    outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
 }
 
@@ -65,7 +77,7 @@ impl ReplyRoutingTable {
     fn register(&self) -> (u64, Arc<PendingReply>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(PendingReply {
-            data: Mutex::new(None),
+            outcome: Mutex::new(None),
             cond: Condvar::new(),
         });
         let mut map = self
@@ -79,6 +91,16 @@ impl ReplyRoutingTable {
     /// Complete a pending reply by depositing the payload and signalling
     /// the waiting thread. Returns `true` if the request ID was found.
     fn complete(&self, request_id: u64, payload: Vec<u8>) -> bool {
+        self.finish(
+            request_id,
+            ReplyOutcome {
+                status: ReplyStatus::Success,
+                data: payload,
+            },
+        )
+    }
+
+    fn finish(&self, request_id: u64, outcome: ReplyOutcome) -> bool {
         let entry = {
             let mut map = self
                 .pending
@@ -88,14 +110,36 @@ impl ReplyRoutingTable {
         };
         if let Some(pending) = entry {
             let mut guard = pending
-                .data
+                .outcome
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = Some(payload);
+            *guard = Some(outcome);
             pending.cond.notify_one();
             true
         } else {
             false
+        }
+    }
+
+    /// Fail every pending reply and wake all blocked waiters.
+    fn fail_all(&self) {
+        let pending = {
+            let mut map = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.drain().map(|(_, pending)| pending).collect::<Vec<_>>()
+        };
+        for pending in pending {
+            let mut guard = pending
+                .outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = Some(ReplyOutcome {
+                status: ReplyStatus::Failed,
+                data: Vec::new(),
+            });
+            pending.cond.notify_one();
         }
     }
 
@@ -111,6 +155,7 @@ impl ReplyRoutingTable {
 
 static REPLY_TABLE: std::sync::LazyLock<ReplyRoutingTable> =
     std::sync::LazyLock::new(ReplyRoutingTable::new);
+static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 
 /// Deposit a reply payload for a pending remote ask.
 ///
@@ -118,6 +163,12 @@ static REPLY_TABLE: std::sync::LazyLock<ReplyRoutingTable> =
 /// `true` if the request ID was matched.
 pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
     REPLY_TABLE.complete(request_id, payload.to_vec())
+}
+
+fn remote_void_reply_sentinel() -> *mut c_void {
+    ptr::from_ref(&REMOTE_VOID_REPLY_SENTINEL)
+        .cast_mut()
+        .cast::<c_void>()
 }
 
 /// Route a message to a remote actor via the current node.
@@ -754,6 +805,7 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;
         }
+        REPLY_TABLE.fail_all();
     }
     node.accept_stop.store(true, Ordering::Release);
     {
@@ -1269,8 +1321,8 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 ///
 /// Returns a `malloc`'d reply buffer on success. Remote failures return
 /// `NULL` instead of fabricating a zero/default reply value. Successful
-/// remote asks for `void` also surface as `NULL`. The caller must `free`
-/// any non-null returned pointer.
+/// remote asks for `void` return a non-null internal sentinel pointer. The
+/// caller must `free` only heap-allocated non-null reply buffers.
 ///
 /// # Safety
 ///
@@ -1371,41 +1423,48 @@ pub unsafe extern "C" fn hew_node_api_ask(
     // Block until the reply arrives or the timeout elapses.
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(REMOTE_ASK_TIMEOUT_MS);
-    let mut data_guard = pending
-        .data
+    let mut outcome_guard = pending
+        .outcome
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while data_guard.is_none() {
+    while outcome_guard.is_none() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             // Timeout — remove the pending entry and return the null failure sentinel.
             REPLY_TABLE.remove(request_id);
             return ptr::null_mut();
         }
-        let (new_guard, wait_result) = pending.cond.wait_timeout_or_recover(data_guard, remaining);
-        data_guard = new_guard;
-        if wait_result.timed_out() && data_guard.is_none() {
+        let (new_guard, wait_result) = pending
+            .cond
+            .wait_timeout_or_recover(outcome_guard, remaining);
+        outcome_guard = new_guard;
+        if wait_result.timed_out() && outcome_guard.is_none() {
             REPLY_TABLE.remove(request_id);
             return ptr::null_mut();
         }
     }
 
-    // Reply received — copy into a malloc'd buffer for the caller.
-    let reply_data = data_guard.take().unwrap_or_default();
-    drop(data_guard);
+    let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
+        status: ReplyStatus::Failed,
+        data: Vec::new(),
+    });
+    drop(outcome_guard);
 
-    if reply_data.is_empty() {
+    if reply.status == ReplyStatus::Failed {
         return ptr::null_mut();
+    }
+    if reply.data.is_empty() {
+        return remote_void_reply_sentinel();
     }
 
     // SAFETY: malloc for reply buffer.
-    let result = unsafe { libc::malloc(reply_data.len()) };
+    let result = unsafe { libc::malloc(reply.data.len()) };
     if result.is_null() {
         return ptr::null_mut();
     }
-    // SAFETY: result was just allocated with reply_data.len() bytes.
+    // SAFETY: result was just allocated with reply.data.len() bytes.
     unsafe {
-        ptr::copy_nonoverlapping(reply_data.as_ptr(), result.cast::<u8>(), reply_data.len());
+        ptr::copy_nonoverlapping(reply.data.as_ptr(), result.cast::<u8>(), reply.data.len());
     }
     result
 }
@@ -1658,46 +1717,53 @@ mod tests {
 
     #[test]
     fn reply_table_register_and_complete() {
-        let (id, pending) = REPLY_TABLE.register();
+        let table = ReplyRoutingTable::new();
+        let (id, pending) = table.register();
         assert!(id > 0);
 
         // Complete the pending reply.
         let payload = vec![1, 2, 3, 4];
-        assert!(REPLY_TABLE.complete(id, payload.clone()));
+        assert!(table.complete(id, payload.clone()));
 
         // The condvar should be signalled and data deposited.
         let guard = pending
-            .data
+            .outcome
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(guard.as_deref(), Some(payload.as_slice()));
+        let outcome = guard.as_ref().expect("reply outcome should be set");
+        assert_eq!(outcome.status, ReplyStatus::Success);
+        assert_eq!(outcome.data, payload);
     }
 
     #[test]
     fn reply_table_complete_unknown_returns_false() {
-        assert!(!REPLY_TABLE.complete(u64::MAX - 1, vec![42]));
+        let table = ReplyRoutingTable::new();
+        assert!(!table.complete(u64::MAX - 1, vec![42]));
     }
 
     #[test]
     fn reply_table_remove_prevents_completion() {
-        let (id, _pending) = REPLY_TABLE.register();
-        REPLY_TABLE.remove(id);
-        assert!(!REPLY_TABLE.complete(id, vec![99]));
+        let table = ReplyRoutingTable::new();
+        let (id, _pending) = table.register();
+        table.remove(id);
+        assert!(!table.complete(id, vec![99]));
     }
 
     #[test]
     fn reply_table_concurrent_complete_wakes_waiter() {
-        let (id, pending) = REPLY_TABLE.register();
+        let table = Arc::new(ReplyRoutingTable::new());
+        let (id, pending) = table.register();
         let pending_clone = Arc::clone(&pending);
+        let table_clone = Arc::clone(&table);
 
         let handle = thread::spawn(move || {
             thread::sleep(Duration::from_millis(10));
-            REPLY_TABLE.complete(id, vec![10, 20]);
+            table_clone.complete(id, vec![10, 20]);
         });
 
         // Wait on the condvar.
         let mut guard = pending_clone
-            .data
+            .outcome
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -1712,9 +1778,65 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard = g;
         }
-        assert_eq!(guard.as_deref(), Some(&[10, 20][..]));
+        let outcome = guard.as_ref().expect("reply outcome should be set");
+        assert_eq!(outcome.status, ReplyStatus::Success);
+        assert_eq!(outcome.data, vec![10, 20]);
 
         handle.join().expect("completer thread panicked");
+    }
+
+    #[test]
+    fn reply_table_fail_marks_failure() {
+        let table = ReplyRoutingTable::new();
+        let (id, pending) = table.register();
+
+        assert!(table.finish(
+            id,
+            ReplyOutcome {
+                status: ReplyStatus::Failed,
+                data: Vec::new(),
+            },
+        ));
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard.as_ref().expect("reply outcome should be set");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert!(outcome.data.is_empty());
+    }
+
+    #[test]
+    fn reply_table_fail_all_wakes_waiter() {
+        let table = Arc::new(ReplyRoutingTable::new());
+        let (_id, pending) = table.register();
+        let pending_clone = Arc::clone(&pending);
+        let table_clone = Arc::clone(&table);
+
+        let handle = thread::spawn(move || {
+            let mut guard = pending_clone
+                .outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while guard.is_none() {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!remaining.is_zero(), "waiter timed out before fail_all");
+                let (new_guard, _) = pending_clone
+                    .cond
+                    .wait_timeout(guard, remaining)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard = new_guard;
+            }
+            let outcome = guard.take().expect("reply outcome should be set");
+            assert_eq!(outcome.status, ReplyStatus::Failed);
+            assert!(outcome.data.is_empty());
+        });
+
+        thread::sleep(Duration::from_millis(10));
+        table_clone.fail_all();
+        handle.join().expect("waiter thread panicked");
     }
 
     #[test]
@@ -1990,6 +2112,87 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn void_ask_probe_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        // SAFETY: the reply channel comes from the scheduler and is valid for a void reply here.
+        unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
+    }
+
+    unsafe extern "C" fn blocked_ask_probe_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
+
+    #[test]
+    fn two_node_remote_void_ask_returns_sentinel() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(313, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node2 = unsafe { TestNode::new(314, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(314);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let void_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(void_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(313);
+        assert!(!void_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*void_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 314);
+
+        let connect_addr = CString::new(format!("314@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        assert_eq!(reply_ptr, remote_void_reply_sentinel());
+
+        // SAFETY: the actor and nodes were allocated in this test and are still valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(void_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
     #[test]
     fn two_node_remote_ask_reply() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
@@ -2081,6 +2284,97 @@ mod tests {
         unsafe {
             let _ = crate::actor::hew_actor_free(echo_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn node_stop_wakes_pending_remote_ask() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(315, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node2 = unsafe { TestNode::new(316, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(316);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let blocked_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(315);
+        assert!(!blocked_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+
+        let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
+        let ask_handle = thread::spawn(move || unsafe {
+            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>()) as usize
+        });
+
+        let pending_seen = (0..100).any(|_| {
+            let guard = REPLY_TABLE
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let seen = !guard.is_empty();
+            drop(guard);
+            if !seen {
+                thread::sleep(Duration::from_millis(10));
+            }
+            seen
+        });
+        assert!(
+            pending_seen,
+            "remote ask never reached the pending reply table"
+        );
+
+        let stop_started = std::time::Instant::now();
+        // SAFETY: node1 remains valid here and stopping it is the behavior under test.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+        }
+        let reply_ptr = ask_handle.join().expect("ask thread panicked") as *mut c_void;
+        assert!(
+            reply_ptr.is_null(),
+            "stopped node should fail pending remote asks"
+        );
+        assert!(
+            stop_started.elapsed() < Duration::from_secs(2),
+            "pending remote ask should wake promptly when the node stops"
+        );
+
+        // SAFETY: the actor and node2 were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(blocked_actor);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();

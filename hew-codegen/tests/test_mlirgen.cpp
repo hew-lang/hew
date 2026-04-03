@@ -2365,6 +2365,81 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: remote void actor asks do not free the reply sentinel
+// ============================================================================
+
+static void test_remote_actor_void_ask_does_not_free_reply() {
+  TEST(remote_actor_void_ask_does_not_free_reply);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn refresh() {
+    }
+}
+
+fn main() {
+    let remote: Stats = Node::lookup("stats");
+    await remote.refresh();
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for remote void actor ask");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for remote void actor ask");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  llvm::CallBase *askCall = nullptr;
+  bool freesAskReply = false;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee)
+        continue;
+      if (callee->getName() == "hew_node_api_ask")
+        askCall = call;
+      if (callee->getName() == "free" && call->arg_size() == 1 &&
+          call->getArgOperand(0) == askCall)
+        freesAskReply = true;
+    }
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered remote void ask to call hew_node_api_ask");
+    return;
+  }
+  if (freesAskReply) {
+    FAIL("remote void ask should not free the reply pointer");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: remote actor asks pass an explicit reply size to hew_node_api_ask
 // ============================================================================
 
@@ -2607,6 +2682,7 @@ int main() {
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
+  test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();
   test_generic_struct_constructor_in_nongeneric_context();

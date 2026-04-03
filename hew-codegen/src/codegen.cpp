@@ -1033,13 +1033,9 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
                                                               dataSize, replySize});
       auto replyPtr = call.getResult(0);
 
-      // Void-return handler: free the reply buffer and erase the op.
-      // free(null) is a safe no-op if the ask failed.
+      // Void-return handler: erase the op. Remote void success returns a
+      // non-owning sentinel pointer, so there is no buffer to free here.
       if (llvm::isa<mlir::NoneType>(resultType)) {
-        auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
-        getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
-        mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
-                                   mlir::ValueRange{replyPtr});
         rewriter.eraseOp(op);
         return mlir::success();
       }

@@ -4292,7 +4292,16 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   uint32_t paramIdx = 0;
   for (const auto &param : fn.params) {
     const auto &paramName = param.name;
-    declareVariable(paramName, entryBlock->getArgument(paramIdx));
+    auto paramValue = entryBlock->getArgument(paramIdx);
+    auto internedName = intern(paramName);
+    if (mutableVars.lookup(internedName)) {
+      // Generic specialization can happen while lowering a caller body. Shadow
+      // any outer mutable binding with the same name so lookups in the
+      // specialized callee don't capture an alloca from the caller's region.
+      declareMutableVariable(internedName, paramValue.getType(), paramValue);
+    } else {
+      declareVariable(internedName, paramValue);
+    }
 
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;

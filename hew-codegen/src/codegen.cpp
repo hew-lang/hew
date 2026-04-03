@@ -509,6 +509,28 @@ static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewrite
       auto clonedField = deepCopyStructFields(rewriter, loc, module, fieldVal, cloneAttr);
       rebuilt = mlir::LLVM::InsertValueOp::create(
           rewriter, loc, rebuilt, clonedField, llvm::ArrayRef<int64_t>{fieldIdx});
+    } else if (cloneFunc == "__closure_clone") {
+      // Closure fields are !llvm.struct<(ptr, ptr)> — extract env ptr,
+      // clone it via hew_rc_clone, rebuild the closure struct.
+      auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType());
+      if (closureType && closureType.getBody().size() == 2) {
+        auto fnPtr = mlir::LLVM::ExtractValueOp::create(
+            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{0}).getResult();
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{1}).getResult();
+        auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+        getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
+        auto clonedEnv = mlir::func::CallOp::create(
+            rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType},
+            mlir::ValueRange{envPtr});
+        mlir::Value newClosure = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+        newClosure = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, newClosure, fnPtr, llvm::ArrayRef<int64_t>{0});
+        newClosure = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, newClosure, clonedEnv.getResult(0), llvm::ArrayRef<int64_t>{1});
+        rebuilt = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, rebuilt, newClosure, llvm::ArrayRef<int64_t>{fieldIdx});
+      }
     } else {
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);

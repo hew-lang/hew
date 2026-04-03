@@ -1022,6 +1022,39 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
+  // ClosureType → !llvm.struct<(ptr, ptr)>: lower a closure to its storage
+  // representation for struct field initialisation.
+  if (mlir::isa<hew::ClosureType>(value.getType())) {
+    if (auto dstStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(targetType)) {
+      if (!dstStruct.isIdentified() && dstStruct.getBody().size() == 2) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, value);
+        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
+        mlir::Value result = mlir::LLVM::UndefOp::create(builder, location, dstStruct);
+        result = mlir::LLVM::InsertValueOp::create(builder, location, result, fnPtr,
+                                                   llvm::ArrayRef<int64_t>{0});
+        result = mlir::LLVM::InsertValueOp::create(builder, location, result, envPtr,
+                                                   llvm::ArrayRef<int64_t>{1});
+        return result;
+      }
+    }
+  }
+
+  // !llvm.struct<(ptr, ptr)> → ClosureType: reconstruct a closure from its
+  // storage representation when reading a struct field.
+  if (auto dstClosure = mlir::dyn_cast<hew::ClosureType>(targetType)) {
+    if (auto srcStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType())) {
+      if (!srcStruct.isIdentified() && srcStruct.getBody().size() == 2) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto fnPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, location, value, llvm::ArrayRef<int64_t>{0});
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, location, value, llvm::ArrayRef<int64_t>{1});
+        return hew::ClosureCreateOp::create(builder, location, dstClosure, fnPtr, envPtr);
+      }
+    }
+  }
+
   // [T; N] → Vec<T> coercion: create Vec, push each array element
   if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(value.getType())) {
     if (auto vecType = mlir::dyn_cast<hew::VecType>(targetType)) {
@@ -3175,7 +3208,7 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       else if (mlir::isa<hew::HashMapType>(field.semanticType))
         cloneFunc = "hew_hashmap_clone_impl";
       else if (mlir::isa<hew::ClosureType>(field.semanticType))
-        cloneFunc = "hew_rc_clone";
+        cloneFunc = "__closure_clone";
       else if (mlir::isa<hew::HandleType>(field.semanticType))
         cloneFunc = "__handle_transfer";
       else if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(
@@ -5934,6 +5967,25 @@ void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location 
       if (fst.isIdentified())
         fieldIsUserDrop = userDropFuncs.count(fst.getName().str()) > 0;
     mlir::Value dropVal = fieldVal;
+    // Closure fields are stored as !llvm.struct<(ptr, ptr)> — extract the
+    // env pointer (field 1) for the rc_drop, guarded by a null check.
+    if (mlir::isa<hew::ClosureType>(field.semanticType)) {
+      auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType());
+      if (closureSt && !closureSt.isIdentified() && closureSt.getBody().size() == 2) {
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, loc, fieldVal, llvm::ArrayRef<int64_t>{1});
+        auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+        auto isNotNull = mlir::LLVM::ICmpOp::create(
+            builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne,
+            envPtr.getResult(), nullPtr);
+        auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        hew::DropOp::create(builder, loc, envPtr.getResult(), drop, false);
+        builder.setInsertionPointAfter(guard);
+        continue;
+      }
+    }
     if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
       dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
     hew::DropOp::create(builder, loc, dropVal, drop, fieldIsUserDrop);

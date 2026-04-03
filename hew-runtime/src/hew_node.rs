@@ -270,6 +270,11 @@ unsafe extern "C" fn node_inbound_router(
             Vec::new()
         };
         let conn_mgr_send = SendConnMgr(conn_mgr);
+        // SAFETY: the inbound router is only called while `conn_mgr` is live.
+        let Some(shutdown_started) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) })
+        else {
+            return;
+        };
         thread::spawn(move || {
             handle_inbound_ask(
                 target_actor_id,
@@ -278,6 +283,7 @@ unsafe extern "C" fn node_inbound_router(
                 request_id,
                 source_node_id,
                 conn_mgr_send,
+                shutdown_started,
             );
         });
     } else {
@@ -291,6 +297,10 @@ unsafe extern "C" fn node_inbound_router(
 
 /// Handle an inbound remote ask by performing a local blocking ask and
 /// sending the reply envelope back to the requesting node.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "spawned ask-handler thread must own the shutdown flag clone"
+)]
 fn handle_inbound_ask(
     target_actor_id: u64,
     msg_type: i32,
@@ -298,6 +308,7 @@ fn handle_inbound_ask(
     request_id: u64,
     source_node_id: u16,
     conn_mgr: SendConnMgr,
+    shutdown_started: Arc<AtomicBool>,
 ) {
     // Perform a local blocking ask against the target actor.
     let reply_ptr = {
@@ -337,7 +348,13 @@ fn handle_inbound_ask(
     };
 
     // Send the reply envelope back to the requesting node.
-    send_reply_envelope(source_node_id, request_id, &reply_data, conn_mgr.0);
+    send_reply_envelope(
+        source_node_id,
+        request_id,
+        &reply_data,
+        conn_mgr.0,
+        Some(shutdown_started.as_ref()),
+    );
 }
 
 /// Encode and send a reply envelope back to the source node.
@@ -350,6 +367,7 @@ fn send_reply_envelope(
     request_id: u64,
     reply_data: &[u8],
     conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: Option<&AtomicBool>,
 ) {
     if conn_mgr.is_null() {
         return;
@@ -368,6 +386,9 @@ fn send_reply_envelope(
     // read lock is held for the entire duration of `conn_mgr` access.
     let guard = CURRENT_NODE.read_or_recover();
     if *guard == 0 {
+        return;
+    }
+    if shutdown_started.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return;
     }
 
@@ -795,13 +816,17 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
     {
         // Setting CURRENT_NODE to zero acts as a lifetime barrier for
-        // ask-handler threads spawned by `node_inbound_router`.  Those
+        // ask-handler threads spawned by `node_inbound_router`. Those
         // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
-        // and bail out immediately if the value is 0.  The write lock here
+        // and bail out immediately if the value is 0. The write lock here
         // blocks until every concurrent read-lock-holder (i.e. every
         // in-flight reply send) has completed, so `conn_mgr` cannot be freed
-        // while any such thread is still running.
+        // while any such thread is still running for the current node.
         let mut guard = CURRENT_NODE.write_or_recover();
+        if !node.conn_mgr.is_null() {
+            // SAFETY: node owns this connection manager until teardown completes.
+            unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
+        }
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;
         }
@@ -2376,6 +2401,32 @@ mod tests {
         unsafe {
             let _ = crate::actor::hew_actor_free(blocked_actor);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node = unsafe { TestNode::new(317, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        // SAFETY: node pointer is valid for start/stop in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+        }
+
+        let shutdown_started = Arc::new(AtomicBool::new(true));
+        let dangling_mgr = std::ptr::NonNull::<connection::HewConnMgr>::dangling().as_ptr();
+        send_reply_envelope(999, 123, &[], dangling_mgr, Some(shutdown_started.as_ref()));
+
+        // SAFETY: node pointer remains valid until drop.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

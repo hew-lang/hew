@@ -5378,6 +5378,26 @@ impl Checker {
         }
     }
 
+    fn check_expr_with_expected(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+        match expr {
+            Expr::Block(block) => {
+                let actual = self.check_block(block, Some(expected));
+                if matches!(actual, Ty::Never | Ty::Error) {
+                    actual
+                } else {
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
+                }
+            }
+            _ => self.check_against(expr, span, expected),
+        }
+    }
+
     /// Check: verify expression against expected type (top-down).
     #[expect(
         clippy::too_many_lines,
@@ -5410,6 +5430,60 @@ impl Checker {
                 Some((expected_params, ret)),
                 span,
             ),
+
+            (
+                Expr::If {
+                    condition,
+                    then_block,
+                    else_block,
+                },
+                _,
+            ) => {
+                self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
+                let actual = if let Some(else_block) = else_block {
+                    let else_ty =
+                        self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
+                    if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
+                        Ty::Error
+                    } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
+                        Ty::Never
+                    } else {
+                        self.subst.resolve(expected)
+                    }
+                } else {
+                    Ty::Unit
+                };
+                if matches!(actual, Ty::Never | Ty::Error) {
+                    actual
+                } else {
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        self.record_type(span, &actual);
+                        actual
+                    }
+                }
+            }
+
+            (Expr::Match { scrutinee, arms }, _) => {
+                let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
+                let actual = self.check_match_expr(&scr_ty, arms, span, Some(expected));
+                if matches!(actual, Ty::Never | Ty::Error) {
+                    actual
+                } else {
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        self.record_type(span, &actual);
+                        actual
+                    }
+                }
+            }
 
             // Integer literal can coerce to any integer type (with range check)
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
@@ -7882,6 +7956,7 @@ impl Checker {
             Some(ty) if !matches!(ty, Ty::Var(_)) => Some(ty.clone()),
             _ => None,
         };
+        let mut had_error = false;
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
@@ -7892,10 +7967,13 @@ impl Checker {
             }
 
             let arm_ty = if let Some(expected) = &result_ty {
-                self.check_against(&arm.body.0, &arm.body.1, expected)
+                self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            if matches!(arm_ty, Ty::Error) {
+                had_error = true;
+            }
 
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
@@ -7910,7 +7988,11 @@ impl Checker {
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
         // If all arms diverge (Never/Error), the match itself diverges
-        result_ty.unwrap_or(Ty::Never)
+        if had_error {
+            Ty::Error
+        } else {
+            result_ty.unwrap_or(Ty::Never)
+        }
     }
 
     fn check_lambda(
@@ -13568,6 +13650,47 @@ fn main() {
         assert!(
             output.errors.is_empty(),
             "match with integer literal arms should coerce to declared return type: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_if_element_coerces_from_expected_type() {
+        // The tuple annotation supplies i32 to the nested if expression's first
+        // element; the literal branch must not synthesize to i64 first.
+        let source = "fn foo(flag: bool, y: i32) -> (i32, i32) { (if flag { 1 } else { y }, y) }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "nested tuple if should inherit the tuple element type: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_match_element_coerces_from_expected_type() {
+        // The tuple annotation supplies i32 to the nested match expression's
+        // first element; the literal arm must not synthesize to i64 first.
+        let source =
+            "fn foo(flag: bool, y: i32) -> (i32, i32) { (match flag { true => 1, false => y }, y) }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "nested tuple match should inherit the tuple element type: {:?}",
             output.errors
         );
     }

@@ -829,8 +829,8 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;
+            REPLY_TABLE.fail_all();
         }
-        REPLY_TABLE.fail_all();
     }
     node.accept_stop.store(true, Ordering::Release);
     {
@@ -2401,6 +2401,54 @@ mod tests {
         unsafe {
             let _ = crate::actor::hew_actor_free(blocked_actor);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn secondary_node_stop_does_not_fail_current_node_pending_asks() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(318, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node2 = unsafe { TestNode::new(319, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        let (request_id, pending) = REPLY_TABLE.register();
+
+        // SAFETY: node2 remains valid here and stopping it is the behavior under test.
+        unsafe {
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            guard.is_none(),
+            "secondary node stop must not fail pending asks owned by CURRENT_NODE"
+        );
+        drop(guard);
+        REPLY_TABLE.remove(request_id);
+
+        // SAFETY: node1 remains valid until the end of the test.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

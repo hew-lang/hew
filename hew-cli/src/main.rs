@@ -212,7 +212,7 @@ fn cmd_debug(a: &args::DebugArgs) {
             std::process::exit(1);
         });
 
-    if !target_spec.can_debug_on_host() {
+    if !target_spec.can_run_on_host() {
         eprintln!("{}", target_spec.cross_target_run_error("debug"));
         std::process::exit(1);
     }

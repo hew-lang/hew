@@ -91,10 +91,6 @@ impl TargetSpec {
         !self.is_wasm() && self.matches_host_environment()
     }
 
-    pub fn can_debug_on_host(&self) -> bool {
-        self.can_run_on_host()
-    }
-
     pub fn can_link_with_host_tools(&self) -> bool {
         self.is_wasm() || self.matches_host_environment()
     }

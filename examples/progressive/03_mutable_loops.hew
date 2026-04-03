@@ -1,9 +1,11 @@
 // Lesson 3: Mutable variables and loops
 //
-// `var` is required whenever a binding is reassigned inside a loop.
-// `for` iterates a range; `while` loops until a condition is false.
+// `for` iterates a range and binds the loop variable each iteration.
+// `while` loops until a condition is false.
+// `var` is needed for accumulator/state variables that you declare
+// *outside* a loop and reassign across iterations.
 fn main() {
-    // for-loop: counter is a fresh `let` binding each iteration
+    // for-loop: `i` is the loop variable, rebound on every iteration
     println("for loop 0..5:");
     for i in 0..5 {
         println(i);

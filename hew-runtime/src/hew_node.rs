@@ -353,7 +353,7 @@ fn handle_inbound_ask(
         request_id,
         &reply_data,
         conn_mgr.0,
-        Some(shutdown_started.as_ref()),
+        shutdown_started.as_ref(),
     );
 }
 
@@ -367,7 +367,7 @@ fn send_reply_envelope(
     request_id: u64,
     reply_data: &[u8],
     conn_mgr: *mut connection::HewConnMgr,
-    shutdown_started: Option<&AtomicBool>,
+    shutdown_started: &AtomicBool,
 ) {
     if conn_mgr.is_null() {
         return;
@@ -388,7 +388,7 @@ fn send_reply_envelope(
     if *guard == 0 {
         return;
     }
-    if shutdown_started.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+    if shutdown_started.load(Ordering::Acquire) {
         return;
     }
 
@@ -2470,7 +2470,7 @@ mod tests {
 
         let shutdown_started = Arc::new(AtomicBool::new(true));
         let dangling_mgr = std::ptr::NonNull::<connection::HewConnMgr>::dangling().as_ptr();
-        send_reply_envelope(999, 123, &[], dangling_mgr, Some(shutdown_started.as_ref()));
+        send_reply_envelope(999, 123, &[], dangling_mgr, shutdown_started.as_ref());
 
         // SAFETY: node pointer remains valid until drop.
         unsafe {

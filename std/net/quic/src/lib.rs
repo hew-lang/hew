@@ -143,16 +143,15 @@ fn ring_provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// Build a development-only [`ClientConfig`] that skips certificate verification.
-fn insecure_client_config() -> ClientConfig {
+fn insecure_client_config() -> Result<ClientConfig, BoxError> {
     let crypto = rustls::ClientConfig::builder_with_provider(ring_provider())
-        .with_protocol_versions(rustls::DEFAULT_VERSIONS)
-        .expect("valid TLS versions")
+        .with_protocol_versions(rustls::DEFAULT_VERSIONS)?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoVerifier))
         .with_no_client_auth();
-    ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(crypto).expect("valid crypto config"),
-    ))
+    Ok(ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?,
+    )))
 }
 
 fn certs_from_pem(pem: &str) -> Result<Vec<CertificateDer<'static>>, BoxError> {
@@ -241,7 +240,8 @@ fn build_client_endpoint(client_config: ClientConfig) -> *mut HewQuicEndpoint {
         return std::ptr::null_mut();
     };
     let endpoint = rt.block_on(async {
-        let mut ep = Endpoint::client("0.0.0.0:0".parse::<SocketAddr>().unwrap()).ok()?;
+        let bind: SocketAddr = "0.0.0.0:0".parse().ok()?;
+        let mut ep = Endpoint::client(bind).ok()?;
         ep.set_default_client_config(client_config);
         Some(ep)
     });
@@ -431,7 +431,10 @@ pub struct HewQuicEvent {
 
 #[no_mangle]
 pub extern "C" fn hew_quic_new_client() -> *mut HewQuicEndpoint {
-    build_client_endpoint(insecure_client_config())
+    let Ok(client_config) = insecure_client_config() else {
+        return std::ptr::null_mut();
+    };
+    build_client_endpoint(client_config)
 }
 
 #[no_mangle]

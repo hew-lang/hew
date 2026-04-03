@@ -1,6 +1,13 @@
 // Stress test: Mass actor spawn
-// Spawns 500 worker actors, each sends done() to a collector.
-// Exercises: high actor count, fan-in message pattern, scheduler load.
+// Spawns 500 worker actors concurrently, each sends done() to a collector.
+// Exercises: high actor count, peak-concurrency fan-out/fan-in, scheduler load.
+//
+// Synchronization: two-phase pattern instead of a timing-sensitive sleep barrier.
+//   Phase 1 — spawn all 500 workers and fire work() to each; all workers are live
+//             simultaneously, preserving the peak-concurrency stress shape.
+//   Phase 2 — await close(w) for each worker; this drains every worker's mailbox,
+//             guaranteeing all collector.done() messages are enqueued before the
+//             final await collector.get_count() is sent (FIFO ordering on collector).
 actor Collector {
     let count: int;
     receive fn done() {
@@ -21,14 +28,15 @@ actor Worker {
 
 fn main() {
     let collector = spawn Collector(count: 0);
+    let workers: Vec<ActorRef<Worker>> = [];
     for i in 0..500 {
         let worker_id: int = i;
         let w = spawn Worker(id: worker_id, collector: collector);
         w.work();
-        // await close(w) drains the worker's mailbox before the next iteration,
-        // guaranteeing collector.done() has been enqueued before we proceed.
-        // This replaces the timing-sensitive sleep_ms barrier.
-        await close(w);
+        workers.push(w);
+    }
+    for i in 0..workers.len() {
+        await close(workers.get(i));
     }
     let count = await collector.get_count();
     println(count);

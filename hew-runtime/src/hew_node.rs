@@ -304,9 +304,25 @@ fn send_reply_envelope(
         return;
     }
 
+    // Synchronize with `hew_node_stop` to prevent a use-after-free on
+    // `conn_mgr`.  `hew_node_stop` holds the CURRENT_NODE write lock while it
+    // clears the pointer to zero (and only frees `conn_mgr` afterward), so:
+    //
+    // * If this thread acquires the read lock first, stop is blocked until we
+    //   release it — `conn_mgr` is guaranteed valid for this whole function.
+    // * If stop cleared CURRENT_NODE first, we see `*guard == 0` here and
+    //   return before touching `conn_mgr`.
+    //
+    // The guard must remain live until the end of the function so that the
+    // read lock is held for the entire duration of `conn_mgr` access.
+    let guard = CURRENT_NODE.read_or_recover();
+    if *guard == 0 {
+        return;
+    }
+
     // Find the connection back to the requesting node.
-    // SAFETY: conn_mgr is the manager that received the ask and remains
-    // valid for the lifetime of the node.
+    // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
+    // read lock held above (guard) ensures it remains valid for this call.
     let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
     if conn_id < 0 {
         return;
@@ -727,6 +743,13 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
 
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
     {
+        // Setting CURRENT_NODE to zero acts as a lifetime barrier for
+        // ask-handler threads spawned by `node_inbound_router`.  Those
+        // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
+        // and bail out immediately if the value is 0.  The write lock here
+        // blocks until every concurrent read-lock-holder (i.e. every
+        // in-flight reply send) has completed, so `conn_mgr` cannot be freed
+        // while any such thread is still running.
         let mut guard = CURRENT_NODE.write_or_recover();
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;

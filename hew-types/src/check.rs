@@ -253,6 +253,21 @@ fn first_infer_span_in_extern_fn(function: &ExternFnDecl) -> Option<Span> {
         })
 }
 
+#[derive(Debug, Clone)]
+struct DeferredInferenceHole {
+    span: Span,
+    context: String,
+    hole_vars: Vec<TypeVar>,
+}
+
+#[derive(Debug, Clone)]
+struct DeferredCastCheck {
+    span: Span,
+    actual: Ty,
+    target: Ty,
+    target_hole_vars: Vec<TypeVar>,
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -271,6 +286,8 @@ pub struct Checker {
     fn_sigs: HashMap<String, FnSig>,
     type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
+    deferred_inference_holes: Vec<DeferredInferenceHole>,
+    deferred_cast_checks: Vec<DeferredCastCheck>,
     /// Tracks the span where each function was first defined (for duplicate detection).
     fn_def_spans: HashMap<String, Span>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
@@ -551,6 +568,12 @@ fn common_numeric_type(a: &Ty, b: &Ty) -> Option<Ty> {
     }
 }
 
+fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
+    (actual.is_numeric() && target.is_numeric())
+        || (*actual == Ty::Bool && target.is_integer())
+        || (actual.is_integer() && *target == Ty::Bool)
+}
+
 impl Checker {
     #[must_use]
     pub fn new(module_registry: ModuleRegistry) -> Self {
@@ -566,6 +589,8 @@ impl Checker {
             fn_sigs: HashMap::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
+            deferred_inference_holes: Vec::new(),
+            deferred_cast_checks: Vec::new(),
             fn_def_spans: HashMap::new(),
             type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
@@ -3293,6 +3318,56 @@ impl Checker {
         }
     }
 
+    fn resolve_annotation_holes(&mut self, annotation: &Spanned<TypeExpr>) -> (Ty, Vec<TypeVar>) {
+        let mut hole_vars = Vec::new();
+        let ty = self.resolve_type_expr_tracking_holes(&annotation.0, &mut hole_vars);
+        (ty, hole_vars)
+    }
+
+    fn record_deferred_inference_holes(
+        &mut self,
+        annotation: &Spanned<TypeExpr>,
+        context: impl Into<String>,
+        hole_vars: Vec<TypeVar>,
+    ) {
+        if hole_vars.is_empty() {
+            return;
+        }
+        self.deferred_inference_holes.push(DeferredInferenceHole {
+            span: first_infer_span_in_type_expr(annotation).unwrap_or_else(|| annotation.1.clone()),
+            context: context.into(),
+            hole_vars,
+        });
+    }
+
+    fn record_deferred_cast_check(
+        &mut self,
+        span: &Span,
+        actual: &Ty,
+        target: &Ty,
+        target_hole_vars: Vec<TypeVar>,
+    ) {
+        if target_hole_vars.is_empty() {
+            return;
+        }
+        self.deferred_cast_checks.push(DeferredCastCheck {
+            span: span.clone(),
+            actual: actual.clone(),
+            target: target.clone(),
+            target_hole_vars,
+        });
+    }
+
+    fn resolve_annotation_with_holes(
+        &mut self,
+        annotation: &Spanned<TypeExpr>,
+        context: impl Into<String>,
+    ) -> Ty {
+        let (ty, hole_vars) = self.resolve_annotation_holes(annotation);
+        self.record_deferred_inference_holes(annotation, context, hole_vars);
+        ty
+    }
+
     fn inference_holes_still_unresolved(&self, hole_vars: &[TypeVar]) -> bool {
         hole_vars
             .iter()
@@ -3318,6 +3393,38 @@ impl Checker {
         }
 
         self.report_unresolved_inference_in_items(&program.items, None);
+
+        let deferred_errors: Vec<_> = self
+            .deferred_inference_holes
+            .iter()
+            .filter(|hole| self.inference_holes_still_unresolved(&hole.hole_vars))
+            .map(|hole| TypeError::inference_failed(hole.span.clone(), &hole.context))
+            .collect();
+        self.errors.extend(deferred_errors);
+
+        let deferred_cast_errors: Vec<_> = self
+            .deferred_cast_checks
+            .iter()
+            .filter(|check| !self.inference_holes_still_unresolved(&check.target_hole_vars))
+            .filter_map(|check| {
+                let actual = self.subst.resolve(&check.actual);
+                let target = self.subst.resolve(&check.target);
+                (!ty_has_unresolved_inference_var(&actual)
+                    && !ty_has_unresolved_inference_var(&target)
+                    && !cast_is_valid(&actual, &target))
+                .then(|| {
+                    TypeError::new(
+                        TypeErrorKind::Mismatch {
+                            expected: target.to_string(),
+                            actual: actual.to_string(),
+                        },
+                        check.span.clone(),
+                        format!("cannot cast `{actual}` to `{target}`"),
+                    )
+                })
+            })
+            .collect();
+        self.errors.extend(deferred_cast_errors);
     }
 
     #[expect(
@@ -3715,7 +3822,10 @@ impl Checker {
 
         // Bind init parameters
         for p in &init.params {
-            let ty = self.resolve_type_expr(&p.ty.0);
+            let ty = self.resolve_annotation_with_holes(
+                &p.ty,
+                format!("init parameter `{}` of actor `{actor_name}`", p.name),
+            );
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
 
@@ -3917,7 +4027,8 @@ impl Checker {
     }
 
     fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
-        let expected = self.resolve_type_expr(&cd.ty.0);
+        let expected =
+            self.resolve_annotation_with_holes(&cd.ty, format!("constant `{}`", cd.name));
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);
         // Store compile-time value for untyped consts (declared as Int/Float default)
         // so they can be coerced to other numeric types at use sites.
@@ -4232,15 +4343,20 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
         match stmt {
             Stmt::Let { pattern, ty, value } => {
+                let binding_context = match &pattern.0 {
+                    Pattern::Identifier(name) => format!("local binding `{name}`"),
+                    _ => "local binding".to_string(),
+                };
                 let val_ty = if let Some((val, vs)) = value {
-                    if let Some((te, _)) = ty {
-                        let expected = self.resolve_type_expr(te);
+                    if let Some(annotation) = ty {
+                        let expected =
+                            self.resolve_annotation_with_holes(annotation, binding_context.clone());
                         self.check_against(val, vs, &expected)
                     } else {
                         self.synthesize(val, vs)
                     }
-                } else if let Some((te, _)) = ty {
-                    self.resolve_type_expr(te)
+                } else if let Some(annotation) = ty {
+                    self.resolve_annotation_with_holes(annotation, binding_context)
                 } else {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
@@ -4304,15 +4420,17 @@ impl Checker {
                 }
             }
             Stmt::Var { name, ty, value } => {
+                let binding_context = format!("local binding `{name}`");
                 let val_ty = if let Some((val, vs)) = value {
-                    if let Some((te, _)) = ty {
-                        let expected = self.resolve_type_expr(te);
+                    if let Some(annotation) = ty {
+                        let expected =
+                            self.resolve_annotation_with_holes(annotation, binding_context.clone());
                         self.check_against(val, vs, &expected)
                     } else {
                         self.synthesize(val, vs)
                     }
-                } else if let Some((te, _)) = ty {
-                    self.resolve_type_expr(te)
+                } else if let Some(annotation) = ty {
+                    self.resolve_annotation_with_holes(annotation, binding_context)
                 } else {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
@@ -4920,18 +5038,16 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let actual = self.synthesize(&inner.0, &inner.1);
-        let target = self.resolve_type_expr(&type_expr.0);
+        let (target, hole_vars) = self.resolve_annotation_holes(type_expr);
+        let has_target_holes = !hole_vars.is_empty();
+        if has_target_holes {
+            self.record_deferred_inference_holes(type_expr, "cast target type", hole_vars.clone());
+            self.record_deferred_cast_check(span, &actual, &target, hole_vars);
+        }
         let actual_resolved = self.subst.resolve(&actual);
         let target_resolved = self.subst.resolve(&target);
 
-        // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
-        let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
-            // Allow bool → integer
-            || (actual_resolved == Ty::Bool && target_resolved.is_integer())
-            // Allow integer → bool
-            || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
-
-        if !valid {
+        if !has_target_holes && !cast_is_valid(&actual_resolved, &target_resolved) {
             self.report_error(
                 TypeErrorKind::Mismatch {
                     expected: target_resolved.to_string(),
@@ -7913,6 +8029,10 @@ impl Checker {
         result_ty.unwrap_or(Ty::Never)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lambda checking combines contextual inference with capture analysis"
+    )]
     fn check_lambda(
         &mut self,
         type_params: Option<&[TypeParam]>,
@@ -7975,8 +8095,21 @@ impl Checker {
 
         let mut param_tys = Vec::new();
         for (i, p) in params.iter().enumerate() {
-            let ty = if let Some((te, _)) = &p.ty {
-                self.resolve_type_expr(te)
+            let ty = if let Some(annotation) = &p.ty {
+                let (annotated_ty, hole_vars) = self.resolve_annotation_holes(annotation);
+                if !hole_vars.is_empty() {
+                    if let Some((expected_params, _)) = &expected {
+                        if let Some(expected_ty) = expected_params.get(i) {
+                            self.expect_type(expected_ty, &annotated_ty, &annotation.1);
+                        }
+                    }
+                    self.record_deferred_inference_holes(
+                        annotation,
+                        format!("lambda parameter `{}`", p.name),
+                        hole_vars,
+                    );
+                }
+                self.subst.resolve(&annotated_ty)
             } else if let Some((expected_params, _)) = &expected {
                 expected_params
                     .get(i)
@@ -7994,11 +8127,17 @@ impl Checker {
         // not the outer function's.
         let prev_return_type = self.current_return_type.take();
 
-        let ret_ty = if let Some((te, _)) = return_type {
-            let expected_ret = self.resolve_type_expr(te);
+        let ret_ty = if let Some(annotation) = return_type {
+            let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
+            if !hole_vars.is_empty() {
+                if let Some((_, contextual_ret)) = expected {
+                    self.expect_type(contextual_ret, &expected_ret, &annotation.1);
+                }
+                self.record_deferred_inference_holes(annotation, "lambda return type", hole_vars);
+            }
             self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, &expected_ret);
-            expected_ret
+            self.subst.resolve(&expected_ret)
         } else if let Some((_, expected_ret)) = expected {
             self.current_return_type = Some(expected_ret.clone());
             self.check_against(&body.0, &body.1, expected_ret);

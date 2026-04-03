@@ -915,6 +915,290 @@ fn inference_hole_type_field_is_rejected() {
     );
 }
 
+#[test]
+fn explicit_hole_nonitem_local_var_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            var value: _ = None;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        fn takes(value: Option<int>) {}
+
+        fn main() {
+            let value: _ = None;
+            takes(value);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_const_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        const MAYBE: _ = None;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        const MAYBE: _ = None;
+
+        fn takes(value: Option<int>) {}
+
+        fn main() {
+            takes(MAYBE);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = (x: _) => 1;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f: fn(int) -> int = (x: _) => 1;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = () -> _ => None;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_return_annotation_is_resolved_from_body() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = () -> _ => 1;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_actor_init_param_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        actor Greeter {
+            let name: string;
+            init(prefix: _) {
+                println(name);
+            }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_actor_init_param_annotation_is_resolved_from_body() {
+    let output = typecheck(
+        r"
+        actor Greeter {
+            let name: string;
+            init(prefix: _) {
+                name = prefix;
+            }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let x = 42;
+            let y = x as _;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "Did not expect cast mismatch before inference failure, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        fn takes_i32(value: i32) {}
+
+        fn main() {
+            let x = 42;
+            let y = x as _;
+            takes_i32(y);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected cast target hole to resolve from later use, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_still_rejects_invalid_inferred_cast() {
+    let output = typecheck(
+        r"
+        fn takes_string(value: string) {}
+
+        fn main() {
+            let x = 42;
+            let y = x as _;
+            takes_string(y);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })
+                && e.message.contains("cannot cast")),
+        "Expected cast mismatch, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed once cast target was inferred, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 21. MachineExhaustivenessError — duplicate explicit transition ──
 
 #[test]

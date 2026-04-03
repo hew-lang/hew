@@ -6030,7 +6030,9 @@ mlir::Value MLIRGen::nullTransferredHandlesInStructValue(mlir::Value structVal,
 
 void MLIRGen::nullOutTransferredHandleFields(const std::string &varName,
                                              mlir::Location loc) {
+  auto internedName = intern(varName);
   mlir::Value slot = getMutableVarSlot(varName);
+  bool bindingUsesSlot = static_cast<bool>(slot);
   if (!slot) {
     for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend() && !slot; ++scopeIt) {
       for (auto &entry : *scopeIt) {
@@ -6041,19 +6043,55 @@ void MLIRGen::nullOutTransferredHandleFields(const std::string &varName,
       }
     }
   }
-  if (!slot)
-    return;
+  if (slot) {
+    auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(slot.getType());
+    if (!memrefTy)
+      return;
+    auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(memrefTy.getElementType());
+    if (!structTy || !structTy.isIdentified())
+      return;
 
-  auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(slot.getType());
-  if (!memrefTy)
+    if (!bindingUsesSlot) {
+      mutableVars.insert(internedName, slot);
+      for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+        for (auto &entry : *scopeIt) {
+          if (entry.varName == varName && entry.promotedSlot == slot)
+            entry.bindingIdentity = slot;
+        }
+      }
+    }
+
+    auto loaded = mlir::memref::LoadOp::create(builder, loc, slot);
+    auto cleared = nullTransferredHandlesInStructValue(loaded, loc);
+    mlir::memref::StoreOp::create(builder, loc, cleared, slot, mlir::ValueRange{});
     return;
-  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(memrefTy.getElementType());
+  }
+
+  auto bound = symbolTable.lookup(internedName);
+  if (!bound)
+    return;
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bound.getType());
   if (!structTy || !structTy.isIdentified())
     return;
 
-  auto loaded = mlir::memref::LoadOp::create(builder, loc, slot);
-  auto cleared = nullTransferredHandlesInStructValue(loaded, loc);
-  mlir::memref::StoreOp::create(builder, loc, cleared, slot, mlir::ValueRange{});
+  auto cleared = nullTransferredHandlesInStructValue(bound, loc);
+  auto semanticType = cleared.getType();
+  auto storageType = toSlotStorageType(semanticType);
+  auto alloca = createHoistedAlloca(storageType, semanticType);
+  auto storedValue = coerceType(cleared, storageType, builder.getUnknownLoc());
+  mlir::memref::StoreOp::create(builder, loc, storedValue, alloca, mlir::ValueRange{});
+  if (storageType != semanticType)
+    slotSemanticTypes[alloca] = semanticType;
+  mutableVars.insert(internedName, alloca);
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+    for (auto &entry : *scopeIt) {
+      if (entry.varName == varName && !entry.promotedSlot) {
+        entry.promotedSlot = alloca;
+        entry.bindingIdentity = alloca;
+        return;
+      }
+    }
+  }
 }
 
 void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {

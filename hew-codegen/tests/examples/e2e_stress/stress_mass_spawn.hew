@@ -25,8 +25,11 @@ fn main() {
         let worker_id: int = i;
         let w = spawn Worker(id: worker_id, collector: collector);
         w.work();
+        // await close(w) drains the worker's mailbox before the next iteration,
+        // guaranteeing collector.done() has been enqueued before we proceed.
+        // This replaces the timing-sensitive sleep_ms barrier.
+        await close(w);
     }
-    sleep_ms(500);
     let count = await collector.get_count();
     println(count);
 }

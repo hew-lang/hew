@@ -3636,7 +3636,12 @@ impl Checker {
         let prev_in_generator = self.in_generator;
         self.in_generator = fd.is_generator;
 
-        let actual = self.check_block(&fd.body);
+        // Pass expected_ret so the trailing expression is checked with check_against,
+        // enabling integer/float literal coercion for function return positions.
+        // check_block handles error reporting for the trailing expression;
+        // expect_type below handles the remaining mismatch for non-trailing paths
+        // (e.g. a Stmt::Expression followed by no trailing expr).
+        let actual = self.check_block(&fd.body, Some(&expected_ret));
         self.expect_type(
             &expected_ret,
             &actual,
@@ -3716,7 +3721,7 @@ impl Checker {
 
         // Init returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
-        self.check_block(&init.body);
+        self.check_block(&init.body, None);
         self.current_return_type = None;
 
         self.current_function = prev_function;
@@ -3744,7 +3749,7 @@ impl Checker {
 
         // Terminate returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
-        self.check_block(&term.body);
+        self.check_block(&term.body, None);
         self.current_return_type = None;
 
         self.current_function = prev_function;
@@ -3892,7 +3897,8 @@ impl Checker {
         let prev_in_generator = self.in_generator;
         self.in_generator = rf.is_generator;
 
-        let actual = self.check_block(&rf.body);
+        // Same as check_fn_decl: pass expected_ret so trailing literals coerce correctly.
+        let actual = self.check_block(&rf.body, Some(&expected_ret));
         self.expect_type(
             &expected_ret,
             &actual,
@@ -4032,7 +4038,7 @@ impl Checker {
         }
     }
 
-    fn check_block(&mut self, block: &Block) -> Ty {
+    fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {
         self.env.push_scope();
         // Snapshot const_values so let-bound literal entries added in this
         // scope are cleaned up when the scope exits.
@@ -4070,7 +4076,7 @@ impl Checker {
                     | Stmt::Match { .. }
                     | Stmt::Return(_)
                     | Stmt::Break { .. }
-                    | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span),
+                    | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
                     Stmt::Expression((expr, es)) => {
                         let expr_ty = self.synthesize(expr, es);
                         if matches!(expr_ty, Ty::Never) {
@@ -4094,7 +4100,7 @@ impl Checker {
                 stmt,
                 Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
             ) {
-                let ty = self.check_stmt_as_expr(stmt, span);
+                let ty = self.check_stmt_as_expr(stmt, span, None);
                 if matches!(ty, Ty::Never) {
                     terminated = true;
                 }
@@ -4124,7 +4130,16 @@ impl Checker {
                     ],
                 });
             }
-            self.synthesize(&expr.0, &expr.1)
+            // When the block has a known expected type, use check_against so that
+            // integer/float literals coerce to the target width instead of defaulting
+            // to i64/f64 and causing a spurious type mismatch.  For all other
+            // expressions check_against falls through to synthesize + expect_type,
+            // producing the same result as before.
+            if let Some(exp) = expected {
+                self.check_against(&expr.0, &expr.1, exp)
+            } else {
+                self.synthesize(&expr.0, &expr.1)
+            }
         } else {
             Ty::Unit
         };
@@ -4135,7 +4150,7 @@ impl Checker {
 
     /// Check a statement that may serve as a block's trailing expression.
     /// Returns the "expression type" of the statement.
-    fn check_stmt_as_expr(&mut self, stmt: &Stmt, span: &Span) -> Ty {
+    fn check_stmt_as_expr(&mut self, stmt: &Stmt, span: &Span, expected: Option<&Ty>) -> Ty {
         match stmt {
             Stmt::If {
                 condition,
@@ -4143,13 +4158,13 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                let then_ty = self.check_block(then_block);
+                let then_ty = self.check_block(then_block, expected);
                 if let Some(eb) = else_block {
                     if let Some(ref if_stmt) = eb.if_stmt {
-                        let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1);
+                        let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
                         self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
                     } else if let Some(block) = &eb.block {
-                        let else_ty = self.check_block(block);
+                        let else_ty = self.check_block(block, expected);
                         self.unify_branches(&then_ty, &else_ty, span)
                     } else {
                         Ty::Unit
@@ -4167,10 +4182,10 @@ impl Checker {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                let then_ty = self.check_block(body);
+                let then_ty = self.check_block(body, expected);
                 self.env.pop_scope();
                 if let Some(block) = else_body {
-                    let else_ty = self.check_block(block);
+                    let else_ty = self.check_block(block, expected);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     Ty::Unit
@@ -4350,12 +4365,12 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                self.check_block(then_block);
+                self.check_block(then_block, None);
                 if let Some(eb) = else_block {
                     if let Some(ref if_stmt) = eb.if_stmt {
                         self.check_stmt(&if_stmt.0, &if_stmt.1);
                     } else if let Some(block) = &eb.block {
-                        self.check_block(block);
+                        self.check_block(block, None);
                     }
                 }
             }
@@ -4368,10 +4383,10 @@ impl Checker {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                self.check_block(body);
+                self.check_block(body, None);
                 self.env.pop_scope();
                 if let Some(block) = else_body {
-                    self.check_block(block);
+                    self.check_block(block, None);
                 }
             }
             Stmt::Return(value) => {
@@ -4396,7 +4411,7 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
-                self.check_block(body);
+                self.check_block(body, None);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -4449,7 +4464,7 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
-                self.check_block(body);
+                self.check_block(body, None);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -4479,7 +4494,7 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
-                self.check_block(body);
+                self.check_block(body, None);
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -4495,7 +4510,7 @@ impl Checker {
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 self.loop_depth += 1;
-                self.check_block(body);
+                self.check_block(body, None);
                 self.loop_depth -= 1;
                 self.env.pop_scope();
             }
@@ -4648,7 +4663,7 @@ impl Checker {
             Expr::FieldAccess { object, field } => self.check_field_access(object, field, span),
 
             // Block
-            Expr::Block(block) => self.check_block(block),
+            Expr::Block(block) => self.check_block(block, None),
 
             // If expression
             Expr::If {
@@ -4968,10 +4983,10 @@ impl Checker {
         let scr_ty = self.synthesize(&expr.0, &expr.1);
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-        let then_ty = self.check_block(body);
+        let then_ty = self.check_block(body, None);
         self.env.pop_scope();
         if let Some(block) = else_body {
-            let else_ty = self.check_block(block);
+            let else_ty = self.check_block(block, None);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
             Ty::Unit
@@ -5268,16 +5283,16 @@ impl Checker {
                     args: vec![param_ty],
                 }
             }
-            Expr::Scope { body: block, .. } => self.check_block(block),
+            Expr::Scope { body: block, .. } => self.check_block(block, None),
             Expr::Unsafe(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
-                let ty = self.check_block(block);
+                let ty = self.check_block(block, None);
                 self.in_unsafe = prev;
                 ty
             }
             Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
-                let body_ty = self.check_block(block);
+                let body_ty = self.check_block(block, None);
                 Ty::Named {
                     name: "Task".to_string(),
                     args: vec![body_ty],
@@ -13346,6 +13361,125 @@ fn main() {
                 .any(|e| e.message.contains("does not fit")),
             "expected range error: {:?}",
             checker.errors
+        );
+    }
+
+    // ── Trailing-literal coercion in typed functions (gap fix) ────────
+
+    #[test]
+    fn trailing_integer_literal_coerces_to_declared_return_type() {
+        // fn foo() -> i32 { 0 }  — bare 0 defaulted to i64 before fix
+        let source = "fn foo() -> i32 { 0 }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "trailing literal should coerce to declared return type: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_integer_literal_coerces_smaller_width() {
+        // fn foo() -> i8 { 42 }  — literal fits in i8
+        let source = "fn foo() -> i8 { 42 }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "literal 42 fits in i8 and should coerce: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_integer_literal_out_of_range_is_rejected() {
+        // fn foo() -> i8 { 300 }  — 300 does not fit in i8 (range -128..=127)
+        let source = "fn foo() -> i8 { 300 }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "out-of-range literal should be rejected: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_if_with_literal_branches_coerces() {
+        // fn foo(x: i32) -> i32 { if x > 0 { 1 } else { 0 } }
+        // Both branches are integer literals that should coerce to i32.
+        let source = "fn foo(x: i32) -> i32 { if x > 0 { 1 } else { 0 } }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "if-else with integer literals should coerce to declared return type: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn explicit_return_with_literal_still_works() {
+        // Regression guard: explicit return was already working; must stay working.
+        let source = "fn foo() -> i32 { return 0; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "explicit return with literal coercion should still work: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_negative_literal_rejected_for_unsigned_return() {
+        // fn foo() -> u32 { -1 }  — negative literal cannot fit in unsigned type
+        let source = "fn foo() -> u32 { -1 }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            !output.errors.is_empty(),
+            "negative literal should be rejected for unsigned return type"
         );
     }
 }

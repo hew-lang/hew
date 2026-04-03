@@ -4193,7 +4193,7 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, arms, span)
+                self.check_match_expr(&scr_ty, arms, span, expected)
             }
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
@@ -4690,7 +4690,7 @@ impl Checker {
             // Match
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, arms, span)
+                self.check_match_expr(&scr_ty, arms, span, None)
             }
 
             // Tuple
@@ -7819,12 +7819,26 @@ impl Checker {
         }
     }
 
-    fn check_match_expr(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) -> Ty {
+    fn check_match_expr(
+        &mut self,
+        scrutinee_ty: &Ty,
+        arms: &[MatchArm],
+        span: &Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
         if arms.is_empty() {
             return Ty::Unit;
         }
 
-        let mut result_ty: Option<Ty> = None;
+        // If the enclosing context supplies a concrete expected type (e.g. the
+        // function's declared return type), pre-seed result_ty so every arm body
+        // is checked with check_against rather than having the first arm's
+        // synthesized type (which defaults literals to i64) propagate to later arms.
+        let resolved_expected = expected.map(|ty| self.subst.resolve(ty));
+        let mut result_ty: Option<Ty> = match &resolved_expected {
+            Some(ty) if !matches!(ty, Ty::Var(_)) => Some(ty.clone()),
+            _ => None,
+        };
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
@@ -13480,6 +13494,27 @@ fn main() {
         assert!(
             !output.errors.is_empty(),
             "negative literal should be rejected for unsigned return type"
+        );
+    }
+
+    #[test]
+    fn trailing_match_with_literal_arms_coerces() {
+        // fn foo(x: bool) -> i32 { match x { true => 1, false => 0 } }
+        // Stmt::Match is the last statement; both arms are integer literals that
+        // should coerce to i32 via the pre-seeded expected type.
+        let source = "fn foo(x: bool) -> i32 { match x { true => 1, false => 0 } }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "match with integer literal arms should coerce to declared return type: {:?}",
+            output.errors
         );
     }
 }

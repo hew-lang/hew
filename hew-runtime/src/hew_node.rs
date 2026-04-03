@@ -2135,20 +2135,6 @@ mod tests {
         unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
     }
 
-    unsafe extern "C" fn empty_reply_probe_dispatch(
-        _state: *mut c_void,
-        _msg_type: i32,
-        _data: *mut c_void,
-        _size: usize,
-    ) {
-        let ch = crate::scheduler::hew_get_reply_channel();
-        if ch.is_null() {
-            return;
-        }
-        // SAFETY: the reply channel comes from the scheduler and is valid for an empty reply here.
-        unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
-    }
-
     unsafe extern "C" fn blocked_ask_probe_dispatch(
         _state: *mut c_void,
         _msg_type: i32,
@@ -2344,7 +2330,7 @@ mod tests {
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
         let empty_reply_actor = unsafe {
-            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(empty_reply_probe_dispatch))
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(void_ask_probe_dispatch))
         };
         crate::pid::hew_pid_set_local_node(317);
         assert!(!empty_reply_actor.is_null(), "actor spawn failed");

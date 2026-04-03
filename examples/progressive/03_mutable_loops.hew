@@ -1,9 +1,21 @@
-// Test 3: Mutable variables and while loops
-// Trying var instead of let, and testing a simple loop
+// Lesson 3: Mutable variables and loops
+//
+// `var` is required whenever a binding is reassigned inside a loop.
+// `for` iterates a range; `while` loops until a condition is false.
 fn main() {
-    println("Counting to 5:");
-    for counter in 0..5 {
-        println(counter);
+    // for-loop: counter is a fresh `let` binding each iteration
+    println("for loop 0..5:");
+    for i in 0..5 {
+        println(i);
     }
-    println("Done!");
+
+    // while-loop with a `var` accumulator — shows real reassignment
+    println("while loop sum:");
+    var sum = 0;
+    var n = 1;
+    while n <= 5 {
+        sum = sum + n;
+        n = n + 1;
+    }
+    println(sum);
 }

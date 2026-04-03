@@ -1,7 +1,8 @@
-Counting to 5:
+for loop 0..5:
 0
 1
 2
 3
 4
-Done!
+while loop sum:
+15

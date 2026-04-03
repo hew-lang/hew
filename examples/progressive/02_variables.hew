@@ -1,17 +1,21 @@
-// Test 2: Variables and arithmetic
-// Trying to see how variable assignment and basic math works
+// Lesson 2: Variables and arithmetic
+//
+// `let` declares an immutable binding — the name cannot be reassigned.
+// `var` declares a mutable binding — the name can be reassigned later.
 fn main() {
+    // Immutable bindings with `let`
     let x = 10;
     let y = 20;
     let sum = x + y;
-    println("Testing variables:");
+    println("let bindings (immutable):");
     println(x);
     println(y);
     println(sum);
 
-    // Try some more math
-    let product = x * y;
-    let difference = y - x;
-    println(product);
-    println(difference);
+    // Mutable binding with `var`; reassign after declaration
+    var counter = 0;
+    counter = counter + 1;
+    counter = counter + 1;
+    println("var binding after two increments:");
+    println(counter);
 }

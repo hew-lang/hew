@@ -287,6 +287,24 @@ if(HEW_DWARFDUMP)
       -DEXPECTED_SYMBOL_LINES=Pair.sum|10,add|16,main|20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
   )
+  # W-1 COFF DWARF smoke: emits an x86_64-pc-windows-msvc object from the same
+  # fixture and asserts that DWARF (DW_AT_name, DW_AT_decl_line, source file)
+  # survives the COFF path.  No Windows host, linker, or CodeView/PDB toolchain
+  # is required.  The test is skipped gracefully when the host LLVM does not
+  # include the X86 backend.
+  add_test(
+    NAME dwarf_coff_smoke
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DDWARFDUMP=${HEW_DWARFDUMP}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_generated_locations.hew
+      -DOUT_OBJ=${CMAKE_CURRENT_BINARY_DIR}/dwarf_coff_smoke.obj
+      -DEXPECTED_SYMBOL_LINES=Worker_ping|8,Worker_dispatch|8,Pool_init|18
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_coff_smoke_test.cmake
+  )
+  set_tests_properties(dwarf_coff_smoke PROPERTIES
+    SKIP_REGULAR_EXPRESSION "COFF_SMOKE_SKIP:"
+  )
 else()
   message(STATUS "Skipping DWARF smoke test — dwarfdump not found")
 endif()

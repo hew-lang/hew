@@ -122,7 +122,7 @@ fn collect_inlay_hints_from_stmt(
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         hints.push(InlayHint {
                             offset: pattern.1.end,
-                            label: format!(": {inferred_ty}"),
+                            label: format!(": {}", inferred_ty.user_facing()),
                             kind: InlayHintKind::Type,
                             padding_left: false,
                         });
@@ -146,7 +146,7 @@ fn collect_inlay_hints_from_stmt(
                         let name_end = find_var_name_end(source, &value_expr.1, name);
                         hints.push(InlayHint {
                             offset: name_end,
-                            label: format!(": {inferred_ty}"),
+                            label: format!(": {}", inferred_ty.user_facing()),
                             kind: InlayHintKind::Type,
                             padding_left: false,
                         });
@@ -263,7 +263,7 @@ fn collect_inlay_hints_from_expr(
                 if let Some(body_ty) = tc.expr_types.get(&span_key) {
                     hints.push(InlayHint {
                         offset: body.1.start,
-                        label: format!("-> {body_ty} "),
+                        label: format!("-> {} ", body_ty.user_facing()),
                         kind: InlayHintKind::Type,
                         padding_left: true,
                     });
@@ -530,14 +530,14 @@ mod tests {
                 _,
             )) = f.body.stmts.first()
             {
-                let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::I32);
+                let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::I64);
                 let hints = build_inlay_hints(source, &pr, &tc);
                 let type_hints: Vec<_> = hints
                     .iter()
                     .filter(|h| h.kind == InlayHintKind::Type)
                     .collect();
                 assert!(!type_hints.is_empty(), "var binding should get a type hint");
-                assert!(type_hints[0].label.contains("i32"));
+                assert_eq!(type_hints[0].label, ": int");
             } else {
                 panic!("expected var statement with value");
             }

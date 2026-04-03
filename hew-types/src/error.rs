@@ -105,11 +105,15 @@ impl TypeError {
     pub fn mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {
         Self::new(
             TypeErrorKind::Mismatch {
-                expected: expected.to_string(),
-                actual: actual.to_string(),
+                expected: expected.user_facing().to_string(),
+                actual: actual.user_facing().to_string(),
             },
             span,
-            format!("expected `{expected}`, found `{actual}`"),
+            format!(
+                "expected `{}`, found `{}`",
+                expected.user_facing(),
+                actual.user_facing()
+            ),
         )
     }
 
@@ -129,7 +133,7 @@ impl TypeError {
         Self::new(
             TypeErrorKind::UndefinedField,
             span,
-            format!("no field `{field}` on type `{ty}`"),
+            format!("no field `{field}` on type `{}`", ty.user_facing()),
         )
     }
 
@@ -139,7 +143,7 @@ impl TypeError {
         Self::new(
             TypeErrorKind::InvalidOperation,
             span,
-            format!("cannot apply `{op}` to type `{ty}`"),
+            format!("cannot apply `{op}` to type `{}`", ty.user_facing()),
         )
     }
 
@@ -204,7 +208,11 @@ impl TypeError {
         Self::new(
             TypeErrorKind::ReturnTypeMismatch,
             span,
-            format!("return type mismatch: expected `{expected}`, found `{actual}`"),
+            format!(
+                "return type mismatch: expected `{}`, found `{}`",
+                expected.user_facing(),
+                actual.user_facing()
+            ),
         )
     }
 
@@ -440,6 +448,19 @@ mod tests {
     }
 
     #[test]
+    fn test_mismatch_display_uses_int_alias() {
+        let err = TypeError::mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
+        assert_eq!(err.to_string(), "expected `int`, found `Option<int>`");
+        assert_eq!(
+            err.kind,
+            TypeErrorKind::Mismatch {
+                expected: "int".to_string(),
+                actual: "Option<int>".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn test_undefined_variable_display() {
         let err = TypeError::new(
             TypeErrorKind::UndefinedVariable,
@@ -628,6 +649,15 @@ mod tests {
             "return type mismatch: expected `String`, found `i32`"
         );
         assert_eq!(err.kind, TypeErrorKind::ReturnTypeMismatch);
+    }
+
+    #[test]
+    fn test_return_type_mismatch_display_uses_int_alias() {
+        let err = TypeError::return_type_mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
+        assert_eq!(
+            err.to_string(),
+            "return type mismatch: expected `int`, found `Option<int>`"
+        );
     }
 
     #[test]

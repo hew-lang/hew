@@ -224,6 +224,134 @@ impl Ty {
         })
     }
 
+    /// Wrap this type for user-facing display without changing internal identity.
+    #[must_use]
+    pub fn user_facing(&self) -> UserFacingTy<'_> {
+        UserFacingTy(self)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "type display covers all type variants recursively"
+    )]
+    fn fmt_with_i64_name(&self, f: &mut fmt::Formatter<'_>, i64_name: &str) -> fmt::Result {
+        match self {
+            Ty::I8 => write!(f, "i8"),
+            Ty::I16 => write!(f, "i16"),
+            Ty::I32 => write!(f, "i32"),
+            Ty::I64 => write!(f, "{i64_name}"),
+            Ty::U8 => write!(f, "u8"),
+            Ty::U16 => write!(f, "u16"),
+            Ty::U32 => write!(f, "u32"),
+            Ty::U64 => write!(f, "u64"),
+            Ty::F32 => write!(f, "f32"),
+            Ty::F64 => write!(f, "f64"),
+            Ty::Bool => write!(f, "bool"),
+            Ty::Char => write!(f, "char"),
+            Ty::String => write!(f, "String"),
+            Ty::Bytes => write!(f, "bytes"),
+            Ty::Duration => write!(f, "duration"),
+            Ty::Unit => write!(f, "()"),
+            Ty::Never => write!(f, "!"),
+            Ty::Var(v) => write!(f, "{v}"),
+            Ty::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    elem.fmt_with_i64_name(f, i64_name)?;
+                }
+                write!(f, ")")
+            }
+            Ty::Array(elem, size) => {
+                write!(f, "[")?;
+                elem.fmt_with_i64_name(f, i64_name)?;
+                write!(f, "; {size}]")
+            }
+            Ty::Slice(elem) => {
+                write!(f, "[")?;
+                elem.fmt_with_i64_name(f, i64_name)?;
+                write!(f, "]")
+            }
+            Ty::Named { name, args } => {
+                write!(f, "{name}")?;
+                if !args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        arg.fmt_with_i64_name(f, i64_name)?;
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
+            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+                write!(f, "fn(")?;
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    param.fmt_with_i64_name(f, i64_name)?;
+                }
+                write!(f, ") -> ")?;
+                ret.fmt_with_i64_name(f, i64_name)
+            }
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => {
+                if *is_mutable {
+                    write!(f, "*mut ")?;
+                } else {
+                    write!(f, "*const ")?;
+                }
+                pointee.fmt_with_i64_name(f, i64_name)
+            }
+            Ty::TraitObject { traits } => {
+                write!(f, "dyn ")?;
+                if traits.len() == 1 {
+                    let bound = &traits[0];
+                    write!(f, "{}", bound.trait_name)?;
+                    if !bound.args.is_empty() {
+                        write!(f, "<")?;
+                        for (i, arg) in bound.args.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            arg.fmt_with_i64_name(f, i64_name)?;
+                        }
+                        write!(f, ">")?;
+                    }
+                } else {
+                    write!(f, "(")?;
+                    for (i, bound) in traits.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " + ")?;
+                        }
+                        write!(f, "{}", bound.trait_name)?;
+                        if !bound.args.is_empty() {
+                            write!(f, "<")?;
+                            for (j, arg) in bound.args.iter().enumerate() {
+                                if j > 0 {
+                                    write!(f, ", ")?;
+                                }
+                                arg.fmt_with_i64_name(f, i64_name)?;
+                            }
+                            write!(f, ">")?;
+                        }
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            Ty::Machine { name } => write!(f, "{name}"),
+            Ty::Error => write!(f, "<error>"),
+        }
+    }
+
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
         Some(match name {
@@ -580,117 +708,19 @@ impl Ty {
     }
 }
 
+/// User-facing type wrapper that preserves `int` spelling for canonical `Ty::I64`.
+#[derive(Debug)]
+pub struct UserFacingTy<'a>(&'a Ty);
+
 impl fmt::Display for Ty {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "type display covers all type variants"
-    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ty::I8 => write!(f, "i8"),
-            Ty::I16 => write!(f, "i16"),
-            Ty::I32 => write!(f, "i32"),
-            Ty::I64 => write!(f, "i64"),
-            Ty::U8 => write!(f, "u8"),
-            Ty::U16 => write!(f, "u16"),
-            Ty::U32 => write!(f, "u32"),
-            Ty::U64 => write!(f, "u64"),
-            Ty::F32 => write!(f, "f32"),
-            Ty::F64 => write!(f, "f64"),
-            Ty::Bool => write!(f, "bool"),
-            Ty::Char => write!(f, "char"),
-            Ty::String => write!(f, "String"),
-            Ty::Bytes => write!(f, "bytes"),
-            Ty::Duration => write!(f, "duration"),
-            Ty::Unit => write!(f, "()"),
-            Ty::Never => write!(f, "!"),
-            Ty::Var(v) => write!(f, "{v}"),
-            Ty::Tuple(elems) => {
-                write!(f, "(")?;
-                for (i, elem) in elems.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{elem}")?;
-                }
-                write!(f, ")")
-            }
-            Ty::Array(elem, size) => write!(f, "[{elem}; {size}]"),
-            Ty::Slice(elem) => write!(f, "[{elem}]"),
-            Ty::Named { name, args } => {
-                write!(f, "{name}")?;
-                if !args.is_empty() {
-                    write!(f, "<")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{arg}")?;
-                    }
-                    write!(f, ">")?;
-                }
-                Ok(())
-            }
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
-                write!(f, "fn(")?;
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{param}")?;
-                }
-                write!(f, ") -> {ret}")
-            }
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => {
-                if *is_mutable {
-                    write!(f, "*mut {pointee}")
-                } else {
-                    write!(f, "*const {pointee}")
-                }
-            }
-            Ty::TraitObject { traits } => {
-                write!(f, "dyn ")?;
-                if traits.len() == 1 {
-                    let bound = &traits[0];
-                    write!(f, "{}", bound.trait_name)?;
-                    if !bound.args.is_empty() {
-                        write!(f, "<")?;
-                        for (i, arg) in bound.args.iter().enumerate() {
-                            if i > 0 {
-                                write!(f, ", ")?;
-                            }
-                            write!(f, "{arg}")?;
-                        }
-                        write!(f, ">")?;
-                    }
-                } else {
-                    write!(f, "(")?;
-                    for (i, bound) in traits.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " + ")?;
-                        }
-                        write!(f, "{}", bound.trait_name)?;
-                        if !bound.args.is_empty() {
-                            write!(f, "<")?;
-                            for (j, arg) in bound.args.iter().enumerate() {
-                                if j > 0 {
-                                    write!(f, ", ")?;
-                                }
-                                write!(f, "{arg}")?;
-                            }
-                            write!(f, ">")?;
-                        }
-                    }
-                    write!(f, ")")?;
-                }
-                Ok(())
-            }
-            Ty::Machine { name } => write!(f, "{name}"),
-            Ty::Error => write!(f, "<error>"),
-        }
+        self.fmt_with_i64_name(f, "i64")
+    }
+}
+
+impl fmt::Display for UserFacingTy<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt_with_i64_name(f, "int")
     }
 }
 
@@ -762,6 +792,40 @@ mod tests {
                 }
             ),
             "Vec<i32>"
+        );
+    }
+
+    #[test]
+    fn test_user_facing_display_preserves_int_alias() {
+        assert_eq!(Ty::I64.user_facing().to_string(), "int");
+    }
+
+    #[test]
+    fn test_user_facing_display_formats_nested_types() {
+        let ty = Ty::Function {
+            params: vec![
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![Ty::I64],
+                },
+                Ty::Tuple(vec![Ty::Bool, Ty::I64]),
+            ],
+            ret: Box::new(Ty::result(
+                Ty::I64,
+                Ty::Named {
+                    name: "HashMap".to_string(),
+                    args: vec![Ty::String, Ty::I64],
+                },
+            )),
+        };
+
+        assert_eq!(
+            ty.user_facing().to_string(),
+            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<String, int>>"
+        );
+        assert_eq!(
+            ty.to_string(),
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<String, i64>>"
         );
     }
 

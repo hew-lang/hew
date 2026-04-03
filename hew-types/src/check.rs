@@ -4950,7 +4950,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("`?` requires Result or Option, found `{ty}`"),
+                        format!(
+                            "`?` requires Result or Option, found `{}`",
+                            ty.user_facing()
+                        ),
                     );
                     Ty::Error
                 }
@@ -5019,7 +5022,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("cannot negate type `{resolved}`"),
+                        format!("cannot negate type `{}`", resolved.user_facing()),
                     );
                 }
                 ty
@@ -5034,7 +5037,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("bitwise NOT requires integer type, found `{resolved}`"),
+                        format!(
+                            "bitwise NOT requires integer type, found `{}`",
+                            resolved.user_facing()
+                        ),
                     );
                 }
                 ty
@@ -5080,11 +5086,15 @@ impl Checker {
         if !has_target_holes && !cast_is_valid(&actual_resolved, &target_resolved) {
             self.report_error(
                 TypeErrorKind::Mismatch {
-                    expected: target_resolved.to_string(),
-                    actual: actual_resolved.to_string(),
+                    expected: target_resolved.user_facing().to_string(),
+                    actual: actual_resolved.user_facing().to_string(),
                 },
                 span,
-                format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
+                format!(
+                    "cannot cast `{}` to `{}`",
+                    actual_resolved.user_facing(),
+                    target_resolved.user_facing()
+                ),
             );
         }
 
@@ -5100,7 +5110,10 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &count.1,
-                format!("array repeat count must be an integer, found `{resolved_count}`"),
+                format!(
+                    "array repeat count must be an integer, found `{}`",
+                    resolved_count.user_facing()
+                ),
             );
         }
         if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
@@ -5176,7 +5189,10 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidSend,
                 span,
-                format!("cannot send `{msg_ty}` to actor: type is not Send"),
+                format!(
+                    "cannot send `{}` to actor: type is not Send",
+                    msg_ty.user_facing()
+                ),
             );
         }
         // Mark sent value as moved (unless Copy)
@@ -5374,7 +5390,10 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             span,
-                            format!("cannot index into `{obj_ty}`: type has no `get` method"),
+                            format!(
+                                "cannot index into `{}`: type has no `get` method",
+                                obj_ty.user_facing()
+                            ),
                         );
                         Ty::Error
                     }
@@ -5387,7 +5406,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("cannot index into `{obj_ty}`"),
+                        format!("cannot index into `{}`", obj_ty.user_facing()),
                     );
                     Ty::Error
                 }
@@ -5396,7 +5415,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot index into `{obj_ty}`"),
+                    format!("cannot index into `{}`", obj_ty.user_facing()),
                 );
                 Ty::Error
             }
@@ -5640,7 +5659,8 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "negative literal `{value}` cannot be assigned to unsigned type `{expected}`"
+                                "negative literal `{value}` cannot be assigned to unsigned type `{}`",
+                                expected.user_facing()
                             ),
                         );
                         return Ty::Error;
@@ -5651,7 +5671,8 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "integer literal `{value}` does not fit in `{expected}` (range {lo}..={hi})"
+                                "integer literal `{value}` does not fit in `{}` (range {lo}..={hi})",
+                                expected.user_facing()
                             ),
                         );
                         return Ty::Error;
@@ -5674,7 +5695,10 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             span,
-                            format!("float literal `{value}` does not fit in `{expected}`"),
+                            format!(
+                                "float literal `{value}` does not fit in `{}`",
+                                expected.user_facing()
+                            ),
                         );
                         return Ty::Error;
                     }
@@ -5743,7 +5767,8 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "constant `{name}` (value {value}) cannot be assigned to unsigned type `{expected}`"
+                                        "constant `{name}` (value {value}) cannot be assigned to unsigned type `{}`",
+                                        expected.user_facing()
                                     ),
                                 );
                                 return Ty::Error;
@@ -5754,7 +5779,8 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "constant `{name}` (value {value}) does not fit in `{expected}` (range {lo}..={hi})"
+                                        "constant `{name}` (value {value}) does not fit in `{}` (range {lo}..={hi})",
+                                        expected.user_facing()
                                     ),
                                 );
                                 return Ty::Error;
@@ -5775,7 +5801,8 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "constant `{name}` (value {value}) does not fit in `{expected}`"
+                                        "constant `{name}` (value {value}) does not fit in `{}`",
+                                        expected.user_facing()
                                     ),
                                 );
                                 return Ty::Error;
@@ -5979,7 +6006,9 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "cannot implicitly coerce `{left_resolved}` and `{right_resolved}` in arithmetic; use an explicit conversion"
+                                "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
                             ),
                         );
                         Ty::Error
@@ -6005,7 +6034,11 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!("cannot apply `{op}` to `{left_resolved}` and `{right_resolved}`"),
+                        format!(
+                            "cannot apply `{op}` to `{}` and `{}`",
+                            left_resolved.user_facing(),
+                            right_resolved.user_facing()
+                        ),
                     );
                     Ty::Error
                 }
@@ -6023,7 +6056,9 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "bitwise `{op}` requires compatible integer types; found `{left_resolved}` and `{right_resolved}`"
+                                "bitwise `{op}` requires compatible integer types; found `{}` and `{}`",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
                             ),
                         );
                         Ty::Error
@@ -6040,7 +6075,11 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!("bitwise `{op}` requires integer operands, found `{left_resolved}` and `{right_resolved}`"),
+                        format!(
+                            "bitwise `{op}` requires integer operands, found `{}` and `{}`",
+                            left_resolved.user_facing(),
+                            right_resolved.user_facing()
+                        ),
                     );
                     Ty::Error
                 }
@@ -6057,7 +6096,9 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "cannot implicitly coerce `{left_resolved}` and `{right_resolved}` for comparison; use an explicit conversion"
+                                "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
                             ),
                         );
                     }
@@ -6089,7 +6130,9 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             &left.1,
                             format!(
-                                "range bounds require compatible integer types; found `{left_resolved}` and `{right_resolved}`"
+                                "range bounds require compatible integer types; found `{}` and `{}`",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
                             ),
                         );
                         Ty::Error
@@ -6108,14 +6151,20 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &left.1,
-                        format!("left side of regex match must be string, found `{left_ty}`"),
+                        format!(
+                            "left side of regex match must be string, found `{}`",
+                            left_ty.user_facing()
+                        ),
                     );
                 }
                 if !matches!(&right_ty, Ty::Named { name, .. } if name == "regex.Pattern") {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &right.1,
-                        format!("right side of regex match must be regex, found `{right_ty}`"),
+                        format!(
+                            "right side of regex match must be regex, found `{}`",
+                            right_ty.user_facing()
+                        ),
                     );
                 }
                 Ty::Bool
@@ -6147,7 +6196,11 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot apply `{op}` to `{left}` and `{right}`"),
+                    format!(
+                        "cannot apply `{op}` to `{}` and `{}`",
+                        left.user_facing(),
+                        right.user_facing()
+                    ),
                 );
                 Ty::Error
             }
@@ -6605,10 +6658,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::Mismatch {
                             expected: "function".to_string(),
-                            actual: format!("{resolved}"),
+                            actual: resolved.user_facing().to_string(),
                         },
                         span,
-                        format!("cannot call value of type `{resolved}`"),
+                        format!("cannot call value of type `{}`", resolved.user_facing()),
                     );
                 }
                 Ty::Error
@@ -6696,7 +6749,8 @@ impl Checker {
                         span,
                         format!(
                             "`lines()` is only supported on `Stream<String>`, \
-                             not `Stream<{inner}>`"
+                             not `Stream<{}>`",
+                            inner.user_facing()
                         ),
                     );
                 }
@@ -6709,7 +6763,8 @@ impl Checker {
                         span,
                         format!(
                             "`collect()` is only supported on `Stream<String>`, \
-                             not `Stream<{inner}>`"
+                             not `Stream<{}>`",
+                            inner.user_facing()
                         ),
                     );
                 }
@@ -6758,7 +6813,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
-                    format!("no method `{method}` on `Stream<{inner}>`"),
+                    format!("no method `{method}` on `Stream<{}>`", inner.user_facing()),
                 );
                 Ty::Error
             }
@@ -7074,7 +7129,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
-                        format!("`Vec::join` is only available on Vec<String>, not Vec<{elem_ty}>"),
+                        format!(
+                            "`Vec::join` is only available on Vec<String>, not Vec<{}>",
+                            elem_ty.user_facing()
+                        ),
                     );
                 }
                 Ty::String
@@ -7393,7 +7451,10 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
                             span,
-                            format!("no conversion method `{method}` on `{resolved}`"),
+                            format!(
+                                "no conversion method `{method}` on `{}`",
+                                resolved.user_facing()
+                            ),
                         );
                         Ty::Error
                     }
@@ -7441,7 +7502,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
-                        format!("no method `{method}` on `{resolved}`"),
+                        format!("no method `{method}` on `{}`", resolved.user_facing()),
                     );
                     Ty::Error
                 }
@@ -7656,7 +7717,7 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
                             span,
-                            format!("no method `{method}` on `{resolved}`"),
+                            format!("no method `{method}` on `{}`", resolved.user_facing()),
                         );
                         Ty::Error
                     }
@@ -7869,7 +7930,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
-                    format!("no method `{method}` on `{resolved}`"),
+                    format!("no method `{method}` on `{}`", resolved.user_facing()),
                 );
                 Ty::Error
             }
@@ -7931,7 +7992,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
-                        format!("no method `{method}` on `{resolved}`"),
+                        format!("no method `{method}` on `{}`", resolved.user_facing()),
                     );
                     Ty::Error
                 }
@@ -7952,7 +8013,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
-                    format!("no method `{method}` on `{resolved}`"),
+                    format!("no method `{method}` on `{}`", resolved.user_facing()),
                 );
                 Ty::Error
             }
@@ -8066,7 +8127,10 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::UndefinedField,
                     span,
-                    format!("cannot access field `{field}` on `{resolved}`"),
+                    format!(
+                        "cannot access field `{field}` on `{}`",
+                        resolved.user_facing()
+                    ),
                 );
                 Ty::Error
             }
@@ -8075,7 +8139,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedField,
                         span,
-                        format!("cannot access field `{field}` on `{resolved}`"),
+                        format!(
+                            "cannot access field `{field}` on `{}`",
+                            resolved.user_facing()
+                        ),
                     );
                 }
                 Ty::Error
@@ -8485,7 +8552,10 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidSend,
                         as_,
-                        format!("cannot send `{ty}` to actor: type is not Send"),
+                        format!(
+                            "cannot send `{}` to actor: type is not Send",
+                            ty.user_facing()
+                        ),
                     );
                 }
                 if !self.registry.implements_marker(&ty, MarkerTrait::Copy) {
@@ -9332,12 +9402,14 @@ impl Checker {
             if expected_resolved.is_numeric() && actual_resolved.is_numeric() {
                 self.report_error(
                     TypeErrorKind::Mismatch {
-                        expected: format!("{expected_resolved}"),
-                        actual: format!("{actual_resolved}"),
+                        expected: expected_resolved.user_facing().to_string(),
+                        actual: actual_resolved.user_facing().to_string(),
                     },
                     span,
                     format!(
-                        "implicit numeric coercion from `{actual_resolved}` to `{expected_resolved}` is not allowed; use an explicit conversion"
+                        "implicit numeric coercion from `{}` to `{}` is not allowed; use an explicit conversion",
+                        actual_resolved.user_facing(),
+                        expected_resolved.user_facing()
                     ),
                 );
                 return;
@@ -9345,12 +9417,14 @@ impl Checker {
             if expected_resolved != Ty::Error && actual_resolved != Ty::Error {
                 self.report_error(
                     TypeErrorKind::Mismatch {
-                        expected: format!("{expected_resolved}"),
-                        actual: format!("{actual_resolved}"),
+                        expected: expected_resolved.user_facing().to_string(),
+                        actual: actual_resolved.user_facing().to_string(),
                     },
                     span,
                     format!(
-                        "type mismatch: expected `{expected_resolved}`, found `{actual_resolved}`"
+                        "type mismatch: expected `{}`, found `{}`",
+                        expected_resolved.user_facing(),
+                        actual_resolved.user_facing()
                     ),
                 );
             }
@@ -10077,7 +10151,7 @@ mod tests {
                 matches!(
                     &e.kind,
                     TypeErrorKind::Mismatch { expected, actual }
-                    if expected == "i64" && actual == "String"
+                    if expected == "int" && actual == "String"
                 )
             }),
             "expected element-type mismatch, got: {:?}",
@@ -10490,7 +10564,7 @@ mod tests {
 
     #[test]
     fn typecheck_let_type_annotation_mismatch() {
-        let source = "fn main() { let x: i32 = \"hello\"; }";
+        let source = "fn main() { let x: int = \"hello\"; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -10501,8 +10575,13 @@ mod tests {
         let output = checker.check_program(&result.program);
         assert!(
             !output.errors.is_empty(),
-            "expected type error for string assigned to i32 variable"
+            "expected type error for string assigned to int variable"
         );
+        assert!(output.errors.iter().any(|e| {
+            e.message.contains("expected `int`")
+                && e.message.contains("found `String`")
+                && !e.message.contains("i64")
+        }));
     }
 
     #[test]

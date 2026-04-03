@@ -1,0 +1,37 @@
+// Regression: non-wire struct.from_json() with wrong-typed string field
+// returns Err(...), not a struct with a null pointer.
+
+type Record {
+    name: String;
+    value: int;
+}
+
+fn main() {
+    // Both fields correct — roundtrip succeeds.
+    let r = Record { name: "hello", value: 42 };
+    let json = r.to_json();
+    match Record.from_json(json) {
+        Ok(decoded) => {
+            println(decoded.name);
+            println(decoded.value);
+        },
+        Err(_) => println("unexpected error"),
+    }
+
+    // name field is an integer, not a string — should be Err.
+    match Record.from_json("{\"name\":99,\"value\":1}") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println("string type error caught"),
+    }
+
+    // Entire value field is a string where int is expected — known gap:
+    // get_int returns 0 rather than Err.  Pinned here to track the
+    // remaining non-string scalar coercion hole.
+    match Record.from_json("{\"name\":\"hi\",\"value\":\"bad\"}") {
+        Ok(decoded) => {
+            println("int coercion gap: value=");
+            println(decoded.value);
+        },
+        Err(_) => println("int type error caught"),
+    }
+}

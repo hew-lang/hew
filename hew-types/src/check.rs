@@ -1287,6 +1287,9 @@ impl Checker {
     ///
     /// Adds `to_json`, `to_yaml`, `to_toml` instance methods and
     /// `from_json`, `from_yaml`, `from_toml` static methods.
+    ///
+    /// The `from_*` static methods return `Result<Self, String>` so that invalid
+    /// input is surfaced as a typed error rather than a runtime panic.
     fn register_encode_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
             name: type_name.to_string(),
@@ -1313,17 +1316,14 @@ impl Checker {
             }
         }
 
-        // Static methods: TypeName.from_json(String) -> Self, etc.
-        // SHIM: Returns Self directly, not Result<Self, String>. Result wrapping
-        // requires codegen changes to construct Result enum values. Until then,
-        // parse errors panic at runtime.
-        // WHEN: Add Result wrapping when codegen can emit Result<T, E> construction.
-        // WHAT: Change return type to Ty::result(self_ty, Ty::String) and update codegen
-        // to wrap parse output in Ok/Err.
+        // Static methods: TypeName.from_json(String) -> Result<Self, String>, etc.
+        // Returns Result so callers can distinguish valid input from a malformed document
+        // without a runtime panic.
+        let result_ty = Ty::result(self_ty.clone(), Ty::String);
         let static_methods = [
-            ("from_json", vec![Ty::String], self_ty.clone()),
-            ("from_yaml", vec![Ty::String], self_ty.clone()),
-            ("from_toml", vec![Ty::String], self_ty),
+            ("from_json", vec![Ty::String], result_ty.clone()),
+            ("from_yaml", vec![Ty::String], result_ty.clone()),
+            ("from_toml", vec![Ty::String], result_ty),
         ];
 
         for (method_name, params, return_type) in static_methods {
@@ -14007,6 +14007,88 @@ fn main() {
             arm_mismatch,
             "match arms with mismatched types should still report an error even when \
              the return type is Ty::Error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn nonwire_from_json_returns_result_self_string() {
+        // Regression: non-wire struct.from_json(s) must type-check as
+        // Result<Self, String>, not Self.  The SHIM that returned Self directly
+        // was removed; this test pins the correct surface type.
+        let source = r#"
+type Point { x: i32; y: i32; }
+fn main() {
+    let s = "{\"x\":1,\"y\":2}";
+    let r: Result<Point, String> = Point.from_json(s);
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "from_json should return Result<Self, String> with no type errors; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn nonwire_from_json_bare_self_is_type_error() {
+        // Assigning the result of from_json directly to `Self` (not Result<Self, …>)
+        // must produce a type mismatch — confirms the SHIM is gone.
+        let source = r#"
+type Point { x: i32; y: i32; }
+fn main() {
+    let s = "{\"x\":1,\"y\":2}";
+    let p: Point = Point.from_json(s);
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let has_mismatch = output.errors.iter().any(|e| {
+            let msg = format!("{e:?}");
+            msg.contains("TypeMismatch") || msg.contains("mismatch") || msg.contains("Result")
+        });
+        assert!(
+            has_mismatch,
+            "assigning Result<Point, String> to Point must be a type error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn nonwire_from_yaml_and_from_toml_return_result() {
+        // Both from_yaml and from_toml should also return Result<Self, String>.
+        let source = r#"
+type Cfg { n: i32; }
+fn main() {
+    let _a: Result<Cfg, String> = Cfg.from_yaml("n: 1");
+    let _b: Result<Cfg, String> = Cfg.from_toml("n = 1");
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "from_yaml / from_toml should return Result<Self, String>; got: {:?}",
             output.errors
         );
     }

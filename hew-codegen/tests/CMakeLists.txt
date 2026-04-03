@@ -717,6 +717,9 @@ add_wasm_file_test(generic_struct_param e2e_generics generic_struct_param)
 add_wasm_file_test(generic_all_types    e2e_generics generic_all_types)
 add_wasm_file_test(generic_nested       e2e_generics generic_nested)
 add_wasm_file_test(generic_param_local_name_clash e2e_generics generic_param_local_name_clash)
+add_wasm_file_test(generic_mutable_name_clash     e2e_generics generic_mutable_name_clash)
+add_wasm_file_test(generic_nested_name_clash      e2e_generics generic_nested_name_clash)
+add_wasm_file_test(generic_multi_param_clash      e2e_generics generic_multi_param_clash)
 
 # Traits and impl
 add_wasm_file_test(trait_impl           e2e_traits trait_impl)

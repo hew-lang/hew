@@ -167,7 +167,7 @@ pub struct HewConnMgr {
     /// Active connections (protected by mutex for concurrent add/remove).
     connections: Mutex<Vec<ConnectionActor>>,
     /// Transport used for I/O operations.
-    transport: *mut HewTransport,
+    pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
     /// Signature: `fn(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize)`.
     inbound_router: Option<InboundRouter>,
@@ -183,6 +183,11 @@ pub struct HewConnMgr {
     reconnect_shutdown: Arc<AtomicBool>,
     /// Background reconnect worker handles.
     reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
+    /// The node ID advertised in the handshake for this manager's node.
+    /// Stored explicitly so multi-node tests (two nodes in one process) get the
+    /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
+    /// to a different (`CURRENT_NODE`) node.
+    pub(crate) local_node_id: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -199,10 +204,13 @@ struct ReconnectPlan {
 
 /// Inbound message routing callback.
 ///
-/// Parameters: `(target_actor_id, msg_type, data, size, request_id, source_node_id)`.
+/// Parameters: `(target_actor_id, msg_type, data, size, request_id, source_node_id, conn_mgr)`.
 /// `request_id` > 0 with `source_node_id` > 0 means this is an ask that expects
 /// a reply. `request_id` == 0 is fire-and-forget.
-type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize, u64, u16);
+/// `conn_mgr` is the manager that received the message; the callback must
+/// use it to route replies so they go out on the correct connection regardless
+/// of which node is stored in the process-global `CURRENT_NODE`.
+type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize, u64, u16, *mut HewConnMgr);
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that
 // serialize access via the internal Mutex. The transport pointer is
@@ -502,10 +510,13 @@ fn local_schema_hash() -> u32 {
     fnv1a32_update(hash, &HEW_WIRE_FIXED32.to_le_bytes())
 }
 
-fn local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) -> HewHandshake {
+fn local_handshake(
+    local_node_id: u16,
+    static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
+) -> HewHandshake {
     HewHandshake {
         protocol_version: HEW_PROTOCOL_VERSION,
-        node_id: crate::pid::hew_pid_local_node(),
+        node_id: local_node_id,
         schema_hash: local_schema_hash(),
         feature_flags: local_feature_flags(),
         static_noise_pubkey,
@@ -904,6 +915,7 @@ fn reader_loop(
                             envelope.payload_size as usize,
                             envelope.request_id,
                             envelope.source_node_id,
+                            mgr,
                         );
                     }
                 }
@@ -931,6 +943,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
     router: Option<InboundRouter>,
     routing_table: *mut HewRoutingTable,
     cluster: *mut HewCluster,
+    local_node_id: u16,
 ) -> *mut HewConnMgr {
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
@@ -943,6 +956,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         reconnect_workers: Mutex::new(Vec::new()),
+        local_node_id,
     });
     Box::into_raw(mgr)
 }
@@ -1150,7 +1164,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         Zeroizing::new(keypair.private)
     };
 
-    let local_hs = local_handshake(local_noise_pubkey);
+    let local_hs = local_handshake(mgr.local_node_id, local_noise_pubkey);
     // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
     let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, local_hs) }) else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
@@ -1476,6 +1490,115 @@ pub unsafe extern "C" fn hew_connmgr_send(
     }
 }
 
+/// Send a pre-encoded wire frame over a specific connection, applying noise
+/// encryption when the connection is encrypted.
+///
+/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
+/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
+/// only transformation applied is noise encryption (when enabled).
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer for the duration of the call.
+/// - `data` must point to at least `len` readable bytes.
+pub(crate) unsafe fn hew_connmgr_send_preencoded(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    data: *const u8,
+    len: usize,
+) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    #[cfg(feature = "encryption")]
+    let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
+    {
+        let Ok(conns) = mgr_ref.connections.lock() else {
+            return -1;
+        };
+        match conns.iter().find(|c| c.conn_id == conn_id) {
+            Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
+                #[cfg(feature = "encryption")]
+                {
+                    maybe_noise = Some(Arc::clone(&c.noise_transport));
+                }
+            }
+            _ => return -1,
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    if let Some(noise_arc) = maybe_noise {
+        // SAFETY: data is valid for `len` bytes per caller contract.
+        let slice = unsafe { std::slice::from_raw_parts(data, len) };
+        let mut ciphertext = vec![0u8; len + 16];
+        let mut guard = noise_arc.lock_or_recover();
+        if let Some(noise) = guard.as_mut() {
+            let Ok(n) = noise.write_message(slice, &mut ciphertext) else {
+                return -1;
+            };
+            ciphertext.truncate(n);
+            // SAFETY: transport is valid per manager contract; conn_id verified active above.
+            return if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
+                0
+            } else {
+                -1
+            };
+        }
+        // No noise state — fall through to plaintext send.
+    }
+
+    // Plaintext send path.
+    // SAFETY: transport is valid per manager contract.
+    let t = unsafe { &*mgr_ref.transport };
+    // SAFETY: ops pointer is part of valid transport.
+    let rc = if let Some(ops) = unsafe { t.ops.as_ref() } {
+        if let Some(send_fn) = ops.send {
+            // SAFETY: data is valid for `len` bytes per caller contract; conn_id verified active.
+            unsafe { send_fn(t.r#impl, conn_id, data.cast_mut().cast(), len) }
+        } else {
+            -1
+        }
+    } else {
+        -1
+    };
+    if rc > 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Return the connection ID of the first active connection whose handshake
+/// identified the peer as `node_id`. Returns -1 if not found.
+///
+/// Used by `send_reply_envelope` on the accepting side where `conn_by_node`
+/// is not populated (only the initiating side calls `hew_node_connect`).
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer for the duration of the call.
+pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_id: u16) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr_ref = unsafe { &*mgr };
+    let Ok(conns) = mgr_ref.connections.lock() else {
+        return -1;
+    };
+    for c in conns.iter() {
+        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+            return c.conn_id;
+        }
+    }
+    -1
+}
+
 /// Return the number of active connections.
 ///
 /// # Safety
@@ -1658,6 +1781,7 @@ mod tests {
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
             reconnect_workers: Mutex::new(Vec::new()),
+            local_node_id: 0,
         };
 
         assert_eq!(
@@ -1709,6 +1833,7 @@ mod tests {
                 None,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
+                0,
             );
             assert!(mgr.is_null());
         }
@@ -1731,14 +1856,14 @@ mod tests {
     #[test]
     fn handshake_rejects_invalid_magic() {
         let mut bytes = [0u8; HEW_HANDSHAKE_SIZE];
-        bytes.copy_from_slice(&local_handshake([0; NOISE_STATIC_PUBKEY_LEN]).serialize());
+        bytes.copy_from_slice(&local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]).serialize());
         bytes[0] = b'X';
         assert!(HewHandshake::deserialize(&bytes).is_none());
     }
 
     #[test]
     fn protocol_version_mismatch_rejected() {
-        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.protocol_version = local.protocol_version.wrapping_add(1);
         assert!(!version_compatible(&local, &peer));
@@ -1746,7 +1871,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_future_protocol_version() {
-        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
         let peer = HewHandshake {
             protocol_version: 999,
             ..local
@@ -1756,7 +1881,7 @@ mod tests {
 
     #[test]
     fn schema_hash_mismatch_rejected() {
-        let local = local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.schema_hash ^= 0x0100_0000;
         assert!(!schema_compatible(&local, &peer));

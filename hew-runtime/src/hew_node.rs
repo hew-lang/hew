@@ -207,6 +207,7 @@ unsafe extern "C" fn node_inbound_router(
     size: usize,
     request_id: u64,
     source_node_id: u16,
+    conn_mgr: *mut connection::HewConnMgr,
 ) {
     if request_id > 0 && source_node_id > 0 {
         // Inbound remote ask — dispatch locally and send the reply back.
@@ -217,6 +218,7 @@ unsafe extern "C" fn node_inbound_router(
         } else {
             Vec::new()
         };
+        let conn_mgr_send = SendConnMgr(conn_mgr);
         thread::spawn(move || {
             handle_inbound_ask(
                 target_actor_id,
@@ -224,6 +226,7 @@ unsafe extern "C" fn node_inbound_router(
                 &payload,
                 request_id,
                 source_node_id,
+                conn_mgr_send,
             );
         });
     } else {
@@ -243,6 +246,7 @@ fn handle_inbound_ask(
     payload: &[u8],
     request_id: u64,
     source_node_id: u16,
+    conn_mgr: SendConnMgr,
 ) {
     // Perform a local blocking ask against the target actor.
     let reply_ptr = {
@@ -282,30 +286,47 @@ fn handle_inbound_ask(
     };
 
     // Send the reply envelope back to the requesting node.
-    send_reply_envelope(source_node_id, request_id, &reply_data);
+    send_reply_envelope(source_node_id, request_id, &reply_data, conn_mgr.0);
 }
 
 /// Encode and send a reply envelope back to the source node.
-fn send_reply_envelope(target_node_id: u16, request_id: u64, reply_data: &[u8]) {
+///
+/// Uses `conn_mgr` directly so the reply is routed via the connection that
+/// received the original ask. This makes reply routing work on the accepting
+/// side, where `CURRENT_NODE.conn_by_node` is not populated.
+fn send_reply_envelope(
+    target_node_id: u16,
+    request_id: u64,
+    reply_data: &[u8],
+    conn_mgr: *mut connection::HewConnMgr,
+) {
+    if conn_mgr.is_null() {
+        return;
+    }
+
+    // Synchronize with `hew_node_stop` to prevent a use-after-free on
+    // `conn_mgr`.  `hew_node_stop` holds the CURRENT_NODE write lock while it
+    // clears the pointer to zero (and only frees `conn_mgr` afterward), so:
+    //
+    // * If this thread acquires the read lock first, stop is blocked until we
+    //   release it — `conn_mgr` is guaranteed valid for this whole function.
+    // * If stop cleared CURRENT_NODE first, we see `*guard == 0` here and
+    //   return before touching `conn_mgr`.
+    //
+    // The guard must remain live until the end of the function so that the
+    // read lock is held for the entire duration of `conn_mgr` access.
     let guard = CURRENT_NODE.read_or_recover();
     if *guard == 0 {
         return;
     }
-    let node = *guard as *mut HewNode;
-    // SAFETY: read lock pins the node pointer.
-    let node_ref = unsafe { &*node };
-    if node_ref.conn_mgr.is_null() {
+
+    // Find the connection back to the requesting node.
+    // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
+    // read lock held above (guard) ensures it remains valid for this call.
+    let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
+    if conn_id < 0 {
         return;
     }
-
-    // Find the connection for the target node.
-    let conn_id = {
-        let map = node_ref.conn_by_node.lock_or_recover();
-        match map.get(&target_node_id) {
-            Some(&id) => id,
-            None => return,
-        }
-    };
 
     // Encode the reply envelope with request_id set and source_node_id = 0
     // to mark it as a reply (not a new request).
@@ -333,22 +354,13 @@ fn send_reply_envelope(target_node_id: u16, request_id: u64, reply_data: &[u8]) 
         return;
     }
 
-    // SAFETY: transport pointer is valid while node is running.
-    let t = unsafe { &*node_ref.transport };
-    // SAFETY: transport ops are valid.
-    if let Some(ops) = unsafe { t.ops.as_ref() } {
-        if let Some(send_fn) = ops.send {
-            // SAFETY: wire_buf contains the encoded envelope.
-            unsafe {
-                send_fn(
-                    t.r#impl,
-                    conn_id,
-                    wire_buf.data.cast::<c_void>(),
-                    wire_buf.len,
-                )
-            };
-        }
-    }
+    // Send via conn_mgr so noise encryption is applied when the connection
+    // is encrypted. This replaces the former raw transport send which would
+    // send unencrypted data over an encrypted connection.
+    // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+    unsafe {
+        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+    };
     // SAFETY: wire_buf was initialised above.
     unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
 }
@@ -652,6 +664,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
                 Some(node_inbound_router),
                 node.routing_table,
                 node.cluster,
+                node.node_id,
             )
         };
         if node.conn_mgr.is_null() {
@@ -730,6 +743,13 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
 
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
     {
+        // Setting CURRENT_NODE to zero acts as a lifetime barrier for
+        // ask-handler threads spawned by `node_inbound_router`.  Those
+        // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
+        // and bail out immediately if the value is 0.  The write lock here
+        // blocks until every concurrent read-lock-holder (i.e. every
+        // in-flight reply send) has completed, so `conn_mgr` cannot be freed
+        // while any such thread is still running.
         let mut guard = CURRENT_NODE.write_or_recover();
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;
@@ -1257,10 +1277,6 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 /// - `pid` must be a valid actor PID.
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
-#[expect(
-    clippy::too_many_lines,
-    reason = "local + remote ask paths are clearer in one function"
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
@@ -1334,24 +1350,12 @@ pub unsafe extern "C" fn hew_node_api_ask(
         return ptr::null_mut();
     }
 
-    // Send the encoded envelope.
-    // SAFETY: transport pointer is valid while node is running.
+    // Send the encoded envelope through the connection manager so noise
+    // encryption is applied when the connection is encrypted.
+    // SAFETY: conn_mgr is valid while node is running; wire_buf is valid.
     let send_ok = unsafe {
-        let t = &*node.transport;
-        if let Some(ops) = t.ops.as_ref() {
-            if let Some(send_fn) = ops.send {
-                send_fn(
-                    t.r#impl,
-                    conn_id,
-                    wire_buf.data.cast::<c_void>(),
-                    wire_buf.len,
-                ) > 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        connection::hew_connmgr_send_preencoded(node.conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+            == 0
     };
     // SAFETY: wire_buf was initialised above.
     unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
@@ -1547,18 +1551,8 @@ mod tests {
 
         let connect_addr =
             CString::new(format!("202@127.0.0.1:{node2_port}")).expect("valid connect addr");
-        let mut connected = false;
-        let mut backoff = Duration::from_millis(25);
-        for _ in 0..20 {
-            // SAFETY: pointers are valid and connect_addr is a valid C string.
-            if unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) } == 0 {
-                connected = true;
-                break;
-            }
-            thread::sleep(backoff);
-            backoff = (backoff * 2).min(Duration::from_millis(200));
-        }
-        assert!(connected, "node1 failed to connect to node2");
+        // SAFETY: node pointer and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
         let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
         let actor_pid = (u64::from(202u16) << 48) | 0x63;
@@ -1574,27 +1568,8 @@ mod tests {
             );
         }
 
-        let handshake_complete = (0..80).any(|i| {
-            // SAFETY: node pointers and conn manager pointers are valid while nodes live.
-            let ready = unsafe {
-                let n1 = &*node1.as_ptr();
-                let n2 = &*node2.as_ptr();
-                connection::hew_connmgr_count(n1.conn_mgr) > 0
-                    && connection::hew_connmgr_count(n2.conn_mgr) > 0
-            };
-            if !ready {
-                let sleep_ms = if i < 20 {
-                    25
-                } else if i < 50 {
-                    50
-                } else {
-                    100
-                };
-                thread::sleep(Duration::from_millis(sleep_ms));
-            }
-            ready
-        });
-        assert!(handshake_complete, "connection handshake did not complete");
+        // SAFETY: node pointers are valid while the test owns both nodes.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: pointers remain valid until dropped.
         unsafe {
@@ -1820,6 +1795,293 @@ mod tests {
 
             let _ = crate::registry::hew_registry_unregister(name.as_ptr());
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Distributed proof-lane integration tests ──────────────────────────
+    //
+    // These tests exercise the real TCP transport path end-to-end in a
+    // single process using two HewNode instances:
+    //
+    //  • `two_node_remote_send_delivery` — proves fire-and-forget message
+    //    delivery from node1 to an actor registered on node2.
+    //  • `two_node_remote_ask_reply` — proves the full ask/reply round-trip
+    //    over the real transport: node1 sends an ask, node2's actor replies,
+    //    and node1 receives the reply.
+    //
+    // Both tests run under NODE_TEST_LOCK to ensure CURRENT_NODE / LOCAL_NODE_ID
+    // state is not perturbed by concurrent node tests.
+
+    use std::sync::atomic::AtomicU32;
+
+    // ── Shared helpers for proof-lane tests ───────────────────────────────
+
+    /// Connect `initiator` to `responder_addr` with retry back-off.
+    unsafe fn connect_with_retry(initiator: *mut HewNode, responder_addr: &CString) {
+        let mut backoff = Duration::from_millis(25);
+        for _ in 0..20 {
+            // SAFETY: initiator and responder_addr are valid for this call.
+            if unsafe { hew_node_connect(initiator, responder_addr.as_ptr()) } == 0 {
+                return;
+            }
+            thread::sleep(backoff);
+            backoff = (backoff * 2).min(Duration::from_millis(200));
+        }
+        panic!("could not connect initiator to responder");
+    }
+
+    /// Poll until both connection managers report at least one active connection.
+    unsafe fn wait_for_handshake(node1: *mut HewNode, node2: *mut HewNode) {
+        let ok = (0..80).any(|i| {
+            // SAFETY: node1 and node2 pointers are valid for the duration of the test.
+            let ready = unsafe {
+                connection::hew_connmgr_count((*node1).conn_mgr) > 0
+                    && connection::hew_connmgr_count((*node2).conn_mgr) > 0
+            };
+            if !ready {
+                let ms = if i < 20 {
+                    25
+                } else if i < 50 {
+                    50
+                } else {
+                    100
+                };
+                thread::sleep(Duration::from_millis(ms));
+            }
+            ready
+        });
+        assert!(ok, "TCP handshake did not complete in time");
+    }
+
+    // ── Test: fire-and-forget remote message delivery ─────────────────────
+
+    /// Stores the `msg_type` of the most-recently received remote message.
+    static SEND_PROBE_MSG_TYPE: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn send_probe_dispatch(
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "msg_type is a non-negative tag in this test"
+        )]
+        SEND_PROBE_MSG_TYPE.store(msg_type as u32, Ordering::Release);
+    }
+
+    #[test]
+    fn two_node_remote_send_delivery() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 301.
+        // Node 2 (responder) starts after; CURRENT_NODE is already non-zero so
+        // hew_node_start does NOT overwrite LOCAL_NODE_ID.
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(301, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(302, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 301
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0); // CURRENT_NODE stays node1
+        }
+
+        // Ensure the scheduler is running so actor dispatches work.
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
+        // This makes the actor look remote from node1's routing perspective.
+        SEND_PROBE_MSG_TYPE.store(0, Ordering::Release);
+        crate::pid::hew_pid_set_local_node(302);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let probe_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(send_probe_dispatch)) };
+        // Restore node1 as the local node before any routing decisions.
+        crate::pid::hew_pid_set_local_node(301);
+        assert!(!probe_actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_pid = unsafe { (*probe_actor).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(actor_pid),
+            302,
+            "actor PID must encode node2's ID"
+        );
+
+        let connect_addr = CString::new(format!("302@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Fire-and-forget from node1 to the actor on node2.
+        let msg_type_sent: i32 = 77;
+        // SAFETY: null payload / size 0 is valid for a bare signal message.
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_pid, msg_type_sent, ptr::null(), 0) };
+        assert_eq!(rc, 0, "hew_node_send should succeed");
+
+        let delivered = (0..100).any(|_| {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "msg_type_sent is a non-negative tag value"
+            )]
+            let got = SEND_PROBE_MSG_TYPE.load(Ordering::Acquire) == msg_type_sent as u32;
+            if !got {
+                thread::sleep(Duration::from_millis(20));
+            }
+            got
+        });
+        assert!(
+            delivered,
+            "actor on node2 did not receive the remote message"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(probe_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Test: remote ask / reply round-trip ───────────────────────────────
+
+    /// Echo-double dispatch: reads a u32 from `data`, replies with `value * 2`.
+    unsafe extern "C" fn ask_probe_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        data: *mut c_void,
+        size: usize,
+    ) {
+        if size < std::mem::size_of::<u32>() {
+            return;
+        }
+        // SAFETY: data is valid for at least size_of::<u32>() bytes.
+        let value = unsafe { *(data.cast::<u32>()) };
+        let mut reply_value: u32 = value.wrapping_mul(2);
+
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        // SAFETY: ch is the current thread-local reply channel; reply_value is valid.
+        unsafe {
+            crate::reply_channel::hew_reply(
+                ch.cast(),
+                (&raw mut reply_value).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+        }
+    }
+
+    #[test]
+    fn two_node_remote_ask_reply() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
+        // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(311, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(312, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 311
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0); // CURRENT_NODE stays node1
+        }
+
+        // Ensure the scheduler is running so actor dispatches work.
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Temporarily set LOCAL_NODE_ID = 312 to assign a node-2 PID to the actor.
+        crate::pid::hew_pid_set_local_node(312);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let echo_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        // Restore node1 as the local node before any routing decisions.
+        crate::pid::hew_pid_set_local_node(311);
+        assert!(!echo_actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_pid = unsafe { (*echo_actor).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(actor_pid),
+            312,
+            "actor PID must encode node2's ID"
+        );
+
+        let connect_addr = CString::new(format!("312@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Remote ask from node1 (CURRENT_NODE, LOCAL_NODE_ID=311) to actor on node2.
+        //
+        // Routing: target_node_id=312 ≠ local_node_id=311 → remote path.
+        // node1.conn_by_node[312] provides the outbound conn_id.
+        // On node2 the inbound router fires handle_inbound_ask with conn_mgr=node2.conn_mgr;
+        // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
+        // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
+        let send_value: u32 = 21;
+        // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_pid,
+                1,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                std::mem::size_of::<u32>(),
+            )
+        };
+
+        assert!(
+            !reply_ptr.is_null(),
+            "remote ask should return a non-null reply"
+        );
+        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        assert_eq!(
+            reply_value,
+            send_value * 2,
+            "echo-double should return 21 * 2 = 42"
+        );
+        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
+        unsafe { libc::free(reply_ptr) };
+
+        // SAFETY: actor and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

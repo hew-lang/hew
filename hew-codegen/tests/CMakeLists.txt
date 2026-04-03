@@ -707,7 +707,8 @@ add_wasm_file_test(struct_impl_method   e2e_impl struct_impl_method)
 add_wasm_file_test(dyn_dispatch         e2e_dyn_trait dyn_dispatch)
 add_wasm_file_test(dyn_dispatch_string  e2e_dyn_trait dyn_dispatch_string)
 add_wasm_file_test(dyn_dispatch_args    e2e_dyn_trait dyn_dispatch_args)
-add_wasm_file_test(dyn_dispatch_void    e2e_dyn_trait dyn_dispatch_void)
+add_wasm_file_test(dyn_dispatch_void        e2e_dyn_trait dyn_dispatch_void)
+add_wasm_file_test(mixed_generic_dyn        e2e_dyn_trait mixed_generic_dyn)
 add_wasm_file_test(trait_inherit        e2e_trait_inherit trait_inherit)
 
 # Closures

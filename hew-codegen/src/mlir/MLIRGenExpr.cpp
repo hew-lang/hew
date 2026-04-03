@@ -1936,27 +1936,27 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     if (!val)
       return nullptr;
 
-    // Coerce concrete struct -> dyn Trait fat pointer if parameter expects one
+    // Coerce concrete struct -> dyn Trait fat pointer if the parameter expects one.
+    // Derive the required trait from the callee's declared parameter type so that
+    // the exact vtable is always chosen, regardless of how many traits the concrete
+    // type implements.
     if (calleeFuncType && i < calleeFuncType.getNumInputs()) {
       auto expectedType = calleeFuncType.getInput(i);
       auto valType = val.getType();
       if (expectedType != valType) {
-        if (auto litStruct = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(expectedType)) {
-          if (!litStruct.isIdentified() && litStruct.getBody().size() == 2 &&
-              mlir::isa<mlir::LLVM::LLVMPointerType>(litStruct.getBody()[0]) &&
-              litStruct.getBody()[1].isInteger(32)) {
-            if (auto identStruct = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(valType)) {
-              if (identStruct.isIdentified()) {
-                std::string structName = identStruct.getName().str();
-                for (const auto &[traitN, dispInfo] : traitDispatchRegistry) {
-                  for (const auto &impl : dispInfo.impls) {
-                    if (impl.typeName == structName) {
-                      val = coerceToDynTrait(val, structName, traitN, location);
-                      goto coercion_done;
-                    }
+        if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(expectedType)) {
+          if (auto identStruct = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(valType)) {
+            if (identStruct.isIdentified()) {
+              std::string structName = identStruct.getName().str();
+              std::string traitName = traitObjType.getTraitName().str();
+              auto dispIt = traitDispatchRegistry.find(traitName);
+              if (dispIt != traitDispatchRegistry.end()) {
+                for (const auto &impl : dispIt->second.impls) {
+                  if (impl.typeName == structName) {
+                    val = coerceToDynTrait(val, structName, traitName, location);
+                    break;
                   }
                 }
-              coercion_done:;
               }
             }
           }

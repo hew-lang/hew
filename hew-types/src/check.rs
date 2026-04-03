@@ -2384,7 +2384,13 @@ impl Checker {
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
-                generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+                generic_bindings.insert(
+                    tp.name.clone(),
+                    Ty::Named {
+                        name: tp.name.clone(),
+                        args: vec![],
+                    },
+                );
             }
         }
         if !generic_bindings.is_empty() {
@@ -3684,7 +3690,8 @@ impl Checker {
             self.env.push_scope();
             // Bind actor fields directly in scope (bare field access)
             self.bind_actor_fields(&ad.fields);
-            self.check_function(method);
+            let qualified = format!("{}::{}", ad.name, method.name);
+            self.check_function_as(method, &qualified);
             self.env.pop_scope();
         }
 
@@ -3858,12 +3865,18 @@ impl Checker {
         // in the call graph (enables dead-code reachability analysis).
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
-        self.current_function = Some(qualified_name);
+        self.current_function = Some(qualified_name.clone());
 
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
-                generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+                generic_bindings.insert(
+                    tp.name.clone(),
+                    Ty::Named {
+                        name: tp.name.clone(),
+                        args: vec![],
+                    },
+                );
             }
         }
         if !generic_bindings.is_empty() {
@@ -3883,10 +3896,20 @@ impl Checker {
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
 
-        let declared_ret = rf
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
+            if rf.is_generator {
+                sig.return_type
+                    .as_stream()
+                    .cloned()
+                    .unwrap_or_else(|| sig.return_type.clone())
+            } else {
+                sig.return_type.clone()
+            }
+        } else {
+            rf.return_type
+                .as_ref()
+                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te))
+        };
         let expected_ret = if rf.is_generator {
             Ty::Unit
         } else {
@@ -3976,7 +3999,13 @@ impl Checker {
             let mut generic_bindings = std::collections::HashMap::new();
             if let Some(tps) = &id.type_params {
                 for tp in tps {
-                    generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+                    generic_bindings.insert(
+                        tp.name.clone(),
+                        Ty::Named {
+                            name: tp.name.clone(),
+                            args: vec![],
+                        },
+                    );
                 }
             }
             let pushed_generic = !generic_bindings.is_empty();

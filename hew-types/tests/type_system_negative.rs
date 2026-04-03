@@ -1,5 +1,6 @@
 use hew_types::error::TypeErrorKind;
 use hew_types::Checker;
+use hew_types::Ty;
 
 fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
     let parsed = hew_parser::parse(source);
@@ -10,6 +11,34 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
     );
     let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     checker.check_program(&parsed.program)
+}
+
+fn generic_param(name: &str) -> Ty {
+    Ty::Named {
+        name: name.to_string(),
+        args: vec![],
+    }
+}
+
+fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "Expected return hole to resolve cleanly for {}, got errors: {:?}",
+        sig_name,
+        output.errors
+    );
+
+    let sig = output.fn_sigs.get(sig_name).unwrap_or_else(|| {
+        panic!(
+            "Expected signature for {}, got {:?}",
+            sig_name, output.fn_sigs
+        )
+    });
+    assert_eq!(
+        &sig.return_type, expected_return_type,
+        "Unexpected return type for {sig_name}: {sig:?}"
+    );
 }
 
 // ── 1. MutabilityError — assign to a `let` binding ──────────────────
@@ -895,6 +924,61 @@ fn inference_hole_function_return_signature_is_resolved() {
     assert_eq!(
         output.fn_sigs.get("f").map(|sig| &sig.return_type),
         Some(&hew_types::Ty::Unit)
+    );
+}
+
+#[test]
+fn inference_hole_generic_free_function_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        fn f<T>(x: T) -> _ { x }
+        fn main() {}
+    ",
+        "f",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_impl_method_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        type Box<T> { value: T; }
+        impl<T> Box<T> {
+            fn get(boxed: Box<T>, x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Box::get",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_actor_receive_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        actor Foo {
+            receive fn bar<T>(x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Foo::bar",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_actor_method_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        actor Foo {
+            fn bar<T>(x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Foo::bar",
+        &generic_param("T"),
     );
 }
 

@@ -21,6 +21,10 @@ actor Handler {
         sink.close();
         // req is automatically freed by Drop here
     }
+
+    receive fn ping() -> int {
+        0
+    }
 }
 
 fn main() {
@@ -30,19 +34,25 @@ fn main() {
 
     let h1 = spawn Handler;
     h1.handle(HttpReq { path: "/api/users" }, sink1);
+    var handled1 = "";
+    for await r in resp1 { handled1 = f"{r}"; }
+    await h1.ping();
+    println(handled1);
+    resp1.close();
 
     let h2 = spawn Handler;
     h2.handle(HttpReq { path: "/api/items" }, sink2);
+    var handled2 = "";
+    for await r in resp2 { handled2 = f"{r}"; }
+    await h2.ping();
+    println(handled2);
+    resp2.close();
 
     let h3 = spawn Handler;
     h3.handle(HttpReq { path: "/health" }, sink3);
-
-    for await r in resp1 { println(r); }
-    resp1.close();
-
-    for await r in resp2 { println(r); }
-    resp2.close();
-
-    for await r in resp3 { println(r); }
+    var handled3 = "";
+    for await r in resp3 { handled3 = f"{r}"; }
+    await h3.ping();
+    println(handled3);
     resp3.close();
 }

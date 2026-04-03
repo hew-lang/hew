@@ -188,9 +188,11 @@ private:
                                      const std::string &methodName,
                                      const std::vector<ast::CallArg> &args,
                                      mlir::Location location);
+  bool actorBoundarySenderRetainsOwnership(mlir::Type valueType) const;
   /// Generate args for an actor send/ask call, handling self-reference substitution.
   std::optional<llvm::SmallVector<mlir::Value, 4>>
-  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location);
+  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
+                        bool retainAllTemporaries = false);
   /// Emit the gen-next null-check, wrap, cleanup, and return sequence.
   void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr, mlir::LLVM::LLVMStructType stateType,
                          unsigned genFrameIdx, mlir::Type yieldType, mlir::Type wrapperType,

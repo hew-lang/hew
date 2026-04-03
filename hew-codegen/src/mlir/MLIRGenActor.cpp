@@ -1397,8 +1397,21 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 // Shared helpers for actor send/ask
 // ============================================================================
 
+bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
+  if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(valueType))
+    return true;
+  if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(valueType)) {
+    if (structTy.isIdentified()) {
+      auto structName = structTy.getName().str();
+      return structHasOwnedFields(structName) && !userDropFuncs.count(structName);
+    }
+  }
+  return false;
+}
+
 std::optional<llvm::SmallVector<mlir::Value, 4>>
-MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location) {
+MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
+                               bool retainAllTemporaries) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
@@ -1406,9 +1419,11 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
     auto val = generateExpression(argSpanned.value);
     if (!val)
       return std::nullopt;
-    // Materialize temporaries: the runtime deep-copies args at the actor
-    // boundary, so the caller still owns the original and must drop it.
-    materializeTemporary(val, argSpanned.value);
+    // Materialize only when the sender keeps an owned copy after the actor
+    // boundary. User-Drop structs transfer ownership to the receiver even when
+    // passed inline as temporaries.
+    if (retainAllTemporaries || actorBoundarySenderRetainsOwnership(val.getType()))
+      materializeTemporary(val, argSpanned.value);
     argVals.push_back(val);
   }
   return argVals;
@@ -1488,10 +1503,6 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     return nullptr;
   }
 
-  auto argVals = generateActorCallArgs(args, location);
-  if (!argVals)
-    return nullptr;
-
   // Check if this is a wire-encoded message (single param that is a #[wire] struct)
   const auto &recvFn = actorInfo.receiveFns[msgIdx];
   const WireWrapperNames *wireNames = nullptr;
@@ -1506,6 +1517,10 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       }
     }
   }
+
+  auto argVals = generateActorCallArgs(args, location, /*retainAllTemporaries=*/wireNames != nullptr);
+  if (!argVals)
+    return nullptr;
 
   if (wireNames) {
     // Wire send path: encode struct → bytes, send bytes via runtime
@@ -1561,13 +1576,15 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                     hew::ClosureType>(argType))
         continue;
-      // Structs with owned fields are deep-copied at the boundary;
-      // the sender retains the originals and must still drop them.
-      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
-        if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
+      // Auto-field-drop structs retain an independent sender copy after the
+      // deep-copy boundary. User-Drop structs still transfer ownership to the
+      // receiver, so the sender must not keep dropping them.
+      if (actorBoundarySenderRetainsOwnership(argType)) {
+        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+            structTy && structTy.isIdentified())
           nullOutTransferredHandleFields(identExpr->name, location);
-          continue;
-        }
+        continue;
+      }
       unregisterDroppable(identExpr->name);
     }
   }
@@ -1629,13 +1646,15 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                   hew::ClosureType>(argType))
       continue;
-    // Structs with owned fields are deep-copied at the boundary;
-    // the sender retains the originals and must still drop them.
-    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
-      if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
+    // Auto-field-drop structs retain an independent sender copy after the
+    // deep-copy boundary. User-Drop structs still transfer ownership to the
+    // receiver, so the sender must not keep dropping them.
+    if (actorBoundarySenderRetainsOwnership(argType)) {
+      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+          structTy && structTy.isIdentified())
         nullOutTransferredHandleFields(identExpr->name, location);
-        continue;
-      }
+      continue;
+    }
     unregisterDroppable(identExpr->name);
   }
 
@@ -1656,10 +1675,6 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   if (!actorVal || !msgVal)
     return nullptr;
 
-  // Materialize temporary messages: the runtime deep-copies at the actor
-  // boundary, so the caller owns the original and must drop it.
-  materializeTemporary(msgVal, expr.message->value);
-
   // Check if the message type is a wire struct
   const WireWrapperNames *wireNames = nullptr;
   auto msgType = msgVal.getType();
@@ -1671,6 +1686,9 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
         wireNames = &it->second;
     }
   }
+
+  if (wireNames || actorBoundarySenderRetainsOwnership(msgType))
+    materializeTemporary(msgVal, expr.message->value);
 
   if (wireNames) {
     // Wire send path: encode struct → bytes, send bytes via runtime
@@ -1710,12 +1728,11 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
       bool senderRetains =
           mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                     hew::ClosureType>(msgType);
-      if (!senderRetains) {
-        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType))
-          if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str())) {
-            senderRetains = true;
-            nullOutTransferredHandleFields(identExpr->name, location);
-          }
+      if (!senderRetains && actorBoundarySenderRetainsOwnership(msgType)) {
+        senderRetains = true;
+        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType);
+            structTy && structTy.isIdentified())
+          nullOutTransferredHandleFields(identExpr->name, location);
       }
       if (!senderRetains)
         unregisterDroppable(identExpr->name);

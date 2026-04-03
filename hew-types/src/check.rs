@@ -3772,14 +3772,6 @@ impl Checker {
     }
 
     fn check_actor(&mut self, ad: &ActorDecl) {
-        // Type-check init body if present
-        if let Some(init) = &ad.init {
-            self.check_actor_init(&ad.name, init, &ad.fields);
-        }
-        // Type-check terminate body if present
-        if let Some(term) = &ad.terminate {
-            self.check_actor_terminate(&ad.name, term, &ad.fields);
-        }
         let actor_ty = Ty::Named {
             name: ad.name.clone(),
             args: vec![],
@@ -3789,6 +3781,15 @@ impl Checker {
             &mut self.current_actor_fields,
             ad.fields.iter().map(|f| f.name.clone()).collect(),
         );
+
+        // Type-check init body if present
+        if let Some(init) = &ad.init {
+            self.check_actor_init(&ad.name, init, &ad.fields);
+        }
+        // Type-check terminate body if present
+        if let Some(term) = &ad.terminate {
+            self.check_actor_terminate(&ad.name, term, &ad.fields);
+        }
 
         for rf in &ad.receive_fns {
             self.check_receive_fn(&ad.name, rf, &ad.fields);
@@ -5319,14 +5320,15 @@ impl Checker {
             ty
         } else {
             if name == "self" {
-                self.report_error(
-                    TypeErrorKind::UndefinedVariable,
-                    span,
+                let message = if self.current_actor_type.is_some() {
+                    "`self` is not used in Hew actor bodies; access actor state with bare field names like `count` (not `self.count`), or use `this` when you need the actor handle".to_string()
+                } else {
                     "`self` is not a valid identifier in Hew; \
                      use a named receiver parameter instead: \
                      `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
-                        .to_string(),
-                );
+                        .to_string()
+                };
+                self.report_error(TypeErrorKind::UndefinedVariable, span, message);
             } else {
                 let similar = crate::error::find_similar(
                     name,

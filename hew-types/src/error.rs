@@ -105,11 +105,15 @@ impl TypeError {
     pub fn mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {
         Self::new(
             TypeErrorKind::Mismatch {
-                expected: expected.to_string(),
-                actual: actual.to_string(),
+                expected: expected.user_facing().to_string(),
+                actual: actual.user_facing().to_string(),
             },
             span,
-            format!("expected `{expected}`, found `{actual}`"),
+            format!(
+                "expected `{}`, found `{}`",
+                expected.user_facing(),
+                actual.user_facing()
+            ),
         )
     }
 
@@ -441,6 +445,19 @@ mod tests {
         );
         assert_eq!(err.severity, Severity::Error);
         assert_eq!(err.span, (0..10));
+    }
+
+    #[test]
+    fn test_mismatch_display_uses_int_alias() {
+        let err = TypeError::mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
+        assert_eq!(err.to_string(), "expected `int`, found `Option<int>`");
+        assert_eq!(
+            err.kind,
+            TypeErrorKind::Mismatch {
+                expected: "int".to_string(),
+                actual: "Option<int>".to_string(),
+            }
+        );
     }
 
     #[test]

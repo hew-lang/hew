@@ -1011,6 +1011,18 @@ private:
   // Track dyn-trait variable types: varName → traitName
   std::unordered_map<std::string, std::string> dynTraitVarTypes;
 
+  enum class TraitImplBodyNameMode {
+    QualifyOnBaseCollision,
+    PreferQualifiedIfGenerated,
+  };
+
+  /// Choose between the base mangled impl-body name and a trait-qualified
+  /// fallback, preserving the existing call-site-specific lookup behavior.
+  std::string resolveTraitImplBodyName(const std::string &typeName,
+                                       const std::string &traitName,
+                                       const std::string &methodName,
+                                       TraitImplBodyNameMode mode);
+
   /// Register an impl for trait dispatch and generate shim functions.
   void registerTraitImpl(const std::string &typeName, const std::string &traitName,
                          const std::vector<std::string> &methodNames);

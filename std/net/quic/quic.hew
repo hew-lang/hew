@@ -413,9 +413,18 @@ pub fn stream_recv_string(strm: QUICStream) -> String {
     _quic_bytes_to_string(data)
 }
 
-// Private helpers to wrap each unsafe FFI call as a plain Hew function.
-// Using `let data = regular_call(); …` avoids the codegen limitation where
-// `let x = unsafe { … }; expr2` is miscompiled in non-void functions.
+// Private helpers — each wraps a single FFI call so the public wrappers
+// above can write `let data = plain_call(); …` instead of
+// `let data = unsafe { ffi(…) }; unsafe { ffi2(…, data) }`.
+// The direct nested-unsafe form triggers a confirmed MLIR codegen bug
+// (hew-codegen ≤ current HEAD): when a non-void function's body starts
+// with `let x = unsafe { … }`, the inner generateBlock() incorrectly
+// fires useReturnGuards, stores the unsafe result into the function's
+// return slot, and returns nullptr — so `x` is never bound and the
+// second statement's reference to `x` is emitted as "undeclared variable".
+// Splitting each FFI call into its own single-expression function avoids
+// that path entirely and produces correct MLIR.
+// Filed as a known codegen limitation; remove these helpers once fixed.
 fn _quic_string_to_bytes(s: String) -> bytes { unsafe { hew_string_to_bytes(s) } }
 fn _quic_bytes_to_string(b: bytes) -> String { unsafe { hew_bytes_to_string(b) } }
 fn _quic_stream_send(strm: QUICStream, b: bytes) -> i32 { unsafe { hew_quic_stream_send(strm, b) } }

@@ -5544,8 +5544,13 @@ impl Checker {
                 }
                 // Not a coercible const — fall through to default behaviour
                 let actual = self.synthesize(expr, span);
+                let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
-                actual
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
             }
 
             // Tuple literal coercion: propagate expected element types
@@ -13550,6 +13555,28 @@ fn main() {
             output.errors.len(),
             1,
             "expected exactly one type mismatch error, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_identifier_mismatch_reports_exactly_one_error() {
+        // fn foo(s: String) -> i32 { s }
+        // The identifier arm in check_against matched before the default arm,
+        // so without the guard it fired a second duplicate error.
+        let source = "fn foo(s: String) -> i32 { s }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert_eq!(
+            output.errors.len(),
+            1,
+            "expected exactly one type mismatch error for identifier, got: {:?}",
             output.errors
         );
     }

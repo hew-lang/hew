@@ -2430,12 +2430,13 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si,
       if (const auto *resolvedTy = resolvedTypeOf(exprSpan)) {
         if (auto *named = std::get_if<ast::TypeNamed>(&resolvedTy->kind)) {
           if (named->type_args && !named->type_args->empty()) {
-            // resolveTypeArgMangledName materializes the specialization via
-            // an internal convertType call and returns the mangled name.
+            // resolveTypeArgMangledName calls convertType internally, which
+            // can insert into structTypes and rehash the map, invalidating
+            // any iterator obtained before this call.  Always re-fetch `it`
+            // from the map after the call so the subsequent end() check uses
+            // a valid iterator regardless of whether specialization succeeded.
             std::string mangledName = resolveTypeArgMangledName(*resolvedTy);
-            auto mangledIt = structTypes.find(mangledName);
-            if (mangledIt != structTypes.end())
-              it = mangledIt;
+            it = structTypes.find(mangledName);
           }
         }
       }

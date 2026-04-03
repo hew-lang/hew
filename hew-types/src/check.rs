@@ -5174,14 +5174,15 @@ impl Checker {
             ty
         } else {
             if name == "self" {
-                self.report_error(
-                    TypeErrorKind::UndefinedVariable,
-                    span,
+                let message = if self.current_actor_type.is_some() {
+                    "`self` is not used in Hew actor bodies; access actor state with bare field names like `count` (not `self.count`), or use `this` when you need the actor handle".to_string()
+                } else {
                     "`self` is not a valid identifier in Hew; \
                      use a named receiver parameter instead: \
                      `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
-                        .to_string(),
-                );
+                        .to_string()
+                };
+                self.report_error(TypeErrorKind::UndefinedVariable, span, message);
             } else {
                 let similar = crate::error::find_similar(
                     name,

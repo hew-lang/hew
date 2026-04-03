@@ -144,6 +144,43 @@ fn test_actor_method_valid_field_access() {
 }
 
 #[test]
+fn test_actor_receive_self_uses_actor_guidance() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            receive fn current() -> i32 {
+                self.count
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    let self_error = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("`self`"))
+        .expect("expected an error mentioning `self`");
+    assert!(
+        self_error.message.contains("bare field names like `count`"),
+        "actor `self` guidance should mention bare field access: {:?}",
+        output.errors
+    );
+    assert!(
+        self_error.message.contains("`this`"),
+        "actor `self` guidance should mention `this`: {:?}",
+        output.errors
+    );
+    assert!(
+        !self_error.message.contains("named receiver parameter"),
+        "actor `self` guidance should not use trait/impl receiver advice: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn test_actor_terminate_valid_field_access() {
     let output = typecheck(
         r"

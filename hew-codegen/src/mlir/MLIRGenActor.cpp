@@ -408,8 +408,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
                   structTy && structTy.isIdentified()) {
                 isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
               }
-              if (!isUserDrop)
-                registerDroppable(param.name, dropFn, false);
+              registerDroppable(param.name, dropFn, isUserDrop);
             }
 
             ++pi;
@@ -605,8 +604,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
               structTy && structTy.isIdentified()) {
             isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
           }
-          if (!isUserDrop)
-            registerDroppable(param.name, dropFn, false);
+          registerDroppable(param.name, dropFn, isUserDrop);
         }
 
         ++pi;

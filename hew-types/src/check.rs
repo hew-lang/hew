@@ -5630,15 +5630,29 @@ impl Checker {
                 }
                 // Fall through: non-generic or arity mismatch — synthesize normally
                 let actual = self.synthesize(expr, span);
+                let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
-                actual
+                // If expect_type added a new error, return Ty::Error so callers
+                // (e.g. check_fn_decl's outer expect_type) don't re-fire the same
+                // mismatch as a duplicate diagnostic.
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
             }
 
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
+                let n = self.errors.len();
                 self.expect_type(expected, &actual, span);
-                actual
+                // Same duplicate-suppression as the struct-init fallthrough above.
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
             }
         }
     }
@@ -13514,6 +13528,28 @@ fn main() {
         assert!(
             output.errors.is_empty(),
             "match with integer literal arms should coerce to declared return type: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn trailing_type_mismatch_reports_exactly_one_error() {
+        // fn foo() -> i32 { "hello" }
+        // check_against already reports the mismatch at the expression site;
+        // check_fn_decl's outer expect_type must NOT fire a duplicate.
+        let source = "fn foo() -> i32 { \"hello\" }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert_eq!(
+            output.errors.len(),
+            1,
+            "expected exactly one type mismatch error, got: {:?}",
             output.errors
         );
     }

@@ -1,0 +1,22 @@
+fn classify(input: String) {
+    match input {
+        s if s =~ re"^foo[0-9]+$" => println("foo-number"),
+        s if s !~ re"^[a-z]+$" => println("mixed"),
+        _ => println("plain-word"),
+    }
+}
+
+fn main() {
+    let email = "user@example.com";
+    if email =~ re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" {
+        println("email ok");
+    }
+
+    if "hew42" !~ re"^[a-z]+$" {
+        println("not plain alpha");
+    }
+
+    classify("foo123");
+    classify("hew42");
+    classify("hew");
+}

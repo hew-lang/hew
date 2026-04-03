@@ -1747,8 +1747,63 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Unresolved generic substitution type fails MLIR generation
+// Test: generic struct constructor in non-generic function body (main)
+// Regression: "unknown struct type 'Wrapper'" when typeParamSubstitutions empty
 // ============================================================================
+static void test_generic_struct_constructor_in_nongeneric_context() {
+  TEST(generic_struct_constructor_in_nongeneric_context);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  // Wrapper { inner: 42 } inside main() — no explicit type annotation.
+  // The type checker infers Wrapper<i32> and records it in expr_types.
+  // The codegen must use that info to materialise Wrapper_i32.
+  auto module = generateMLIR(ctx, R"(
+type Wrapper<T> { inner: T; }
+fn main() {
+    let w = Wrapper { inner: 42 };
+    println(w.inner);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for generic struct constructor in non-generic context");
+    return;
+  }
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: generic struct constructor in monomorphic helper with return annotation
+// Regression: "unknown struct type 'Wrapper'" in non-generic fn with explicit
+//             return type (Wrapper<i32>).
+// ============================================================================
+static void test_generic_struct_constructor_monomorphic_helper() {
+  TEST(generic_struct_constructor_monomorphic_helper);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+type Wrapper<T> { inner: T; }
+fn wrap_i32(x: i32) -> Wrapper<i32> {
+    Wrapper { inner: x }
+}
+fn main() {
+    let v = wrap_i32(99);
+    println(v.inner);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for generic struct constructor in monomorphic helper");
+    return;
+  }
+  module.getOperation()->destroy();
+  PASS();
+}
+
+
 static void test_unresolved_generic_substitution_type_fails() {
   TEST(unresolved_generic_substitution_type_fails);
 
@@ -2554,6 +2609,8 @@ int main() {
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();
+  test_generic_struct_constructor_in_nongeneric_context();
+  test_generic_struct_constructor_monomorphic_helper();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

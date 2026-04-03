@@ -251,7 +251,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *send = std::get_if<ast::ExprSend>(&expr.kind))
     return generateSendExpr(*send);
   if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind))
-    return generateStructInit(*si);
+    return generateStructInit(*si, expr.span);
   if (auto *mc = std::get_if<ast::ExprMethodCall>(&expr.kind))
     return generateMethodCall(*mc);
   if (auto *tup = std::get_if<ast::ExprTuple>(&expr.kind))
@@ -2399,7 +2399,8 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
 // Struct initialization
 // ============================================================================
 
-mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
+mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si,
+                                        const ast::Span &exprSpan) {
   auto location = currentLoc;
   const auto &structName = si.name;
 
@@ -2417,6 +2418,27 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
             mangledName += "_" + substIt->second;
         }
         it = structTypes.find(mangledName);
+      }
+    }
+    // Non-generic context: use the type checker's resolved concrete type
+    // (e.g., Wrapper<i32>) to materialize and look up the specialization.
+    // This handles generic struct constructor expressions in non-generic
+    // function bodies (e.g., `Wrapper { inner: 42 }` in main()) where
+    // typeParamSubstitutions is empty but the type checker already inferred
+    // the concrete type args.
+    if (it == structTypes.end()) {
+      if (const auto *resolvedTy = resolvedTypeOf(exprSpan)) {
+        if (auto *named = std::get_if<ast::TypeNamed>(&resolvedTy->kind)) {
+          if (named->type_args && !named->type_args->empty()) {
+            // resolveTypeArgMangledName calls convertType internally, which
+            // can insert into structTypes and rehash the map, invalidating
+            // any iterator obtained before this call.  Always re-fetch `it`
+            // from the map after the call so the subsequent end() check uses
+            // a valid iterator regardless of whether specialization succeeded.
+            std::string mangledName = resolveTypeArgMangledName(*resolvedTy);
+            it = structTypes.find(mangledName);
+          }
+        }
       }
     }
     if (it == structTypes.end()) {

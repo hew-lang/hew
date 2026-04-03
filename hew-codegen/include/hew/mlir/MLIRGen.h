@@ -238,7 +238,8 @@ private:
   mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan);
   mlir::Value generateBlockExpr(const ast::Block &block);
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
-  mlir::Value generateStructInit(const ast::ExprStructInit &expr);
+  mlir::Value generateStructInit(const ast::ExprStructInit &expr,
+                                 const ast::Span &exprSpan);
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
   std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::ExprIdentifier &ident,

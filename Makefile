@@ -35,7 +35,7 @@
 #   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors)
-#   make clean        — remove build/, target/, hew-codegen/build/
+#   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
 .PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm wasm-dist release
@@ -353,22 +353,22 @@ lsan:
 	cargo build -p hew-cli -p hew-runtime -p hew-serialize
 	cargo build -p hew-lib
 ifeq ($(shell uname -s),Darwin)
-	cmake -B hew-codegen/build -G Ninja \
+	cmake -B hew-codegen/build-lsan -G Ninja \
 		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
 		$(CMAKE_EXTRA_ARGS) \
 		-S hew-codegen
 else
-	cmake -B hew-codegen/build -G Ninja \
+	cmake -B hew-codegen/build-lsan -G Ninja \
 		-DCMAKE_C_COMPILER=$(SANITIZER_CC) \
 		-DCMAKE_CXX_COMPILER=$(SANITIZER_CXX) \
 		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
 		$(CMAKE_EXTRA_ARGS) \
 		-S hew-codegen
 endif
-	cmake --build hew-codegen/build --parallel $(SANITIZER_JOBS)
-	cd hew-codegen/build && $(CODEGEN_SANITIZER_TEST_ENV) \
+	cmake --build hew-codegen/build-lsan --parallel $(SANITIZER_JOBS)
+	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
 	ctest --output-on-failure -R "$(CODEGEN_SANITIZER_UNIT_REGEX)"
-	cd hew-codegen/build && $(CODEGEN_SANITIZER_TEST_ENV) \
+	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
 	ctest --output-on-failure -j"$(SANITIZER_JOBS)" -R "$(CODEGEN_SANITIZER_E2E_REGEX)"
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
@@ -580,7 +580,7 @@ uninstall:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf hew-codegen/build hew-codegen/build-cov
+	rm -rf hew-codegen/build hew-codegen/build-cov hew-codegen/build-lsan
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
 	rm -rf $(COV_DIR)

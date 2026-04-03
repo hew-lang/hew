@@ -1,0 +1,9 @@
+fn identity<T>(T: T) -> T {
+    T
+}
+
+fn main() {
+    let T = 42;
+    let y = identity<int>(T);
+    println(y);
+}

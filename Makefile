@@ -31,12 +31,15 @@
 #   make test-codegen — just hew-codegen ctest (native E2E + unit)
 #   make test-hew     — run Hew test files (std/ *_test.hew)
 #   make test-wasm    — just WASM E2E tests (requires wasmtime)
+#   make asan         — run the nightly rust-runtime ASan test command locally
+#   make lsan         — run the nightly codegen sanitizer tests with CI leak env
+#   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors)
-#   make clean        — remove build/, target/, hew-codegen/build/
+#   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
 .PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm wasm-dist release
-.PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
+.PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -82,6 +85,29 @@ DEBUG_DIR  := target/debug
 RELEASE_DIR := target/release
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
+
+# Sanitizer targets mirror .github/workflows/nightly-sanitizers.yml as closely
+# as possible while remaining usable as local entrypoints.
+SANITIZER_LLVM_VERSION ?= 22
+SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
+SANITIZER_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+SANITIZER_CC ?= $(or $(shell command -v clang-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CC))
+SANITIZER_CXX ?= $(or $(shell command -v clang++-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CXX))
+CODEGEN_SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
+CODEGEN_SANITIZER_LINK_FLAGS := -fsanitize=address,undefined
+CODEGEN_SANITIZER_UNIT_REGEX := ^(mlir_dialect|translate|coro_generator|coro_fib_generator)$$
+CODEGEN_SANITIZER_E2E_REGEX := ^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator)$$
+CODEGEN_SANITIZER_ASAN_OPTIONS := detect_leaks=1:strict_string_checks=1
+CODEGEN_SANITIZER_LSAN_OPTIONS := suppressions=$(CURDIR)/hew-codegen/lsan.supp
+CODEGEN_SANITIZER_UBSAN_OPTIONS := print_stacktrace=1:halt_on_error=1
+CODEGEN_SANITIZER_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_FLAGS="$(CODEGEN_SANITIZER_FLAGS)" -DCMAKE_CXX_FLAGS="$(CODEGEN_SANITIZER_FLAGS)"
+ifneq ($(shell uname -s),Darwin)
+  CODEGEN_SANITIZER_CMAKE_ARGS += -DCMAKE_EXE_LINKER_FLAGS="$(CODEGEN_SANITIZER_LINK_FLAGS)"
+  CODEGEN_SANITIZER_CMAKE_ARGS += -DCMAKE_SHARED_LINKER_FLAGS="$(CODEGEN_SANITIZER_LINK_FLAGS)"
+endif
+CODEGEN_SANITIZER_TEST_ENV := ASAN_OPTIONS="$(CODEGEN_SANITIZER_ASAN_OPTIONS)" LSAN_OPTIONS="$(CODEGEN_SANITIZER_LSAN_OPTIONS)" UBSAN_OPTIONS="$(CODEGEN_SANITIZER_UBSAN_OPTIONS)"
+RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
+RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
 
 # ── Default target ──────────────────────────────────────────────────────────
 
@@ -315,6 +341,48 @@ test-cpp: codegen
 	@echo "==> Running C++ unit tests"
 	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate|codegen_capi|msgpack_reader)$$"
 
+# Nightly rust-runtime ASan command (Linux/nightly toolchain required).
+asan:
+	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
+	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
+	ASAN_OPTIONS="detect_leaks=1" \
+	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
+
+# Nightly codegen sanitizer lane: ASan+UBSan build plus leak-checking test env.
+lsan:
+	cargo build -p hew-cli -p hew-runtime -p hew-serialize
+	cargo build -p hew-lib
+ifeq ($(shell uname -s),Darwin)
+	cmake -B hew-codegen/build-lsan -G Ninja \
+		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
+		$(CMAKE_EXTRA_ARGS) \
+		-S hew-codegen
+else
+	cmake -B hew-codegen/build-lsan -G Ninja \
+		-DCMAKE_C_COMPILER=$(SANITIZER_CC) \
+		-DCMAKE_CXX_COMPILER=$(SANITIZER_CXX) \
+		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
+		$(CMAKE_EXTRA_ARGS) \
+		-S hew-codegen
+endif
+	cmake --build hew-codegen/build-lsan --parallel $(SANITIZER_JOBS)
+	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
+	ctest --output-on-failure -R "$(CODEGEN_SANITIZER_UNIT_REGEX)"
+	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
+	ctest --output-on-failure -j"$(SANITIZER_JOBS)" -R "$(CODEGEN_SANITIZER_E2E_REGEX)"
+
+# Nightly rust-runtime TSan command (Linux/nightly toolchain required).
+tsan:
+	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
+	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes" \
+	TSAN_OPTIONS="halt_on_error=1" \
+	cargo +nightly test \
+		--target $(SANITIZER_RUST_TARGET) \
+		-p hew-runtime \
+		--no-default-features \
+		--lib \
+		-- --test-threads=1
+
 # ── Lint ────────────────────────────────────────────────────────────────────
 
 lint:
@@ -512,7 +580,7 @@ uninstall:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf hew-codegen/build hew-codegen/build-cov
+	rm -rf hew-codegen/build hew-codegen/build-cov hew-codegen/build-lsan
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
 	rm -rf $(COV_DIR)

@@ -8979,7 +8979,10 @@ impl Checker {
 
     fn type_satisfies_trait_bound(&self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
-            Ty::Named { name, .. } => self.type_implements_trait(name, trait_name),
+            Ty::Named { name, .. } => {
+                self.type_implements_trait(name, trait_name)
+                    || self.type_structurally_satisfies(name, trait_name)
+            }
             Ty::TraitObject { traits } => traits.iter().any(|t| {
                 t.trait_name == trait_name || self.trait_extends(&t.trait_name, trait_name)
             }),
@@ -9060,6 +9063,48 @@ impl Checker {
                 }
             }
         }
+        false
+    }
+
+    /// Structural-bounds scaffold for compositional interfaces (Stage 1 / E1).
+    ///
+    /// Returns `true` only when **all** of the following hold:
+    ///
+    /// 1. The trait is known in `trait_defs`.
+    /// 2. The trait has **no associated types** (E1 guard – associated-type resolution requires
+    ///    an explicit `impl` alias scope that does not exist in the structural path yet).
+    /// 3. The trait has **no generic methods** (E1 guard – per-method type-parameter
+    ///    substitution belongs in a later slice).
+    /// 4. The concrete type is known (its `type_defs` entry is reachable).
+    ///
+    /// **E1 deliberately returns `false`** so that the call-site fallback in
+    /// `type_satisfies_trait_bound` is safe to introduce now without changing any existing
+    /// program behaviour.  A later slice (E2) will lift the blanket `false` return and
+    /// implement real method-presence matching against `type_defs`.
+    fn type_structurally_satisfies(&self, type_name: &str, trait_name: &str) -> bool {
+        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+            return false;
+        };
+
+        // E1 guard: traits with associated types require an explicit impl context.
+        if !trait_info.associated_types.is_empty() {
+            return false;
+        }
+
+        // E1 guard: traits with generic methods are not handled structurally yet.
+        if trait_info
+            .methods
+            .iter()
+            .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
+        {
+            return false;
+        }
+
+        // E1 placeholder: real method-presence matching lives in E2.
+        // The `type_name` reference is intentional — kept so E2 can replace this line with
+        // a lookup into `self.type_defs` without needing to fish `type_name` back out of
+        // caller scope.
+        let _ = type_name;
         false
     }
 
@@ -14151,6 +14196,190 @@ fn main() {
             output.errors.is_empty(),
             "from_yaml / from_toml should return Result<Self, String>; got: {:?}",
             output.errors
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Structural-bounds scaffold tests (E1)
+    //
+    // These tests verify the `type_structurally_satisfies` scaffold and the
+    // updated `type_satisfies_trait_bound` fallback without changing any
+    // existing program behaviour.
+    // -------------------------------------------------------------------------
+
+    /// Build a minimal `Checker` with a trait registered in `trait_defs`.
+    ///
+    /// The trait is method-only (no associated types, no generic methods) unless
+    /// the caller opts in via the `with_assoc` / `with_generic_method` flags.
+    fn make_checker_with_trait(
+        trait_name: &str,
+        method_names: &[&str],
+        with_assoc: bool,
+        with_generic_method: bool,
+    ) -> Checker {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let mut items: Vec<hew_parser::ast::TraitItem> = method_names
+            .iter()
+            .map(|name| {
+                let type_params = if with_generic_method {
+                    Some(vec![TypeParam {
+                        name: "U".to_string(),
+                        bounds: vec![],
+                    }])
+                } else {
+                    None
+                };
+                TraitItem::Method(TraitMethod {
+                    name: name.to_string(),
+                    is_pure: false,
+                    type_params,
+                    params: vec![Param {
+                        name: "val".to_string(),
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Self".to_string(),
+                                type_args: None,
+                            },
+                            0..4,
+                        ),
+                        is_mutable: false,
+                    }],
+                    return_type: None,
+                    where_clause: None,
+                    body: None,
+                })
+            })
+            .collect();
+
+        if with_assoc {
+            items.push(TraitItem::AssociatedType {
+                name: "Output".to_string(),
+                default: None,
+                bounds: vec![],
+            });
+        }
+
+        let td = TraitDecl {
+            visibility: hew_parser::ast::Visibility::Private,
+            name: trait_name.to_string(),
+            type_params: None,
+            super_traits: None,
+            items,
+            doc_comment: None,
+        };
+
+        let info = Checker::trait_info_from_decl(&td);
+        checker.trait_defs.insert(trait_name.to_string(), info);
+        checker
+    }
+
+    #[test]
+    fn structural_satisfies_returns_false_for_unknown_trait() {
+        let checker = Checker::new(ModuleRegistry::new(vec![]));
+        assert!(
+            !checker.type_structurally_satisfies("MyType", "NoSuchTrait"),
+            "unknown trait must not satisfy structural check"
+        );
+    }
+
+    #[test]
+    fn structural_satisfies_e1_guard_associated_types() {
+        let checker = make_checker_with_trait("Indexed", &["get"], true, false);
+        assert!(
+            !checker.type_structurally_satisfies("MyType", "Indexed"),
+            "E1 guard: traits with associated types must return false"
+        );
+    }
+
+    #[test]
+    fn structural_satisfies_e1_guard_generic_methods() {
+        let checker = make_checker_with_trait("Mapper", &["map"], false, true);
+        assert!(
+            !checker.type_structurally_satisfies("MyType", "Mapper"),
+            "E1 guard: traits with generic methods must return false"
+        );
+    }
+
+    #[test]
+    fn structural_satisfies_e1_placeholder_returns_false_for_method_only_trait() {
+        // A method-only, non-generic trait passes the guards but still returns
+        // false in E1 (the real method-presence check lives in E2).
+        let checker = make_checker_with_trait("Greet", &["hello"], false, false);
+        assert!(
+            !checker.type_structurally_satisfies("MyType", "Greet"),
+            "E1 placeholder must return false even for qualifying traits"
+        );
+    }
+
+    #[test]
+    fn type_satisfies_trait_bound_nominal_path_unchanged() {
+        // Verify that existing nominal conformance still works after the
+        // structural fallback was wired into type_satisfies_trait_bound.
+        let source = r"
+            trait Greet {
+                fn hello(val: Self);
+            }
+
+            type Greeter {}
+
+            impl Greet for Greeter {
+                fn hello(val: Greeter) {}
+            }
+
+            fn use_greet<T: Greet>(t: T) {}
+
+            fn main() {
+                let g = Greeter {};
+                use_greet(g);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "nominal trait conformance must still succeed after E1 scaffold: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn type_satisfies_trait_bound_missing_impl_still_fails() {
+        // A type that has no impl and no structural match must still fail the
+        // bound — E1 must not silently accept it.
+        let source = r"
+            trait Greet {
+                fn hello(val: Self);
+            }
+
+            type Stranger {}
+
+            fn use_greet<T: Greet>(t: T) {}
+
+            fn main() {
+                let s = Stranger {};
+                use_greet(s);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            !output.errors.is_empty(),
+            "E1 must not accept a type with no impl and no structural match; expected errors"
         );
     }
 }

@@ -2718,6 +2718,23 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     genericImplMethods[typeName] = std::move(info);
   });
 
+  // Pass 1k-trait: Generate non-generic trait impl method bodies so that vtable
+  // shim names are resolved before Pass 1k compiles function bodies.  Any
+  // function body (e.g. main) that coerces a concrete value to a dyn-trait
+  // object calls coerceToDynTrait, which reads shimFunctions from the trait
+  // dispatch registry.  Generating impl bodies here — before Pass 1k — ensures
+  // generateTraitImplShims can overwrite the stale shim names that the early
+  // pre-registration pass stored before any method bodies existed.
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    auto *impl = std::get_if<ast::ImplDecl>(&item.kind);
+    if (!impl || !impl->trait_bound)
+      return; // non-trait impls handled in Pass 2
+    if (impl->type_params && !impl->type_params->empty())
+      return; // generic impls deferred for specialization
+    generateImplDecl(*impl, loc(spannedItem.span));
+  });
+
   // Pass 1k: Generate regular function bodies before actor bodies so that
   // actor receive functions can call user-defined functions (including void
   // functions that were skipped by the forward-declaration pass 1d).
@@ -2743,7 +2760,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
       generateItem(item, loc(spannedItem.span));
   });
 
-  // Pass 2: Generate remaining items (supervisor decls, etc.)
+  // Pass 2: Generate remaining items (supervisor decls, non-trait impls, etc.)
   // Items already handled in earlier passes are skipped.
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
@@ -2756,6 +2773,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         std::holds_alternative<ast::WireDecl>(item.kind) ||
         std::holds_alternative<ast::MachineDecl>(item.kind))
       return; // already handled in pass 1
+    // Non-generic trait impls were already generated in Pass 1k-trait.
+    if (auto *id = std::get_if<ast::ImplDecl>(&item.kind)) {
+      if (id->trait_bound && !(id->type_params && !id->type_params->empty()))
+        return;
+    }
     generateItem(item, loc(spannedItem.span));
   });
 
@@ -3727,20 +3749,37 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   // Set Self substitution so bare self parameters resolve to the target type
   typeParamSubstitutions["Self"] = typeName;
 
-  // Generate each method as a free function with mangled name
+  // Generate each method as a free function with mangled name.
+  // When a trait impl method name collides with a body already registered for
+  // a different trait (same typeName + methodName), qualify the impl body name
+  // with the trait so both bodies coexist in the module.
   std::set<std::string> overriddenMethods;
   for (const auto &method : decl.methods) {
-    std::string mangledMethod = mangleName(currentModulePath, typeName, method.name);
+    std::string baseMangled = mangleName(currentModulePath, typeName, method.name);
+    bool bodyCollision = false;
+    if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(baseMangled))
+      bodyCollision = !existing.isDeclaration();
+    std::string mangledMethod = bodyCollision
+        ? mangleName(currentModulePath, typeName, traitName + "__" + method.name)
+        : baseMangled;
     generateFunction(method, mangledMethod, fallbackLoc);
     overriddenMethods.insert(method.name);
   }
 
-  // Generate default method bodies from the trait for methods not overridden
+  // Generate default method bodies from the trait for methods not overridden.
+  // Apply the same collision-aware naming as explicit methods: if another trait
+  // already registered a full body under the base name, qualify with the trait.
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
       if (tm->body && overriddenMethods.find(tm->name) == overriddenMethods.end()) {
-        std::string mangledDefault = mangleName(currentModulePath, typeName, tm->name);
+        std::string baseDefault = mangleName(currentModulePath, typeName, tm->name);
+        bool defaultCollision = false;
+        if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(baseDefault))
+          defaultCollision = !existing.isDeclaration();
+        std::string mangledDefault = defaultCollision
+            ? mangleName(currentModulePath, typeName, traitName + "__" + tm->name)
+            : baseDefault;
         generateTraitDefaultMethod(*tm, typeName, mangledDefault, fallbackLoc);
       }
     }
@@ -3811,7 +3850,15 @@ void MLIRGen::registerTraitImpl(const std::string &typeName, const std::string &
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
-      std::string implFuncName = mangleName(currentModulePath, typeName, tm->name);
+      // Resolve the impl body function: when a trait-qualified variant was
+      // generated (due to a body-name collision with another trait), use it
+      // so the vtable entry points at the correct implementation.
+      std::string qualName = mangleName(currentModulePath, typeName, traitName + "__" + tm->name);
+      std::string baseName = mangleName(currentModulePath, typeName, tm->name);
+      bool qualExists = false;
+      if (auto qf = module.lookupSymbol<mlir::func::FuncOp>(qualName))
+        qualExists = !qf.isDeclaration();
+      std::string implFuncName = qualExists ? qualName : baseName;
       implInfo.shimFunctions.push_back("__dyn." + implFuncName);
     }
   }
@@ -3949,10 +3996,41 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
   if (traitIt == traitRegistry.end())
     return;
 
-  // Generate shim function bodies for each trait method
+  // Find the TraitImplInfo in the dispatch registry so we can update shimFunctions.
+  // The early pre-registration pass at pass-1k may have stored wrong shim names
+  // (computed before impl bodies existed); we overwrite them here now that bodies
+  // are present.
+  TraitImplInfo *implInfoPtr = nullptr;
+  auto dispIt = traitDispatchRegistry.find(traitName);
+  if (dispIt != traitDispatchRegistry.end()) {
+    for (auto &impl : dispIt->second.impls) {
+      if (impl.typeName == typeName) {
+        implInfoPtr = &impl;
+        break;
+      }
+    }
+  }
+
+  // Rebuild the shim-function list with the correct resolved names and
+  // generate each shim body.
+  llvm::SmallVector<std::string> updatedShims;
   for (const auto *tm : traitIt->second.methods) {
-    std::string implFuncName = mangleName(currentModulePath, typeName, tm->name);
+    // If a trait-qualified body was generated (due to a name collision with
+    // another trait impl), use it; otherwise fall back to the base-mangled name.
+    std::string qualName = mangleName(currentModulePath, typeName, traitName + "__" + tm->name);
+    std::string baseName = mangleName(currentModulePath, typeName, tm->name);
+    bool qualExists = false;
+    if (auto qf = module.lookupSymbol<mlir::func::FuncOp>(qualName))
+      qualExists = !qf.isDeclaration();
+    std::string implFuncName = qualExists ? qualName : baseName;
     generateDynDispatchShim(implFuncName);
+    updatedShims.push_back("__dyn." + implFuncName);
+  }
+
+  // Overwrite the shim names in the dispatch registry so coerceToDynTrait
+  // uses the correct vtable entries when the user's code is lowered.
+  if (implInfoPtr) {
+    implInfoPtr->shimFunctions.assign(updatedShims.begin(), updatedShims.end());
   }
 }
 

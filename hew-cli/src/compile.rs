@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{ImportDecl, Item, Spanned};
 
+use crate::target::TargetSpec;
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(
@@ -381,6 +383,7 @@ fn typecheck_program(
     program: &hew_parser::ast::Program,
     source: &str,
     input: &str,
+    target: &TargetSpec,
     options: &CompileOptions,
 ) -> Result<TypeCheckResult, String> {
     let search_paths = build_module_search_paths();
@@ -394,11 +397,7 @@ fn typecheck_program(
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
-    if options
-        .target
-        .as_deref()
-        .is_some_and(|t| t.starts_with("wasm32"))
-    {
+    if target.is_wasm() {
         checker.enable_wasm_target();
     }
     let tco = checker.check_program(program);
@@ -552,11 +551,12 @@ fn compile_and_link(
     ast_data: &[u8],
     input: &str,
     output: Option<&str>,
+    target: &TargetSpec,
     options: &CompileOptions,
 ) -> Result<String, String> {
     let obj_temp = tempfile::Builder::new()
         .prefix("hew_")
-        .suffix(".o")
+        .suffix(target.object_suffix())
         .tempfile()
         .map_err(|e| format!("Error: cannot create temp file: {e}"))?
         .into_temp_path();
@@ -565,6 +565,7 @@ fn compile_and_link(
     run_embedded_codegen(
         ast_data,
         EmbeddedCodegenMode::EmitObject,
+        target,
         options,
         Some(&obj_path),
     )?;
@@ -574,19 +575,17 @@ fn compile_and_link(
         .and_then(|s| s.to_str())
         .unwrap_or("a.out")
         .to_string();
-    // Append platform exe suffix when compiling for native host
-    let suffix = super::platform::exe_suffix();
-    let default_output =
-        if !suffix.is_empty() && options.target.is_none() && !default_output.ends_with(suffix) {
-            format!("{default_output}{suffix}")
-        } else {
-            default_output
-        };
+    let suffix = target.executable_suffix();
+    let default_output = if !suffix.is_empty() && !default_output.ends_with(suffix) {
+        format!("{default_output}{suffix}")
+    } else {
+        default_output
+    };
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
         output_path,
-        options.target.as_deref(),
+        target,
         &options.extra_libs,
         options.debug,
     )?;
@@ -627,6 +626,8 @@ pub fn compile(
     check_only: bool,
     options: &CompileOptions,
 ) -> Result<String, String> {
+    let target = TargetSpec::from_requested(options.target.as_deref())?;
+
     // 1. Setup — read source, load manifest
     let project = load_project_context(input)?;
 
@@ -640,7 +641,7 @@ pub fn compile(
     let TypeCheckResult {
         tco,
         module_registry,
-    } = typecheck_program(&program, &project.source, input, options)?;
+    } = typecheck_program(&program, &project.source, input, &target, options)?;
 
     if check_only {
         return Ok(String::new());
@@ -698,16 +699,16 @@ pub fn compile(
             let output_path = output.ok_or_else(|| {
                 "Error: object emission requires an output path (pass -o <FILE>)".to_string()
             })?;
-            let _ = run_embedded_codegen(&ast_data, mode, options, Some(output_path))?;
+            let _ = run_embedded_codegen(&ast_data, mode, &target, options, Some(output_path))?;
             return Ok(output_path.to_string());
         }
 
-        let text_output = run_embedded_codegen(&ast_data, mode, options, None)?;
+        let text_output = run_embedded_codegen(&ast_data, mode, &target, options, None)?;
         return write_output(output, &text_output);
     }
 
     // 7. Codegen to object file and link executable
-    compile_and_link(&ast_data, input, output, options)
+    compile_and_link(&ast_data, input, output, &target, options)
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +718,7 @@ pub fn compile(
 fn run_embedded_codegen(
     ast_data: &[u8],
     mode: EmbeddedCodegenMode,
+    target: &TargetSpec,
     options: &CompileOptions,
     output_path: Option<&str>,
 ) -> Result<Vec<u8>, String> {
@@ -725,9 +727,8 @@ fn run_embedded_codegen(
             CString::new(path).map_err(|_| format!("Error: output path contains NUL: {path}"))
         })
         .transpose()?;
-    let target_triple = options
-        .target
-        .as_deref()
+    let target_triple = target
+        .codegen_triple()
         .map(|target| {
             CString::new(target).map_err(|_| format!("Error: target triple contains NUL: {target}"))
         })

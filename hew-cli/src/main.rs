@@ -29,6 +29,7 @@ mod manifest;
 mod platform;
 #[cfg(unix)]
 mod signal;
+mod target;
 mod test_runner;
 mod util;
 mod watch;
@@ -121,11 +122,21 @@ fn cmd_build(a: &args::BuildArgs) {
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
+    let target_spec =
+        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+
+    if !target_spec.can_run_on_host() {
+        eprintln!("{}", target_spec.cross_target_run_error("run"));
+        std::process::exit(1);
+    }
 
     // Compile to a temporary binary
     let tmp_path = tempfile::Builder::new()
         .prefix("hew_run_")
-        .suffix(platform::exe_suffix())
+        .suffix(target_spec.executable_suffix())
         .tempfile()
         .unwrap_or_else(|e| {
             eprintln!("Error: cannot create temp file: {e}");
@@ -195,13 +206,23 @@ fn cmd_check(a: &args::CheckArgs) {
 fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
+    let target_spec =
+        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+
+    if !target_spec.can_debug_on_host() {
+        eprintln!("{}", target_spec.cross_target_run_error("debug"));
+        std::process::exit(1);
+    }
 
     // Compile to a temporary binary with debug info
     let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let debug_bin_name = format!("hew_debug_bin{}", platform::exe_suffix());
+    let debug_bin_name = format!("hew_debug_bin{}", target_spec.executable_suffix());
     let tmp_bin = tmp_dir.path().join(debug_bin_name);
     let tmp_bin_str = tmp_bin.display().to_string();
 

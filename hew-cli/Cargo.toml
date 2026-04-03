@@ -32,5 +32,8 @@ notify = "8"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+object = "0.37"
+
 [lints]
 workspace = true

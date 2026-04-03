@@ -1,9 +1,23 @@
-// Test 3: Mutable variables and while loops
-// Trying var instead of let, and testing a simple loop
+// Lesson 3: Mutable variables and loops
+//
+// `for` iterates a range and binds the loop variable each iteration.
+// `while` loops until a condition is false.
+// `var` is needed for accumulator/state variables that you declare
+// *outside* a loop and reassign across iterations.
 fn main() {
-    println("Counting to 5:");
-    for counter in 0..5 {
-        println(counter);
+    // for-loop: `i` is the loop variable, rebound on every iteration
+    println("for loop 0..5:");
+    for i in 0..5 {
+        println(i);
     }
-    println("Done!");
+
+    // while-loop with a `var` accumulator — shows real reassignment
+    println("while loop sum:");
+    var sum = 0;
+    var n = 1;
+    while n <= 5 {
+        sum = sum + n;
+        n = n + 1;
+    }
+    println(sum);
 }

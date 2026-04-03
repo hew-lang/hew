@@ -1,6 +1,6 @@
-Testing variables:
+let bindings (immutable):
 10
 20
 30
-200
-10
+var binding after two increments:
+2

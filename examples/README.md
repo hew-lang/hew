@@ -21,6 +21,7 @@ hew build examples/fibonacci.hew -o fibonacci
 
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
+- **directory_module_demo/** -- Best in-repo explainer for Hew's module/import system: shows a directory-form module made of peer files and the `import` resolution rules ([README](directory_module_demo/README.md))
 
 ### Topic Collections
 

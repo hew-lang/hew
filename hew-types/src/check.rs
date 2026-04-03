@@ -8103,7 +8103,6 @@ impl Checker {
             Some(ty) if !matches!(ty, Ty::Var(_) | Ty::Error) => Some(ty.clone()),
             _ => None,
         };
-        let mut had_error = false;
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
@@ -8118,10 +8117,6 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
-            if matches!(arm_ty, Ty::Error) {
-                had_error = true;
-            }
-
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
             if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
@@ -8135,11 +8130,7 @@ impl Checker {
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
         // If all arms diverge (Never/Error), the match itself diverges
-        if had_error {
-            Ty::Error
-        } else {
-            result_ty.unwrap_or(Ty::Never)
-        }
+        result_ty.unwrap_or(Ty::Never)
     }
 
     #[expect(

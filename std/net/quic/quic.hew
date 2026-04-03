@@ -37,6 +37,12 @@
 //!     stream.send(data);
 //!     stream.finish();
 //!     stream.close();
+//!     // Drain connection events so the peer has received all in-flight data
+//!     // before the connection is torn down.  Calling conn.disconnect() before
+//!     // the stream-closed (kind=3) and peer-disconnected (kind=1) events
+//!     // arrive can race delivery on the wire.
+//!     let ev1 = conn.on_event(); ev1.free();   // stream closed
+//!     let ev2 = conn.on_event(); ev2.free();   // peer disconnected
 //!     conn.disconnect();
 //!     ep.close();
 //! }
@@ -54,6 +60,10 @@
 //!     stream.send(b"hello quic");
 //!     let reply = stream.recv();
 //!     stream.finish();
+//!     // Drain to EOF before closing.  Without this recv() the local close
+//!     // can race the server's final STREAM_FIN frame and the reply may be
+//!     // lost in transit.
+//!     let eof = stream.recv();
 //!     stream.close();
 //!     conn.disconnect();
 //!     ep.close();
@@ -249,6 +259,18 @@ trait QUICStreamMethods {
     /// Call `finish()` first if you want the peer to observe a graceful EOF.
     fn close(strm: QUICStream) -> i32;
 
+    /// Send a UTF-8 string on this stream.
+    ///
+    /// Convenience wrapper around `send` that converts `msg` to bytes first.
+    /// Returns 0 on success or −1 on error.
+    fn send_string(strm: QUICStream, msg: String) -> i32;
+
+    /// Block until data arrives and return it as a UTF-8 string.
+    ///
+    /// Convenience wrapper around `recv` that converts the received bytes to
+    /// a `String`.  Returns an empty string on stream close or error.
+    fn recv_string(strm: QUICStream) -> String;
+
     /// Return a non-destructive snapshot of stream state.
     fn observe(strm: QUICStream) -> QUICStreamObservation;
 }
@@ -259,6 +281,12 @@ impl QUICStreamMethods for QUICStream {
     fn finish(strm: QUICStream) -> i32 { unsafe { hew_quic_stream_finish(strm) } }
     fn stop(strm: QUICStream, error_code: i64) -> i32 { unsafe { hew_quic_stream_stop(strm, error_code) } }
     fn close(strm: QUICStream) -> i32 { unsafe { hew_quic_stream_close(strm) } }
+    fn send_string(strm: QUICStream, msg: String) -> i32 {
+        stream_send_string(strm, msg)
+    }
+    fn recv_string(strm: QUICStream) -> String {
+        stream_recv_string(strm)
+    }
     fn observe(strm: QUICStream) -> QUICStreamObservation {
         stream_observe(strm)
     }
@@ -365,6 +393,34 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
     }
 }
 
+/// Send a UTF-8 string on a QUIC stream.
+///
+/// Module-level wrapper used by the `send_string` method via AST enrichment.
+/// Converts `msg` to bytes using the runtime string helper, then delegates
+/// to the underlying `hew_quic_stream_send` FFI.
+pub fn stream_send_string(strm: QUICStream, msg: String) -> i32 {
+    let data = _quic_string_to_bytes(msg);
+    _quic_stream_send(strm, data)
+}
+
+/// Receive a UTF-8 string from a QUIC stream.
+///
+/// Module-level wrapper used by the `recv_string` method via AST enrichment.
+/// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
+/// `String` using the runtime string helper.
+pub fn stream_recv_string(strm: QUICStream) -> String {
+    let data = _quic_stream_recv(strm);
+    _quic_bytes_to_string(data)
+}
+
+// Private helpers to wrap each unsafe FFI call as a plain Hew function.
+// Using `let data = regular_call(); …` avoids the codegen limitation where
+// `let x = unsafe { … }; expr2` is miscompiled in non-void functions.
+fn _quic_string_to_bytes(s: String) -> bytes { unsafe { hew_string_to_bytes(s) } }
+fn _quic_bytes_to_string(b: bytes) -> String { unsafe { hew_bytes_to_string(b) } }
+fn _quic_stream_send(strm: QUICStream, b: bytes) -> i32 { unsafe { hew_quic_stream_send(strm, b) } }
+fn _quic_stream_recv(strm: QUICStream) -> bytes { unsafe { hew_quic_stream_recv(strm) } }
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
@@ -413,4 +469,8 @@ extern "C" {
     // Event methods
     fn hew_quic_event_kind(event: QUICEvent) -> i32;
     fn hew_quic_event_free(event: QUICEvent);
+
+    // String conversion helpers (shared runtime builtins)
+    fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_bytes_to_string(data: bytes) -> String;
 }

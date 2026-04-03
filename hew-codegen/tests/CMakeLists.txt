@@ -483,6 +483,14 @@ foreach(_cat ${_E2E_CATEGORIES})
   endforeach()
 endforeach()
 
+# quic_string_loopback uses send_string/recv_string which are only present in
+# this branch's std/net/quic/quic.hew.  Point HEW_STD at the worktree std so
+# both the module-registry and import-resolution paths find the right file.
+if(TEST e2e_quic_quic_string_loopback)
+  set_tests_properties(e2e_quic_quic_string_loopback PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+
 # ── Sorted-output E2E tests (non-deterministic output ordering) ───────────────
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)

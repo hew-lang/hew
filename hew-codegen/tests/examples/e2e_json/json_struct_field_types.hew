@@ -24,14 +24,10 @@ fn main() {
         Err(_) => println("string type error caught"),
     }
 
-    // Entire value field is a string where int is expected — known gap:
-    // get_int returns 0 rather than Err.  Pinned here to track the
-    // remaining non-string scalar coercion hole.
+    // value field is a string where int is expected — hew_json_is_int
+    // rejects the mismatch and returns Err, not Ok({value: 0}).
     match Record.from_json("{\"name\":\"hi\",\"value\":\"bad\"}") {
-        Ok(decoded) => {
-            println("int coercion gap: value=");
-            println(decoded.value);
-        },
+        Ok(_) => println("unexpected ok"),
         Err(_) => println("int type error caught"),
     }
 }

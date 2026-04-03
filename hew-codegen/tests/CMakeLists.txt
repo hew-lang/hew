@@ -119,6 +119,7 @@ else()
 endif()
 
 find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
+find_program(HEW_LLDB NAMES lldb)
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
@@ -288,6 +289,24 @@ if(HEW_DWARFDUMP)
   )
 else()
   message(STATUS "Skipping DWARF smoke test — dwarfdump not found")
+endif()
+
+if(HEW_LLDB)
+  # Keep this on main's declaration line for now: the current DWARF line table
+  # reliably maps function entry/declaration lines, while symbol-name
+  # breakpoints like `breakpoint set -n Pair.sum` remain a known gap.
+  add_test(
+    NAME lldb_smoke_linked_binary
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DLLDB=${HEW_LLDB}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/lldb_smoke_linked_binary${HEW_EXE_SUFFIX}
+      -DBREAKPOINT_LINE=20
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_smoke_test.cmake
+  )
+else()
+  message(STATUS "Skipping LLDB smoke test — lldb not found")
 endif()
 
 # ── Negative tests (verify compile-time error detection) ─────────────────────

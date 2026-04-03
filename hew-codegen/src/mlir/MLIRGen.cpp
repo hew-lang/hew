@@ -3703,6 +3703,29 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
 // Impl declaration generation
 // ============================================================================
 
+std::string MLIRGen::resolveTraitImplBodyName(const std::string &typeName,
+                                              const std::string &traitName,
+                                              const std::string &methodName,
+                                              TraitImplBodyNameMode mode) {
+  auto hasBody = [&](const std::string &name) {
+    if (auto func = module.lookupSymbol<mlir::func::FuncOp>(name))
+      return !func.isDeclaration();
+    return false;
+  };
+
+  std::string baseName = mangleName(currentModulePath, typeName, methodName);
+  std::string qualifiedName =
+      mangleName(currentModulePath, typeName, traitName + "__" + methodName);
+
+  switch (mode) {
+  case TraitImplBodyNameMode::QualifyOnBaseCollision:
+    return hasBody(baseName) ? qualifiedName : baseName;
+  case TraitImplBodyNameMode::PreferQualifiedIfGenerated:
+    return hasBody(qualifiedName) ? qualifiedName : baseName;
+  }
+  llvm_unreachable("unhandled trait impl body name mode");
+}
+
 void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
                                std::optional<mlir::Location> fallbackLoc) {
   // Get the target type name
@@ -3755,13 +3778,9 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   // with the trait so both bodies coexist in the module.
   std::set<std::string> overriddenMethods;
   for (const auto &method : decl.methods) {
-    std::string baseMangled = mangleName(currentModulePath, typeName, method.name);
-    bool bodyCollision = false;
-    if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(baseMangled))
-      bodyCollision = !existing.isDeclaration();
-    std::string mangledMethod = bodyCollision
-        ? mangleName(currentModulePath, typeName, traitName + "__" + method.name)
-        : baseMangled;
+    std::string mangledMethod = resolveTraitImplBodyName(
+        typeName, traitName, method.name,
+        TraitImplBodyNameMode::QualifyOnBaseCollision);
     generateFunction(method, mangledMethod, fallbackLoc);
     overriddenMethods.insert(method.name);
   }
@@ -3773,13 +3792,9 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
       if (tm->body && overriddenMethods.find(tm->name) == overriddenMethods.end()) {
-        std::string baseDefault = mangleName(currentModulePath, typeName, tm->name);
-        bool defaultCollision = false;
-        if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(baseDefault))
-          defaultCollision = !existing.isDeclaration();
-        std::string mangledDefault = defaultCollision
-            ? mangleName(currentModulePath, typeName, traitName + "__" + tm->name)
-            : baseDefault;
+        std::string mangledDefault = resolveTraitImplBodyName(
+            typeName, traitName, tm->name,
+            TraitImplBodyNameMode::QualifyOnBaseCollision);
         generateTraitDefaultMethod(*tm, typeName, mangledDefault, fallbackLoc);
       }
     }
@@ -3850,15 +3865,9 @@ void MLIRGen::registerTraitImpl(const std::string &typeName, const std::string &
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
-      // Resolve the impl body function: when a trait-qualified variant was
-      // generated (due to a body-name collision with another trait), use it
-      // so the vtable entry points at the correct implementation.
-      std::string qualName = mangleName(currentModulePath, typeName, traitName + "__" + tm->name);
-      std::string baseName = mangleName(currentModulePath, typeName, tm->name);
-      bool qualExists = false;
-      if (auto qf = module.lookupSymbol<mlir::func::FuncOp>(qualName))
-        qualExists = !qf.isDeclaration();
-      std::string implFuncName = qualExists ? qualName : baseName;
+      std::string implFuncName = resolveTraitImplBodyName(
+          typeName, traitName, tm->name,
+          TraitImplBodyNameMode::PreferQualifiedIfGenerated);
       implInfo.shimFunctions.push_back("__dyn." + implFuncName);
     }
   }
@@ -4015,14 +4024,9 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
   // generate each shim body.
   llvm::SmallVector<std::string> updatedShims;
   for (const auto *tm : traitIt->second.methods) {
-    // If a trait-qualified body was generated (due to a name collision with
-    // another trait impl), use it; otherwise fall back to the base-mangled name.
-    std::string qualName = mangleName(currentModulePath, typeName, traitName + "__" + tm->name);
-    std::string baseName = mangleName(currentModulePath, typeName, tm->name);
-    bool qualExists = false;
-    if (auto qf = module.lookupSymbol<mlir::func::FuncOp>(qualName))
-      qualExists = !qf.isDeclaration();
-    std::string implFuncName = qualExists ? qualName : baseName;
+    std::string implFuncName = resolveTraitImplBodyName(
+        typeName, traitName, tm->name,
+        TraitImplBodyNameMode::PreferQualifiedIfGenerated);
     generateDynDispatchShim(implFuncName);
     updatedShims.push_back("__dyn." + implFuncName);
   }

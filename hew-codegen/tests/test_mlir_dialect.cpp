@@ -1265,6 +1265,119 @@ static void test_cast_chain_canonicalization() {
 }
 
 //===----------------------------------------------------------------------===//
+// Test: CastOp chain canonicalization skips unsigned-tagged casts
+//===----------------------------------------------------------------------===//
+
+static void test_cast_chain_canonicalization_skips_unsigned() {
+  TEST(cast_chain_canonicalization_skips_unsigned);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i8Type = builder.getIntegerType(8);
+  auto i16Type = builder.getIntegerType(16);
+  auto i32Type = builder.getI32Type();
+  auto funcType = builder.getFunctionType({i8Type}, {i32Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto arg = entryBlock->getArgument(0);
+  auto cast1 = hew::CastOp::create(builder, loc, i16Type, arg);
+  cast1->setAttr("is_unsigned", builder.getBoolAttr(true));
+  auto cast2 = hew::CastOp::create(builder, loc, i32Type, cast1.getResult());
+  cast2->setAttr("is_unsigned", builder.getBoolAttr(true));
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{cast2.getResult()});
+
+  mlir::RewritePatternSet patterns(&ctx);
+  hew::CastOp::getCanonicalizationPatterns(patterns, &ctx);
+
+  mlir::GreedyRewriteConfig config;
+  config.setMaxIterations(10);
+  (void)mlir::applyPatternsGreedily(func, std::move(patterns), config);
+
+  int castCount = 0;
+  bool outerStillUsesInner = false;
+  func.walk([&](hew::CastOp op) {
+    castCount++;
+    if (op.getResult().getType() == i32Type &&
+        mlir::isa_and_nonnull<hew::CastOp>(op.getInput().getDefiningOp()))
+      outerStillUsesInner = true;
+  });
+
+  if (castCount != 2 || !outerStillUsesInner) {
+    FAIL("Unsigned cast chain should not be collapsed");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
+// Test: CastOp chain canonicalization skips lossy inner casts
+//===----------------------------------------------------------------------===//
+
+static void test_cast_chain_canonicalization_skips_lossy_inner() {
+  TEST(cast_chain_canonicalization_skips_lossy_inner);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto f64Type = builder.getF64Type();
+  auto funcType = builder.getFunctionType({f64Type}, {f64Type});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto arg = entryBlock->getArgument(0);
+  auto cast1 = hew::CastOp::create(builder, loc, i32Type, arg);
+  auto cast2 = hew::CastOp::create(builder, loc, f64Type, cast1.getResult());
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{cast2.getResult()});
+
+  mlir::RewritePatternSet patterns(&ctx);
+  hew::CastOp::getCanonicalizationPatterns(patterns, &ctx);
+
+  mlir::GreedyRewriteConfig config;
+  config.setMaxIterations(10);
+  (void)mlir::applyPatternsGreedily(func, std::move(patterns), config);
+
+  int castCount = 0;
+  bool outerStillUsesInner = false;
+  func.walk([&](hew::CastOp op) {
+    castCount++;
+    if (op.getResult().getType() == f64Type &&
+        mlir::isa_and_nonnull<hew::CastOp>(op.getInput().getDefiningOp()))
+      outerStillUsesInner = true;
+  });
+
+  if (castCount != 2 || !outerStillUsesInner) {
+    FAIL("Cast chain with lossy inner cast should not be collapsed");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Test: Dead Vec pair elimination (vec.new → vec.free with no other uses)
 //===----------------------------------------------------------------------===//
 
@@ -3203,6 +3316,8 @@ int main() {
 
   // Canonicalization tests
   test_cast_chain_canonicalization();
+  test_cast_chain_canonicalization_skips_unsigned();
+  test_cast_chain_canonicalization_skips_lossy_inner();
   test_dead_vec_elimination();
   test_dead_hashmap_elimination();
   test_string_concat_identity_canonicalization();

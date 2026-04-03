@@ -1533,8 +1533,10 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
   // No pointer sharing — sender always retains ownership and drops normally.
   //
   // Non-wire sends (deepCopyOwnedArgs in codegen.cpp): String, Vec, HashMap,
-  // and Closure are deep-copied — sender drops normally.  Everything else
-  // passes the raw pointer through (shared) — sender must NOT drop.
+  // Closure, and struct fields thereof are deep-copied — sender drops normally.
+  // Handle fields are transferred with source null-out — sender drop is a
+  // no-op for those.  Everything else passes the raw pointer through
+  // (shared) — sender must NOT drop.
   if (!wireNames) {
     for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
       const auto &argSpanned = ast::callArgExpr(args[i]);
@@ -1545,6 +1547,11 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                     hew::ClosureType>(argType))
         continue;
+      // Structs with owned fields are deep-copied at the boundary;
+      // the sender retains the originals and must still drop them.
+      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
+        if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str()))
+          continue;
       unregisterDroppable(identExpr->name);
     }
   }
@@ -1590,10 +1597,12 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
                               builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
                               /*timeout_ms=*/mlir::IntegerAttr{});
 
-  // Ownership parity with the non-wire send path: String, Vec, HashMap, and
-  // Closure are deep-copied at the actor boundary so the sender retains
-  // ownership and drops normally.  Everything else passes the raw pointer
-  // through — the receiver owns it, so the sender must NOT drop.
+  // Ownership parity with the non-wire send path: String, Vec, HashMap,
+  // Closure, and struct fields thereof are deep-copied at the actor boundary
+  // so the sender retains ownership and drops normally.  Handle fields are
+  // transferred with source null-out — sender drop is a no-op for those.
+  // Everything else passes the raw pointer through — the receiver owns it,
+  // so the sender must NOT drop.
   // ask has no wire path, so this applies unconditionally.
   for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
     const auto &argSpanned = ast::callArgExpr(args[i]);
@@ -1604,6 +1613,11 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                   hew::ClosureType>(argType))
       continue;
+    // Structs with owned fields are deep-copied at the boundary;
+    // the sender retains the originals and must still drop them.
+    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType))
+      if (structTy.isIdentified() && structHasOwnedFields(structTy.getName().str()))
+        continue;
     unregisterDroppable(identExpr->name);
   }
 
@@ -1668,14 +1682,23 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   }
 
   // Wire sends serialize the value into independent bytes — no sharing.
-  // Non-wire sends only deep-copy String/Vec/HashMap/Closure — everything
-  // else shares the raw pointer and the sender must not drop.
+  // Non-wire sends deep-copy String/Vec/HashMap/Closure and struct fields
+  // thereof — sender retains ownership.  Handle fields are transferred with
+  // source null-out.  Everything else shares the raw pointer — sender must
+  // not drop.
   if (!wireNames) {
     if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
-      if (!mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
-                     hew::ClosureType>(msgVal.getType())) {
-        unregisterDroppable(identExpr->name);
+      auto msgType = msgVal.getType();
+      bool senderRetains =
+          mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
+                    hew::ClosureType>(msgType);
+      if (!senderRetains) {
+        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType))
+          senderRetains = structTy.isIdentified() &&
+                          structHasOwnedFields(structTy.getName().str());
       }
+      if (!senderRetains)
+        unregisterDroppable(identExpr->name);
     }
   }
 

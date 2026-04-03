@@ -181,6 +181,59 @@ fn test_actor_receive_self_uses_actor_guidance() {
 }
 
 #[test]
+fn test_actor_init_terminate_and_method_self_use_actor_guidance() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            init() {
+                self.count
+            }
+
+            fn current() -> i32 {
+                self.count
+            }
+
+            terminate {
+                self.count
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    let self_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("`self`"))
+        .collect();
+    assert_eq!(
+        self_errors.len(),
+        3,
+        "expected actor-specific `self` errors in init, method, and terminate: {:?}",
+        output.errors
+    );
+    for self_error in self_errors {
+        assert!(
+            self_error.message.contains("bare field names like `count`"),
+            "actor `self` guidance should mention bare field access: {:?}",
+            output.errors
+        );
+        assert!(
+            self_error.message.contains("`this`"),
+            "actor `self` guidance should mention `this`: {:?}",
+            output.errors
+        );
+        assert!(
+            !self_error.message.contains("named receiver parameter"),
+            "actor `self` guidance should not use trait/impl receiver advice: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn test_actor_terminate_valid_field_access() {
     let output = typecheck(
         r"

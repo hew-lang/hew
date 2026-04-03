@@ -414,17 +414,22 @@ pub fn stream_recv_string(strm: QUICStream) -> String {
 }
 
 // Private helpers — each wraps a single FFI call so the public wrappers
-// above can write `let data = plain_call(); …` instead of
-// `let data = unsafe { ffi(…) }; unsafe { ffi2(…, data) }`.
-// The direct nested-unsafe form triggers a confirmed MLIR codegen bug
-// (hew-codegen ≤ current HEAD): when a non-void function's body starts
-// with `let x = unsafe { … }`, the inner generateBlock() incorrectly
-// fires useReturnGuards, stores the unsafe result into the function's
-// return slot, and returns nullptr — so `x` is never bound and the
-// second statement's reference to `x` is emitted as "undeclared variable".
-// Splitting each FFI call into its own single-expression function avoids
-// that path entirely and produces correct MLIR.
-// Filed as a known codegen limitation; remove these helpers once fixed.
+// above can use `let data = plain_call(); …` rather than the direct form
+// `let data = unsafe { ffi(…) }; ffi2(data)`.
+//
+// The direct form is broken in non-void functions: `generateBlock` in
+// MLIRGenStmt.cpp enables `useReturnGuards` whenever the parent MLIR op is
+// a FuncOp.  Because an unsafe block generates code inline (no new MLIR
+// region), its parent is still the enclosing FuncOp, so `generateBlock`
+// stores the result directly into the function's return slot and returns
+// nullptr.  `generateLetStmt` sees nullptr and exits without binding the
+// name; the subsequent use of that name compiles as "undeclared variable".
+//
+// Confirmed with hew-codegen ≤ current HEAD on both scalar (i32) and
+// pointer-like (bytes) return types.  Tracked by reject test:
+//   hew-codegen/tests/examples/e2e_negative/unsafe_nonvoid_let_binding.hew
+// Remove these helpers and use the direct form once that reject test starts
+// failing (meaning the codegen bug has been fixed).
 fn _quic_string_to_bytes(s: String) -> bytes { unsafe { hew_string_to_bytes(s) } }
 fn _quic_bytes_to_string(b: bytes) -> String { unsafe { hew_bytes_to_string(b) } }
 fn _quic_stream_send(strm: QUICStream, b: bytes) -> i32 { unsafe { hew_quic_stream_send(strm, b) } }

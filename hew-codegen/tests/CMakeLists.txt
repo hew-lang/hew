@@ -349,6 +349,10 @@ add_e2e_reject_test(node_lookup_var_init_reject e2e_negative node_lookup_var_ini
 add_e2e_reject_test(node_lookup_assign_reject e2e_negative node_lookup_assign_reject "coerceType: no known conversion")
 add_e2e_reject_test(array_to_vec_actor_ref_reject e2e_negative array_to_vec_actor_ref_reject "coerceType: no known conversion")
 add_e2e_reject_test(let_vec_actor_ref_reject      e2e_negative let_vec_actor_ref_reject      "coerceType: no known conversion")
+# Codegen bug: let x = unsafe { … }; expr2 in a non-void function silently
+# drops the binding.  Tracked here so we notice when the bug is fixed.
+# Remove this entry (and simplify std/net/quic/quic.hew helpers) once it passes.
+add_e2e_reject_test(unsafe_nonvoid_let_binding    e2e_negative unsafe_nonvoid_let_binding    "undeclared variable")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

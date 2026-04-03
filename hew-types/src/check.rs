@@ -8100,7 +8100,7 @@ impl Checker {
         // synthesized type (which defaults literals to i64) propagate to later arms.
         let resolved_expected = expected.map(|ty| self.subst.resolve(ty));
         let mut result_ty: Option<Ty> = match &resolved_expected {
-            Some(ty) if !matches!(ty, Ty::Var(_)) => Some(ty.clone()),
+            Some(ty) if !matches!(ty, Ty::Var(_) | Ty::Error) => Some(ty.clone()),
             _ => None,
         };
         let mut had_error = false;
@@ -13905,6 +13905,36 @@ fn main() {
             output.errors.len(),
             1,
             "expected exactly one type mismatch error for identifier, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_does_not_suppress_match_arm_diagnostics() {
+        // fn foo() -> UnknownType { match true { true => "hello", false => 42 } }
+        // UnknownType resolves to Ty::Error. Without the Ty::Error guard in
+        // check_match_expr, the error type pre-seeds all arms via check_against,
+        // silently accepting the String/int mismatch between arms.
+        let source = r#"fn foo() -> UnknownType { match true { true => "hello", false => 42 } }"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        // We expect at least two errors: one for UnknownType and one for the
+        // arm type mismatch (String vs int). Before the fix only the
+        // UnknownType error appeared.
+        let arm_mismatch = output.errors.iter().any(|e| {
+            let msg = format!("{e:?}");
+            msg.contains("TypeMismatch") || msg.contains("mismatch")
+        });
+        assert!(
+            arm_mismatch,
+            "match arms with mismatched types should still report an error even when \
+             the return type is Ty::Error; got: {:?}",
             output.errors
         );
     }

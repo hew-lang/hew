@@ -50,15 +50,14 @@ namespace {
 
 constexpr llvm::StringLiteral kHewDebugParamNameAttr = "hew.debug.param_name";
 
-llvm::StringRef shortTypeName(llvm::StringRef name) {
-  auto dotPos = name.rfind('.');
-  return dotPos == llvm::StringRef::npos ? name : name.substr(dotPos + 1);
+bool isQualifiedStdlibPointerBackedHandleName(llvm::StringRef name) {
+  return name == "stream.Stream" || name == "stream.Sink" || name == "stream.StreamPair" ||
+         name == "channel.Sender" || name == "channel.Receiver" || name == "channel.ChannelPair";
 }
 
-bool isPointerBackedHandleName(llvm::StringRef name) {
-  auto shortName = shortTypeName(name);
-  return shortName == "Stream" || shortName == "Sink" || shortName == "StreamPair" ||
-         shortName == "Sender" || shortName == "Receiver" || shortName == "ChannelPair";
+bool isBareStdlibPointerBackedHandleName(llvm::StringRef name) {
+  return name == "Stream" || name == "Sink" || name == "StreamPair" || name == "Sender" ||
+         name == "Receiver" || name == "ChannelPair";
 }
 
 void setDebugParamNameAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
@@ -524,7 +523,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
     // Some stdlib handles are pointer-backed in MLIR even though they flow through
     // the same metadata path.
     if (knownHandleTypes.count(name)) {
-      if (isPointerBackedHandleName(name))
+      if (isQualifiedStdlibPointerBackedHandleName(name))
         return mlir::LLVM::LLVMPointerType::get(&context);
       auto reprIt = handleTypeRepr.find(name);
       if (reprIt != handleTypeRepr.end() && reprIt->second == "i32")
@@ -534,7 +533,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
     // Fallback for compiling the defining stdlib module itself: current-module
     // handle decls are not present in Program.handle_types, so bare short names
     // still need explicit lowering here.
-    if (isPointerBackedHandleName(name))
+    if (isBareStdlibPointerBackedHandleName(name))
       return mlir::LLVM::LLVMPointerType::get(&context);
     // Actor type names resolve to typed actor refs
     if (actorRegistry.count(name))

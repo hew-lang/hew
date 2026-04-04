@@ -426,6 +426,14 @@ impl App {
         self.timeline_offset_ns = 0;
     }
 
+    fn should_fetch_traces(&self) -> bool {
+        match self.active_tab {
+            Tab::Messages => !self.trace_paused,
+            Tab::Timeline => !self.timeline_paused,
+            _ => false,
+        }
+    }
+
     pub fn filtered_actors(&self) -> Vec<&ActorInfo> {
         if self.filter_text.is_empty() {
             self.actors.iter().collect()
@@ -511,9 +519,7 @@ impl App {
             };
 
         // Messages/Timeline tab: fetch traces from all nodes
-        let traces = if (self.active_tab == Tab::Messages && !self.trace_paused)
-            || self.active_tab == Tab::Timeline
-        {
+        let traces = if self.should_fetch_traces() {
             let cluster_ref = self.cluster.as_mut().unwrap();
             let mut all_traces = Vec::new();
             for node in &mut cluster_ref.nodes {
@@ -978,9 +984,168 @@ fn flatten_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+    use std::thread::{self, JoinHandle};
+
+    struct TestTraceServer {
+        addr: String,
+        state: Arc<Mutex<TestTraceState>>,
+        shutdown: Arc<AtomicBool>,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    struct TestTraceState {
+        trace_requests: usize,
+        trace_responses: VecDeque<String>,
+    }
+
+    impl TestTraceServer {
+        fn new(trace_responses: Vec<String>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind trace test server");
+            listener
+                .set_nonblocking(true)
+                .expect("set nonblocking trace test server");
+            let addr = listener
+                .local_addr()
+                .expect("read trace server addr")
+                .to_string();
+            let state = Arc::new(Mutex::new(TestTraceState {
+                trace_requests: 0,
+                trace_responses: trace_responses.into(),
+            }));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let worker = {
+                let state = Arc::clone(&state);
+                let shutdown = Arc::clone(&shutdown);
+                thread::spawn(move || loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            if shutdown.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            handle_trace_request(stream, &state);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if shutdown.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(e) => panic!("accept trace test server connection: {e}"),
+                    }
+                })
+            };
+            Self {
+                addr,
+                state,
+                shutdown,
+                worker: Some(worker),
+            }
+        }
+
+        fn addr(&self) -> String {
+            self.addr.clone()
+        }
+
+        fn trace_requests(&self) -> usize {
+            self.state
+                .lock()
+                .expect("lock trace server state")
+                .trace_requests
+        }
+    }
+
+    impl Drop for TestTraceServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect(&self.addr);
+            if let Some(worker) = self.worker.take() {
+                worker.join().expect("join trace test server");
+            }
+        }
+    }
+
+    fn handle_trace_request(mut stream: TcpStream, state: &Arc<Mutex<TestTraceState>>) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone trace request stream"));
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .expect("read trace request line");
+        loop {
+            let mut header = String::new();
+            reader
+                .read_line(&mut header)
+                .expect("read trace request header");
+            if header == "\r\n" || header.is_empty() {
+                break;
+            }
+        }
+
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .expect("extract trace request path");
+        let body = trace_response_body(path, state);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write trace response");
+    }
+
+    fn trace_response_body(path: &str, state: &Arc<Mutex<TestTraceState>>) -> String {
+        match path {
+            "/api/metrics" => r#"{"timestamp_secs":1.0}"#.to_owned(),
+            "/api/cluster/members" | "/api/connections" => "[]".to_owned(),
+            "/api/routing/table" => r#"{"local_node_id":1,"routes":[]}"#.to_owned(),
+            "/api/traces" => {
+                let mut state = state.lock().expect("lock trace server state");
+                state.trace_requests += 1;
+                state
+                    .trace_responses
+                    .pop_front()
+                    .unwrap_or_else(|| "[]".to_owned())
+            }
+            _ => "null".to_owned(),
+        }
+    }
 
     fn demo_app() -> App {
         App::new_demo()
+    }
+
+    fn trace_response(trace_id: &str, timestamp_ns: u64) -> String {
+        serde_json::to_string(&vec![serde_json::json!({
+            "trace_id": trace_id,
+            "span_id": 0,
+            "parent_span_id": 0,
+            "actor_id": 42,
+            "event_type": "send",
+            "msg_type": 7,
+            "timestamp_ns": timestamp_ns,
+        })])
+        .expect("serialize trace response")
+    }
+
+    fn timeline_app(server: &TestTraceServer) -> App {
+        let mut app = App::new_tcp(&[server.addr()]);
+        app.active_tab = Tab::Timeline;
+        app
+    }
+
+    fn trace_timestamps(app: &App) -> Vec<u64> {
+        app.trace_events
+            .iter()
+            .map(|event| event.timestamp_ns)
+            .collect()
     }
 
     /// Pressing `/` to re-activate filter mode must NOT clear an existing filter.
@@ -1043,5 +1208,53 @@ mod tests {
             app.cycle_sort();
         }
         assert_eq!(app.sort_column, SortColumn::Id, "sort must wrap back to Id");
+    }
+
+    #[test]
+    fn timeline_pause_skips_trace_drain_until_unpaused() {
+        let server = TestTraceServer::new(vec![trace_response("after-pause", 1)]);
+        let mut app = timeline_app(&server);
+        app.timeline_paused = true;
+
+        app.refresh();
+        assert!(
+            app.trace_events.is_empty(),
+            "paused timeline refresh must not drain traces"
+        );
+        assert_eq!(
+            server.trace_requests(),
+            0,
+            "paused timeline refresh must not hit /api/traces"
+        );
+
+        app.timeline_toggle_pause();
+        app.refresh();
+
+        assert_eq!(
+            server.trace_requests(),
+            1,
+            "unpaused timeline refresh must resume trace fetching"
+        );
+        assert_eq!(app.trace_events.len(), 1);
+        assert_eq!(trace_timestamps(&app), vec![1]);
+    }
+
+    #[test]
+    fn timeline_unpaused_refresh_keeps_fetching_traces() {
+        let server = TestTraceServer::new(vec![
+            trace_response("first", 1),
+            trace_response("second", 2),
+        ]);
+        let mut app = timeline_app(&server);
+
+        app.refresh();
+        app.refresh();
+
+        assert_eq!(
+            server.trace_requests(),
+            2,
+            "unpaused timeline refreshes must continue fetching traces"
+        );
+        assert_eq!(trace_timestamps(&app), vec![1, 2]);
     }
 }

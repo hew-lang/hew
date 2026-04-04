@@ -472,7 +472,9 @@ impl HewCluster {
             }
             _ => return,
         }
-        drop(tokens);
+        // Keep the token guard until the membership state update completes so
+        // a replacement publish cannot slip in between token retirement and the
+        // resulting `connection_lost` transition.
         self.notify_connection_lost(node_id);
     }
 
@@ -502,9 +504,11 @@ impl HewCluster {
     }
 
     fn notify_connection_established_for_token(&self, node_id: u16, publication_token: u64) {
-        self.connection_tokens
-            .lock_or_recover()
-            .insert(node_id, publication_token);
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        tokens.insert(node_id, publication_token);
+        // Keep the token guard until the membership state update completes so a
+        // stale `connection_lost` cannot interleave after the new token is
+        // published but before the member is marked alive again.
         self.notify_connection_established(node_id);
     }
 
@@ -1329,6 +1333,139 @@ mod tests {
                 (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
             ]
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test coordinates the stale lost-vs-established race in one place"
+    )]
+    fn tokenized_connection_lost_serializes_replacement_publish() {
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+        }
+
+        extern "C" fn block_on_suspect(node_id: u16, event: u8, user_data: *mut c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == HEW_MEMBERSHIP_EVENT_NODE_SUSPECT {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until both worker threads join.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+        }));
+
+        // SAFETY: test-owned cluster and callback state remain valid until the
+        // explicit free/drop calls after both worker threads complete.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(cluster, block_on_suspect, callback_state.cast());
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (established_done_tx, established_done_rx) = std::sync::mpsc::channel::<()>();
+            let established_cluster = SendCluster(cluster);
+            let established_handle = std::thread::spawn(move || {
+                let cluster = established_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_established_for_token(cluster.0, 2, 2);
+                assert_eq!(rc, 0);
+                established_done_tx
+                    .send(())
+                    .expect("established thread should report completion");
+            });
+
+            assert!(
+                matches!(
+                    established_done_rx.recv_timeout(std::time::Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "replacement publish should wait until the prior lost transition finishes"
+            );
+
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish after the callback is released");
+            established_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("replacement publish should complete after lost finishes");
+
+            lost_handle.join().expect("lost thread should not panic");
+            established_handle
+                .join()
+                .expect("established thread should not panic");
+
+            let cluster_ref = &*cluster;
+            {
+                let members = cluster_ref
+                    .members
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(member.state, MEMBER_ALIVE);
+            }
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                ],
+                "replacement publish must not slip in between token retirement and the lost update"
+            );
+
+            hew_cluster_free(cluster);
+            drop(Box::from_raw(callback_state));
+        }
     }
 
     #[test]

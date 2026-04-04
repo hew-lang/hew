@@ -241,6 +241,26 @@ type MemberChangeCallback = unsafe extern "C" fn(u16, i32, u64);
 /// Signature: `fn(node_id: u16, event: u8, user_data: *mut c_void)`.
 pub type HewMembershipCallback = extern "C" fn(u16, u8, *mut c_void);
 
+/// Snapshot of the currently installed membership callback slot.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MembershipCallbackBinding {
+    pub(crate) callback: Option<HewMembershipCallback>,
+    user_data_bits: usize,
+}
+
+impl MembershipCallbackBinding {
+    pub(crate) fn new(callback: Option<HewMembershipCallback>, user_data: *mut c_void) -> Self {
+        Self {
+            callback,
+            user_data_bits: user_data as usize,
+        }
+    }
+
+    pub(crate) fn user_data(self) -> *mut c_void {
+        self.user_data_bits as *mut c_void
+    }
+}
+
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -1139,9 +1159,65 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
+    unsafe {
+        hew_cluster_replace_membership_callback(
+            cluster,
+            MembershipCallbackBinding::new(Some(callback), user_data),
+        );
+    };
+}
+
+/// Read the current membership callback binding.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+pub(crate) unsafe fn hew_cluster_membership_callback_binding(
+    cluster: *mut HewCluster,
+) -> MembershipCallbackBinding {
+    if cluster.is_null() {
+        return MembershipCallbackBinding::default();
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    MembershipCallbackBinding::new(
+        cluster.membership_callback,
+        cluster.membership_callback_user_data,
+    )
+}
+
+/// Replace the current membership callback binding.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+pub(crate) unsafe fn hew_cluster_replace_membership_callback(
+    cluster: *mut HewCluster,
+    binding: MembershipCallbackBinding,
+) {
+    if cluster.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &mut *cluster };
-    cluster.membership_callback = Some(callback);
-    cluster.membership_callback_user_data = user_data;
+    cluster.membership_callback = binding.callback;
+    cluster.membership_callback_user_data = binding.user_data();
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    event: u8,
+) {
+    if cluster.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    if let Some(callback) = cluster.membership_callback {
+        callback(node_id, event, cluster.membership_callback_user_data);
+    }
 }
 
 /// Register a callback for registry gossip events.

@@ -1,0 +1,61 @@
+// haiku_quic_service_client.hew — Minimal QUIC remote service client
+//
+// Demonstrates:
+//   - Using std::net::quic public API to create a QUIC client endpoint
+//   - Dialing a remote QUIC server
+//   - Opening a stream and sending messages
+//   - Clean shutdown
+//
+// Run after server is listening:
+//   hew run haiku_quic_service_client.hew
+
+import std::net::quic;
+
+fn main() {
+    println("[client] starting minimal QUIC service client...");
+    
+    // Create a QUIC client endpoint (ephemeral local port).
+    let ep = quic.new_client();
+    println("[client] created client endpoint");
+    
+    // Connect to the remote QUIC server.
+    // server_name is the TLS SNI field; localhost is used for permissive dev verification.
+    let conn = ep.connect("127.0.0.1:4433", "localhost");
+    println("[client] connected to server");
+    
+    // Open a new stream on the connection.
+    let stream = conn.open_stream();
+    println("[client] opened stream");
+    
+    // Send a message to the server.
+    let msg = "Hello from client";
+    let result = stream.send(unsafe { hew_string_to_bytes(msg) });
+    if result != 0 {
+        println("[client] failed to send message");
+    } else {
+        println("[client] sent message");
+    }
+    
+    // Signal end of send (but we can still receive).
+    stream.finish();
+    
+    // Receive response from server.
+    let response = stream.recv();
+    let resp_msg = unsafe { hew_bytes_to_string(response) };
+    println(f"[client] received: {resp_msg}");
+    
+    // Clean shutdown of stream.
+    stream.close();
+    
+    // Clean shutdown of connection.
+    conn.disconnect();
+    
+    // Clean shutdown of endpoint.
+    ep.close();
+    println("[client] shutdown complete");
+}
+
+extern "C" {
+    fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_bytes_to_string(b: bytes) -> String;
+}

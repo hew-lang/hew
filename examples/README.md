@@ -42,6 +42,7 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
 - **directory_module_demo/** -- Quick proof that directory-form module merging works: two peer files compose into one `greeting` module ([README](directory_module_demo/README.md))
+- **module_generic_boundaries/** -- Small two-file demo showing generic trait APIs crossing a module boundary (`main.hew` + `src/widgets.hew`)
 - **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
   - `01_shapes/` — directory module with peer-file types + trait impls; bare import + qualified access
   - `02_geometry/` — peer files sharing a type across functions; selective `import mod::{A, B}`
@@ -61,6 +62,8 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 ### Topic Collections
 
+- **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing
+- **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities
 - **playground/** -- Grouped by topic:
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
@@ -68,24 +71,23 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 ### Cross-Language Comparisons
 
-- **benchmarks/** -- HTTP server implementations in Hew, Rust, Go, and Python
-- **comparison/** -- Counter service implemented side-by-side in Hew, Go, and Rust
+- **benchmarks/** -- Cross-language benchmark fixtures: paired `bench_*` implementations under `hew/`, `go/`, and `rust/`, plus the HTTP server comparison files at the directory root ([README](benchmarks/README.md))
+- **comparison/** -- Counter service implemented side-by-side in Hew, Go, and Rust ([README](comparison/README.md))
 
-### Service Patterns
+### Service and Distributed Patterns
 
-- **services/** -- Distributed service patterns that showcase Hew's actor model:
+- **services/** -- Distributed service patterns that showcase Hew's actor model ([README](services/README.md)):
   - Circuit breaker, rate limiter, worker pool, pub/sub broker, health monitor, distributed counter
+- **quic_mesh/** -- Two-node QUIC/TLS mesh demo with separate `server.hew` and `client.hew`
+- **Root-level network/distributed demos** -- `distributed_hello`, `sensor_mesh`, `http_server`, `static_server`, `mqtt_broker`, `chat_*`, `curl_client`, `actor_net_reader`, and `network_file_reader`
 
-### Standalone Examples
+### Root-Level Examples
 
-| Category      | Examples                                                                  |
-| ------------- | ------------------------------------------------------------------------- |
-| Actors        | `actor_fib`, `fibonacci_actors`, `lambda_actor*`, `concurrent_counter`    |
-| Supervisors   | `supervisor_*` (6 examples covering crash budgets, nesting, worker pools) |
-| Networking    | `http_server`, `mqtt_broker`, `chat_server`, `chat_client`, `curl_client` |
-| Async/Streams | `async_demo`, `scope_demo`, `scope_minimal`                               |
-| Stress Tests  | `stress_*` (8 examples for actors, mailboxes, scheduling, supervision)    |
-| Self-Hosting  | `selfhost_lexer_v2`                                                       |
-| Types         | `enum_test`, `enums_and_options`, `types_and_traits` (structs · traits · impl blocks · dyn dispatch), `type_inference` |
-| Strings       | `string_escapes`, `string_ops_test`, `string_test`                        |
-| Utilities     | `hew_grep`, `regex_demo`, `file_reader`, `cli_argparse`                   |
+The `examples/` root also contains many focused single-file demos. The
+current clusters are easiest to scan by filename:
+
+- **Actors / concurrency** -- `actor_*`, `lambda_*`, `async_*`, `scope_*`, `fibonacci_actors`, `concurrent_counter`, `struct_spawn_test`, `backpressure_test`
+- **Supervision / runtime stress** -- `supervisor_*` and `stress_*`
+- **Language / type-system demos** -- `enum_test`, `enums_and_options`, `types_and_traits`, `type_inference`, `if_let`, `custom_indexing`, `method_*`, `string_*`, `result_option_test`, `vec_hashmap_test`
+- **Regression-oriented samples** -- `test_*`, `comprehensive_test*`, `closures_test`, `syntax_test`, `full_validation`, `test_llvm_e2e`
+- **Tooling / observability / showcases** -- `hew_grep`, `regex_demo`, `file_reader`, `cli_argparse`, `benchmark_demo`, `profiler_demo`, `observe_showcase`, `selfhost_lexer_v2`, `showcase`, `simple`, `demo_four_pillars`

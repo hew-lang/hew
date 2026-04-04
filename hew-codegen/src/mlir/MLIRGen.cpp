@@ -1725,7 +1725,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     // Compute sizeof(T) at MLIR level using hew.sizeof.
     auto size = hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(valType));
 
-    // Null pointer for drop_fn (primitives need no destructor).
+    // Null pointer for drop_fn.
+    // Safe because the type-checker's BoundsNotSatisfied guard on Rc::new
+    // restricts T to Copy — Copy types carry no ownership, so no destructor
+    // is ever needed when the Rc's strong count reaches zero.
     auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
 
     // Call hew_rc_new(data_ptr, size, drop_fn) -> *u8 (data region of the Rc).

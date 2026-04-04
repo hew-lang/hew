@@ -401,3 +401,20 @@ fn rc_rejected_at_actor_send_boundary() {
         output.errors
     );
 }
+
+/// `Rc::new` must be rejected when `T` is not `Copy`.
+/// A null `drop_fn` and a bare `LoadOp` are only sound for Copy types; restricting
+/// construction at the type-checker level makes both codegen invariants hold.
+#[test]
+fn rc_new_non_copy_inner_rejected() {
+    // String is a heap-allocated non-Copy type.
+    let output = typecheck_inline(r#"fn main() { let _rc = Rc::new("hello"); }"#);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BoundsNotSatisfied),
+        "Rc::new with a non-Copy inner type should fail with BoundsNotSatisfied, got: {:#?}",
+        output.errors
+    );
+}

@@ -1067,7 +1067,16 @@ void MLIRGen::registerDropsForVariable(
         registerDroppable(varName, "hew_hashmap_free_impl");
       else if (typeName == "HashSet" && (isHashSetCtor || isNewCollectionMethod))
         registerDroppable(varName, "hew_hashset_free");
-      else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
+      else if (typeName == "Rc") {
+        bool isRcCtor = defOp && mlir::isa<hew::RcNewOp>(defOp);
+        bool isCloneCall = false;
+        if (stmtValue && *stmtValue) {
+          if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
+            isCloneCall = (mc->method == "clone");
+        }
+        if (isRcCtor || isCloneCall)
+          registerDroppable(varName, "hew_rc_drop");
+      } else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
         bool isBorrowed = isBorrowedGetString;
         if (stmtValue && *stmtValue) {
@@ -1126,12 +1135,13 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
-  // ── MLIR-type fallback for Vec/HashMap ─────────────────────────────
+  // ── MLIR-type fallback for Vec/HashMap/Rc ───────────────────────────
   if (value) {
     auto valType = value.getType();
     bool isOwned = false;
     if (auto *defOp = value.getDefiningOp()) {
-      isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
+      isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp) ||
+                mlir::isa<hew::RcNewOp>(defOp);
     }
     if (!isOwned && stmtValue && *stmtValue) {
       const auto &vk = (*stmtValue)->value.kind;

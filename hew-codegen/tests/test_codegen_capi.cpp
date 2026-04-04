@@ -356,6 +356,44 @@ static void test_emit_mlir_produces_output() {
   PASS();
 }
 
+// Regression: Rc<T> variables must emit hew_rc_drop at scope exit.
+// Both annotated (let x: Rc<int> = Rc::new(v)) and unannotated
+// (let x = Rc::new(v)) paths must register the drop.
+static void test_rc_scope_exit_drop_registered() {
+  TEST(rc_scope_exit_drop_registered);
+  // Annotated path
+  {
+    auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); println(rc.get()); }");
+    if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew_rc_drop") == std::string::npos) {
+      FAIL("annotated Rc<int> variable missing hew_rc_drop at scope exit");
+      return;
+    }
+  }
+  // Unannotated path
+  {
+    auto ast = hewToMsgpack("fn main() { let rc = Rc::new(42); println(rc.get()); }");
+    if (ast.empty()) { FAIL("failed to parse unannotated Rc test"); return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew_rc_drop") == std::string::npos) {
+      FAIL("unannotated Rc variable missing hew_rc_drop at scope exit");
+      return;
+    }
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -528,6 +566,7 @@ int main() {
 
   // Successful emission
   test_emit_mlir_produces_output();
+  test_rc_scope_exit_drop_registered();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

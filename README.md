@@ -41,6 +41,8 @@ The [`examples/`](examples/) directory contains structured learning paths for ne
 
 See [`examples/README.md`](examples/README.md) for the complete directory guide.
 
+When you move from language lessons to library APIs, use [`std/README.md`](std/README.md), the canonical index of shipped stdlib modules.
+
 ### Language Basics
 
 **`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:
@@ -66,7 +68,7 @@ fn main() {
 }
 ```
 
-See [`std/README.md`](std/README.md) for the full module list.
+See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib modules.
 
 For directory-form modules and Hew's multi-file import resolution rules, see [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md).
 

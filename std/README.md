@@ -2,21 +2,23 @@
 
 The Hew standard library provides core types, data structures, networking, encoding, and utilities.
 
+This file is the canonical index of shipped stdlib modules in this repository. Module links below go to the public `.hew` surface that Hew programs import.
+
 ## Builtins — auto-imported, plain function calls
 
 `println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.
 
 ```hew
 fn main() {
-    print("count: ");    // no newline
-    println(42);         // newline appended; works with any Display type
+    print("count: ");
+    println(42);
 }
 ```
 
 All other standard library modules require an explicit import at the top of the file:
 
 ```hew
-import std::fs;           // single module
+import std::fs;
 import std::encoding::json;
 
 fn main() {
@@ -25,87 +27,112 @@ fn main() {
 }
 ```
 
-## Module Overview
+## Quick wayfinding
 
-### Core (top-level)
+- **CLI, files, and OS** — [`std::io`](io.hew), [`std::fs`](fs.hew), [`std::path`](path.hew), [`std::os`](os.hew), [`std::process`](process.hew)
+- **Collections and scans** — [`std::vec`](vec.hew), [`std::deque`](deque.hew), [`std::collections::hashset`](collections/hashset/hashset.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
+- **Streams and coordination** — [`std::stream`](stream.hew), [`std::channel::channel`](channel/channel.hew), [`std::semaphore`](semaphore.hew)
+- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire`](encoding/wire/wire.hew)
+- **Networking** — [`std::net`](net/net.hew), [`std::net::http`](net/http/http.hew), [`std::net::dns`](net/dns/dns.hew), [`std::net::tls`](net/tls/tls.hew), [`std::net::quic`](net/quic/quic.hew), [`std::net::url`](net/url/url.hew)
+- **Testing and perf** — [`std::testing`](testing/testing.hew), [`std::bench`](bench/bench.hew)
 
-| Module    | Import            | Description                                     |
-| --------- | ----------------- | ----------------------------------------------- |
-| builtins  | _(auto-imported)_ | `println`, `print`, `sleep_ms`, `exit`, `panic` |
-| string    | `std::string`     | String operations and formatting                |
-| vec       | `std::vec`        | Growable vector type                            |
-| option    | `std::option`     | `Option<T>` helpers (`is_some`, `unwrap_or`)    |
-| result    | `std::result`     | `Result<T,E>` helpers (`is_ok`, `unwrap_or`)    |
-| stream    | `std::stream`     | Byte streams, channels, `Sink`/`Stream` types   |
-| fs        | `std::fs`         | File system read/write operations               |
-| path      | `std::path`       | Path manipulation                               |
-| os        | `std::os`         | Environment variables, platform info            |
-| process   | `std::process`    | Spawn and manage child processes                |
-| semaphore | `std::semaphore`  | Counting semaphore for concurrency control      |
+## Shipped module index
 
-### Encoding (`std::encoding::*`)
+Every shipped module under `std/` should appear here.
 
-| Module   | Description                        |
-| -------- | ---------------------------------- |
-| json     | JSON parsing and serialization     |
-| yaml     | YAML parsing and serialization     |
-| toml     | TOML parsing and serialization     |
-| csv      | CSV reading and writing            |
-| msgpack  | MessagePack binary serialization   |
-| protobuf | Protocol Buffers encoding/decoding |
-| base64   | Base64 encode/decode               |
-| hex      | Hexadecimal encode/decode          |
-| compress | Zstd and gzip compression          |
-| markdown | Markdown to HTML rendering         |
-| wire     | Hew wire format serialization      |
+### Core and formatting
 
-### Crypto (`std::crypto::*`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`builtins`](builtins.hew) | _(auto-imported)_ | `println`, `print`, `sleep_ms`, `exit`, and `panic` |
+| [`string`](string.hew) | `std::string` | String conversion and manipulation utilities |
+| [`fmt`](fmt/fmt.hew) | `std::fmt` | Number formatting, padding, and repetition helpers |
+| [`option`](option.hew) | `std::option` | Helper functions for common `Option<T>` patterns |
+| [`result`](result.hew) | `std::result` | Helper functions for common `Result<T, E>` patterns |
+| [`math`](math/math.hew) | `std::math` | Integer helpers, float ops, and common constants |
 
-| Module   | Description                                     |
-| -------- | ----------------------------------------------- |
-| crypto   | SHA-256/384/512, HMAC, constant-time comparison |
-| jwt      | JSON Web Token creation and verification        |
-| password | Argon2 password hashing and verification        |
-| encrypt  | AES-256-GCM encryption (planned)                |
+### Files, OS, and processes
 
-### Networking (`std::net::*`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`io`](io.hew) | `std::io` | stdin, stdout, and stderr helpers |
+| [`fs`](fs.hew) | `std::fs` | File system operations |
+| [`path`](path.hew) | `std::path` | File path and glob utilities |
+| [`os`](os.hew) | `std::os` | Operating system interfaces |
+| [`process`](process.hew) | `std::process` | Process execution |
 
-| Module    | Description                              |
-| --------- | ---------------------------------------- |
-| net       | TCP listener and connection types        |
-| http      | HTTP server and client                   |
-| websocket | WebSocket client connections             |
-| smtp      | Email sending via SMTP                   |
-| url       | URL parsing and construction             |
-| ipnet     | IP address and CIDR utilities            |
-| mime      | MIME type detection from file extensions |
+### Collections, iteration, and concurrency
 
-### Text (`std::text::*`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`vec`](vec.hew) | `std::vec` | Utility helpers for `Vec<T>` |
+| [`deque`](deque.hew) | `std::deque` | Double-ended queue operations |
+| [`hashset`](collections/hashset/hashset.hew) | `std::collections::hashset` | Hash set collection |
+| [`iter`](iter.hew) | `std::iter` | Map/filter/fold-style helpers for `Vec<T>` |
+| [`sort`](sort/sort.hew) | `std::sort` | Sorting and reversing vector helpers |
+| [`stream`](stream.hew) | `std::stream` | Typed `Stream<T>`/`Sink<T>` pipes and file streams |
+| [`channel`](channel/channel.hew) | `std::channel::channel` | Bounded MPSC channels |
+| [`semaphore`](semaphore.hew) | `std::semaphore` | Counting semaphore for concurrency control |
 
-| Module | Description                             |
-| ------ | --------------------------------------- |
-| regex  | Regular expression matching             |
-| semver | Semantic version parsing and comparison |
+### Encoding and wire formats
 
-### Time (`std::time::*`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`base64`](encoding/base64/base64.hew) | `std::encoding::base64` | Base64 encoding and decoding |
+| [`compress`](encoding/compress/compress.hew) | `std::encoding::compress` | Compression and decompression |
+| [`csv`](encoding/csv/csv.hew) | `std::encoding::csv` | CSV parsing |
+| [`hex`](encoding/hex/hex.hew) | `std::encoding::hex` | Hexadecimal encoding and decoding |
+| [`json`](encoding/json/json.hew) | `std::encoding::json` | JSON parsing and manipulation |
+| [`markdown`](encoding/markdown/markdown.hew) | `std::encoding::markdown` | Markdown to HTML conversion |
+| [`msgpack`](encoding/msgpack/msgpack.hew) | `std::encoding::msgpack` | MessagePack serialization |
+| [`protobuf`](encoding/protobuf/protobuf.hew) | `std::encoding::protobuf` | Protocol Buffers message construction |
+| [`toml`](encoding/toml/toml.hew) | `std::encoding::toml` | TOML parsing and generation |
+| [`wire`](encoding/wire/wire.hew) | `std::encoding::wire` | Hew wire format encoding and decoding |
+| [`xml`](encoding/xml/xml.hew) | `std::encoding::xml` | XML parsing and manipulation |
+| [`yaml`](encoding/yaml/yaml.hew) | `std::encoding::yaml` | YAML parsing and generation |
 
-| Module   | Description                            |
-| -------- | -------------------------------------- |
-| datetime | Date/time formatting and arithmetic    |
-| cron     | Cron expression parsing and scheduling |
+### Crypto
 
-### Misc (`std::misc::*`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`crypto`](crypto/crypto/crypto.hew) | `std::crypto::crypto` | Cryptographic hashing and utilities |
+| [`encrypt`](crypto/encrypt/encrypt.hew) | `std::crypto::encrypt` | Symmetric encryption and decryption |
+| [`jwt`](crypto/jwt/jwt.hew) | `std::crypto::jwt` | JSON Web Token encoding and validation |
+| [`password`](crypto/password/password.hew) | `std::crypto::password` | Password hashing and verification |
 
-| Module | Description                    |
-| ------ | ------------------------------ |
-| log    | Structured logging with levels |
-| uuid   | UUID v4 generation             |
+### Networking
 
-### Bench (`std::bench`)
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`net`](net/net.hew) | `std::net` | TCP listeners and connections |
+| [`dns`](net/dns/dns.hew) | `std::net::dns` | DNS hostname resolution |
+| [`http`](net/http/http.hew) | `std::net::http` | HTTP server and request/response handling |
+| [`http_client`](net/http/http_client.hew) | `import std::net::http` + `http_client.*` | Outbound HTTP GET/POST helpers |
+| [`ipnet`](net/ipnet/ipnet.hew) | `std::net::ipnet` | IP address and CIDR utilities |
+| [`mime`](net/mime/mime.hew) | `std::net::mime` | MIME type detection |
+| [`quic`](net/quic/quic.hew) | `std::net::quic` | QUIC transport for internode messaging |
+| [`smtp`](net/smtp/smtp.hew) | `std::net::smtp` | SMTP client for sending email |
+| [`tls`](net/tls/tls.hew) | `std::net::tls` | TLS client connections |
+| [`url`](net/url/url.hew) | `std::net::url` | URL parsing |
+| [`websocket`](net/websocket/websocket.hew) | `std::net::websocket` | WebSocket client and server support |
 
-| Module | Description                                       |
-| ------ | ------------------------------------------------- |
-| bench  | Microbenchmark harness with warmup and statistics |
+### Text, time, and utilities
+
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`regex`](text/regex/regex.hew) | `std::text::regex` | Regular expression matching |
+| [`semver`](text/semver/semver.hew) | `std::text::semver` | Semantic version parsing and comparison |
+| [`datetime`](time/datetime/datetime.hew) | `std::time::datetime` | Date and time operations |
+| [`cron`](time/cron/cron.hew) | `std::time::cron` | Cron expression parsing and scheduling |
+| [`log`](misc/log/log.hew) | `std::misc::log` | Structured logging |
+| [`uuid`](misc/uuid/uuid.hew) | `std::misc::uuid` | UUID generation and validation |
+
+### Testing and benchmarking
+
+| Module | Import | Use for |
+| --- | --- | --- |
+| [`testing`](testing/testing.hew) | `std::testing` | Assertion helpers for Hew tests |
+| [`bench`](bench/bench.hew) | `std::bench` | Benchmark harness for measuring function performance |
 
 ## Architecture
 

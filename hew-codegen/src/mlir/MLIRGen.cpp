@@ -4210,7 +4210,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
   mlir::Value bodyValue =
-      generateBlock(*method.body, /*statementPosition=*/resultTypes.empty());
+      generateBlock(*method.body, /*statementPosition=*/resultTypes.empty(),
+                    /*isFunctionBodyBlock=*/true);
 
   auto *currentBlock = builder.getInsertionBlock();
   if (currentBlock &&
@@ -4684,7 +4685,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   }
   bool bodyResultDiscarded = isImplicitMainReturn || (fn.return_type && resultTypes.empty()) ||
                              finalStmtNeedsStatementLowering;
-  mlir::Value bodyValue = generateBlock(fn.body, /*statementPosition=*/bodyResultDiscarded);
+  mlir::Value bodyValue = generateBlock(fn.body, /*statementPosition=*/bodyResultDiscarded,
+                                        /*isFunctionBodyBlock=*/true);
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
   funcLevelEarlyReturnVarNames.clear();
@@ -5037,7 +5039,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     }
 
     // Generate the function body naturally — loops, conditionals all work
-    generateBlock(fn.body, /*statementPosition=*/true);
+    generateBlock(fn.body, /*statementPosition=*/true, /*isFunctionBodyBlock=*/true);
     funcLevelDropExcludeVars.clear();
     funcLevelReturnVarNames.clear();
 

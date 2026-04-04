@@ -279,7 +279,12 @@ private:
   /// expression value (or nullptr if the block has no trailing expression).
   /// When statementPosition is true, final if/match statements are lowered as
   /// plain statements instead of implicit block results.
-  mlir::Value generateBlock(const ast::Block &block, bool statementPosition = false);
+  /// When isFunctionBodyBlock is true, the return-guard path activates for
+  /// non-void functions.  Inline sub-blocks (unsafe, block-expr) must pass
+  /// false (the default) so their result is returned as an SSA value rather
+  /// than stored into returnSlot.
+  mlir::Value generateBlock(const ast::Block &block, bool statementPosition = false,
+                            bool isFunctionBodyBlock = false);
 
   // ── Match ────────────────────────────────────────────────────────
   void generateMatchStmt(const ast::StmtMatch &stmt);

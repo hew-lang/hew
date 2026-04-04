@@ -1,0 +1,17 @@
+// Regression: let x = unsafe { … }; expr2 in a non-void function.
+// Previously miscompiled: generateBlock fired return-guard for the inline
+// unsafe block, stored the result into returnSlot, and returned nullptr;
+// the subsequent use of the binding produced "undeclared variable".
+// Fixed by: pass isFunctionBodyBlock=true only from function-body callers.
+extern "C" {
+    fn abs(n: i32) -> i32;
+}
+
+fn double_abs(n: i32) -> i32 {
+    let a = unsafe { abs(n) };
+    a + a
+}
+
+fn main() {
+    println(double_abs(-7));
+}

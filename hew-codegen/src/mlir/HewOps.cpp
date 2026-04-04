@@ -178,6 +178,12 @@ mlir::LogicalResult hew::VecLenOp::verify() {
   return success();
 }
 
+mlir::LogicalResult hew::VecFreeOp::verify() {
+  if (!llvm::isa<hew::VecType>(getVec().getType()))
+    return emitOpError("vec operand must be !hew.vec<T>, got ") << getVec().getType();
+  return success();
+}
+
 mlir::LogicalResult hew::VecPopOp::verify() {
   auto vecType = llvm::dyn_cast<hew::VecType>(getVec().getType());
   if (!vecType)

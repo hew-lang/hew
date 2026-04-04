@@ -798,6 +798,7 @@ def Hew_VecFreeOp : Hew_Op<"vec.free"> {
   let arguments = (ins AnyType:$vec);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

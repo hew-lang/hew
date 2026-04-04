@@ -150,7 +150,7 @@ blank();
 
 // Actor & concurrency
 emit('# Actor & concurrency');
-const actorWords = ['actor', 'receive', 'init', 'spawn', 'move', 'this'];
+const actorWords = ['actor', 'init', 'move', 'receive', 'spawn', 'terminate', 'this'];
 emit(`color brightgreen ${nanoKeywordRegex(actorWords)}`);
 blank();
 

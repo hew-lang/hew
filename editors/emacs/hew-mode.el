@@ -65,7 +65,7 @@
     "break" "continue" "return"
     "let" "var" "const" "fn" "gen" "type" "struct" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
-    "actor" "receive" "init" "spawn" "async" "move" "await" "this"
+    "actor" "receive" "init" "spawn" "terminate" "async" "move" "await" "this"
     "supervisor" "child" "restart" "budget" "strategy"
     "wire" "reserved" "optional" "deprecated" "default"
     "machine" "state" "event" "on" "when"

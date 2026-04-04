@@ -6548,31 +6548,14 @@ impl Checker {
     /// error fires even though the double-free is a codegen/runtime bug, because
     /// no correct compilation is possible for this pattern today.
     fn warn_rc_param_return(&mut self, fd: &FnDecl) {
-        // Build the set of non-Copy type-param names (from inline bounds and
-        // where-clause predicates).
-        let non_copy_type_params: HashSet<&str> =
-            fd.type_params.as_ref().map_or_else(HashSet::new, |tps| {
-                let mut s: HashSet<&str> = tps
-                    .iter()
-                    .filter(|tp| !tp.bounds.iter().any(|b| b.name == "Copy"))
-                    .map(|tp| tp.name.as_str())
-                    .collect();
-                // Where-clause bounds can add Copy retroactively.
-                if let Some(wc) = &fd.where_clause {
-                    for pred in &wc.predicates {
-                        if let TypeExpr::Named { name, .. } = &pred.ty.0 {
-                            if pred.bounds.iter().any(|b| b.name == "Copy") {
-                                s.remove(name.as_str());
-                            }
-                        }
-                    }
-                }
-                s
-            });
-
-        // Collect dangerous params: explicit Rc<_> params, plus params whose
-        // declared type annotation is a bare non-Copy type parameter.
-        // The tag distinguishes them for diagnostic messaging.
+        // Collect dangerous params: those with explicit Rc<_> type annotations.
+        //
+        // NOTE: generic type params (e.g. `x: T`) are NOT flagged here because
+        // the danger only materialises when `T` is instantiated with `Rc<U>` at
+        // a call site.  Definition-site checking would reject all generic
+        // identity patterns (`fn id<T>(x: T) -> T { x }`) which are safe for
+        // non-Rc types.  Call-site / monomorphisation-time checking is deferred
+        // to a future slice.
         let dangerous_params: Vec<(&str, &str)> = fd
             .params
             .iter()
@@ -6580,17 +6563,6 @@ impl Checker {
                 let ty = self.resolve_type_expr(&p.ty.0);
                 if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
                     return Some((p.name.as_str(), "Rc"));
-                }
-                // Check if the declared type annotation is a bare non-Copy
-                // type parameter, e.g. `x: T` where T has no Copy bound.
-                if let TypeExpr::Named {
-                    name: ty_name,
-                    type_args: None,
-                } = &p.ty.0
-                {
-                    if non_copy_type_params.contains(ty_name.as_str()) {
-                        return Some((p.name.as_str(), ty_name.as_str()));
-                    }
                 }
                 None
             })
@@ -6635,8 +6607,7 @@ impl Checker {
     /// expression whose trailing expression is), emit a fail-closed error.
     ///
     /// `param_tags` maps param name → tag string (`"Rc"` for explicit Rc params,
-    /// or the type-param name like `"T"` for non-Copy generic params).  The tag
-    /// controls the diagnostic wording.
+    /// or `"tainted:<source>:<tag>"` for locals tainted by storing an Rc param).
     fn check_expr_is_rc_param_return(
         &mut self,
         expr: &Expr,
@@ -6648,8 +6619,8 @@ impl Checker {
             Expr::Identifier(name) if rc_params.contains(&name.as_str()) => {
                 let tag = param_tags.get(name.as_str()).copied().unwrap_or("Rc");
                 let (message, note, suggestion) = if let Some(rest) = tag.strip_prefix("tainted:") {
-                    // Tainted local: tag = "tainted:<source_param>:<source_tag>"
-                    let (source_param, source_tag) = rest.split_once(':').unwrap_or((rest, "Rc"));
+                    // Tainted local: tag = "tainted:<source_param>:Rc"
+                    let (source_param, _source_tag) = rest.split_once(':').unwrap_or((rest, "Rc"));
                     (
                         format!(
                             "returning local `{name}` which contains borrowed parameter \
@@ -6661,16 +6632,9 @@ impl Checker {
                             "parameter `{source_param}` is borrowed under call-boundary \
                              ownership; storing it in `{name}` does not transfer ownership"
                         ),
-                        if source_tag == "Rc" {
-                            format!("clone the parameter before storing: `{source_param}.clone()`")
-                        } else {
-                            format!(
-                                "add a `Copy` bound (`{source_tag}: Copy`) or clone \
-                                 `{source_param}` before storing"
-                            )
-                        },
+                        format!("clone the parameter before storing: `{source_param}.clone()`"),
                     )
-                } else if tag == "Rc" {
+                } else {
                     (
                         format!(
                             "returning Rc parameter `{name}` transfers a borrowed reference \
@@ -6682,21 +6646,6 @@ impl Checker {
                             .to_string(),
                         format!(
                             "use `{name}.clone()` to create an owned copy with an incremented refcount"
-                        ),
-                    )
-                } else {
-                    (
-                        format!(
-                            "returning non-Copy parameter `{name}` (type `{tag}`) transfers a \
-                             borrowed value — when `{tag}` is instantiated with a ref-counted \
-                             or owned type, this causes a double-free"
-                        ),
-                        format!(
-                            "type parameter `{tag}` has no `Copy` bound; the caller retains \
-                             ownership under call-boundary semantics"
-                        ),
-                        format!(
-                            "add a `Copy` bound (`{tag}: Copy`) or clone the parameter before returning"
                         ),
                     )
                 };
@@ -6811,7 +6760,7 @@ impl Checker {
     }
 
     /// Forward-scan statements to find local variables tainted by storing a
-    /// dangerous parameter (Rc or non-Copy generic param).
+    /// dangerous Rc parameter.
     ///
     /// A local is "tainted" when:
     /// 1. Direct alias: `let v = r;`

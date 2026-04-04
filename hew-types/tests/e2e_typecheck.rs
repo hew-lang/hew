@@ -1005,159 +1005,6 @@ fn rc_param_passed_to_regular_fn_no_error() {
     );
 }
 
-// ── Generic passthrough: non-Copy type param returns ─────────────────────────
-
-/// Returning an unbounded generic param is unsafe when instantiated with
-/// a ref-counted type — the checker catches this at definition time.
-#[test]
-fn rc_generic_passthrough_unbounded_errors() {
-    let output = typecheck_inline(
-        r"
-        fn id<T>(x: T) -> T {
-            x
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "returning non-Copy generic param should emit BorrowedParamReturn, got errors: {:#?}",
-        output.errors
-    );
-    // Verify the error message mentions the type parameter, not "Rc".
-    assert!(
-        rc_errors[0].message.contains("non-Copy parameter"),
-        "message should describe non-Copy param, got: {}",
-        rc_errors[0].message
-    );
-}
-
-/// Generic param with explicit Copy bound is safe — no error expected.
-#[test]
-fn rc_generic_copy_bounded_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn id<T: Copy>(x: T) -> T {
-            x
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "Copy-bounded generic param should not error, got: {rc_errors:#?}",
-    );
-}
-
-/// Where-clause `T: Copy` bound also exempts the parameter from the check.
-#[test]
-fn rc_generic_where_clause_copy_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn id<T>(x: T) -> T where T: Copy {
-            x
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "where-clause Copy-bounded generic param should not error, got: {rc_errors:#?}",
-    );
-}
-
-/// Returning a non-Copy generic param via explicit `return` triggers the error.
-#[test]
-fn rc_generic_passthrough_explicit_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn maybe<T>(x: T, flag: bool) -> T {
-            if flag {
-                return x;
-            }
-            x
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        2,
-        "both the explicit return and trailing expr should fire, got: {rc_errors:#?}",
-    );
-}
-
-/// Wrapping a non-Copy generic param in `Some()` should also be caught.
-#[test]
-fn rc_generic_passthrough_some_wrap_errors() {
-    let output = typecheck_inline(
-        r"
-        fn wrap<T>(x: T) -> Option<T> {
-            Some(x)
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "wrapping non-Copy generic param in Some should error, got errors: {:#?}",
-        output.errors
-    );
-}
-
-/// Multiple type params — only non-Copy ones should be flagged.
-#[test]
-fn rc_generic_mixed_bounds_selective_error() {
-    let output = typecheck_inline(
-        r"
-        fn pick<A: Copy, B>(a: A, b: B) -> B {
-            b
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "only non-Copy param `b` should fire, got: {rc_errors:#?}",
-    );
-    assert!(
-        rc_errors[0].message.contains("`b`"),
-        "error should mention param `b`, got: {}",
-        rc_errors[0].message
-    );
-}
-
 // ── Collection-store / taint-tracking tests ─────────────────────────────────
 
 /// `v.push(r); v` — Rc param stored in collection via method call then returned.
@@ -1361,31 +1208,6 @@ fn rc_method_call_store_in_branch_errors() {
     assert!(
         !rc_errors.is_empty(),
         "v.push(r) inside branch then return v must fire, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Generic param stored via method call: v.push(x) where x: T (non-Copy).
-#[test]
-fn rc_generic_method_call_store_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad<T>(x: T) -> Vec<T> {
-            var v = Vec::new();
-            v.push(x);
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "v.push(x) for non-Copy T then return v must fire, got: {:#?}",
         output.errors
     );
 }
@@ -1735,9 +1557,14 @@ fn plain_named_struct_no_rc_vec_push_ok() {
 // The following patterns are NOT caught by the current syntactic scanner and
 // are explicitly deferred to a future escape-analysis pass:
 //
-// 1. Inter-procedural storage: `let v = wrap(r); return v;` where `wrap`
+// 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` is safe when called
+//    with value types (int, String, structs) but unsound when `T = Rc<U>`.
+//    Definition-site checking was removed because it rejects all generic
+//    identity patterns.  Needs call-site / monomorphisation-time checking.
+//
+// 2. Inter-procedural storage: `let v = wrap(r); return v;` where `wrap`
 //    stores `r` into a container.  Requires cross-function analysis.
 //
-// 2. Deeply nested non-constructor call chains are not caught.
+// 3. Deeply nested non-constructor call chains are not caught.
 //
 // These are tracked as future escape-analysis work.

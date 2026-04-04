@@ -600,9 +600,13 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // Mailbox closed while draining -> IDLE -> STOPPED.
             // Mirrors the native scheduler's post-drain close-path (see
             // scheduler.rs `Idle -> Stopped` branch).
+            //
+            // Note: native also calls hew_trace_lifecycle here, but
+            // `crate::tracing` is #[cfg(not(target_arch = "wasm32"))] and does
+            // not exist on the real WASM target.  Consistent with the existing
+            // Stopping->Stopped path in this file which likewise omits tracing.
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Relaxed);
-            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             // call_terminate_fn has an internal `terminate_called` guard so
             // cleanup paths are idempotent.

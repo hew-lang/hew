@@ -9,6 +9,10 @@ use hew_parser::ast::{
     ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
     Spanned, Stmt, TraitBound, TypeExpr,
 };
+use hew_types::builtin_names::{
+    QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
+    STREAM,
+};
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;
 use std::fmt;
@@ -1451,20 +1455,20 @@ fn enrich_method_call(
         end: receiver.1.end,
     };
     let c_fn: Option<String> = match tco.expr_types.get(&key) {
-        Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
+        Some(Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
             let elem = args.first().and_then(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Stream", method, elem).map(String::from)
+            hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from)
         }
-        Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
+        Some(Ty::Named { name, args }) if name == SINK || name == QUALIFIED_SINK => {
             let elem = args.first().and_then(ty_element_name);
-            hew_types::stdlib::resolve_stream_method("Sink", method, elem).map(String::from)
+            hew_types::stdlib::resolve_stream_method(SINK, method, elem).map(String::from)
         }
-        Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
-            hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
+        Some(Ty::Named { name, args }) if name == SENDER || name == QUALIFIED_SENDER => {
+            hew_types::stdlib::resolve_channel_method(SENDER, method, args.first())
                 .map(String::from)
         }
-        Some(Ty::Named { name, args }) if name == "Receiver" || name == "channel.Receiver" => {
-            hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
+        Some(Ty::Named { name, args }) if name == RECEIVER || name == QUALIFIED_RECEIVER => {
+            hew_types::stdlib::resolve_channel_method(RECEIVER, method, args.first())
                 .map(String::from)
         }
         Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),

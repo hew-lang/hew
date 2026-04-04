@@ -10130,6 +10130,7 @@ mod tests {
             where_clause: None,
             body,
             doc_comment: None,
+            decl_span: 0..0,
         };
         let program = Program {
             module_graph: None,
@@ -10374,6 +10375,7 @@ mod tests {
                 trailing_expr: None,
             },
             doc_comment: None,
+            decl_span: 0..0,
         };
 
         let program = Program {
@@ -11999,6 +12001,7 @@ fn main() {
                 trailing_expr: Some(Box::new(make_int_literal(0, 0..1))),
             },
             doc_comment: None,
+            decl_span: 0..0,
         }
     }
 
@@ -12026,6 +12029,7 @@ fn main() {
                 trailing_expr: Some(Box::new(make_int_literal(0, 0..1))),
             },
             doc_comment: None,
+            decl_span: 0..0,
         }
     }
 
@@ -12858,6 +12862,7 @@ fn main() {
                 trailing_expr: None,
             },
             doc_comment: None,
+            decl_span: 0..0,
         });
 
         let private_const = Item::Const(ConstDecl {

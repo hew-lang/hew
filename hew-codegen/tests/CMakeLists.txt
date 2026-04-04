@@ -287,7 +287,7 @@ if(HEW_DWARFDUMP)
       -DDWARFDUMP=${HEW_DWARFDUMP}
       -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_linked_binary${HEW_EXE_SUFFIX}
-      -DEXPECTED_SYMBOL_LINES=Pair.sum|10,add|16,main|20
+      -DEXPECTED_SYMBOL_LINES=Pair.sum|11,add|16,main|20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
   )
   # W-1 COFF DWARF smoke: emits an x86_64-pc-windows-msvc object from the same
@@ -355,7 +355,7 @@ if(UNIX AND NOT APPLE)
         -DSYMBOLIZER_MODE=${HEW_LINUX_SYMBOLIZER_MODE}
         -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
         -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/linux_symbolizer_smoke_linked_binary${HEW_EXE_SUFFIX}
-        -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|10,_HM19dwarf_linked_binaryF3add|16,main|20
+        -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|11,_HM19dwarf_linked_binaryF3add|16,main|20
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_linux_symbolizer_smoke_test.cmake
     )
   else()

@@ -807,6 +807,7 @@ pub(crate) fn compile_from_source_checked(
         expr_type_map,
         meta.handle_types,
         meta.handle_type_repr,
+        meta.drop_funcs,
         meta.abs_source_path.as_deref(),
         meta.line_map.as_deref(),
     );

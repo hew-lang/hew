@@ -304,7 +304,7 @@
         {
           "comment": "Generic / collection types",
           "name": "storage.type.generic.hew",
-          "match": "\\b(ActorStream|Arc|Err|HashMap|Ok|Option|Range|Rc|Result|Some|Vec|Weak)\\b"
+          "match": "\\b(ActorStream|Arc|Err|HashMap|HashSet|Ok|Option|Range|Rc|Result|Some|Vec|Weak)\\b"
         },
         {
           "comment": "Concurrency types",

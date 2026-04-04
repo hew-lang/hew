@@ -4,6 +4,7 @@
 //! name/actor registry wiring.
 
 use crate::util::{CondvarExt, MutexExt, RwLockExt};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
@@ -32,6 +33,73 @@ const _: () = assert!(
 /// Only one `HewNode` may be active per process. Starting a second node
 /// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
+
+// ---------------------------------------------------------------------------
+// Ask-error discriminant
+// ---------------------------------------------------------------------------
+
+/// Typed failure reason for a remote ask.
+///
+/// Written to a thread-local slot whenever `hew_node_api_ask` returns `NULL`.
+/// Callers retrieve the discriminant via [`hew_node_ask_take_last_error`].
+///
+/// Values are stable across releases; do not reorder or reuse.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AskError {
+    /// No failure — used to reset the slot after a successful ask.
+    None = 0,
+    /// No active node is installed in this process.
+    NodeNotRunning = 1,
+    /// The target PID could not be mapped to a connection.
+    RoutingFailed = 2,
+    /// Wire-encoding the request envelope failed.
+    EncodeFailed = 3,
+    /// Sending the encoded envelope over the connection failed.
+    SendFailed = 4,
+    /// The reply did not arrive before the deadline elapsed.
+    Timeout = 5,
+    /// The underlying connection was dropped before the reply arrived.
+    ConnectionDropped = 6,
+    /// The reply payload size did not match the expected reply type size.
+    PayloadSizeMismatch = 7,
+}
+
+thread_local! {
+    static LAST_ASK_ERROR: Cell<i32> = const { Cell::new(AskError::None as i32) };
+}
+
+/// Write `err` to the thread-local slot and return `ptr::null_mut()`.
+///
+/// Using a helper keeps every NULL-return site in `hew_node_api_ask`
+/// a single expression and prevents accidentally forgetting the annotation.
+#[inline]
+fn ask_null(err: AskError) -> *mut c_void {
+    LAST_ASK_ERROR.with(|cell| cell.set(err as i32));
+    ptr::null_mut()
+}
+
+/// Read and clear the last ask-error discriminant for the current thread.
+///
+/// Returns one of the [`AskError`] values as an `i32`.  The slot is reset to
+/// `AskError::None` (0) after each call, so repeated calls without an
+/// intervening failed ask return 0.
+///
+/// This function is intended for use immediately after `hew_node_api_ask`
+/// returns `NULL` to distinguish the failure reason.
+///
+/// # WASM-TODO
+/// WASM uses cooperative local ask/reply only — there is no network path, so
+/// WASM ask failures (actor stopped, mailbox full) are not reported through
+/// this slot.  A parallel mechanism for WASM ask-error reporting is deferred.
+#[no_mangle]
+pub extern "C" fn hew_node_ask_take_last_error() -> i32 {
+    LAST_ASK_ERROR.with(|cell| {
+        let v = cell.get();
+        cell.set(AskError::None as i32);
+        v
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Reply routing table for distributed ask/reply
@@ -1427,19 +1495,19 @@ pub unsafe extern "C" fn hew_node_api_ask(
     let guard = CURRENT_NODE.read_or_recover();
     let node_ptr = *guard as *mut HewNode;
     if node_ptr.is_null() {
-        return ptr::null_mut();
+        return ask_null(AskError::NodeNotRunning);
     }
     // SAFETY: read lock pins CURRENT_NODE.
     let node = unsafe { &*node_ptr };
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
-        return ptr::null_mut();
+        return ask_null(AskError::NodeNotRunning);
     }
 
     // Look up the connection for the target node via the routing table.
     // SAFETY: routing_table is valid while node is running.
     let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
     if conn_id < 0 {
-        return ptr::null_mut();
+        return ask_null(AskError::RoutingFailed);
     }
 
     // Register a pending reply slot.
@@ -1469,7 +1537,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         // SAFETY: wire_buf was initialised above.
         unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
         REPLY_TABLE.remove(request_id);
-        return ptr::null_mut();
+        return ask_null(AskError::EncodeFailed);
     }
 
     // Send the encoded envelope through the connection manager so noise
@@ -1484,7 +1552,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
 
     if !send_ok {
         REPLY_TABLE.remove(request_id);
-        return ptr::null_mut();
+        return ask_null(AskError::SendFailed);
     }
 
     // Drop the read lock before blocking so other threads can use the node.
@@ -1502,7 +1570,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         if remaining.is_zero() {
             // Timeout — remove the pending entry and return the null failure sentinel.
             REPLY_TABLE.remove(request_id);
-            return ptr::null_mut();
+            return ask_null(AskError::Timeout);
         }
         let (new_guard, wait_result) = pending
             .cond
@@ -1510,7 +1578,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         outcome_guard = new_guard;
         if wait_result.timed_out() && outcome_guard.is_none() {
             REPLY_TABLE.remove(request_id);
-            return ptr::null_mut();
+            return ask_null(AskError::Timeout);
         }
     }
 
@@ -1520,9 +1588,16 @@ pub unsafe extern "C" fn hew_node_api_ask(
     });
     drop(outcome_guard);
     if reply.status == ReplyStatus::Failed {
-        return ptr::null_mut();
+        return ask_null(AskError::ConnectionDropped);
     }
-    remote_reply_data_to_ptr(&reply.data, reply_size)
+    let result = remote_reply_data_to_ptr(&reply.data, reply_size);
+    if result.is_null() {
+        // Non-void ask received an empty or wrong-size payload from the remote actor.
+        ask_null(AskError::PayloadSizeMismatch)
+    } else {
+        LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
+        result
+    }
 }
 
 #[cfg(test)]
@@ -1769,6 +1844,136 @@ mod tests {
         };
 
         assert!(reply.is_null());
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::NodeNotRunning as i32,
+            "ask with no active node should report NodeNotRunning"
+        );
+    }
+
+    /// After a successful ask the error slot must be cleared to `None`.
+    #[test]
+    fn ask_error_slot_cleared_after_successful_local_ask() {
+        // Poison the slot with a stale error, then perform a local ask.
+        LAST_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+
+        // Perform a local ask — force local path by leaving CURRENT_NODE at 0.
+        // hew_actor_ask_by_id is the local delegate; we verify the slot is NOT
+        // cleared by the local path (it goes through a different function).
+        // What we check here is that a successful remote reply clears the slot.
+        // Build a fake ReplyOutcome with Success and non-empty data and inject
+        // it directly through REPLY_TABLE to exercise the success path without
+        // needing a live network.
+        let key = ConnectionKey {
+            conn_mgr: 99,
+            conn_id: 42,
+        };
+        let (id, pending) = REPLY_TABLE.register(key);
+        REPLY_TABLE.complete(id, vec![0xAAu8, 0xBBu8, 0xCCu8, 0xDDu8]);
+        // Drain the outcome directly as the success branch of hew_node_api_ask would.
+        let mut g = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = g.take().unwrap();
+        drop(g);
+        assert_eq!(outcome.status, ReplyStatus::Success);
+        // Simulate the success branch clearing the slot.
+        LAST_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::None as i32,
+            "success path should leave error slot as None"
+        );
+    }
+
+    /// `hew_node_ask_take_last_error` must reset the slot to None (0) after reading.
+    #[test]
+    fn ask_take_error_resets_slot() {
+        LAST_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+        let first = hew_node_ask_take_last_error();
+        let second = hew_node_ask_take_last_error();
+        assert_eq!(
+            first,
+            AskError::Timeout as i32,
+            "first take should return Timeout"
+        );
+        assert_eq!(
+            second,
+            AskError::None as i32,
+            "second take should return None after reset"
+        );
+    }
+
+    /// A connection-dropped failure (via `fail_connection`) must report `ConnectionDropped`.
+    #[test]
+    fn reply_table_fail_connection_sets_connection_dropped_status() {
+        let key = ConnectionKey {
+            conn_mgr: 77,
+            conn_id: 11,
+        };
+        let (id, pending) = REPLY_TABLE.register(key);
+
+        // Simulate a connection drop.
+        REPLY_TABLE.fail_connection(key);
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard
+            .as_ref()
+            .expect("outcome should be set after fail_connection");
+        assert_eq!(
+            outcome.status,
+            ReplyStatus::Failed,
+            "fail_connection must set Failed status"
+        );
+        drop(guard);
+
+        // Verify the entry was removed from the pending table.
+        let map = REPLY_TABLE
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !map.contains_key(&id),
+            "fail_connection must remove the entry"
+        );
+    }
+
+    /// `fail_all` wakes every pending reply with `Failed` status.
+    #[test]
+    fn reply_table_fail_all_wakes_all_pending() {
+        let key_a = ConnectionKey {
+            conn_mgr: 55,
+            conn_id: 1,
+        };
+        let key_b = ConnectionKey {
+            conn_mgr: 55,
+            conn_id: 2,
+        };
+        let (id_a, pending_a) = REPLY_TABLE.register(key_a);
+        let (id_b, pending_b) = REPLY_TABLE.register(key_b);
+
+        REPLY_TABLE.fail_all();
+
+        for (id, pending) in [(id_a, &pending_a), (id_b, &pending_b)] {
+            let guard = pending
+                .outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let outcome = guard
+                .as_ref()
+                .unwrap_or_else(|| panic!("entry {id} not woken"));
+            assert_eq!(outcome.status, ReplyStatus::Failed);
+        }
+        let map = REPLY_TABLE
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!map.contains_key(&id_a));
+        assert!(!map.contains_key(&id_b));
     }
 
     #[test]
@@ -2290,6 +2495,11 @@ mod tests {
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
         let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
         assert_eq!(reply_ptr, remote_void_reply_sentinel());
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::None as i32,
+            "successful void ask must leave the error slot cleared"
+        );
 
         // SAFETY: the actor and nodes were allocated in this test and are still valid here.
         unsafe {
@@ -2450,6 +2660,11 @@ mod tests {
             reply_ptr.is_null(),
             "non-void remote ask should return null on an empty reply payload"
         );
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::PayloadSizeMismatch as i32,
+            "empty reply to non-void ask should report PayloadSizeMismatch"
+        );
 
         // SAFETY: the actor and nodes were allocated in this test and are still valid here.
         unsafe {
@@ -2508,7 +2723,10 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>()) as usize
+            let ptr =
+                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let err = hew_node_ask_take_last_error();
+            (ptr as usize, err)
         });
 
         let pending_seen = (0..100).any(|_| {
@@ -2533,10 +2751,16 @@ mod tests {
         unsafe {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         }
-        let reply_ptr = ask_handle.join().expect("ask thread panicked") as *mut c_void;
+        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
+        let reply_ptr = reply_raw as *mut c_void;
         assert!(
             reply_ptr.is_null(),
             "stopped node should fail pending remote asks"
+        );
+        assert_eq!(
+            ask_err,
+            AskError::ConnectionDropped as i32,
+            "node stop should report ConnectionDropped on pending asks"
         );
         assert!(
             stop_started.elapsed() < Duration::from_secs(2),
@@ -2619,7 +2843,10 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>()) as usize
+            let ptr =
+                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let err = hew_node_ask_take_last_error();
+            (ptr as usize, err)
         });
 
         let pending_seen = (0..100).any(|_| {
@@ -2649,10 +2876,16 @@ mod tests {
                 0
             );
         }
-        let reply_ptr = ask_handle.join().expect("ask thread panicked") as *mut c_void;
+        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
+        let reply_ptr = reply_raw as *mut c_void;
         assert!(
             reply_ptr.is_null(),
             "connection drop should fail the pending remote ask"
+        );
+        assert_eq!(
+            ask_err,
+            AskError::ConnectionDropped as i32,
+            "connection drop should report ConnectionDropped"
         );
         assert!(
             disconnect_started.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS / 2),

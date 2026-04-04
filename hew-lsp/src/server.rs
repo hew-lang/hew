@@ -933,6 +933,7 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::DeadCode
         | TypeErrorKind::OrphanImpl
         | TypeErrorKind::PlatformLimitation
+        | TypeErrorKind::BlockingCallInReceiveFn
         | TypeErrorKind::Shadowing => DiagnosticSeverity::WARNING,
         _ => DiagnosticSeverity::ERROR,
     }
@@ -971,6 +972,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
         TypeErrorKind::PlatformLimitation => "PlatformLimitation",
         TypeErrorKind::MachineExhaustivenessError => "MachineExhaustivenessError",
         TypeErrorKind::UnresolvedImport => "UnresolvedImport",
+        TypeErrorKind::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
     };
     serde_json::json!({
         "kind": kind_str,

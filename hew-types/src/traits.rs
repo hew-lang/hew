@@ -289,6 +289,13 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // Actor<T>: the built-in lambda-actor handle; always Send + Sync + Clone + Debug.
+            // Actor references are channel handles — safe to capture in spawned actors.
+            Ty::Named { name, .. } if name == "Actor" => matches!(
+                marker,
+                MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Debug
+            ),
+
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
             Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => {
                 match marker {
@@ -464,6 +471,19 @@ mod tests {
         });
         assert!(registry.is_send(&actor_ref));
         assert!(registry.is_frozen(&actor_ref));
+    }
+
+    #[test]
+    fn test_actor_handle_is_send() {
+        // Actor<T> (the lambda actor handle returned by spawn) must be Send so it can
+        // be captured inside another spawned actor (pipeline pattern).
+        let registry = TraitRegistry::new();
+        let actor_int = Ty::Named {
+            name: "Actor".to_string(),
+            args: vec![Ty::I32],
+        };
+        assert!(registry.is_send(&actor_int));
+        assert!(registry.is_sync(&actor_int));
     }
 
     #[test]

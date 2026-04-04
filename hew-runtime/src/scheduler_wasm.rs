@@ -2062,16 +2062,7 @@ mod tests {
     /// dispatch and fall back to libc malloc once activation finishes.
     #[test]
     fn arena_is_installed_during_dispatch_and_cleared_after() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        // SAFETY: Serialized by TEST_LOCK.
-        unsafe { reset_globals() };
-        hew_sched_init();
-
-        // Create a real arena so we can detect whether alloc routes through it.
-        let actor_arena = crate::arena::hew_arena_new();
-        assert!(!actor_arena.is_null(), "arena creation must succeed");
-
-        // Dispatch captures the arena pointer that was active mid-dispatch.
+        // Items must precede all statements to satisfy clippy::items_after_statements.
         static ARENA_DURING_DISPATCH: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
 
@@ -2086,6 +2077,15 @@ mod tests {
             crate::arena::set_current_arena(ptr); // put it back
             ARENA_DURING_DISPATCH.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
         }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Create a real arena so we can detect whether alloc routes through it.
+        let actor_arena = crate::arena::hew_arena_new();
+        assert!(!actor_arena.is_null(), "arena creation must succeed");
 
         let mut actor = stub_actor();
         actor.dispatch = Some(capture_arena_dispatch);
@@ -2134,14 +2134,7 @@ mod tests {
     /// the next dispatch cycle).
     #[test]
     fn arena_is_reset_after_activation() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        // SAFETY: Serialized by TEST_LOCK.
-        unsafe { reset_globals() };
-        hew_sched_init();
-
-        let actor_arena = crate::arena::hew_arena_new();
-        assert!(!actor_arena.is_null());
-
+        // Items must precede all statements to satisfy clippy::items_after_statements.
         // Dispatch allocates from the arena so the cursor advances.
         unsafe extern "C" fn alloc_in_dispatch(
             _state: *mut c_void,
@@ -2152,6 +2145,14 @@ mod tests {
             // SAFETY: arena is installed by the scheduler before dispatch.
             unsafe { crate::arena::hew_arena_malloc(64) };
         }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let actor_arena = crate::arena::hew_arena_new();
+        assert!(!actor_arena.is_null());
 
         let mut actor = stub_actor();
         actor.dispatch = Some(alloc_in_dispatch);
@@ -2175,6 +2176,7 @@ mod tests {
         assert!(!p1.is_null(), "post-reset alloc must succeed");
         // SAFETY: same arena — reset once more so subsequent tests are clean.
         unsafe { (*actor_arena).reset() };
+        // SAFETY: arena is valid and cursor is at zero after reset.
         let p2 = unsafe { (*actor_arena).alloc(1, 1) };
         // Both allocations from a freshly-reset arena share the same base.
         assert_eq!(p1, p2, "arena cursor must be at zero after reset");
@@ -2191,27 +2193,11 @@ mod tests {
     /// when the inner activation completes.
     #[test]
     fn arena_restored_on_reentrant_activation() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        // SAFETY: Serialized by TEST_LOCK.
-        unsafe { reset_globals() };
-        hew_sched_init();
+        // Items must precede all statements to satisfy clippy::items_after_statements.
 
-        // Two separate arenas — one per actor.
-        let outer_arena = crate::arena::hew_arena_new();
-        let inner_arena = crate::arena::hew_arena_new();
-        assert!(!outer_arena.is_null() && !inner_arena.is_null());
-
-        // We record what arena was active after each dispatch returns.
+        // We record what arena was active after the inner activation returns.
         static OUTER_POST_DISPATCH: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
-
-        // Inner actor: simple no-op dispatch.
-        let mut inner_actor = stub_actor();
-        inner_actor.id = 2;
-        inner_actor.arena = inner_arena.cast::<c_void>();
-        // SAFETY: test exclusively owns this mailbox.
-        inner_actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
-        let mut inner_ptr: *mut HewActor = (&raw mut inner_actor).cast();
 
         // Outer dispatch: enqueues and runs the inner actor inline (simulating
         // re-entrant activation through hew_actor_ask / hew_sched_run).
@@ -2221,11 +2207,11 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
         ) {
-            // state carries a pointer to the inner actor.
-            // SAFETY: state was set to a valid HewActor pointer by the test.
+            // SAFETY: state was set to a valid *mut HewActor pointer by the test.
             let inner: *mut HewActor = unsafe { *state.cast::<*mut HewActor>() };
+            // SAFETY: inner is a valid live actor; sched_enqueue and hew_sched_run
+            // are safe to call from within a dispatch on the same single thread.
             unsafe {
-                // Enqueue inner actor and send it a message.
                 sched_enqueue(inner);
                 queue_wasm_message_static(inner, 0);
                 // Run the inner actor inline — this is the re-entrant path.
@@ -2241,6 +2227,7 @@ mod tests {
         // inside an extern "C" fn body, so we need a plain-fn wrapper.
         unsafe fn queue_wasm_message_static(actor: *mut HewActor, value: i32) {
             let mut payload = value;
+            // SAFETY: actor is a valid live actor with an initialized mailbox.
             let rc = unsafe {
                 crate::mailbox_wasm::hew_mailbox_send(
                     (*actor).mailbox.cast(),
@@ -2250,15 +2237,34 @@ mod tests {
                 )
             };
             let _ = rc; // ignore error in test helper
+            // SAFETY: actor is a valid live WASM actor.
             unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
         }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Two separate arenas — one per actor.
+        let outer_arena = crate::arena::hew_arena_new();
+        let inner_arena = crate::arena::hew_arena_new();
+        assert!(!outer_arena.is_null() && !inner_arena.is_null());
+
+        // Inner actor: simple no-op dispatch (no dispatch fn set → messages freed).
+        let mut inner_actor = stub_actor();
+        inner_actor.id = 2;
+        inner_actor.arena = inner_arena.cast::<c_void>();
+        // SAFETY: test exclusively owns this mailbox.
+        inner_actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        let mut inner_ptr: *mut HewActor = (&raw mut inner_actor).cast();
 
         let mut outer_actor = stub_actor();
         outer_actor.id = 1;
         outer_actor.arena = outer_arena.cast::<c_void>();
         outer_actor.dispatch = Some(outer_dispatch);
         // Pass inner_ptr via state so outer_dispatch can enqueue it.
-        outer_actor.state = (&raw mut inner_ptr as *mut *mut HewActor).cast::<c_void>();
+        outer_actor.state = (&raw mut inner_ptr).cast::<c_void>();
         // SAFETY: test exclusively owns this mailbox.
         outer_actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
         let outer_ptr: *mut HewActor = (&raw mut outer_actor).cast();

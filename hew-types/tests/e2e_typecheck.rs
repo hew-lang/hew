@@ -402,6 +402,78 @@ fn rc_rejected_at_actor_send_boundary() {
     );
 }
 
+#[test]
+fn lambda_actor_capture_must_be_send() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let rc: Rc<int> = Rc::new(1);
+            let worker = spawn move (x: int) => {
+                println(rc.strong_count());
+                println(x);
+            };
+            worker.send(1);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "spawned lambda actor must reject non-Send captures, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn lambda_actor_send_method_requires_send_payload() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = spawn (msg: Rc<int>) => {
+                println(msg.strong_count());
+            };
+            let rc: Rc<int> = Rc::new(1);
+            worker.send(rc);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "lambda actor .send() must reject non-Send payloads, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn actor_ref_send_method_requires_send_payload() {
+    let output = typecheck_inline(
+        r"
+        actor Sink {
+            let _unused: int;
+        }
+
+        fn main() {
+            let sink = spawn Sink(_unused: 0);
+            let rc: Rc<int> = Rc::new(1);
+            sink.send(rc);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "ActorRef.send() must reject non-Send payloads, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `Rc::new` must accept non-Copy `T`; the codegen passes the real drop function.
 /// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]

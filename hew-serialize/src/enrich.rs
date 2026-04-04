@@ -15,6 +15,21 @@ use std::fmt;
 
 use crate::msgpack::ExprTypeEntry;
 
+/// Discriminant that callers use to decide how to handle a conversion failure.
+///
+/// - `UnresolvedVar` — a `Ty::Var` escaped type-checking unresolved; this is a
+///   compiler bug and must be treated as a hard error.
+/// - `ErrorSentinel` — a `Ty::Error` reached the serializer; type-checking
+///   already emitted the real diagnostic so this should be silently suppressed.
+/// - `Unsupported` — the type is structurally valid but not yet representable
+///   (e.g. generator types); callers may choose to warn and continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeExprConversionKind {
+    UnresolvedVar,
+    ErrorSentinel,
+    Unsupported,
+}
+
 /// Diagnostic describing why a resolved [`Ty`] could not be serialized into a
 /// [`TypeExpr`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +63,22 @@ impl TypeExprConversionError {
     #[must_use]
     pub fn span(&self) -> Option<&Span> {
         self.span.as_ref()
+    }
+
+    /// Returns the kind of this conversion error, derived from the source type.
+    ///
+    /// - [`TypeExprConversionKind::UnresolvedVar`] when the originating type is
+    ///   `Ty::Var`; callers should treat this as a hard error.
+    /// - [`TypeExprConversionKind::ErrorSentinel`] when it is `Ty::Error`;
+    ///   callers should silently suppress it (type-check already reported it).
+    /// - [`TypeExprConversionKind::Unsupported`] for all other types.
+    #[must_use]
+    pub fn kind(&self) -> TypeExprConversionKind {
+        match &self.ty {
+            Ty::Var(_) => TypeExprConversionKind::UnresolvedVar,
+            Ty::Error => TypeExprConversionKind::ErrorSentinel,
+            _ => TypeExprConversionKind::Unsupported,
+        }
     }
 }
 
@@ -214,11 +245,7 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     ));
                 }
                 ("Range", 1) => {
-                    let inner = match &args[0] {
-                        Ty::Var(_) => &Ty::I64,
-                        other => other,
-                    };
-                    let inner_expr = require_converted(inner, "Range element type")?;
+                    let inner_expr = require_converted(&args[0], "Range element type")?;
                     TypeExpr::Named {
                         name: "Range".into(),
                         type_args: Some(vec![inner_expr]),
@@ -2013,6 +2040,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -2121,6 +2149,11 @@ mod tests {
             err.to_string()
                 .contains("type-checker error sentinel reached serializer"),
             "unexpected error: {err}"
+        );
+        assert_eq!(
+            err.kind(),
+            TypeExprConversionKind::ErrorSentinel,
+            "Ty::Error must produce ErrorSentinel kind"
         );
     }
 
@@ -2275,6 +2308,24 @@ mod tests {
     }
 
     #[test]
+    fn test_ty_to_type_expr_range_with_var_is_unresolved_var() {
+        // Range<Ty::Var> must not be silently coerced to Range<i64>; it must
+        // surface as UnresolvedVar so the fail-closed path in compile.rs aborts.
+        use hew_types::ty::TypeVar;
+        let ty = Ty::range(Ty::Var(TypeVar(5)));
+        let err = unwrap_err(ty_to_type_expr(&ty));
+        assert_eq!(
+            err.kind(),
+            TypeExprConversionKind::UnresolvedVar,
+            "Range<Ty::Var> must produce UnresolvedVar, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("Range element type"),
+            "error context should mention Range element type, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_ty_to_type_expr_var_returns_explicit_error() {
         use hew_types::ty::TypeVar;
         let err = unwrap_err(ty_to_type_expr(&Ty::Var(TypeVar(123))));
@@ -2283,6 +2334,36 @@ mod tests {
                 .contains("unresolved type variable reached serializer"),
             "unexpected error: {err}"
         );
+        assert_eq!(
+            err.kind(),
+            TypeExprConversionKind::UnresolvedVar,
+            "Ty::Var must produce UnresolvedVar kind"
+        );
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_generator_returns_unsupported_kind() {
+        let ty = Ty::generator(Ty::I32, Ty::String);
+        let err = unwrap_err(ty_to_type_expr(&ty));
+        assert_eq!(
+            err.kind(),
+            TypeExprConversionKind::Unsupported,
+            "Generator must produce Unsupported kind (not UnresolvedVar or ErrorSentinel)"
+        );
+    }
+
+    #[test]
+    fn test_kind_discriminants_are_distinct() {
+        use hew_types::ty::TypeVar;
+        let var_err = unwrap_err(ty_to_type_expr(&Ty::Var(TypeVar(1))));
+        let sentinel_err = unwrap_err(ty_to_type_expr(&Ty::Error));
+        let unsupported_err = unwrap_err(ty_to_type_expr(&Ty::generator(Ty::I32, Ty::String)));
+        assert_eq!(var_err.kind(), TypeExprConversionKind::UnresolvedVar);
+        assert_eq!(sentinel_err.kind(), TypeExprConversionKind::ErrorSentinel);
+        assert_eq!(unsupported_err.kind(), TypeExprConversionKind::Unsupported);
+        assert_ne!(var_err.kind(), sentinel_err.kind());
+        assert_ne!(var_err.kind(), unsupported_err.kind());
+        assert_ne!(sentinel_err.kind(), unsupported_err.kind());
     }
 
     #[test]
@@ -2354,6 +2435,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -2420,6 +2502,7 @@ mod tests {
                         ))),
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -2499,6 +2582,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -2908,6 +2992,7 @@ mod tests {
                 where_clause: None,
                 body,
                 doc_comment: None,
+                decl_span: 0..0,
             }),
             0..0,
         )
@@ -3046,6 +3131,7 @@ mod tests {
                     where_clause: None,
                     body: make_block_with_expr(len_call),
                     doc_comment: None,
+                    decl_span: 0..0,
                 }],
             }),
             0..0,
@@ -3142,6 +3228,7 @@ mod tests {
                     where_clause: None,
                     body: make_block_with_expr(len_call),
                     doc_comment: None,
+                    decl_span: 0..0,
                 })],
                 doc_comment: None,
                 wire: None,
@@ -4894,6 +4981,7 @@ mod tests {
                             trailing_expr: Some(Box::new(make_int_lit(42))),
                         },
                         doc_comment: None,
+                        decl_span: 0..0,
                     }],
                 }),
                 0..0,
@@ -4996,6 +5084,7 @@ mod tests {
                             trailing_expr: Some(Box::new(make_int_lit(0))),
                         },
                         doc_comment: None,
+                        decl_span: 0..0,
                     })],
                     doc_comment: None,
                     wire: None,
@@ -5088,6 +5177,7 @@ mod tests {
                             trailing_expr: Some(Box::new(make_int_lit(2))),
                         },
                         doc_comment: None,
+                        decl_span: 0..0,
                     }],
                     mailbox_capacity: None,
                     overflow_policy: None,
@@ -5145,6 +5235,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -5291,6 +5382,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],
@@ -5545,6 +5637,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..0,
             )],

@@ -933,6 +933,10 @@ struct FnDecl {
   std::optional<WhereClause> where_clause;
   Block body;
   std::optional<std::string> doc_comment;
+  /// Byte span of the function-name token from the Rust parser.
+  /// Present whenever the AST was produced by a new-enough parser build.
+  /// Used by MLIRGen to emit the correct DW_AT_decl_line for impl methods.
+  std::optional<Span> decl_span;
 };
 
 // ── Items ─────────────────────────────────────────────────────────────────

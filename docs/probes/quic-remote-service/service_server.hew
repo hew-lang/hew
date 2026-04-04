@@ -1,0 +1,58 @@
+// haiku_quic_service_server.hew — Minimal QUIC-based remote service
+//
+// Demonstrates:
+//   - Using std::net::quic public API to bind a QUIC server endpoint
+//   - Accepting a remote connection
+//   - Receiving and sending messages over QUIC streams
+//   - Clean bounded shutdown
+//
+// Run in one terminal:
+//   hew run haiku_quic_service_server.hew
+//
+// Then in another:
+//   hew run haiku_quic_service_client.hew
+
+import std::net::quic;
+
+fn main() {
+    println("[server] starting minimal QUIC service...");
+    
+    // Create a QUIC server endpoint on a fixed address.
+    // Self-signed certificate is auto-generated for development.
+    let ep = quic.new_server(":4433");
+    println("[server] listening on :4433");
+    
+    // Accept one incoming connection.
+    let conn = ep.accept();
+    println("[server] accepted connection");
+    
+    // Accept a stream on that connection.
+    let stream = conn.accept_stream();
+    println("[server] accepted stream");
+    
+    // Receive data from the client.
+    let data = stream.recv();
+    let msg = unsafe { hew_bytes_to_string(data) };
+    println(f"[server] received: {msg}");
+    
+    // Echo back a response.
+    let response = "Echo from server";
+    stream.send(unsafe { hew_string_to_bytes(response) });
+    println("[server] sent response");
+    
+    // Clean shutdown of stream.
+    stream.finish();
+    stream.close();
+    
+    // Clean shutdown of connection.
+    conn.disconnect();
+    
+    // Clean shutdown of endpoint.
+    ep.close();
+    println("[server] shutdown complete");
+}
+
+extern "C" {
+    fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_bytes_to_string(b: bytes) -> String;
+}

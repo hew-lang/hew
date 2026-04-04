@@ -1308,7 +1308,12 @@ impl<'src> Parser<'src> {
         is_pure: bool,
         attributes: Vec<Attribute>,
     ) -> Option<FnDecl> {
+        // Capture the byte position of the name token so the debug pipeline
+        // can emit DW_AT_decl_line pointing at the method declaration rather
+        // than the enclosing impl-block span.
+        let decl_start = self.peek_span().start;
         let name = self.expect_ident()?;
+        let decl_end = self.peek_span().start;
 
         let type_params = self.parse_opt_type_params()?;
 
@@ -1334,6 +1339,7 @@ impl<'src> Parser<'src> {
             where_clause,
             body,
             doc_comment: None,
+            decl_span: decl_start..decl_end,
         })
     }
 

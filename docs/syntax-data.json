@@ -1,5 +1,5 @@
 {
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
   "keywords": {
     "control_flow": [
@@ -213,7 +213,7 @@
       "never",
       "duration"
     ],
-    "collections": ["Vec", "HashMap"],
+    "collections": ["HashMap", "HashSet", "Vec"],
     "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
     "concurrency": [
       "ActorRef",

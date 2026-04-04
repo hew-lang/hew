@@ -1022,6 +1022,39 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
+  // ClosureType → !llvm.struct<(ptr, ptr)>: lower a closure to its storage
+  // representation for struct field initialisation.
+  if (mlir::isa<hew::ClosureType>(value.getType())) {
+    if (auto dstStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(targetType)) {
+      if (!dstStruct.isIdentified() && dstStruct.getBody().size() == 2) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, value);
+        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
+        mlir::Value result = mlir::LLVM::UndefOp::create(builder, location, dstStruct);
+        result = mlir::LLVM::InsertValueOp::create(builder, location, result, fnPtr,
+                                                   llvm::ArrayRef<int64_t>{0});
+        result = mlir::LLVM::InsertValueOp::create(builder, location, result, envPtr,
+                                                   llvm::ArrayRef<int64_t>{1});
+        return result;
+      }
+    }
+  }
+
+  // !llvm.struct<(ptr, ptr)> → ClosureType: reconstruct a closure from its
+  // storage representation when reading a struct field.
+  if (auto dstClosure = mlir::dyn_cast<hew::ClosureType>(targetType)) {
+    if (auto srcStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType())) {
+      if (!srcStruct.isIdentified() && srcStruct.getBody().size() == 2) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto fnPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, location, value, llvm::ArrayRef<int64_t>{0});
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, location, value, llvm::ArrayRef<int64_t>{1});
+        return hew::ClosureCreateOp::create(builder, location, dstClosure, fnPtr, envPtr);
+      }
+    }
+  }
+
   // [T; N] → Vec<T> coercion: create Vec, push each array element
   if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(value.getType())) {
     if (auto vecType = mlir::dyn_cast<hew::VecType>(targetType)) {
@@ -2920,7 +2953,11 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
   }
 
   auto funcType = builder.getFunctionType(paramTypes, resultTypes);
-  auto location = fallbackLoc.value_or(builder.getUnknownLoc());
+  auto location = [&]() -> mlir::Location {
+    if (fn.decl_span && fn.decl_span->end > fn.decl_span->start)
+      return loc(*fn.decl_span);
+    return fallbackLoc.value_or(builder.getUnknownLoc());
+  }();
 
   // Create a declaration (no body) at module scope
   auto savedIP = builder.saveInsertionPoint();
@@ -3158,6 +3195,50 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
   }
 
   structTypes[declName] = std::move(info);
+
+  // Emit module-level metadata for struct fields that need deep-copying at
+  // actor message boundaries.  The lowering pass (deepCopyOwnedArgs) reads
+  // this to clone owned fields (String, Vec, HashMap) inside struct payloads,
+  // recurse into nested structs, and transfer handle ownership.
+  {
+    const auto &regInfo = structTypes[declName];
+    llvm::SmallVector<mlir::Attribute, 4> cloneEntries;
+    for (const auto &field : regInfo.fields) {
+      llvm::StringRef cloneFunc;
+      if (mlir::isa<hew::StringRefType>(field.semanticType))
+        cloneFunc = "strdup";
+      else if (mlir::isa<hew::VecType>(field.semanticType))
+        cloneFunc = "hew_vec_clone";
+      else if (mlir::isa<hew::HashMapType>(field.semanticType))
+        cloneFunc = "hew_hashmap_clone_impl";
+      else if (mlir::isa<hew::ClosureType>(field.semanticType))
+        cloneFunc = "__closure_clone";
+      else if (mlir::isa<hew::HandleType>(field.semanticType))
+        cloneFunc = "__handle_transfer";
+      else if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(
+                   field.semanticType)) {
+        if (fst.isIdentified() && structHasOwnedFields(fst.getName().str()))
+          cloneFunc = "__recurse";
+      }
+      if (!cloneFunc.empty()) {
+        cloneEntries.push_back(mlir::ArrayAttr::get(&context, {
+            builder.getI64IntegerAttr(field.index),
+            builder.getStringAttr(cloneFunc)}));
+      }
+    }
+    if (!cloneEntries.empty()) {
+      auto existing =
+          module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+      llvm::SmallVector<mlir::NamedAttribute> entries;
+      if (existing)
+        for (auto &named : existing)
+          entries.push_back(named);
+      entries.push_back(builder.getNamedAttr(
+          declName, mlir::ArrayAttr::get(&context, cloneEntries)));
+      module->setAttr("hew.struct_clone_fields",
+                      builder.getDictionaryAttr(entries));
+    }
+  }
 
   // Generate serialization functions for struct types with all-encodable fields.
   // Wire types handle their own serialization; skip actors and generic templates.
@@ -4212,7 +4293,15 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     }
   }
 
-  auto location = fallbackLoc.value_or(currentLoc);
+  // Prefer the per-function decl_span captured by the parser (points at the
+  // fn-name token) over the enclosing-item fallbackLoc.  This ensures impl
+  // methods get DW_AT_decl_line pointing at their own declaration line rather
+  // than the impl-block header line.
+  auto location = [&]() -> mlir::Location {
+    if (fn.decl_span && fn.decl_span->end > fn.decl_span->start)
+      return loc(*fn.decl_span);
+    return fallbackLoc.value_or(currentLoc);
+  }();
 
   // Create the function at module scope.
   // When nameOverride is provided, the caller has already mangled the name.
@@ -5636,12 +5725,13 @@ bool MLIRGen::structHasOwnedFields(const std::string &name) const {
   if (it == structTypes.end())
     return false;
   for (const auto &field : it->second.fields) {
-    // Recursive check: use a simplified test — only check Hew-level heap types,
-    // not nested structs (those are handled by recursive field drops).
+    // Recursive check for any field that carries ownership/drop semantics at
+    // actor message boundaries, including transferred handles.
     if (mlir::isa<hew::StringRefType>(field.semanticType) ||
         mlir::isa<hew::VecType>(field.semanticType) ||
         mlir::isa<hew::HashMapType>(field.semanticType) ||
-        mlir::isa<hew::ClosureType>(field.semanticType))
+        mlir::isa<hew::ClosureType>(field.semanticType) ||
+        mlir::isa<hew::HandleType>(field.semanticType))
       return true;
     if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
       if (fst.isIdentified()) {
@@ -5890,12 +5980,129 @@ void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location 
       if (fst.isIdentified())
         fieldIsUserDrop = userDropFuncs.count(fst.getName().str()) > 0;
     mlir::Value dropVal = fieldVal;
+    // Closure fields are stored as !llvm.struct<(ptr, ptr)> — extract the
+    // env pointer (field 1) for the rc_drop, guarded by a null check.
+    if (mlir::isa<hew::ClosureType>(field.semanticType)) {
+      auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType());
+      if (closureSt && !closureSt.isIdentified() && closureSt.getBody().size() == 2) {
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            builder, loc, fieldVal, llvm::ArrayRef<int64_t>{1});
+        auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+        auto isNotNull = mlir::LLVM::ICmpOp::create(
+            builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne,
+            envPtr.getResult(), nullPtr);
+        auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        hew::DropOp::create(builder, loc, envPtr.getResult(), drop, false);
+        builder.setInsertionPointAfter(guard);
+        continue;
+      }
+    }
     if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
       dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
     hew::DropOp::create(builder, loc, dropVal, drop, fieldIsUserDrop);
     // Recursively drop owned fields of nested user-drop structs.
     if (fieldIsUserDrop)
       emitFieldDropsForUserStruct(fieldVal, loc);
+  }
+}
+
+mlir::Value MLIRGen::nullTransferredHandlesInStructValue(mlir::Value structVal,
+                                                         mlir::Location loc) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified())
+    return structVal;
+  auto it = structTypes.find(structTy.getName().str());
+  if (it == structTypes.end())
+    return structVal;
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  mlir::Value rebuilt = structVal;
+  for (const auto &field : it->second.fields) {
+    if (mlir::isa<hew::HandleType>(field.semanticType)) {
+      auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          builder, loc, rebuilt, nullPtr, llvm::ArrayRef<int64_t>{field.index});
+      continue;
+    }
+    if (auto nested = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
+      if (!nested.isIdentified() || !structHasOwnedFields(nested.getName().str()))
+        continue;
+      auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, rebuilt,
+                                              builder.getStringAttr(field.name),
+                                              builder.getI64IntegerAttr(field.index));
+      auto cleared = nullTransferredHandlesInStructValue(fieldVal, loc);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          builder, loc, rebuilt, cleared, llvm::ArrayRef<int64_t>{field.index});
+    }
+  }
+  return rebuilt;
+}
+
+void MLIRGen::nullOutTransferredHandleFields(const std::string &varName,
+                                             mlir::Location loc) {
+  auto internedName = intern(varName);
+  mlir::Value slot = getMutableVarSlot(varName);
+  bool bindingUsesSlot = static_cast<bool>(slot);
+  if (!slot) {
+    for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend() && !slot; ++scopeIt) {
+      for (auto &entry : *scopeIt) {
+        if (entry.varName == varName && entry.promotedSlot) {
+          slot = entry.promotedSlot;
+          break;
+        }
+      }
+    }
+  }
+  if (slot) {
+    auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(slot.getType());
+    if (!memrefTy)
+      return;
+    auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(memrefTy.getElementType());
+    if (!structTy || !structTy.isIdentified())
+      return;
+
+    if (!bindingUsesSlot) {
+      mutableVars.insert(internedName, slot);
+      for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+        for (auto &entry : *scopeIt) {
+          if (entry.varName == varName && entry.promotedSlot == slot)
+            entry.bindingIdentity = slot;
+        }
+      }
+    }
+
+    auto loaded = mlir::memref::LoadOp::create(builder, loc, slot);
+    auto cleared = nullTransferredHandlesInStructValue(loaded, loc);
+    mlir::memref::StoreOp::create(builder, loc, cleared, slot, mlir::ValueRange{});
+    return;
+  }
+
+  auto bound = symbolTable.lookup(internedName);
+  if (!bound)
+    return;
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bound.getType());
+  if (!structTy || !structTy.isIdentified())
+    return;
+
+  auto cleared = nullTransferredHandlesInStructValue(bound, loc);
+  auto semanticType = cleared.getType();
+  auto storageType = toSlotStorageType(semanticType);
+  auto alloca = createHoistedAlloca(storageType, semanticType);
+  auto storedValue = coerceType(cleared, storageType, builder.getUnknownLoc());
+  mlir::memref::StoreOp::create(builder, loc, storedValue, alloca, mlir::ValueRange{});
+  if (storageType != semanticType)
+    slotSemanticTypes[alloca] = semanticType;
+  mutableVars.insert(internedName, alloca);
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+    for (auto &entry : *scopeIt) {
+      if (entry.varName == varName && !entry.promotedSlot) {
+        entry.promotedSlot = alloca;
+        entry.bindingIdentity = alloca;
+        return;
+      }
+    }
   }
 }
 

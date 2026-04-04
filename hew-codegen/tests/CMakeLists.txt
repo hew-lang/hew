@@ -120,9 +120,30 @@ endif()
 
 find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
 find_program(HEW_LLDB NAMES lldb)
+if(APPLE)
+  find_program(HEW_ATOS NAMES atos)
+  find_program(HEW_NM NAMES nm llvm-nm)
+endif()
 find_program(HEW_ADDR2LINE NAMES addr2line llvm-addr2line)
 find_program(HEW_LLVM_SYMBOLIZER NAMES llvm-symbolizer)
-find_program(HEW_NM NAMES llvm-nm nm)
+if(UNIX AND NOT APPLE)
+  find_program(HEW_NM NAMES llvm-nm nm)
+endif()
+find_program(HEW_PYTHON3 NAMES python3)
+
+# Absolute path to the Hew LLDB Python extension used by both LLDB tests.
+set(HEW_LLDB_SCRIPT "${CMAKE_SOURCE_DIR}/../scripts/debug/hew_lldb.py")
+
+# Pattern-unit test: runs outside LLDB; catches regex false-positive regressions.
+if(HEW_PYTHON3)
+  add_test(
+    NAME hew_lldb_pattern_unit
+    COMMAND ${HEW_PYTHON3}
+      ${CMAKE_SOURCE_DIR}/../scripts/debug/test_hew_lldb_patterns.py
+  )
+else()
+  message(STATUS "Skipping hew_lldb_pattern_unit — python3 not found")
+endif()
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
@@ -165,6 +186,10 @@ add_e2e_test(actor_lambda test_actor_lambda.hew "42\n100\n")
 add_e2e_test(arrow_send test_arrow_send.hew "42\n100\n")
 add_e2e_test(actor_state test_actor_state.hew "60\n3\n")
 add_e2e_test(actor_hashmap_ownership test_actor_hashmap_ownership.hew "true\ntrue\n")
+add_e2e_test(actor_struct_message test_actor_struct_message.hew "alpha:10\nbeta:20\n30\n")
+add_e2e_test(actor_nested_struct_message test_actor_nested_struct_message.hew "first:10\nsecond:25\n35\n")
+add_e2e_test(actor_closure_struct_message test_actor_closure_struct_message.hew "105\n105\n")
+add_e2e_test(actor_nested_handle_struct_message test_actor_nested_handle_struct_message.hew "false\ntrue\nfalse\n")
 add_e2e_test(vec_basic test_vec_basic.hew "3\n10\n20\n30\n60\n")
 add_e2e_test(vec_append test_vec_append.hew "5\n1\n4\n5\n1\n99\n")
 add_e2e_test(else_if test_else_if.hew "2\n-1\n0\n")
@@ -287,7 +312,7 @@ if(HEW_DWARFDUMP)
       -DDWARFDUMP=${HEW_DWARFDUMP}
       -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_linked_binary${HEW_EXE_SUFFIX}
-      -DEXPECTED_SYMBOL_LINES=Pair.sum|10,add|16,main|20
+      -DEXPECTED_SYMBOL_LINES=Pair.sum|11,add|16,main|20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
   )
   # W-1 COFF DWARF smoke: emits an x86_64-pc-windows-msvc object from the same
@@ -313,9 +338,7 @@ else()
 endif()
 
 if(HEW_LLDB)
-  # Keep this on main's declaration line for now: the current DWARF line table
-  # reliably maps function entry/declaration lines, while symbol-name
-  # breakpoints like `breakpoint set -n Pair.sum` remain a known gap.
+  # File/line breakpoint: verifies the DWARF line table maps main() correctly.
   add_test(
     NAME lldb_smoke_linked_binary
     COMMAND ${CMAKE_COMMAND}
@@ -326,8 +349,45 @@ if(HEW_LLDB)
       -DBREAKPOINT_LINE=20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_smoke_test.cmake
   )
+
+  # Name-breakpoint parity: verifies that
+  #   - plain -n add resolves via DW_AT_name (already worked before this slice)
+  #   - hew-break Pair.sum resolves via the Hew mangled-symbol regex helper
+  add_test(
+    NAME lldb_name_breakpoint_parity
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DLLDB=${HEW_LLDB}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/lldb_name_bp_parity${HEW_EXE_SUFFIX}
+      -DHEW_LLDB_SCRIPT=${HEW_LLDB_SCRIPT}
+      -DEXPECTED_ADD_LINE=16
+      -DEXPECTED_SUM_LINE=11
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_name_breakpoint_parity_test.cmake
+  )
 else()
   message(STATUS "Skipping LLDB smoke test — lldb not found")
+endif()
+
+if(APPLE)
+  if(HEW_ATOS AND HEW_NM)
+    # Native Darwin symbolizers still report raw Hew mangled names for
+    # non-main frames. This smoke test uses those raw symbols only to locate
+    # addresses, then asserts the file:line symbolization that already works.
+    add_test(
+      NAME dwarf_atos_smoke
+      COMMAND ${CMAKE_COMMAND}
+        -DHEW_CLI=${HEW_CLI}
+        -DATOS=${HEW_ATOS}
+        -DNM_TOOL=${HEW_NM}
+        -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+        -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_atos_smoke${HEW_EXE_SUFFIX}
+        -DEXPECTED_SYMBOL_LINES=__HM19dwarf_linked_binaryT4PairF3sum|11,__HM19dwarf_linked_binaryF3add|16,_main|20
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_atos_smoke_test.cmake
+    )
+  else()
+    message(STATUS "Skipping Darwin atos smoke test — atos or nm not found")
+  endif()
 endif()
 
 if(UNIX AND NOT APPLE)
@@ -355,7 +415,7 @@ if(UNIX AND NOT APPLE)
         -DSYMBOLIZER_MODE=${HEW_LINUX_SYMBOLIZER_MODE}
         -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
         -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/linux_symbolizer_smoke_linked_binary${HEW_EXE_SUFFIX}
-        -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|10,_HM19dwarf_linked_binaryF3add|16,main|20
+        -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|11,_HM19dwarf_linked_binaryF3add|16,main|20
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_linux_symbolizer_smoke_test.cmake
     )
   else()
@@ -1120,10 +1180,20 @@ add_wasm_file_test(async_sequential               e2e_concurrency  async_sequent
 
 # Actors (native tests that also pass under WASM single-threaded scheduler)
 add_wasm_file_test(actor_counter              e2e_actors       actor_counter)
+add_wasm_file_test(actor_field_mutation       e2e_actors       actor_field_mutation)
 add_wasm_file_test(actor_lifecycle            e2e_actors       actor_lifecycle)
+add_wasm_file_test(actor_message_ordering     e2e_actors       actor_message_ordering)
 add_wasm_file_test(actor_orchestration        e2e_actors       actor_orchestration)
 add_wasm_file_test(actor_pipeline             e2e_actors       actor_pipeline)
+add_wasm_file_test(actor_result_return        e2e_actors       actor_result_return)
 add_wasm_file_test(await_actor_ask            e2e_actors       await_actor_ask)
+add_wasm_file_test(close_await_actor          e2e_actors       close_await_actor)
+add_wasm_file_test(close_await_multi          e2e_actors       close_await_multi)
+add_wasm_file_test(fan_out_fan_in             e2e_actors       fan_out_fan_in)
+add_wasm_file_test(lambda_actor_patterns      e2e_actors       lambda_actor_patterns)
+add_wasm_file_test(ping_pong                  e2e_actors       ping_pong)
+add_wasm_file_test(actor_terminate            e2e_actors       actor_terminate)
+add_wasm_file_test(actor_terminate_fields     e2e_actors       actor_terminate_fields)
 add_wasm_file_test(actor_ask_ownership_unregister  e2e_actor_drop   actor_ask_ownership_unregister)
 add_wasm_file_test(actor_ask_hashset_drop          e2e_actor_drop   actor_ask_hashset_drop)
 add_wasm_file_test(actor_ask_vec_string_drop       e2e_actor_drop   actor_ask_vec_string_drop)
@@ -1146,6 +1216,9 @@ add_wasm_file_test(actor_ref_passing   e2e_actors wasm_actor_ref_passing)
 add_wasm_file_test(actor_multi_receive e2e_actors wasm_actor_multi_receive)
 add_wasm_file_test(actor_self          e2e_actors wasm_actor_self)
 add_wasm_file_test(actor_capture       e2e_actors wasm_actor_capture)
+add_wasm_file_test(actor_struct_message          e2e_actors wasm_actor_struct_message)
+add_wasm_file_test(actor_nested_struct_message   e2e_actors wasm_actor_nested_struct_message)
+add_wasm_file_test(actor_closure_struct_message  e2e_actors wasm_actor_closure_struct_message)
 
 # WASM reject tests (verify unsupported ops produce compile errors)
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "is not supported on WASM")

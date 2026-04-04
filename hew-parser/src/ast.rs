@@ -645,6 +645,11 @@ pub struct FnDecl {
     pub where_clause: Option<WhereClause>,
     pub body: Block,
     pub doc_comment: Option<String>,
+    /// Byte span covering the function-name token, populated by the parser.
+    /// Used by the debug-info pipeline to emit the correct `DW_AT_decl_line`
+    /// for impl methods instead of inheriting the enclosing impl-block span.
+    #[serde(default)]
+    pub decl_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

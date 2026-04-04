@@ -471,6 +471,117 @@ static mlir::Value emitEntryAlloca(mlir::ConversionPatternRewriter &rewriter, ml
 /// the message buffer holds independently-owned data. Without this, the
 /// sender's scope-exit drops would free memory while the receiver still holds
 /// dangling references.
+
+/// Recursively deep-copy owned fields inside an identified LLVM struct,
+/// using the hew.struct_clone_fields module attribute emitted by MLIRGen.
+/// Returns the struct value with all owned fields replaced by fresh clones.
+/// Handle fields are kept as-is (ownership transfer); the caller is
+/// responsible for nulling them in the source memory if needed.
+static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewriter,
+                                        mlir::Location loc, mlir::ModuleOp module,
+                                        mlir::Value structVal,
+                                        mlir::DictionaryAttr cloneAttr) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified() || !cloneAttr)
+    return structVal;
+  auto fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
+  if (!fieldClones || fieldClones.empty())
+    return structVal;
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  mlir::Value rebuilt = structVal;
+  for (auto entry : fieldClones) {
+    auto pair = mlir::cast<mlir::ArrayAttr>(entry);
+    auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
+    auto cloneFunc = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
+
+    if (cloneFunc == "__handle_transfer") {
+      // Handle fields transfer ownership without cloning — the pointer
+      // goes to the receiver as-is.  Source null-out happens after the
+      // full struct is rebuilt (see deepCopyOwnedArgs).
+      continue;
+    }
+
+    auto fieldVal = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, rebuilt, llvm::ArrayRef<int64_t>{fieldIdx});
+
+    if (cloneFunc == "__recurse") {
+      auto clonedField = deepCopyStructFields(rewriter, loc, module, fieldVal, cloneAttr);
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, rebuilt, clonedField, llvm::ArrayRef<int64_t>{fieldIdx});
+    } else if (cloneFunc == "__closure_clone") {
+      // Closure fields are !llvm.struct<(ptr, ptr)> — extract env ptr,
+      // clone it via hew_rc_clone, rebuild the closure struct.
+      auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType());
+      if (closureType && closureType.getBody().size() == 2) {
+        auto fnPtr = mlir::LLVM::ExtractValueOp::create(
+            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{0}).getResult();
+        auto envPtr = mlir::LLVM::ExtractValueOp::create(
+            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{1}).getResult();
+        auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+        getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
+        auto clonedEnv = mlir::func::CallOp::create(
+            rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType},
+            mlir::ValueRange{envPtr});
+        mlir::Value newClosure = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+        newClosure = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, newClosure, fnPtr, llvm::ArrayRef<int64_t>{0});
+        newClosure = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, newClosure, clonedEnv.getResult(0), llvm::ArrayRef<int64_t>{1});
+        rebuilt = mlir::LLVM::InsertValueOp::create(
+            rewriter, loc, rebuilt, newClosure, llvm::ArrayRef<int64_t>{fieldIdx});
+      }
+    } else {
+      auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);
+      auto clonedField = mlir::func::CallOp::create(
+          rewriter, loc, cloneFunc, mlir::TypeRange{ptrType}, mlir::ValueRange{fieldVal});
+      rebuilt = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, rebuilt, clonedField.getResult(0),
+          llvm::ArrayRef<int64_t>{fieldIdx});
+    }
+  }
+  return rebuilt;
+}
+
+/// Null out handle fields inside a struct value stored at a memory
+/// address, so the sender's drop becomes a no-op for transferred handles.
+static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter,
+                                      mlir::Location loc, mlir::Value structAddr,
+                                      mlir::LLVM::LLVMStructType structTy,
+                                      mlir::DictionaryAttr cloneAttr) {
+  if (!cloneAttr)
+    return;
+  auto fieldClones = cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName());
+  if (!fieldClones)
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  for (auto entry : fieldClones) {
+    auto pair = mlir::cast<mlir::ArrayAttr>(entry);
+    auto fieldIdx = mlir::cast<mlir::IntegerAttr>(pair[0]).getInt();
+    auto tag = mlir::cast<mlir::StringAttr>(pair[1]).getValue();
+    auto fieldPtr = mlir::LLVM::GEPOp::create(
+        rewriter, loc, ptrType, structTy, structAddr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
+    if (tag == "__recurse") {
+      auto bodyTypes = structTy.getBody();
+      if (fieldIdx < 0 || static_cast<size_t>(fieldIdx) >= bodyTypes.size())
+        continue;
+      auto nestedStructTy =
+          mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyTypes[fieldIdx]);
+      if (!nestedStructTy || !nestedStructTy.isIdentified())
+        continue;
+      nullOutStructHandleFields(rewriter, loc, fieldPtr, nestedStructTy, cloneAttr);
+      continue;
+    }
+    if (tag != "__handle_transfer")
+      continue;
+    // GEP to the handle field inside the source struct and store null.
+    auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+    mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, fieldPtr);
+  }
+}
+
 static llvm::SmallVector<mlir::Value, 4>
 deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
                   mlir::ModuleOp module, mlir::ValueRange originalArgs,
@@ -530,6 +641,24 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
       if (auto loadOp = convArg.getDefiningOp<mlir::LLVM::LoadOp>()) {
         auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, convArg.getType());
         mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, loadOp.getAddr());
+      }
+    } else if (auto structTy =
+                   mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType())) {
+      // Identified structs may contain owned fields (String, Vec, HashMap)
+      // and/or nested structs with owned fields.  Use the module attribute
+      // emitted by MLIRGen and the recursive deepCopyStructFields helper.
+      if (structTy.isIdentified()) {
+        auto cloneAttr =
+            module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+        auto cloned = deepCopyStructFields(rewriter, loc, module, convArg, cloneAttr);
+        result.push_back(cloned);
+        // If the struct contains handle fields, null them out in the
+        // sender's backing memory so the sender's drop is a no-op for
+        // those transferred handles.
+        if (auto loadOp = convArg.getDefiningOp<mlir::LLVM::LoadOp>())
+          nullOutStructHandleFields(rewriter, loc, loadOp.getAddr(), structTy, cloneAttr);
+      } else {
+        result.push_back(convArg);
       }
     } else {
       result.push_back(convArg);
@@ -1717,20 +1846,33 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto handlerType = handlerFunc.getFunctionType();
       auto numHandlerArgs = handlerType.getNumInputs();
 
+      // Ensure param/result types are lowered to LLVM types via the
+      // type converter — the handler func.func may not have been
+      // signature-converted yet when this pattern fires.
+      auto *tc = getTypeConverter();
+      auto lowerType = [&](mlir::Type t) -> mlir::Type {
+        if (mlir::isa<mlir::LLVM::LLVMPointerType, mlir::LLVM::LLVMStructType,
+                      mlir::IntegerType, mlir::FloatType, mlir::IndexType>(t))
+          return t;
+        if (auto c = tc->convertType(t))
+          return c;
+        return t;
+      };
+
       if (numHandlerArgs > 1) {
         // Handler has message parameters (beyond the state pointer)
         auto numMsgParams = numHandlerArgs - 1;
 
         if (numMsgParams == 1) {
           // Single param: data points directly to the value
-          auto paramType = handlerType.getInput(1);
+          auto paramType = lowerType(handlerType.getInput(1));
           auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, paramType, dataVal);
           callArgs.push_back(loaded);
         } else {
           // Multiple params: data points to a packed struct
           llvm::SmallVector<mlir::Type, 4> fieldTypes;
           for (unsigned pi = 1; pi < numHandlerArgs; ++pi) {
-            fieldTypes.push_back(handlerType.getInput(pi));
+            fieldTypes.push_back(lowerType(handlerType.getInput(pi)));
           }
           auto packType = mlir::LLVM::LLVMStructType::getLiteral(rewriter.getContext(), fieldTypes);
 
@@ -1743,6 +1885,11 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         }
       }
 
+      // Build the lowered result types for the call.
+      llvm::SmallVector<mlir::Type, 1> loweredResults;
+      for (auto rt : handlerType.getResults())
+        loweredResults.push_back(lowerType(rt));
+
       // Ensure handler function is declared
       getOrInsertFuncDecl(module, rewriter, handlerName, handlerType);
 
@@ -1752,11 +1899,12 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto getReplyFuncType = rewriter.getFunctionType({}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_get_reply_channel", getReplyFuncType);
 
-      bool hasReturnType = handlerType.getNumResults() > 0;
+      bool hasReturnType = !loweredResults.empty();
       if (hasReturnType) {
-        // Call handler and capture return value
+        // Call handler and capture return value (use lowered result types
+        // so AllocaOp/emitSizeOf always receive LLVM-legal types).
         auto callOp = mlir::func::CallOp::create(rewriter, loc, handlerName,
-                                                 handlerType.getResults(), callArgs);
+                                                 loweredResults, callArgs);
         auto resultVal = callOp.getResult(0);
         auto resultType = resultVal.getType();
 

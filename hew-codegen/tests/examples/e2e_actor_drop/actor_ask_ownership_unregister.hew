@@ -5,10 +5,10 @@
 //
 // Token has a custom impl Drop that prints "drop:<id>".
 // Before the fix, the sender retained a DropEntry for `tok`, which caused
-// "drop:7" to appear AFTER "done" (sender scope-exit fires after the ask
-// returns, i.e. after ownership is gone → wrong).
-// With the fix, unregisterDroppable removes the entry and "drop:7" does
-// NOT appear after "done".
+// a second drop to appear AFTER "done" when the sender scope exited.
+// With the fix, ownership transfers cleanly: the receiver drops `t` at
+// handler scope exit, so "drop:7" appears once before the await result is
+// printed, and never again after "done".
 
 type Token {
     id: int;
@@ -30,8 +30,9 @@ fn main() {
     let v = spawn Vault;
     let tok = Token { id: 7 };
     let n = await v.store(tok);
-    // If unregisterDroppable did NOT fire, "drop:7" would appear here,
-    // indicating the sender still owns (and drops) a value it transferred.
+    // The receiver-side drop runs before the reply is observed here.
+    // If unregisterDroppable did NOT fire, a second "drop:7" would appear
+    // after "done", indicating the sender still owned the transferred value.
     println(n);
     println("done");
 }

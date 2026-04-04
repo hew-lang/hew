@@ -235,6 +235,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     doc_comment: None,
+                    decl_span: 0..0,
                 }),
                 0..50,
             )],

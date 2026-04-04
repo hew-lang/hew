@@ -1107,6 +1107,113 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Statement-style match always emits a runtime trap on the unmatched path
+//
+// Every conditional arm in a statement-style match must have an else region
+// that either chains to the next arm or traps — never silently falls through.
+// The regression exercises two shapes:
+//   (a) An exhaustive enum variant match where the last arm is still lowered
+//       through generateTagMatch (enum-variant arms are always conditional).
+//   (b) A bool literal match — same issue: last literal arm has no else.
+// Both should emit at least one hew.panic after the fix.
+// ============================================================================
+static void test_stmt_match_last_arm_emits_panic() {
+  TEST(stmt_match_last_arm_emits_panic);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // (a) Exhaustive two-variant enum: the 'Done' arm is the last conditional.
+  auto module = generateMLIR(ctx, R"(
+enum Status {
+    Active;
+    Done;
+}
+
+fn stmt_enum_match(s: Status) {
+    match s {
+        Active => println(1),
+        Done => println(2),
+    }
+}
+
+fn main() {
+    stmt_enum_match(Active);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed (enum variant case)");
+    return;
+  }
+
+  auto enumFn = lookupFuncBySuffix(module, "stmt_enum_match");
+  if (!enumFn) {
+    FAIL("stmt_enum_match function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The 'Done' arm is the last conditional arm.  Its else path must trap so
+  // that a corrupt/unexpected discriminant value doesn't silently fall through.
+  if (countPanicOps(enumFn) < 1) {
+    FAIL("last conditional arm of a statement-style match must emit hew.panic in its else path");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(enumFn) != 0) {
+    FAIL("statement-style enum match should not produce resultful scf.if ops");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+
+  // (b) Bool literal match: last arm is 'false' — a literal pattern that
+  //     generateTagMatch handles, producing no else without the fix.
+  auto module2 = generateMLIR(ctx, R"(
+fn stmt_bool_match(x: bool) {
+    match x {
+        true => println(1),
+        false => println(2),
+    }
+}
+
+fn main() {
+    stmt_bool_match(true);
+}
+  )");
+
+  if (!module2) {
+    FAIL("MLIR generation failed (bool literal case)");
+    return;
+  }
+
+  auto boolFn = lookupFuncBySuffix(module2, "stmt_bool_match");
+  if (!boolFn) {
+    FAIL("stmt_bool_match function not found");
+    module2.getOperation()->destroy();
+    return;
+  }
+
+  if (countPanicOps(boolFn) < 1) {
+    FAIL("last conditional arm of bool literal match must emit hew.panic in its else path");
+    module2.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(boolFn) != 0) {
+    FAIL("statement-style bool literal match should not produce resultful scf.if ops");
+    module2.getOperation()->destroy();
+    return;
+  }
+
+  module2.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Trailing void if/match use statement lowering
 // ============================================================================
 static void test_void_trailing_if_match_stmt_lowering() {
@@ -1605,6 +1712,7 @@ fn main() -> int {
     let m = Big(9);
     match m {
         Big(x) if x > 0 => 1,
+        Big(_) => 0,
         Text(s) => 2,
         Int(_) => 3,
         Unit => 4
@@ -2665,6 +2773,7 @@ int main() {
   test_function_calls();
   test_void_function();
   test_void_trailing_if_match_stmt_lowering();
+  test_stmt_match_last_arm_emits_panic();
   test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

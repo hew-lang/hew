@@ -1,0 +1,35 @@
+// Regression test: struct containing a closure field passed as an
+// actor receive fn parameter.  Exercises deep-copy of closure env
+// (hew_rc_clone on the env ptr) inside a struct at the actor boundary.
+type Job {
+    id: int;
+    action: fn(int) -> int;
+}
+
+actor Runner {
+    let last: int;
+
+    receive fn run(job: Job) {
+        {
+            let f = job.action;
+            println(f(job.id));
+        };
+        let g = job.action;
+        last = g(job.id);
+    }
+
+    receive fn get_last() -> int {
+        last
+    }
+}
+
+fn main() {
+    let offset = 100;
+    let r = spawn Runner(last: 0);
+    let action = (x: int) -> int => x + offset;
+    let j = Job { id: 5, action: action };
+    r.run(j);
+    sleep_ms(100);
+    let v = await r.get_last();
+    println(v);
+}

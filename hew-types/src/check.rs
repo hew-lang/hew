@@ -9070,16 +9070,90 @@ impl Checker {
         false
     }
 
-    /// Structural-bounds check for compositional interfaces (Stage 1 / E2).
+    /// Strip a known module qualifier from a name, e.g. `"json.Value"` → `"Value"`.
+    /// Returns `None` if the prefix is not a known module or there is no dot.
+    fn strip_module_qualifier<'a>(&self, name: &'a str) -> Option<&'a str> {
+        let dot = name.find('.')?;
+        let prefix = &name[..dot];
+        if self.modules.contains(prefix) {
+            Some(&name[dot + 1..])
+        } else {
+            None
+        }
+    }
+
+    /// Collect all required (non-default, non-generic-method) method names from
+    /// `trait_name` and its entire super-trait chain.
     ///
-    /// Returns `true` when **all** required (non-default) methods of the trait are
-    /// present on the concrete type with compatible signatures.  The following guards
-    /// from E1 are preserved:
+    /// Returns `None` if any trait in the chain has associated types or generic
+    /// methods (the E1 guards), which disqualifies the whole structural check.
+    fn collect_structural_required_methods(
+        &self,
+        trait_name: &str,
+        visited: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        if visited.iter().any(|v| v == trait_name) {
+            return Some(vec![]);
+        }
+        visited.push(trait_name.to_string());
+
+        let trait_info = self.trait_defs.get(trait_name)?.clone();
+
+        // E1 guard: associated types require an explicit impl alias scope.
+        if !trait_info.associated_types.is_empty() {
+            return None;
+        }
+        // E1 guard: generic methods require per-call substitution (later slice).
+        if trait_info
+            .methods
+            .iter()
+            .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
+        {
+            return None;
+        }
+
+        let mut required: Vec<String> = trait_info
+            .methods
+            .iter()
+            .filter(|m| m.body.is_none())
+            .map(|m| m.name.clone())
+            .collect();
+
+        // Walk super-traits — clone to release borrow.
+        let supers: Vec<String> = self
+            .trait_super
+            .get(trait_name)
+            .cloned()
+            .unwrap_or_default();
+        for super_trait in &supers {
+            let super_required = self.collect_structural_required_methods(super_trait, visited)?;
+            for m in super_required {
+                if !required.contains(&m) {
+                    required.push(m);
+                }
+            }
+        }
+
+        Some(required)
+    }
+
+    /// Structural-bounds check for compositional interfaces (Stage 1 / E2 + hardening).
     ///
-    /// * **Associated-type guard** — traits that declare associated types are not
-    ///   handled structurally; an explicit `impl` alias scope is required.
-    /// * **Generic-method guard** — traits with per-method type parameters are not
-    ///   handled structurally; per-call substitution belongs in a later slice.
+    /// Returns `true` when **all** required (non-default) methods of the trait **and
+    /// its super-trait chain** are present on the concrete type with compatible
+    /// signatures.  The following guards from E1 are preserved across the whole chain:
+    ///
+    /// * **Associated-type guard** — traits that declare associated types (anywhere in
+    ///   the super-trait chain) are not handled structurally; an explicit `impl` alias
+    ///   scope is required.
+    /// * **Generic-method guard** — traits with per-method type parameters (anywhere in
+    ///   the chain) are not handled structurally; per-call substitution belongs in a
+    ///   later slice.
+    ///
+    /// Both `type_name` and `trait_name` are normalised: a module-qualified name such
+    /// as `"json.Value"` or `"fmt.Display"` is resolved to its unqualified form before
+    /// lookup so that the structural path behaves consistently with the nominal path
+    /// in `type_implements_trait`.
     ///
     /// Signature compatibility (E2 definition):
     /// * Same number of non-receiver parameters.
@@ -9088,53 +9162,50 @@ impl Checker {
     ///
     /// `dyn Trait` / vtable / codegen is explicitly out of scope.
     fn type_structurally_satisfies(&mut self, type_name: &str, trait_name: &str) -> bool {
-        // Clone trait_info upfront to release the immutable borrow on self.trait_defs before
-        // any later &mut self calls (lookup_trait_method takes &mut self).
-        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
+        // Normalize module-qualified names so "json.Value" is treated the same as
+        // "Value" when the structural registry is keyed on the unqualified form.
+        // Convert to owned strings immediately so the shared borrow on self ends
+        // before any &mut self calls below.
+        let trait_name: String = {
+            let uq = self.strip_module_qualifier(trait_name);
+            match uq {
+                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                _ => trait_name.to_string(),
+            }
+        };
+        let type_name: String = {
+            let uq = self.strip_module_qualifier(type_name);
+            match uq {
+                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                _ => type_name.to_string(),
+            }
+        };
+
+        // Collect required methods across the full super-trait chain.
+        // Returns None if any E1 guard triggers anywhere in the chain.
+        let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())
+        else {
             return false;
         };
 
-        // E1 guard: associated types require an explicit impl alias scope.
-        if !trait_info.associated_types.is_empty() {
-            return false;
-        }
-
-        // E1 guard: generic methods require per-call substitution (later slice).
-        if trait_info
-            .methods
-            .iter()
-            .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
-        {
-            return false;
-        }
-
-        // Collect required (non-default) method names.
-        // Default methods have a body in the trait declaration; required ones do not.
-        let required: Vec<String> = trait_info
-            .methods
-            .iter()
-            .filter(|m| m.body.is_none())
-            .map(|m| m.name.clone())
-            .collect();
-
-        // Conservative: a trait with no required methods (all default or zero methods)
-        // is not considered structurally satisfied — an explicit impl is still needed.
-        // This keeps marker-like and all-default traits on the nominal path.
+        // Conservative: a trait with no required methods (all default or zero methods,
+        // even after walking the super-trait chain) is not considered structurally
+        // satisfied — an explicit impl is still needed.
         if required.is_empty() {
             return false;
         }
 
         // The concrete type, used for Self substitution in trait signatures.
         let concrete_ty = Ty::Named {
-            name: type_name.to_string(),
+            name: type_name.clone(),
             args: vec![],
         };
-        let type_name_owned = type_name.to_string();
+        let type_name_owned = type_name.clone();
 
         for method_name in &required {
             // Resolve the trait method's expected signature.
             // lookup_trait_method strips the receiver and walks super-traits.
-            let Some(trait_sig) = self.lookup_trait_method(trait_name, method_name) else {
+            let Some(trait_sig) = self.lookup_trait_method(&trait_name, method_name) else {
                 return false;
             };
 
@@ -9817,12 +9888,12 @@ impl Checker {
         match scrutinee_ty {
             Ty::Named { name, .. } if name == "Option" => {
                 if !Self::has_both_constructor_variants(arms, "Some", "None") {
-                    self.warn_non_exhaustive(span, "Option requires Some and None arms");
+                    self.error_non_exhaustive(span, "Option requires Some and None arms");
                 }
             }
             Ty::Named { name, .. } if name == "Result" => {
                 if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
-                    self.warn_non_exhaustive(span, "Result requires Ok and Err arms");
+                    self.error_non_exhaustive(span, "Result requires Ok and Err arms");
                 }
             }
             Ty::Named { name, .. } => {
@@ -9862,7 +9933,7 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.warn_non_exhaustive(
+                            self.error_non_exhaustive(
                                 span,
                                 &format!("missing {}", names.join(", ")),
                             );
@@ -9906,7 +9977,7 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.warn_non_exhaustive(
+                            self.error_non_exhaustive(
                                 span,
                                 &format!("missing {}", names.join(", ")),
                             );
@@ -9936,7 +10007,7 @@ impl Checker {
                     });
                 }
                 if !has_binding_identifier && (!has_true || !has_false) {
-                    self.warn_non_exhaustive(span, "missing bool variant");
+                    self.error_non_exhaustive(span, "missing bool variant");
                 }
             }
             _ => {
@@ -9962,6 +10033,22 @@ impl Checker {
         }
     }
 
+    /// Emit a hard error for genuinely non-exhaustive enum-like matches (Option, Result,
+    /// user enums, machines, bool).  These are fail-closed: missing variants are a
+    /// correctness issue, not just a style suggestion.
+    fn error_non_exhaustive(&mut self, span: &Span, detail: &str) {
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::NonExhaustiveMatch,
+            span: span.clone(),
+            message: format!("non-exhaustive match: {detail}"),
+            notes: vec![],
+            suggestions: vec![],
+        });
+    }
+
+    /// Emit a soft warning for scalar / open-ended types where adding a wildcard `_`
+    /// arm is a style suggestion rather than a correctness requirement.
     fn warn_non_exhaustive(&mut self, span: &Span, detail: &str) {
         self.warnings.push(TypeError {
             severity: crate::error::Severity::Warning,
@@ -10130,6 +10217,7 @@ mod tests {
             where_clause: None,
             body,
             doc_comment: None,
+            decl_span: 0..0,
         };
         let program = Program {
             module_graph: None,
@@ -10374,6 +10462,7 @@ mod tests {
                 trailing_expr: None,
             },
             doc_comment: None,
+            decl_span: 0..0,
         };
 
         let program = Program {
@@ -10960,25 +11049,30 @@ mod tests {
     }
 
     #[test]
-    fn typecheck_match_statement_missing_variant_warns() {
+    fn typecheck_match_statement_missing_variant_errors() {
         let (errors, warnings) = parse_and_check(concat!(
             "enum Light { Red; Green; }\n",
             "fn main() { let v: Light = Red; match v { Red => 1, } let _done = 0; }\n",
         ));
         assert!(
-            errors.is_empty(),
-            "expected only a warning but got errors: {errors:?}"
-        );
-        assert!(
             warnings
                 .iter()
-                .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
-            "expected non-exhaustive match warning, got: {warnings:?}"
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "non-exhaustive enum match must not be a warning: {warnings:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
         );
     }
 
     #[test]
     fn typecheck_guarded_wildcard_not_exhaustive() {
+        // A guarded wildcard (`_ if false`) does not count as an exhaustive arm;
+        // matching bool with only that arm leaves both `true` and `false` uncovered.
+        // Bool is enum-like, so this is a hard error.
         let (errors, warnings) = parse_and_check(concat!(
             "fn main() {\n",
             "    let x = true;\n",
@@ -10989,14 +11083,44 @@ mod tests {
             "}\n",
         ));
         assert!(
-            errors.is_empty(),
-            "expected only a warning but got errors: {errors:?}"
+            warnings
+                .iter()
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "non-exhaustive bool match must not be a warning: {warnings:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
+        );
+    }
+
+    /// Scalar types (int, float, string, …) have no closed variant set, so a
+    /// missing catch-all should remain a *warning*, not an error.
+    #[test]
+    fn typecheck_scalar_missing_catchall_is_warning_not_error() {
+        let (errors, warnings) = parse_and_check(concat!(
+            "fn main() {\n",
+            "    let x: int = 5;\n",
+            "    match x {\n",
+            "        1 => 10,\n",
+            "        2 => 20,\n",
+            "    }\n",
+            "    let _done = 0;\n",
+            "}\n",
+        ));
+        assert!(
+            errors
+                .iter()
+                .all(|e| !matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "scalar missing catch-all must not be an error: {errors:?}"
         );
         assert!(
             warnings
                 .iter()
                 .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
-            "expected non-exhaustive match warning, got: {warnings:?}"
+            "scalar missing catch-all must be a warning: {warnings:?}"
         );
     }
 
@@ -11999,6 +12123,7 @@ fn main() {
                 trailing_expr: Some(Box::new(make_int_literal(0, 0..1))),
             },
             doc_comment: None,
+            decl_span: 0..0,
         }
     }
 
@@ -12026,6 +12151,7 @@ fn main() {
                 trailing_expr: Some(Box::new(make_int_literal(0, 0..1))),
             },
             doc_comment: None,
+            decl_span: 0..0,
         }
     }
 
@@ -12858,6 +12984,7 @@ fn main() {
                 trailing_expr: None,
             },
             doc_comment: None,
+            decl_span: 0..0,
         });
 
         let private_const = Item::Const(ConstDecl {
@@ -14804,6 +14931,294 @@ fn main() {
                 .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
             "all-default-method trait must require explicit impl; got: {:?}",
             output.errors
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Structural-hardening tests (qualified names + super-trait walk)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn structural_hardening_qualified_trait_name_matches() {
+        // A type registered under "Speaker" must structurally satisfy a bound
+        // expressed as "greet.Greet" once "greet" is a known module.
+        // We build the checker state manually because check_program drains
+        // type_defs/fn_sigs at the end of the pass.
+        let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+        checker.modules.insert("greet".to_string());
+
+        // Register a TypeDef for Speaker.  The trait `hello(val: Self)` has its
+        // receiver stripped by lookup_trait_method, so the effective trait_sig has
+        // params=[].  The concrete method entry must match: receiver already stripped.
+        let type_def = TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Speaker".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: {
+                let mut m = HashMap::new();
+                m.insert("hello".to_string(), FnSig::default()); // params=[], return=Unit
+                m
+            },
+            doc_comment: None,
+            is_indirect: false,
+        };
+        checker.type_defs.insert("Speaker".to_string(), type_def);
+
+        assert!(
+            checker.type_structurally_satisfies("Speaker", "greet.Greet"),
+            "structural check with qualified trait name must succeed after normalization"
+        );
+        // Unqualified form must still work too.
+        assert!(
+            checker.type_structurally_satisfies("Speaker", "Greet"),
+            "structural check with unqualified trait name must still succeed"
+        );
+    }
+
+    #[test]
+    fn structural_hardening_qualified_type_name_matches() {
+        // A bound check with the type expressed as "mymod.Speaker" must succeed
+        // when "mymod" is a known module and "Speaker" is registered in type_defs.
+        let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+        checker.modules.insert("mymod".to_string());
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Speaker".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: {
+                let mut m = HashMap::new();
+                m.insert("hello".to_string(), FnSig::default());
+                m
+            },
+            doc_comment: None,
+            is_indirect: false,
+        };
+        checker.type_defs.insert("Speaker".to_string(), type_def);
+
+        assert!(
+            checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
+            "structural check with qualified type name must succeed after normalization"
+        );
+        // Unqualified form must still work too.
+        assert!(
+            checker.type_structurally_satisfies("Speaker", "Greet"),
+            "unqualified type name must still succeed"
+        );
+    }
+
+    #[test]
+    fn structural_hardening_unknown_module_qualifier_is_rejected() {
+        // If the prefix is not a known module, we must not strip it and must
+        // not accidentally match a same-suffix type/trait.
+        let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+        // "unknown" is NOT inserted into modules.
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Speaker".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: {
+                let mut m = HashMap::new();
+                m.insert("hello".to_string(), FnSig::default());
+                m
+            },
+            doc_comment: None,
+            is_indirect: false,
+        };
+        checker.type_defs.insert("Speaker".to_string(), type_def);
+
+        // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
+        // not a registered module.
+        assert!(
+            !checker.type_structurally_satisfies("Speaker", "unknown.Greet"),
+            "unrecognised module prefix must not be stripped"
+        );
+    }
+
+    #[test]
+    fn structural_hardening_super_trait_methods_required() {
+        // If trait B extends A, a type must provide A's required methods to
+        // structurally satisfy B.  Before the fix, only B's own methods were
+        // checked and A's were silently skipped.
+        let source = r"
+            trait Printable {
+                fn print(val: Self);
+            }
+
+            trait PrettyPrintable: Printable {
+                fn pretty_print(val: Self);
+            }
+
+            type Doc {}
+
+            impl Doc {
+                fn pretty_print(d: Doc) {}
+                // `print` (from super-trait Printable) is intentionally missing
+            }
+
+            fn use_pp<T: PrettyPrintable>(t: T) {}
+
+            fn main() {
+                let d = Doc {};
+                use_pp(d);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
+            "missing super-trait method must fail structural check; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_hardening_super_trait_methods_all_present_succeeds() {
+        // When ALL required methods across the super-trait chain are present the
+        // structural check must succeed without an explicit impl.
+        let source = r"
+            trait Printable {
+                fn print(val: Self);
+            }
+
+            trait PrettyPrintable: Printable {
+                fn pretty_print(val: Self);
+            }
+
+            type Doc {}
+
+            impl Doc {
+                fn print(d: Doc) {}
+                fn pretty_print(d: Doc) {}
+            }
+
+            fn use_pp<T: PrettyPrintable>(t: T) {}
+
+            fn main() {
+                let d = Doc {};
+                use_pp(d);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "all super-trait methods present must pass structural check: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_hardening_super_trait_e1_guard_propagates() {
+        // If a super-trait has an associated type, the E1 guard must veto the
+        // entire structural check — even if the immediate trait has no assoc types.
+        use hew_parser::ast::{Param, TraitDecl, TraitItem, TraitMethod, TypeExpr};
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        // Build super-trait with an associated type.
+        let assoc_super = TraitDecl {
+            visibility: hew_parser::ast::Visibility::Private,
+            name: "AssocSuper".to_string(),
+            type_params: None,
+            super_traits: None,
+            items: vec![
+                TraitItem::AssociatedType {
+                    name: "Output".to_string(),
+                    default: None,
+                    bounds: vec![],
+                },
+                TraitItem::Method(TraitMethod {
+                    name: "do_it".to_string(),
+                    is_pure: false,
+                    type_params: None,
+                    params: vec![Param {
+                        name: "val".to_string(),
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Self".to_string(),
+                                type_args: None,
+                            },
+                            0..4,
+                        ),
+                        is_mutable: false,
+                    }],
+                    return_type: None,
+                    where_clause: None,
+                    body: None,
+                }),
+            ],
+            doc_comment: None,
+        };
+        let info_super = Checker::trait_info_from_decl(&assoc_super);
+        checker
+            .trait_defs
+            .insert("AssocSuper".to_string(), info_super);
+
+        // Child trait with no assoc types of its own.
+        let child = TraitDecl {
+            visibility: hew_parser::ast::Visibility::Private,
+            name: "ChildTrait".to_string(),
+            type_params: None,
+            super_traits: Some(vec![hew_parser::ast::TraitBound {
+                name: "AssocSuper".to_string(),
+                type_args: None,
+            }]),
+            items: vec![TraitItem::Method(TraitMethod {
+                name: "run".to_string(),
+                is_pure: false,
+                type_params: None,
+                params: vec![Param {
+                    name: "val".to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Self".to_string(),
+                            type_args: None,
+                        },
+                        0..4,
+                    ),
+                    is_mutable: false,
+                }],
+                return_type: None,
+                where_clause: None,
+                body: None,
+            })],
+            doc_comment: None,
+        };
+        let info_child = Checker::trait_info_from_decl(&child);
+        checker
+            .trait_defs
+            .insert("ChildTrait".to_string(), info_child);
+        checker
+            .trait_super
+            .insert("ChildTrait".to_string(), vec!["AssocSuper".to_string()]);
+
+        assert!(
+            !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+            "E1 guard in super-trait must veto structural check for child trait"
         );
     }
 }

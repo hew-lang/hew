@@ -1,162 +1,170 @@
 # Troubleshooting
 
-This guide is a narrow checklist for common `hew` compiler, CLI, and source-build failures.
+This guide is a short checklist for common `hew` compiler, CLI, and source-build failures.
+
 Start with the smallest command that still reproduces the problem:
 
 ```sh
-hew check path/to/main.hew          # parse + typecheck only
-hew build path/to/main.hew -o app   # native build + link
-hew run path/to/main.hew            # build and run
+hew check path/to/main.hew
+hew build path/to/main.hew -o app
+hew run path/to/main.hew
 ```
 
-All `hew` CLI commands take a single entry-point file. For multi-file projects,
-pass `main.hew` (or another real entry file) and let the compiler resolve
-imports recursively from there.
+All `hew` commands operate on a single entry-point file and resolve imports
+recursively from there. For multi-file projects, pass `main.hew`, not every
+file in the tree.
 
-## Import and module resolution failures
+## Build & linking
 
 Common signs:
 
-- a module-not-found error for a module such as `greeting`
-- `cannot find value ... in this scope` immediately after adding an import
-- confusing `unused import` warnings while reorganizing multi-file code
+- `Error: clang not found. Install LLVM to link Hew programs.`
+- raw linker output after `hew build <file.hew> [-o output]`
+- `hew check <file.hew>` succeeds, but `hew build ...` or `hew run ...` fails
 
 What to check:
 
-- Run `hew check` against the entry file, not a peer file inside an imported
-  module directory.
-- For `import greeting;`, Hew looks for either `greeting.hew` beside the
-  importer or `greeting/greeting.hew` inside a `greeting/` directory. In the
-  directory form, the entry file stem must match the directory name.
-- Peer files in the same module directory are merged automatically, but
-  subdirectories are not. If you use a child module such as `text_stats::words`,
-  import that child explicitly.
-- Standard library imports use the last path segment as the local module name:
-  `import std::fs;` gives `fs.read(...)`, and
-  `import std::encoding::json;` gives `json.parse(...)`.
-- If the missing import is a package dependency rather than a local module, run
-  `adze install` so the package is available under `.adze/packages/`.
-- The `module ... not found` error prints the exact paths Hew tried. Use that
-  list to confirm whether the compiler is searching beside your entry file,
-  under `.adze/packages/`, or under the installed standard library path.
-- `import mod::*;` is supported, but the current unused-import checker can warn
-  noisily when the import is used only through type references. Prefer bare
-  (`import mod;`) or selective (`import mod::{Name}`) imports when that warning
-  gets in the way.
+- Use `hew check <file.hew>` first to separate frontend failures from
+  link/toolchain failures.
+- Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`
+  flags, or target mismatches before chasing compiler internals.
+- For this repo, use `make`, `make release`, `make test`, and other Makefile
+  targets instead of calling Cargo/CMake/ctest directly.
+- Use the toolchain from the root README: Rust stable, LLVM/MLIR 22,
+  CMake >= 3.20, Ninja, and clang/clang++.
+- On Linux, build `hew-codegen` with clang/clang++ rather than GCC.
+- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) and
+  follow [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
+  bitcode, sysroot, and libc++ issues.
+- After switching LLVM installs, `CC` / `CXX`, or `HEW_STATIC`, run
+  `make clean` before rebuilding.
+- If the program builds but you need a debugger, use
+  `hew debug <file.hew> [-- args...]`.
+
+## Type errors & type inference
+
+Common signs:
+
+- a `type mismatch` error such as `expected int, found String`
+- `cannot infer type`
+- `return type mismatch: expected ..., found ...`
+
+What to check:
+
+- Start with `hew check <file.hew>`.
+- While iterating on the same file or directory,
+  `hew watch <file_or_dir> [options]` can keep rerunning checks.
+- Add explicit types to function parameters, return values, locals flowing into
+  generic code, and any `_` placeholders.
+- `type Foo = _;` currently fails closed with `cannot infer type for type alias`
+  and a help suggestion to add a type annotation.
+- When you hit a mismatch, fix the earliest ambiguous binding or return value,
+  not only the final call site.
+
+## Module & import resolution
+
+Common signs:
+
+- a module-not-found error for a local or package module
+- a `cannot resolve import ...` diagnostic
+- an `unused import: ...` warning while reorganizing imports
+
+What to check:
+
+- Run `hew check <file.hew>` or `hew build <file.hew> [-o output]` against the
+  real entry file, not a peer file inside a module directory.
+- For `import greeting;`, Hew looks for `greeting.hew` beside the importer or
+  `greeting/greeting.hew` in a directory-form module. The entry file stem must
+  match the directory name.
+- Other top-level `.hew` files in that directory merge into the same module
+  automatically. Subdirectories do not; import child modules explicitly, for
+  example `import text_stats::words;`.
+- Standard library imports are available under the last path segment:
+  `import std::fs;` gives `fs`, and `import std::encoding::json;` gives `json`.
+- If the missing module is a package dependency, run `adze install`. If it is
+  undeclared in project metadata, add it with `adze add ...` first.
+- Use the candidate-path list in the module-not-found error to confirm where Hew
+  actually looked.
+- `import mod::*;` works, but bare (`import mod;`) or selective
+  (`import mod::{Name}`) imports avoid the current unused-import noise in some
+  type-only cases.
 
 See also:
 [`../examples/directory_module_demo/README.md`](../examples/directory_module_demo/README.md),
 [`../examples/multifile/README.md`](../examples/multifile/README.md), and
-[`../hew-cli/README.md`](../hew-cli/README.md).
+[`specs/HEW-SPEC.md`](specs/HEW-SPEC.md).
 
-## Type inference and type mismatch diagnostics
-
-Common signs:
-
-- a `type mismatch` error between values such as `int` and `String`
-- `cannot infer type for ...`
-- `return type mismatch: expected ..., found ...`
-
-What to try:
-
-- Use `hew check` first. If `hew check` fails, `hew build` and `hew run` will
-  fail too.
-- Add explicit types where inference has too little context: function
-  parameters, return types, locals passed into generic code, and `_`
-  placeholders.
-- Hew currently fails closed on unresolved type holes. For example,
-  `type Foo = _;` produces a `cannot infer type for type alias` error with a
-  help suggestion to add a type annotation.
-- When a mismatch mentions two concrete types, fix the earlier source of the
-  value rather than only the last call site. In practice that often means
-  annotating the local or return value that first went ambiguous.
-
-## Name lookup and arity mistakes
+## Pattern matching & exhaustiveness
 
 Common signs:
 
-- an `undefined function` error for a misspelled name such as `calculate_sun`
+- `non-exhaustive match: missing Blue`
+- the same kind of error when a `match` on `Option<T>` skips `None`
+- the same kind of error when a `match` on `Result<T, E>` skips `Ok` or `Err`
+
+What to check:
+
+- Matches over enums, `Option<T>`, `Result<T, E>`, machine states, and `bool`
+  are fail-closed: cover every case or add `_ => ...`.
+- For scalar or open-ended values such as `int`, a missing catch-all is only a
+  warning.
+- When a new variant or state lands, update old match sites before chasing
+  downstream type errors.
+- For machine-specific transition and exhaustiveness rules, see
+  [`specs/MACHINE-SPEC.md`](specs/MACHINE-SPEC.md).
+
+## Mutability & variable bindings
+
+Common signs:
+
+- a `cannot assign to immutable variable` error
+- a `variable ... is already defined in this scope` error
+- a warning that a variable shadows a binding in an outer scope
+
+What to check:
+
+- `let` bindings are immutable. Change a binding to `var` only when
+  reassignment is actually intended.
+- Same-scope rebinding is an error. Rename the second binding instead of
+  treating it like reassignment.
+- Nested-scope shadowing is a warning for locals, but it can be a hard error
+  when it would shadow synthetic bindings such as actor fields.
+- Prefix intentionally unused or intentionally shadowed names with `_` to
+  suppress noise.
+
+## Function calls & arity
+
+Common signs:
+
+- an `undefined function` error
 - `cannot find value ... in this scope` / `cannot find type ... in this scope`
-- `this function takes 2 argument(s) but 1 were supplied`
+- `this function takes N argument(s) but M were supplied`
 
 What to check:
 
 - Fix spelling first. Hew can suggest close matches for values, functions,
   types, and fields.
-- Re-check whether the name should be qualified. Bare module imports keep calls
-  under the module name (`utils.helper()`), while selective imports bring only
-  the listed names into scope.
-- Confirm the current argument count after refactors. Arity errors often come
-  from an outdated call site rather than the function you are editing now.
+- Re-check whether the call should stay qualified under a module
+  (`utils.helper()`) or be brought into scope by a selective import.
+- Recount arguments after refactors, especially when constructors or helper
+  signatures changed.
 
-## Mutability and shadowing confusion
-
-Common signs:
-
-- a `cannot assign to immutable variable` error for a binding such as `count`
-- a `variable ... is already defined in this scope` error
-- a warning that a variable such as `count` shadows an outer binding
-
-What to check:
-
-- `let` bindings are immutable. If reassignment is intentional, change the
-  binding to `var`.
-- Reusing the same name in the same scope is a hard error. Rename the second
-  binding instead of treating it like reassignment.
-- Reusing a name in a nested scope is currently a warning, not an error. Rename
-  it if the code reads ambiguously.
-- If a binding is intentionally unused, or you want to suppress the shadowing
-  warning explicitly, prefix it with an underscore such as `_count`.
-
-## Exhaustiveness and pattern-match errors
+## Wire type validation
 
 Common signs:
 
-- `error: non-exhaustive match: missing Blue`
-- similar errors when a `match` on `Option` skips `None`
-- similar errors when a `match` on `Result` skips `Ok` or `Err`
+- an `error: removed required field ...` compatibility failure
+- `wire check: 1 error(s), 0 warning(s)`
 
 What to check:
 
-- Matches over closed variant sets — user enums, `Option<T>`, and `Result<T, E>`
-  — must cover every variant or include a catch-all arm.
-- For scalar or open-ended values such as `int`, a missing catch-all is a
-  warning rather than a hard error. Add `_ => ...` when you really mean
-  "everything else".
-- When a new enum variant lands, update old match sites before chasing unrelated
-  downstream errors.
-
-## Build, link, and toolchain issues
-
-Start by separating frontend failures from toolchain failures:
-
-- If `hew check path/to/main.hew` fails, stay in the sections above.
-- If `hew check` passes but `hew build` fails, you are in codegen, linker, or
-  host-toolchain territory.
-
-For `hew build` problems:
-
-- Hew uses the system linker toolchain and forwards raw linker output. Fix the
-  reported missing libraries, bad `--link-lib` arguments, or target mismatch
-  first.
-- If the CLI reports `Error: clang not found. Install LLVM to link Hew
-  programs.`, install LLVM/clang and make sure it is on `PATH`.
-
-For source builds of this repo:
-
-- Use the supported toolchain from the root README: Rust stable, LLVM/MLIR 22,
-  CMake >= 3.20, Ninja, and clang/clang++.
-- Use the supported entry points from the `Makefile`: `make`, `make release`,
-  `make hew`, and `make test`.
-- On Linux, build `hew-codegen` with clang/clang++ rather than GCC. LLVM's
-  CMake setup passes Clang-only flags such as `-Wweak-vtables`.
-- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) for the
-  compiler, linker, and libc++ paths when building `hew-codegen`. Errors such
-  as `could not parse bitcode object file`, `unknown type name 'size_t'`, or
-  unresolved `std::__1` symbols are covered in
-  [`cross-platform-build-guide.md`](cross-platform-build-guide.md).
-- After changing `HEW_STATIC`, switching LLVM installs, or changing C/C++
-  compilers, run `make clean` before rebuilding.
+- Compare the current schema against a baseline with
+  `hew wire check <file.hew> --against baseline.hew`.
+- Treat field tags as stable IDs. Do not renumber or reuse them.
+- Removing required fields, changing a wire declaration from struct to enum (or
+  back), or setting `min_version` above the baseline version is breaking.
+- Use the last released or otherwise agreed baseline schema, not another
+  in-progress branch snapshot.
 
 ## Related docs
 
@@ -167,9 +175,11 @@ For source builds of this repo:
   — directory-form modules
 - [`../examples/multifile/README.md`](../examples/multifile/README.md) —
   multi-file module patterns
-- [`cross-platform-build-guide.md`](cross-platform-build-guide.md) — deeper
-  native toolchain setup
+- [`cross-platform-build-guide.md`](cross-platform-build-guide.md) — native
+  toolchain setup
 - [`specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — language and module-system rules
+- [`specs/MACHINE-SPEC.md`](specs/MACHINE-SPEC.md) — machine semantics
+- [`diagrams.md`](diagrams.md) — compiler pipeline and runtime diagrams
 
 If you still need help, include the exact `hew` command, the entry-point file
 path, the full diagnostic output, `hew version`, and your OS/toolchain details.

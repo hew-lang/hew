@@ -763,13 +763,14 @@ mlir::LogicalResult hew::EnumExtractTagOp::verify() {
 
 mlir::LogicalResult hew::EnumExtractPayloadOp::verify() {
   auto enumValType = getEnumVal().getType();
+  int64_t fieldIndex = getFieldIndex();
 
   // Hew dialect enum types (!hew.option<T>, !hew.result<T,E>) — validate
   // field_index and result-type against the known algebraic structure.
   if (auto optType = llvm::dyn_cast<hew::OptionEnumType>(enumValType)) {
     // !hew.option<T> lowers to { i32, T } — payload is always at index 1.
-    if (getFieldIndex() != 1)
-      return emitOpError("field_index for !hew.option must be 1, got ") << getFieldIndex();
+    if (fieldIndex != 1)
+      return emitOpError("field_index for !hew.option must be 1, got ") << fieldIndex;
     if (getResult().getType() != optType.getInnerType())
       return emitOpError("result type ")
              << getResult().getType() << " does not match !hew.option inner type "
@@ -779,19 +780,19 @@ mlir::LogicalResult hew::EnumExtractPayloadOp::verify() {
 
   if (auto resType = llvm::dyn_cast<hew::ResultEnumType>(enumValType)) {
     // !hew.result<T,E> lowers to { i32, T, E } — Ok payload at 1, Err at 2.
-    uint64_t idx = getFieldIndex();
-    if (idx == 1) {
+    if (fieldIndex == 1) {
       if (getResult().getType() != resType.getOkType())
         return emitOpError("result type ")
                << getResult().getType()
                << " does not match !hew.result ok type " << resType.getOkType();
-    } else if (idx == 2) {
+    } else if (fieldIndex == 2) {
       if (getResult().getType() != resType.getErrType())
         return emitOpError("result type ")
                << getResult().getType()
                << " does not match !hew.result err type " << resType.getErrType();
     } else {
-      return emitOpError("field_index for !hew.result must be 1 (ok) or 2 (err), got ") << idx;
+      return emitOpError("field_index for !hew.result must be 1 (ok) or 2 (err), got ")
+             << fieldIndex;
     }
     return success();
   }
@@ -803,10 +804,10 @@ mlir::LogicalResult hew::EnumExtractPayloadOp::verify() {
   }
 
   auto body = structType.getBody();
-  uint64_t idx = getFieldIndex();
-  if (idx < 1) {
-    return emitOpError("field_index must be >= 1 for payload extraction, got ") << idx;
+  if (fieldIndex < 1) {
+    return emitOpError("field_index must be >= 1 for payload extraction, got ") << fieldIndex;
   }
+  uint64_t idx = static_cast<uint64_t>(fieldIndex);
   if (idx >= body.size()) {
     return emitOpError("field_index ")
            << idx << " is out of bounds for struct with " << body.size() << " fields";

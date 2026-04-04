@@ -375,12 +375,7 @@ impl App {
                     true
                 }
             })
-            .filter(|e| {
-                e.event_type == "send"
-                    || e.event_type == "spawn"
-                    || e.event_type == "crash"
-                    || e.event_type == "stop"
-            })
+            .filter(|e| e.is_actionable())
             .collect();
         if let Some(evt) = events.get(self.trace_scroll) {
             self.messages_set_filter(evt.actor_id);

@@ -496,12 +496,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
                 true
             }
         })
-        .filter(|e| {
-            e.event_type == "send"
-                || e.event_type == "spawn"
-                || e.event_type == "crash"
-                || e.event_type == "stop"
-        })
+        .filter(|e| e.is_actionable())
         .collect();
 
     if events.is_empty() {

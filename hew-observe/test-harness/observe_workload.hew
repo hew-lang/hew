@@ -45,8 +45,8 @@ actor Monitor {
 
 fn main() {
     println("=== hew-observe workload ===");
-    println("Profiler should be at http://localhost:6060/");
-    println("Run: hew-observe --addr localhost:6060");
+    println("Unix (HEW_PPROF=auto):  hew-observe");
+    println("TCP  (HEW_PPROF=:6060): hew-observe --addr localhost:6060");
     println("");
 
     let c1 = spawn Counter(name: "alpha", count: 0);

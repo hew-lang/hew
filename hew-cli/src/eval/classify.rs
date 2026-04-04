@@ -3,6 +3,8 @@
 //! Determines whether user input is a top-level item, a statement,
 //! a REPL command, or a bare expression.
 
+use hew_parser::ast::Item;
+
 /// The kind of input entered at the REPL prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputKind {
@@ -45,14 +47,12 @@ pub fn classify(input: &str) -> InputKind {
         return InputKind::Command(parse_command(cmd));
     }
 
-    let first_word = trimmed.split_whitespace().next().unwrap_or("");
-    match first_word {
-        "fn" | "struct" | "enum" | "actor" | "trait" | "impl" | "pub" | "supervisor" | "const"
-        | "wire" | "type" | "import" | "extern" => InputKind::Item,
-        "let" | "var" | "if" | "for" | "while" | "loop" | "return" | "match" => {
-            InputKind::Statement
-        }
-        _ => InputKind::Expression,
+    if parses_as_item(trimmed) {
+        InputKind::Item
+    } else if parses_as_statement(trimmed) {
+        InputKind::Statement
+    } else {
+        InputKind::Expression
     }
 }
 
@@ -70,6 +70,32 @@ fn parse_command(cmd: &str) -> ReplCommand {
         "load" | "l" => ReplCommand::Load(arg.unwrap_or_default()),
         other => ReplCommand::Unknown(other.to_string()),
     }
+}
+
+fn parses_as_item(input: &str) -> bool {
+    let parse_result = hew_parser::parse(input);
+    parse_result.errors.is_empty() && !parse_result.program.items.is_empty()
+}
+
+fn parses_as_statement(input: &str) -> bool {
+    let source = format!("fn main() {{\n{input}\n}}\n");
+    let parse_result = hew_parser::parse(&source);
+    if !parse_result.errors.is_empty() || parse_result.program.items.len() != 1 {
+        return false;
+    }
+
+    let Some((Item::Function(function), _)) = parse_result.program.items.first() else {
+        return false;
+    };
+
+    function.body.trailing_expr.is_none() && !function.body.stmts.is_empty()
+}
+
+#[cfg(test)]
+fn parses_as_expression(input: &str) -> bool {
+    let source = format!("fn main() {{\n    let __hew_eval_probe = {input};\n}}\n");
+    let parse_result = hew_parser::parse(&source);
+    parse_result.errors.is_empty() && parse_result.program.items.len() == 1
 }
 
 /// Check whether input has unclosed delimiters (for multi-line input).
@@ -105,18 +131,30 @@ mod tests {
     #[test]
     fn classify_items() {
         assert_eq!(classify("fn foo() {}"), InputKind::Item);
-        assert_eq!(classify("struct Point { x: i32; }"), InputKind::Item);
-        assert_eq!(classify("enum Colour { Red, Green }"), InputKind::Item);
-        assert_eq!(classify("actor Counter { }"), InputKind::Item);
-        assert_eq!(classify("trait Printable { }"), InputKind::Item);
-        assert_eq!(classify("impl Printable for Point { }"), InputKind::Item);
+        assert_eq!(classify("const LIMIT: i64 = 10;"), InputKind::Item);
+        assert_eq!(classify("type UserId = i64;"), InputKind::Item);
+        assert_eq!(classify("enum Colour { Red; Green; }"), InputKind::Item);
+        assert_eq!(
+            classify("actor Counter { receive fn increment() {} }"),
+            InputKind::Item
+        );
+        assert_eq!(
+            classify("trait Printable { fn print(val: Self); }"),
+            InputKind::Item
+        );
         assert_eq!(classify("pub fn bar() {}"), InputKind::Item);
+        assert_eq!(classify("/// Adds numbers.\nfn add() {}"), InputKind::Item);
+        assert_eq!(
+            classify("#[memo]\nfn cached() -> i64 { 42 }"),
+            InputKind::Item
+        );
     }
 
     #[test]
     fn classify_statements() {
         assert_eq!(classify("let x = 42;"), InputKind::Statement);
         assert_eq!(classify("var y = 10;"), InputKind::Statement);
+        assert_eq!(classify("value = value + 1;"), InputKind::Statement);
     }
 
     #[test]
@@ -124,6 +162,7 @@ mod tests {
         assert_eq!(classify("1 + 2"), InputKind::Expression);
         assert_eq!(classify("foo(42)"), InputKind::Expression);
         assert_eq!(classify("x * y + z"), InputKind::Expression);
+        assert_eq!(classify("{ let x = 1; x + 2 }"), InputKind::Expression);
     }
 
     #[test]
@@ -159,5 +198,10 @@ mod tests {
     fn empty_input() {
         assert_eq!(classify(""), InputKind::Expression);
         assert_eq!(classify("   "), InputKind::Expression);
+    }
+
+    #[test]
+    fn expression_probe_accepts_block_expressions() {
+        assert!(parses_as_expression("{ let x = 1; x + 2 }"));
     }
 }

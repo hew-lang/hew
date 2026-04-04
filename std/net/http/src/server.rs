@@ -3,7 +3,7 @@
 //! Provides an HTTP server built on [`tiny_http`] that can be driven from
 //! compiled Hew programs via the C ABI functions below.
 
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use std::ffi::{c_char, CStr};
 use std::io::{Read, Write};
@@ -214,6 +214,37 @@ pub unsafe extern "C" fn hew_http_request_body(
     ptr
 }
 
+/// Read the request body and return it as a `malloc`-allocated, NUL-terminated
+/// C string.
+///
+/// This is the bridge function that matches the Hew-side ABI
+/// `body(req, encoding) -> String`. The `encoding` parameter is accepted for
+/// forward-compatibility but currently only UTF-8 is produced.
+///
+/// # Safety
+///
+/// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`] whose
+///   `inner` is `Some`.
+/// * `encoding` must be a valid NUL-terminated C string (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_body_string(
+    req: *mut HewHttpRequest,
+    _encoding: *const c_char,
+) -> *mut c_char {
+    let mut out_len: usize = 0;
+    // SAFETY: req validity is the caller's responsibility; out_len is a
+    // valid local variable.
+    let ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: ptr is valid for out_len bytes per hew_http_request_body's contract.
+    let result = unsafe { malloc_cstring(ptr, out_len) };
+    // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
+    unsafe { libc::free(ptr.cast()) };
+    result
+}
+
 /// Return the value of the named HTTP header as a `malloc`-allocated C string.
 ///
 /// Header name matching is case-insensitive. Returns null if the header is
@@ -318,6 +349,38 @@ pub unsafe extern "C" fn hew_http_respond(
     } else {
         -1
     }
+}
+
+/// Bridge for the Hew-side `respond(req, status, content_type, content_length, body)` ABI.
+///
+/// Accepts arguments in the order emitted by codegen (matching the Hew API
+/// surface) and forwards to [`hew_http_respond`] with the correct C ABI
+/// argument order. `content_length` is accepted but ignored — the actual body
+/// length is derived from the NUL-terminated `body` string.
+///
+/// # Safety
+///
+/// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`] whose
+///   `inner` is `Some`.
+/// * `content_type` must be a valid NUL-terminated C string (or null).
+/// * `body` must be a valid NUL-terminated C string (or null for empty body).
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_respond_bridge(
+    req: *mut HewHttpRequest,
+    status: i32,
+    content_type: *const c_char,
+    _content_length: i64,
+    body: *const c_char,
+) -> i32 {
+    let (body_ptr, body_len) = if body.is_null() {
+        (std::ptr::null(), 0usize)
+    } else {
+        // SAFETY: body is a valid NUL-terminated C string per caller contract.
+        let bytes = unsafe { CStr::from_ptr(body) }.to_bytes();
+        (bytes.as_ptr(), bytes.len())
+    };
+    // SAFETY: All pointers are valid per caller contract.
+    unsafe { hew_http_respond(req, status, body_ptr, body_len, content_type) }
 }
 
 /// Send a `text/plain` response.
@@ -1193,6 +1256,248 @@ mod tests {
         let result = handle.join().unwrap();
         assert!(result.is_err(), "dropped request should cause client error");
 
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    // -- Bridge function unit tests -----------------------------------
+
+    #[test]
+    fn body_string_null_request_returns_null() {
+        let encoding = c"utf-8";
+        // SAFETY: null request is the tested scenario.
+        let result =
+            unsafe { hew_http_request_body_string(std::ptr::null_mut(), encoding.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn body_string_consumed_request_returns_null() {
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        let encoding = c"utf-8";
+        // SAFETY: req is a valid local struct with inner = None.
+        let result = unsafe { hew_http_request_body_string(&raw mut req, encoding.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn body_string_null_encoding_accepted() {
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        // SAFETY: null encoding should not crash; consumed request returns null.
+        let result = unsafe { hew_http_request_body_string(&raw mut req, std::ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn respond_bridge_null_request_returns_error() {
+        let ct = c"text/plain";
+        let body = c"hello";
+        // SAFETY: null request is the tested scenario.
+        let result = unsafe {
+            hew_http_respond_bridge(std::ptr::null_mut(), 200, ct.as_ptr(), 5, body.as_ptr())
+        };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn respond_bridge_consumed_request_returns_error() {
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        let ct = c"text/plain";
+        let body = c"hello";
+        // SAFETY: req is valid with inner = None; all C strings are valid.
+        let result =
+            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), 5, body.as_ptr()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn respond_bridge_null_body_accepted() {
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        let ct = c"text/plain";
+        // SAFETY: null body is valid (empty response); consumed request returns -1.
+        let result =
+            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), 0, std::ptr::null()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn respond_bridge_null_content_type_accepted() {
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        let body = c"hello";
+        // SAFETY: null content_type is valid; consumed request returns -1.
+        let result = unsafe {
+            hew_http_respond_bridge(&raw mut req, 200, std::ptr::null(), 5, body.as_ptr())
+        };
+        assert_eq!(result, -1);
+    }
+
+    // -- Bridge function loopback integration tests -------------------
+
+    #[test]
+    fn loopback_body_string_reads_post() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            ureq::post(&format!("{base}/body-string"))
+                .header("Content-Type", "text/plain")
+                .send(b"hello bridge" as &[u8])
+                .unwrap()
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let encoding = c"utf-8";
+        // SAFETY: req is valid; encoding is a valid C string.
+        let body_cstr = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
+        assert!(!body_cstr.is_null());
+        // SAFETY: body_cstr is a valid malloc'd C string.
+        let body = unsafe { take_cstr(body_cstr) };
+        assert_eq!(body, "hello bridge");
+
+        let text = c"ok";
+        // SAFETY: req is valid; text is a valid C string.
+        let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+        assert_eq!(result, 0);
+
+        let resp = handle.join().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_body_string_empty_body() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            ureq::post(&format!("{base}/body-string-empty"))
+                .header("Content-Type", "text/plain")
+                .send(b"" as &[u8])
+                .unwrap()
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let encoding = c"utf-8";
+        // SAFETY: req is valid; encoding is a valid C string.
+        let body_cstr = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
+        assert!(!body_cstr.is_null());
+        // SAFETY: body_cstr is a valid malloc'd C string.
+        let body = unsafe { take_cstr(body_cstr) };
+        assert_eq!(body, "");
+
+        let text = c"ok";
+        // SAFETY: req is valid; text is a valid C string.
+        let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+        assert_eq!(result, 0);
+
+        let resp = handle.join().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_respond_bridge_full_response() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            ureq::get(&format!("{base}/bridge-respond")).call().unwrap()
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let ct = c"text/html";
+        let body = c"<h1>Hello</h1>";
+        let body_len = 14_i64; // byte length of "<h1>Hello</h1>"
+                               // SAFETY: req, ct, and body are all valid.
+        let result =
+            unsafe { hew_http_respond_bridge(req, 200, ct.as_ptr(), body_len, body.as_ptr()) };
+        assert_eq!(result, 0);
+
+        let resp = handle.join().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let ct_header = resp
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(ct_header, "text/html");
+        let resp_body = resp.into_body().read_to_string().unwrap();
+        assert_eq!(resp_body, "<h1>Hello</h1>");
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_respond_bridge_null_body_sends_empty() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle =
+            std::thread::spawn(move || ureq::get(&format!("{base}/bridge-empty")).call().unwrap());
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let ct = c"text/plain";
+        // SAFETY: req and ct are valid; null body means empty response.
+        let result = unsafe { hew_http_respond_bridge(req, 204, ct.as_ptr(), 0, std::ptr::null()) };
+        assert_eq!(result, 0);
+
+        let resp = handle.join().unwrap();
+        assert_eq!(resp.status().as_u16(), 204);
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
         // SAFETY: srv was allocated by hew_http_server_new.
         unsafe { hew_http_server_close(srv) };
     }

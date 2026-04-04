@@ -573,9 +573,15 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_duration/duration"
   # Broken .expected files — test exists but output doesn't match
   "e2e_hashset/hashset_no_double_eval"
-  "e2e_memory/rc_basic"
   "e2e_multi_dyn/multi_dyn"
   "e2e_trait_bounds/trait_bounds"
+  # Rc<T> tests — explicitly registered in the Rc block below to keep them
+  # visible in code review; excluded here to prevent double-registration.
+  "e2e_memory/rc_basic"
+  "e2e_memory/rc_scope_drop"
+  "e2e_memory/rc_rebind"
+  "e2e_memory/rc_outlive"
+  "e2e_memory/rc_string"
 )
 
 file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
@@ -615,6 +621,15 @@ endif()
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)
 add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
+
+# ── Rc<T> E2E tests ───────────────────────────────────────────────────────────
+# Five tests covering the user-facing Rc surface.  Explicitly listed here so
+# they are visible in code review; excluded from auto-discovery above.
+add_e2e_file_test(e2e_memory_rc_basic       e2e_memory rc_basic)
+add_e2e_file_test(e2e_memory_rc_scope_drop  e2e_memory rc_scope_drop)
+add_e2e_file_test(e2e_memory_rc_rebind      e2e_memory rc_rebind)
+add_e2e_file_test(e2e_memory_rc_outlive     e2e_memory rc_outlive)
+add_e2e_file_test(e2e_memory_rc_string      e2e_memory rc_string)
 
 
 # ── Reject tests in non-negative categories ───────────────────────────────────

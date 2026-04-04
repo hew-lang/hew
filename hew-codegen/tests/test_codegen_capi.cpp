@@ -356,6 +356,171 @@ static void test_emit_mlir_produces_output() {
   PASS();
 }
 
+// Regression: Rc<T> variables must emit hew_rc_drop at scope exit.
+// Both annotated (let x: Rc<int> = Rc::new(v)) and unannotated
+// (let x = Rc::new(v)) paths must register the drop.
+static void test_rc_scope_exit_drop_registered() {
+  TEST(rc_scope_exit_drop_registered);
+  // Annotated path
+  {
+    auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); println(rc.get()); }");
+    if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew_rc_drop") == std::string::npos) {
+      FAIL("annotated Rc<int> variable missing hew_rc_drop at scope exit");
+      return;
+    }
+  }
+  // Unannotated path
+  {
+    auto ast = hewToMsgpack("fn main() { let rc = Rc::new(42); println(rc.get()); }");
+    if (ast.empty()) { FAIL("failed to parse unannotated Rc test"); return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew_rc_drop") == std::string::npos) {
+      FAIL("unannotated Rc variable missing hew_rc_drop at scope exit");
+      return;
+    }
+  }
+  PASS();
+}
+
+// Regression: plain Rc rebinding (`let rc2 = rc`) must emit an implicit
+// RcCloneOp and register hew_rc_drop for the new binding, otherwise the
+// two aliases share a single refcount and double-drop on scope exit.
+static void test_rc_rebind_emits_clone_and_drop() {
+  TEST(rc_rebind_emits_clone_and_drop);
+  // Unannotated rebinding
+  {
+    auto ast = hewToMsgpack("fn main() { let rc = Rc::new(42); let rc2 = rc; println(rc.get()); }");
+    if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    // Must have an rc.clone for the rebinding
+    if (mlir.find("hew.rc.clone") == std::string::npos) {
+      FAIL("unannotated Rc rebinding missing hew.rc.clone");
+      return;
+    }
+    // Must have TWO hew_rc_drop entries (one per binding)
+    size_t pos = 0;
+    int dropCount = 0;
+    while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+      dropCount++;
+      pos += 11;
+    }
+    if (dropCount < 2) {
+      FAIL(("unannotated Rc rebinding: expected 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+      return;
+    }
+  }
+  // Annotated rebinding
+  {
+    auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); let rc2: Rc<int> = rc; println(rc.get()); }");
+    if (ast.empty()) { FAIL("failed to parse annotated Rc rebind test"); return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew.rc.clone") == std::string::npos) {
+      FAIL("annotated Rc rebinding missing hew.rc.clone");
+      return;
+    }
+    size_t pos = 0;
+    int dropCount = 0;
+    while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+      dropCount++;
+      pos += 11;
+    }
+    if (dropCount < 2) {
+      FAIL(("annotated Rc rebinding: expected 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+      return;
+    }
+  }
+  PASS();
+}
+
+static void test_rc_outlive_block_drop_registered() {
+  TEST(rc_outlive_block_drop_registered);
+  // Rc alias escaping a block as trailing expression must still get
+  // hew_rc_drop in the outer scope AND an hew.rc.clone inside the block.
+  auto ast = hewToMsgpack(
+      "fn main() { "
+      "  let rc2 = { "
+      "    let rc: Rc<int> = Rc::new(42); "
+      "    let alias = rc; "
+      "    alias "
+      "  }; "
+      "  println(rc2.get()); "
+      "}");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  // Must have hew.rc.clone for the inner rebinding
+  if (mlir.find("hew.rc.clone") == std::string::npos) {
+    FAIL("Rc outlive: missing hew.rc.clone for inner rebinding");
+    return;
+  }
+  // Must have TWO hew_rc_drop entries: one for inner `rc`, one for outer `rc2`
+  size_t pos = 0;
+  int dropCount = 0;
+  while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+    dropCount++;
+    pos += 11;
+  }
+  if (dropCount < 2) {
+    FAIL(("Rc outlive: expected >= 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+    return;
+  }
+  PASS();
+}
+
+// Regression: Rc<String> must generate a trampoline drop wrapper
+// (__rc_inner_drop_hew_string_drop) that loads the inner String pointer
+// from the Rc data region before forwarding to hew_string_drop.
+// Without this, hew_string_drop receives an interior Rc pointer → crash.
+static void test_rc_string_inner_drop_trampoline() {
+  TEST(rc_string_inner_drop_trampoline);
+  auto ast = hewToMsgpack(
+      "fn main() { let rc = Rc::new(\"hello\"); print(rc.strong_count()); }");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  // Must contain the trampoline function
+  if (mlir.find("__rc_inner_drop_hew_string_drop") == std::string::npos) {
+    FAIL("Rc<String> missing __rc_inner_drop_hew_string_drop trampoline");
+    return;
+  }
+  // Trampoline must load the inner value and call hew_string_drop
+  if (mlir.find("hew_string_drop") == std::string::npos) {
+    FAIL("Rc<String> trampoline missing call to hew_string_drop");
+    return;
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -528,6 +693,10 @@ int main() {
 
   // Successful emission
   test_emit_mlir_produces_output();
+  test_rc_scope_exit_drop_registered();
+  test_rc_rebind_emits_clone_and_drop();
+  test_rc_outlive_block_drop_registered();
+  test_rc_string_inner_drop_trampoline();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

@@ -352,3 +352,83 @@ fn for_no_await_over_receiver_no_for_await_error() {
         output.errors
     );
 }
+
+// ── Rc<T> surface tests ───────────────────────────────────────────────────────
+
+/// Basic `Rc<T>` construction, clone, get, and `strong_count` must type-check clean.
+#[test]
+fn rc_construction_and_methods_typecheck() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let rc: Rc<int> = Rc::new(42);
+            println(rc.get());
+            let rc2 = rc.clone();
+            println(rc2.get());
+            println(rc.strong_count());
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Rc<int> basic usage should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `Rc<T>` must be rejected when sent across an actor boundary (non-Send).
+#[test]
+fn rc_rejected_at_actor_send_boundary() {
+    let output = typecheck_inline(
+        r"
+        actor Sink {
+            let _unused: int;
+            receive fn consume(val: Rc<int>) {}
+        }
+        fn main() {
+            let rc: Rc<int> = Rc::new(1);
+            let a = spawn Sink(_unused: 0);
+            a.consume(rc);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "Rc<int> must be rejected at actor send boundary with InvalidSend, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `Rc::new` must accept non-Copy `T`; the codegen passes the real drop function.
+/// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
+#[test]
+fn rc_non_copy_construction_ok() {
+    // String is non-Copy; Rc::new should accept it (codegen will pass a real
+    // drop function instead of null).
+    let output = typecheck_inline(r#"fn main() { let _rc: Rc<String> = Rc::new("hello"); }"#);
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with a non-Copy inner type should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_get_non_copy_rejected() {
+    // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
+    // Copy types.  Calling it on Rc<String> must be rejected.
+    let output = typecheck_inline(
+        r#"fn main() { let rc: Rc<String> = Rc::new("hello"); let _ = rc.get(); }"#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BoundsNotSatisfied),
+        "Rc::get on a non-Copy inner type should fail with BoundsNotSatisfied, got: {:#?}",
+        output.errors
+    );
+}

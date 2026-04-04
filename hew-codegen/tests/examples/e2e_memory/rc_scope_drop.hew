@@ -1,0 +1,17 @@
+// Test: Rc<T> scope-exit drop registration
+// Verifies that Rc locals created via Rc::new() compile and run without
+// crashing.  Both the annotated and unannotated let-binding paths must
+// register hew_rc_drop at scope exit so the allocation is freed.
+// The unit test (test_rc_scope_exit_drop_registered) verifies the MLIR
+// directly; this E2E test exercises the full pipeline.
+fn main() {
+    // ── Annotated path: let rc: Rc<int> = Rc::new(...) ──
+    let rc1: Rc<int> = Rc::new(10);
+    println(rc1.get());
+    println(rc1.strong_count());
+
+    // ── Unannotated path: let rc = Rc::new(...) ──
+    let rc2 = Rc::new(20);
+    println(rc2.get());
+    println(rc2.strong_count());
+}

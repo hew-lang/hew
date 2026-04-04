@@ -1049,6 +1049,38 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
+  // ── Rc<T> implicit clone on rebinding ─────────────────────────────
+  // When `let rc2 = rc` (plain identifier) binds an existing Rc, the new
+  // binding aliases the same allocation.  Without a refcount increment
+  // both scope-exit drops would decrement the same count-1 cell, causing
+  // a use-after-free.  Emit an implicit RcCloneOp (matching the closure-
+  // env prior art at the bottom of this function) and register the drop.
+  //
+  // Detection: stmtValue is ExprIdentifier AND the resolved type (or the
+  // type annotation) is Rc.  We must NOT fire for Rc::new / .clone() /
+  // other call expressions — those are handled by the later sections.
+  if (value && stmtValue && *stmtValue &&
+      std::holds_alternative<ast::ExprIdentifier>((*stmtValue)->value.kind)) {
+    bool isRcRebind = false;
+    // Check type annotation first
+    if (stmtTy && *stmtTy) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind))
+        isRcRebind = resolveTypeAlias(named->name) == "Rc";
+    }
+    // Fall back to resolved type from type checker
+    if (!isRcRebind) {
+      if (auto *resolvedType = resolvedTypeOf((*stmtValue)->span)) {
+        if (auto *named = std::get_if<ast::TypeNamed>(&resolvedType->kind))
+          isRcRebind = (named->name == "Rc");
+      }
+    }
+    if (isRcRebind && mlir::isa<mlir::LLVM::LLVMPointerType>(value.getType())) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      hew::RcCloneOp::create(builder, location, ptrType, value);
+      registerDroppable(varName, "hew_rc_drop");
+    }
+  }
+
   // ── Type-annotation-based drops ────────────────────────────────────
   if (stmtTy && *stmtTy) {
     if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind)) {
@@ -1078,7 +1110,16 @@ void MLIRGen::registerDropsForVariable(
         registerDroppable(varName, "hew_hashmap_free_impl");
       else if (typeName == "HashSet" && (isHashSetCtor || isNewCollectionMethod))
         registerDroppable(varName, "hew_hashset_free");
-      else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
+      else if (typeName == "Rc") {
+        bool isRcCtor = defOp && mlir::isa<hew::RcNewOp>(defOp);
+        bool isCloneCall = false;
+        if (stmtValue && *stmtValue) {
+          if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
+            isCloneCall = (mc->method == "clone");
+        }
+        if (isRcCtor || isCloneCall)
+          registerDroppable(varName, "hew_rc_drop");
+      } else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
         bool isBorrowed = isBorrowedGetString;
         if (stmtValue && *stmtValue) {
@@ -1137,12 +1178,13 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
-  // ── MLIR-type fallback for Vec/HashMap ─────────────────────────────
+  // ── MLIR-type fallback for Vec/HashMap/Rc ───────────────────────────
   if (value) {
     auto valType = value.getType();
     bool isOwned = false;
     if (auto *defOp = value.getDefiningOp()) {
-      isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
+      isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp) ||
+                mlir::isa<hew::RcNewOp>(defOp);
     }
     if (!isOwned && stmtValue && *stmtValue) {
       const auto &vk = (*stmtValue)->value.kind;
@@ -1275,6 +1317,37 @@ void MLIRGen::registerDropsForVariable(
   // ── Closure env RAII cleanup ───────────────────────────────────────
   if (value && mlir::isa<hew::ClosureType>(value.getType())) {
     registerDroppable(varName, "hew_rc_drop");
+  }
+
+  // ── Resolved-type catch-all for Rc drop ──────────────────────────
+  // When an Rc value reaches a let binding through an indirect expression
+  // (block expression, if/else, match, etc.) the specific-case sections
+  // above may not recognise the value as owned Rc.  Use the type-checker's
+  // resolved type as a final safety net: if the binding is Rc-typed and no
+  // drop has been registered yet, register hew_rc_drop now.
+  if (value && mlir::isa<mlir::LLVM::LLVMPointerType>(value.getType())) {
+    bool rcDropRegistered = false;
+    if (!dropScopes.empty()) {
+      for (auto &e : dropScopes.back())
+        if (e.varName == varName) { rcDropRegistered = true; break; }
+    }
+    if (!rcDropRegistered) {
+      bool isRcByResolved = false;
+      // Check the RHS expression's resolved type
+      if (stmtValue && *stmtValue) {
+        if (auto *rt = resolvedTypeOf((*stmtValue)->span)) {
+          if (auto *named = std::get_if<ast::TypeNamed>(&rt->kind))
+            isRcByResolved = (named->name == "Rc");
+        }
+      }
+      // Also check the type annotation (e.g. `let x: Rc<int> = ...`)
+      if (!isRcByResolved && stmtTy && *stmtTy) {
+        if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind))
+          isRcByResolved = resolveTypeAlias(named->name) == "Rc";
+      }
+      if (isRcByResolved)
+        registerDroppable(varName, "hew_rc_drop");
+    }
   }
 
   // ── dyn Trait variable type tracking ───────────────────────────────

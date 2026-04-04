@@ -361,6 +361,11 @@ impl TraitRegistry {
                         _ => args.iter().all(|a| self.implements_marker(a, marker)),
                     };
                 }
+                // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
+                // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
+                if name == "Rc" {
+                    return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
+                }
                 // Check if all fields implement the trait
                 if let Some(fields) = self.type_fields.get(name) {
                     fields.iter().all(|f| self.implements_marker(f, marker))

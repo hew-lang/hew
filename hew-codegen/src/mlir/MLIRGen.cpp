@@ -491,6 +491,11 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
       return hew::ActorRefType::get(&context);
     if (name == "Task" || name == "scope.Task")
       return hew::HandleType::get(&context, builder.getStringAttr("Task"));
+    // Rc<T>: opaque pointer to the data region inside a hew_rc allocation.
+    // The inner type T is available in type_args but the pointer is opaque at MLIR level;
+    // method dispatch uses resolvedTypeOf to detect Rc receivers.
+    if (name == "Rc")
+      return mlir::LLVM::LLVMPointerType::get(&context);
     // Stream<T> and Sink<T>: opaque heap pointers to HewStream / HewSink
     if (name == "Stream" || name == "Sink" || name == "stream.Stream" || name == "stream.Sink" ||
         name == "StreamPair" || name == "stream.StreamPair")
@@ -1719,6 +1724,101 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                                       mlir::SymbolRefAttr::get(&context, "hew_hashset_new"),
                                       mlir::ValueRange{})
         .getResult();
+  }
+
+  // Rc::new(val) -> *opaque  (hew_rc data pointer)
+  //
+  // Codegen:
+  //   1. Evaluate the inner value.
+  //   2. Look up the drop function for T using the type-checker annotation
+  //      (handles String→hew_string_drop, Vec→hew_vec_free, Rc→hew_rc_drop,
+  //      user Drop impls via userDropFuncs, etc.).  Primitives / Copy types
+  //      with no owned resources get a null drop pointer.
+  //   3. Compute sizeof(T).
+  //   4. Call RcNewOp(null_data, size, drop_fn) — allocates the Rc header +
+  //      data region without memcpy-ing anything (null data skips the copy in
+  //      hew_rc_new, leaving the data region uninitialised).
+  //   5. Store `val` directly into the data region (move, not memcpy-alias).
+  //      This is safe: `val` is now owned exclusively by the Rc; the type-
+  //      checker's move analysis prevents any further use of the source.
+  if (name == "Rc::new") {
+    if (args.size() != 1) {
+      emitError(location) << "Rc::new requires exactly one argument";
+      return nullptr;
+    }
+    auto val = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!val)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto szType = sizeType(); // platform-correct: i64 native, i32 WASM32
+    auto valType = val.getType();
+
+    // Resolve drop function for T.  Prefer the AST annotation (covers all
+    // named types registered in dropFuncForType); fall back to MLIR type
+    // introspection for hew dialect types (ClosureType, StringRefType, etc.)
+    // not reachable via the AST path.
+    mlir::Value dropFnPtr;
+    {
+      std::string dropFuncName;
+      if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+        dropFuncName = dropFuncForType(*argType);
+      if (dropFuncName.empty())
+        dropFuncName = dropFuncForMLIRType(valType, /*includeStructTypes=*/false);
+      if (!dropFuncName.empty()) {
+        auto dropFnType = builder.getFunctionType({ptrType}, {});
+        getOrCreateExternFunc(dropFuncName, dropFnType);
+
+        // The Rc runtime calls drop_fn(data_region_ptr), but drop functions
+        // (e.g. hew_string_drop) expect the *value* stored in the data
+        // region, not a pointer to the slot.  Generate a thin trampoline
+        // that loads the inner value before forwarding to the real drop.
+        std::string trampolineName = "__rc_inner_drop_" + dropFuncName;
+        if (!module.lookupSymbol<mlir::func::FuncOp>(trampolineName)) {
+          auto savedIP = builder.saveInsertionPoint();
+          builder.setInsertionPointToEnd(module.getBody());
+          auto trampoline = mlir::func::FuncOp::create(
+              builder, location, trampolineName, dropFnType);
+          trampoline.setVisibility(mlir::SymbolTable::Visibility::Private);
+          auto &entry = *trampoline.addEntryBlock();
+          builder.setInsertionPointToStart(&entry);
+          auto innerVal = mlir::LLVM::LoadOp::create(
+              builder, location, ptrType, entry.getArgument(0));
+          mlir::func::CallOp::create(builder, location, dropFuncName,
+                                      mlir::TypeRange{}, mlir::ValueRange{innerVal});
+          mlir::func::ReturnOp::create(builder, location);
+          builder.restoreInsertionPoint(savedIP);
+        }
+
+        dropFnPtr = hew::FuncPtrOp::create(
+                        builder, location, ptrType,
+                        mlir::SymbolRefAttr::get(&context, trampolineName))
+                        .getResult();
+      } else {
+        dropFnPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+      }
+    }
+
+    // Compute sizeof(T) at MLIR level using hew.sizeof.  Use the LLVM
+    // storage type so that SizeOfOp receives a lowerable type (e.g.
+    // !llvm.ptr instead of !hew.string_ref).
+    auto storageType = toLLVMStorageType(valType);
+    auto size =
+        hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(storageType));
+
+    // Allocate Rc with null data — runtime skips memcpy, leaves data region
+    // uninitialised.  We then store val directly (move semantics).
+    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto rcPtr =
+        hew::RcNewOp::create(builder, location, ptrType, nullData, size, dropFnPtr)
+            .getResult();
+
+    // Move val into the Rc data region.  Coerce Hew dialect types
+    // (e.g. !hew.string_ref) to their LLVM storage type so the
+    // llvm.store verifier accepts the operand.
+    auto storageVal = (storageType != valType) ? coerceType(val, storageType, location) : val;
+    mlir::LLVM::StoreOp::create(builder, location, storageVal, rcPtr);
+    return rcPtr;
   }
 
   // duration::from_nanos(x) -> i64: identity passthrough (duration is i64 nanos)
@@ -5672,6 +5772,8 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
     return "hew_hashmap_free_impl";
   if (typeName == "HashSet")
     return "hew_hashset_free";
+  if (typeName == "Rc")
+    return "hew_rc_drop";
   if (typeName == "String" || typeName == "string" || typeName == "str")
     return "hew_string_drop";
   auto dropIt = userDropFuncs.find(typeName);

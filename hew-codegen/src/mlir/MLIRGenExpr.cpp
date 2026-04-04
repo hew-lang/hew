@@ -1740,6 +1740,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                                    "Vec::from",
                                                    "HashMap::new",
                                                    "HashSet::new",
+                                                   "Rc::new",
                                                    "bytes::new",
                                                    "bytes::from",
                                                    "duration::from_nanos",
@@ -3407,9 +3408,18 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   if (method == "clone") {
-    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
-                                       builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
-        .getResult();
+    // Rc<T>.clone() must route to RcCloneOp (handled later in the Rc
+    // methods section), not the String clone path.
+    bool receiverIsRc = false;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind))
+        receiverIsRc = (named->name == "Rc");
+    }
+    if (!receiverIsRc) {
+      return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                         builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
+          .getResult();
+    }
   }
   if (method == "trim") {
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
@@ -3653,6 +3663,63 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
         return castOp.getResult();
       }
+    }
+  }
+
+  // --- Rc<T> methods ---
+  // Detect via resolvedTypeOf returning TypeNamed { name: "Rc", ... }.
+  // The MLIR type is LLVMPointerType (same as Stream/Sender) so we cannot
+  // use the MLIR type alone; we always check the type-checker annotation.
+  {
+    bool isRc = false;
+    const ast::TypeNamed *rcNamed = nullptr;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind)) {
+        if (named->name == "Rc") {
+          isRc = true;
+          rcNamed = named;
+        }
+      }
+    }
+    if (isRc && mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType)) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto i64Type = builder.getI64Type();
+
+      if (method == "clone") {
+        // Increment reference count and return a new handle pointing to the same data.
+        return hew::RcCloneOp::create(builder, location, ptrType, receiver).getResult();
+      }
+
+      if (method == "get") {
+        // Bitwise load of the inner value from the Rc data region.
+        // The type-checker enforces T: Copy on `rc.get()`, so the LoadOp
+        // duplicates a value with no ownership — no double-free possible.
+        mlir::Type innerMlirType;
+        if (rcNamed && rcNamed->type_args && !rcNamed->type_args->empty()) {
+          innerMlirType = convertType((*rcNamed->type_args)[0].value);
+        }
+        if (!innerMlirType) {
+          emitError(location) << "Rc::get: cannot determine inner type";
+          return mlir::Value{};
+        }
+        return mlir::LLVM::LoadOp::create(builder, location, innerMlirType, receiver).getResult();
+      }
+
+      if (method == "strong_count") {
+        // Call hew_rc_count(ptr) -> u32, then zero-extend to i64.
+        // hew_rc_count returns an unsigned refcount; use ExtUIOp to avoid
+        // sign-extending counts >= 2^31 into negative i64 values.
+        auto i32Type = builder.getI32Type();
+        auto countFuncType = builder.getFunctionType({ptrType}, {i32Type});
+        auto countFunc = getOrCreateExternFunc("hew_rc_count", countFuncType);
+        auto count =
+            mlir::func::CallOp::create(builder, location, countFunc, mlir::ValueRange{receiver})
+                .getResult(0);
+        return mlir::arith::ExtUIOp::create(builder, location, i64Type, count).getResult();
+      }
+
+      emitError(location) << "unknown method '" << method << "' on Rc<T>";
+      return mlir::Value{};
     }
   }
 

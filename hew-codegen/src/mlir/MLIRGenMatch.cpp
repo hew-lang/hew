@@ -466,18 +466,20 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       builder.setInsertionPointAfter(ifOp);
       return ifOp.getResult(0);
     } else {
-      bool hasMore = (idx + 1 < arms.size());
-      auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond, hasMore);
+      // Always emit an else region so that a conditional arm whose condition
+      // is false at runtime reaches the next arm (or the base-case trap).
+      // Without this, the last conditional arm in a statement-style match
+      // silently falls through instead of trapping on a non-exhaustive match.
+      auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond,
+                                           /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       generateArmBody(arm);
       ensureYieldTerminator(location);
 
-      if (hasMore) {
-        builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-        generateMatchArmsChain(scrutinee, arms, idx + 1, nullptr, location);
-        ensureYieldTerminator(location);
-      }
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      generateMatchArmsChain(scrutinee, arms, idx + 1, nullptr, location);
+      ensureYieldTerminator(location);
 
       builder.setInsertionPointAfter(ifOp);
       return nullptr;

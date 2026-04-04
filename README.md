@@ -31,6 +31,16 @@ hew eval
 
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
+### Learning Paths
+
+The [`examples/`](examples/) directory contains structured learning paths for new users:
+
+- **[`examples/ux/`](examples/ux/)** — 15 quick-start lessons (hello world through hashmaps), each paired with an `.expected` output file; ideal for a first 20-minute tour
+- **[`examples/progressive/`](examples/progressive/)** — 11 numbered lessons building from variables to actors, also with `.expected` files
+- **[`examples/playground/`](examples/playground/)** — Topic-grouped snippets covering basics, concurrency, and types
+
+See [`examples/README.md`](examples/README.md) for the complete directory guide.
+
 ### Language Basics
 
 **`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:
@@ -57,6 +67,22 @@ fn main() {
 ```
 
 See [`std/README.md`](std/README.md) for the full module list.
+
+For directory-form modules and Hew's multi-file import resolution rules, see [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md).
+
+### Wire Types
+
+Wire types define versioned serialization schemas for use with actors and distributed protocols. Each field carries an explicit numeric tag (`@1`, `@2`, …) that is the field's stable identity across schema versions. You can safely add new tagged fields or rename existing ones; decoders that encounter an unknown tag skip it. **Never reuse a tag number for a different field.**
+
+```hew
+wire type UserMessage {
+    name: String @1;
+    age:  i32    @2;
+    // Adding a new @3 field later is backwards-compatible; reusing @1 is not.
+}
+```
+
+See [`examples/playground/types/wire_types.hew`](examples/playground/types/wire_types.hew) for a runnable example.
 
 ### Distributed Actors
 

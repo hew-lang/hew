@@ -199,6 +199,24 @@ mlir::LogicalResult hew::VecRemoveOp::verify() {
   return success();
 }
 
+mlir::LogicalResult hew::VecRemoveAtOp::verify() {
+  if (!llvm::isa<hew::VecType>(getVec().getType()))
+    return emitOpError("vec operand must be !hew.vec<T>, got ") << getVec().getType();
+  return success();
+}
+
+mlir::LogicalResult hew::VecIsEmptyOp::verify() {
+  if (!llvm::isa<hew::VecType>(getVec().getType()))
+    return emitOpError("vec operand must be !hew.vec<T>, got ") << getVec().getType();
+  return success();
+}
+
+mlir::LogicalResult hew::VecClearOp::verify() {
+  if (!llvm::isa<hew::VecType>(getVec().getType()))
+    return emitOpError("vec operand must be !hew.vec<T>, got ") << getVec().getType();
+  return success();
+}
+
 mlir::LogicalResult hew::HashMapNewOp::verify() {
   if (!llvm::isa<hew::HashMapType>(getResult().getType()))
     return emitOpError("result must be !hew.hashmap<K,V>, got ") << getResult().getType();
@@ -740,12 +758,35 @@ mlir::LogicalResult hew::EnumExtractTagOp::verify() {
 mlir::LogicalResult hew::EnumExtractPayloadOp::verify() {
   auto enumValType = getEnumVal().getType();
 
-  // Hew dialect enum types (!hew.option<T>, !hew.result<T,E>) are valid —
-  // they lower to LLVM structs later; skip detailed field checks here
-  if (llvm::isa<hew::OptionEnumType>(enumValType) || llvm::isa<hew::ResultEnumType>(enumValType)) {
-    if (getFieldIndex() < 1)
-      return emitOpError("field_index must be >= 1 for payload extraction, got ")
-             << getFieldIndex();
+  // Hew dialect enum types (!hew.option<T>, !hew.result<T,E>) — validate
+  // field_index and result-type against the known algebraic structure.
+  if (auto optType = llvm::dyn_cast<hew::OptionEnumType>(enumValType)) {
+    // !hew.option<T> lowers to { i32, T } — payload is always at index 1.
+    if (getFieldIndex() != 1)
+      return emitOpError("field_index for !hew.option must be 1, got ") << getFieldIndex();
+    if (getResult().getType() != optType.getInnerType())
+      return emitOpError("result type ")
+             << getResult().getType() << " does not match !hew.option inner type "
+             << optType.getInnerType();
+    return success();
+  }
+
+  if (auto resType = llvm::dyn_cast<hew::ResultEnumType>(enumValType)) {
+    // !hew.result<T,E> lowers to { i32, T, E } — Ok payload at 1, Err at 2.
+    uint64_t idx = getFieldIndex();
+    if (idx == 1) {
+      if (getResult().getType() != resType.getOkType())
+        return emitOpError("result type ")
+               << getResult().getType()
+               << " does not match !hew.result ok type " << resType.getOkType();
+    } else if (idx == 2) {
+      if (getResult().getType() != resType.getErrType())
+        return emitOpError("result type ")
+               << getResult().getType()
+               << " does not match !hew.result err type " << resType.getErrType();
+    } else {
+      return emitOpError("field_index for !hew.result must be 1 (ok) or 2 (err), got ") << idx;
+    }
     return success();
   }
 
@@ -926,6 +967,12 @@ mlir::LogicalResult hew::TraitObjectTagOp::verify() {
   if (!llvm::isa<hew::HewTraitObjectType>(getTraitObject().getType())) {
     return emitOpError("trait_object must be !hew.trait_object type, got ")
            << getTraitObject().getType();
+  }
+
+  // The tag (vtable pointer) is field 1 of the struct<(ptr, ptr)> lowering.
+  if (!llvm::isa<mlir::LLVM::LLVMPointerType>(getResult().getType())) {
+    return emitOpError("result must be !llvm.ptr (vtable pointer), got ")
+           << getResult().getType();
   }
 
   return success();

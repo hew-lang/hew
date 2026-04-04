@@ -1386,25 +1386,31 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let Ok(mut conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
-        return -1;
+    let (conn, peer_node_id) = {
+        let Ok(mut conns) = mgr.connections.lock() else {
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
+            return -1;
+        };
+
+        let idx = conns.iter().position(|c| c.conn_id == conn_id);
+        let Some(idx) = idx else {
+            set_last_error(format!(
+                "hew_connmgr_remove: connection {conn_id} not found"
+            ));
+            return -1;
+        };
+
+        let conn = conns.swap_remove(idx);
+        let peer_node_id = conn.peer_node_id;
+        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        (conn, peer_node_id)
     };
 
-    let idx = conns.iter().position(|c| c.conn_id == conn_id);
-    let Some(idx) = idx else {
-        set_last_error(format!(
-            "hew_connmgr_remove: connection {conn_id} not found"
-        ));
-        return -1;
-    };
-
-    let conn = conns.swap_remove(idx);
-    let peer_node_id = conn.peer_node_id;
-    conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-
+    // Release the registry lock before waking the reader. The reader cleanup
+    // path can re-enter hew_connmgr_remove on an unexpected drop.
+    //
     // Close the transport connection first so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
@@ -1894,6 +1900,90 @@ mod tests {
         assert_eq!(stop.load(Ordering::Relaxed), 0);
         stop.store(1, Ordering::Relaxed);
         assert_eq!(actor.reader_stop.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn connmgr_remove_releases_connections_lock_before_reader_wake() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
+            // SAFETY: test installs a Sender<()> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<()>>()) };
+            tx.send(()).expect("close signal send should succeed");
+        }
+
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
+        let (lock_result_tx, lock_result_rx) = std::sync::mpsc::channel::<bool>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager in this test.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        let mut actor = ConnectionActor::new(41);
+        actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        let mgr_send = SendConnMgr(mgr);
+        actor.reader_handle = Some(std::thread::spawn(move || {
+            let mgr = mgr_send;
+            close_rx.recv().expect("reader should observe close");
+            // SAFETY: mgr points at the live manager under test until the outer
+            // remove call drops and joins this thread.
+            let could_lock = unsafe { (&*mgr.0).connections.try_lock().is_ok() };
+            lock_result_tx
+                .send(could_lock)
+                .expect("reader should report lock availability");
+        }));
+
+        // SAFETY: mgr is a live manager allocated by hew_connmgr_new above.
+        unsafe {
+            let mut conns = (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            conns.push(actor);
+        }
+
+        // SAFETY: mgr is still valid and owns the test connection above.
+        assert_eq!(unsafe { hew_connmgr_remove(mgr, 41) }, 0);
+        assert!(
+            lock_result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("reader should report whether the lock was released"),
+            "hew_connmgr_remove should release the connections lock before closing the transport"
+        );
+        // SAFETY: mgr remains valid until the free call below.
+        assert_eq!(unsafe { hew_connmgr_count(mgr) }, 0);
+
+        // SAFETY: mgr was allocated by hew_connmgr_new and is no longer used after this.
+        unsafe { hew_connmgr_free(mgr) };
+        // SAFETY: transport_ptr and close_impl were allocated in this test and outlive the manager.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<()>>(),
+            ));
+        }
+        drop(ops);
     }
 
     #[test]

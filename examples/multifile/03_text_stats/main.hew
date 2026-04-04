@@ -1,0 +1,36 @@
+// 03_text_stats — two-level module hierarchy.
+//
+// Project layout:
+//
+//   text_stats/
+//     text_stats.hew     ← `text_stats` module entry
+//     words/
+//       words.hew        ← `text_stats::words` sub-module entry
+//
+// Key point: `import text_stats;` and `import text_stats::words;` are two
+// independent imports.  The parent module does NOT automatically expose the
+// child module's symbols — you must import each level you want to use.
+//
+// This mirrors how large Hew projects are typically structured: a top-level
+// module (e.g. `http`) provides the most common API, while sub-modules
+// (e.g. `http::headers`, `http::status`) hold specialised helpers that
+// callers opt into individually.
+//
+// Run:   hew run   examples/multifile/03_text_stats/main.hew
+// Check: hew check examples/multifile/03_text_stats/main.hew
+
+import text_stats;
+import text_stats::words;
+
+fn main() {
+    let sample = "the quick brown fox";
+
+    // top-level module helpers
+    println(f"characters : {text_stats.char_count(sample)}");
+    println(f"is_empty   : {text_stats.is_empty(sample)}");
+    println(f"truncate   : {text_stats.truncate(sample, 9)}");
+
+    // child sub-module helpers
+    println(f"words      : {words.word_count(sample)}");
+    println(f"first word : {words.first_word(sample)}");
+}

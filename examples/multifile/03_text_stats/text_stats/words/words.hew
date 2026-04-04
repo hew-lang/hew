@@ -1,0 +1,39 @@
+// words.hew — the `text_stats::words` sub-module.
+//
+// Lives inside the `text_stats/words/` directory so its full import path
+// is `text_stats::words`.  This is a separate module from `text_stats`:
+// `import text_stats;` does not bring `words.*` into scope.
+//
+// A directory named `words` with a matching `words.hew` entry file is the
+// standard Hew pattern for a named sub-module.  Additional peer files
+// placed alongside words.hew (e.g. words/stopwords.hew) would also merge
+// into this sub-module automatically.
+
+pub fn word_count(text: String) -> int {
+    if text.len() == 0 {
+        return 0;
+    }
+    var count = 1;
+    var i = 0;
+    let chars = text.chars();
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == ' ' {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn first_word(text: String) -> String {
+    var i = 0;
+    let chars = text.chars();
+    while i < chars.len() {
+        if chars[i] == ' ' {
+            return text.slice(0, i);
+        }
+        i = i + 1;
+    }
+    text
+}

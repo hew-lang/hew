@@ -21,7 +21,11 @@ hew build examples/fibonacci.hew -o fibonacci
 
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
-- **directory_module_demo/** -- Best in-repo explainer for Hew's module/import system: shows a directory-form module made of peer files and the `import` resolution rules ([README](directory_module_demo/README.md))
+- **directory_module_demo/** -- Quick proof that directory-form module merging works: two peer files compose into one `greeting` module ([README](directory_module_demo/README.md))
+- **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
+  - `01_shapes/` — directory module with peer-file types + trait impls; bare import + qualified access
+  - `02_geometry/` — peer files sharing a type across functions; selective `import mod::{A, B}`
+  - `03_text_stats/` — two-level hierarchy; `import parent;` vs `import parent::child;`
 
 ### Topic Collections
 

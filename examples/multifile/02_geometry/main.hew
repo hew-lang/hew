@@ -1,0 +1,40 @@
+// 02_geometry — selective imports and peer-file type sharing.
+//
+// The `geo` module is made of three peer files:
+//   geo.hew      — Point type + origin() factory
+//   distance.hew — abs_int, manhattan, chebyshev  (use Point without import)
+//   area.hew     — bounding_area                   (use Point + abs_int without import)
+//
+// This file demonstrates three import styles against the same module:
+//
+//   import geo::{Point, origin, manhattan, chebyshev, bounding_area};
+//       → selective — only these names enter scope; no module prefix needed.
+//         No "unused import" warning as long as at least one imported name
+//         is called as a function.
+//
+//   import geo;
+//       → bare — all pub names in scope, also available as geo.name(...).
+//
+//   import geo::*;
+//       → wildcard — all pub names in scope (same as bare), but the
+//         compiler currently emits a false-positive "unused import" warning
+//         when the import is consumed only through type/trait references.
+//         Prefer bare or selective imports to avoid the noise.
+//
+// Run:   hew run   examples/multifile/02_geometry/main.hew
+// Check: hew check examples/multifile/02_geometry/main.hew
+
+import geo::{Point, origin, manhattan, chebyshev, bounding_area};
+
+fn main() {
+    let o = origin();
+    let p = Point { x: 3, y: 4 };
+    let q = Point { x: 6, y: 8 };
+
+    println(f"origin  = ({o.x}, {o.y})");
+    println(f"p       = ({p.x}, {p.y})");
+    println(f"q       = ({q.x}, {q.y})");
+    println(f"manhattan(o, p)   = {manhattan(o, p)}");
+    println(f"chebyshev(p, q)   = {chebyshev(p, q)}");
+    println(f"bounding_area(o, q) = {bounding_area(o, q)}");
+}

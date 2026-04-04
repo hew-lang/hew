@@ -1,0 +1,19 @@
+// rectangle.hew — peer file inside the `shapes` directory module.
+//
+// Same pattern as circle.hew: type + impl + factory, all merged into the
+// single `shapes` namespace at import time.
+
+pub type Rectangle {
+    width:  int;
+    height: int;
+}
+
+pub fn make_rectangle(width: int, height: int) -> Rectangle {
+    Rectangle { width: width, height: height }
+}
+
+impl Drawable for Rectangle {
+    fn draw(r: Rectangle) -> String {
+        f"Rectangle({r.width}x{r.height})"
+    }
+}

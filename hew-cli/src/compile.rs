@@ -456,12 +456,36 @@ fn enrich_program_ast(
         let mut seen_inferred_type_diagnostics = HashSet::new();
         let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
+
+        // Fail closed on unresolved inference variables — these are compiler
+        // bugs, not user errors, and must not silently produce wrong codegen.
+        // Error-sentinel diagnostics are suppressed here because type-checking
+        // already emitted the real error to the user.
+        {
+            let unresolved: Vec<_> = enrich_diagnostics
+                .diagnostics()
+                .iter()
+                .filter(|d| d.kind() == hew_serialize::TypeExprConversionKind::UnresolvedVar)
+                .collect();
+            if !unresolved.is_empty() {
+                let msgs: Vec<String> = unresolved.iter().map(|d| format!("  {d}")).collect();
+                return Err(format!(
+                    "Error: unresolved type variable(s) reached the serializer (inference bug):\n{}",
+                    msgs.join("\n")
+                ));
+            }
+        }
+
         for diagnostic in collect_new_inferred_type_diagnostics(
             enrich_diagnostics.diagnostics(),
             input,
             &imported_item_sources,
             &mut seen_inferred_type_diagnostics,
         ) {
+            // ErrorSentinel: type-check already reported it; suppress duplicate.
+            if diagnostic.kind() == hew_serialize::TypeExprConversionKind::ErrorSentinel {
+                continue;
+            }
             render_inferred_type_serialization_diagnostic(
                 source,
                 input,
@@ -486,12 +510,33 @@ fn enrich_program_ast(
             }
         }
         let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
+
+        // Same triage for the expr-type-map pass.
+        {
+            let unresolved: Vec<_> = expr_type_map_build
+                .diagnostics()
+                .iter()
+                .filter(|d| d.kind() == hew_serialize::TypeExprConversionKind::UnresolvedVar)
+                .collect();
+            if !unresolved.is_empty() {
+                let msgs: Vec<String> = unresolved.iter().map(|d| format!("  {d}")).collect();
+                return Err(format!(
+                    "Error: unresolved type variable(s) reached the serializer (inference bug):\n{}",
+                    msgs.join("\n")
+                ));
+            }
+        }
+
         for diagnostic in collect_new_inferred_type_diagnostics(
             expr_type_map_build.diagnostics(),
             input,
             &imported_item_sources,
             &mut seen_inferred_type_diagnostics,
         ) {
+            // ErrorSentinel: suppress duplicate, type-check already reported it.
+            if diagnostic.kind() == hew_serialize::TypeExprConversionKind::ErrorSentinel {
+                continue;
+            }
             render_inferred_type_serialization_diagnostic(
                 source,
                 input,

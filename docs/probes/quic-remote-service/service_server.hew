@@ -1,16 +1,17 @@
-// haiku_quic_service_server.hew — Minimal QUIC-based remote service
+// service_server.hew — Minimal QUIC-based remote service
 //
 // Demonstrates:
 //   - Using std::net::quic public API to bind a QUIC server endpoint
 //   - Accepting a remote connection
 //   - Receiving and sending messages over QUIC streams
+//   - Converting demo payload strings to/from bytes at the edge
 //   - Clean bounded shutdown
 //
 // Run in one terminal:
-//   hew run haiku_quic_service_server.hew
+//   hew run service_server.hew
 //
 // Then in another:
-//   hew run haiku_quic_service_client.hew
+//   hew run service_client.hew
 
 import std::net::quic;
 
@@ -31,14 +32,19 @@ fn main() {
     println("[server] accepted stream");
     
     // Receive data from the client.
-    let data = stream.recv();
-    let msg = unsafe { hew_bytes_to_string(data) };
+    let payload = stream.recv();
+    let msg = unsafe { hew_bytes_to_string(payload) };
     println(f"[server] received: {msg}");
     
     // Echo back a response.
     let response = "Echo from server";
-    stream.send(unsafe { hew_string_to_bytes(response) });
-    println("[server] sent response");
+    let reply = unsafe { hew_string_to_bytes(response) };
+    let send_result = stream.send(reply);
+    if send_result == 0 {
+        println("[server] sent response");
+    } else {
+        println("[server] failed to send response");
+    }
     
     // Clean shutdown of stream.
     stream.finish();

@@ -1,20 +1,23 @@
 # Haiku Remote Service Probe - Summary
 
 ## Objective
-Create a minimal bounded remote/distributed service using only Hew code and public stdlib, demonstrating the feasibility of building remote transport-backed services without relying on runtime internals or C FFI.
+Create a minimal bounded remote/distributed service using Hew code plus the public `std::net::quic` transport surface, and accurately document the remaining edge: the archived probe still uses unsafe string-conversion helpers at the byte boundary.
+
+> **Archive refresh note:** This summary now matches the checked-in probe files in
+> `docs/probes/quic-remote-service/`.
 
 ## Constraints Satisfied
-✅ **Only Hew language features** - No Rust, no FFI beyond stdlib's public bindings
-✅ **Only public stdlib modules** - Used `std::net::quic` from public API
+✅ **Only public stdlib transport modules** - Used `std::net::quic` endpoint/connection/stream APIs
 ✅ **No runtime internals** - Did not use `Node`, `Actor` transport mechanisms, or undocumented internals
+⚠️ **String marshaling still uses unsafe helpers** - The probe declares `hew_string_to_bytes()` / `hew_bytes_to_string()` locally for UTF-8 payload conversion
 ✅ **Clean bounded runtime** - Both server and client initialize, run, and gracefully shut down
 ✅ **Two-endpoint interaction** - Real client-server QUIC communication with bidirectional streams
 
 ## Solution: QUIC-Based Remote Service
 
 ### Files
-- **haiku_quic_service_server.hew** - Minimal QUIC server endpoint (47 lines)
-- **haiku_quic_service_client.hew** - Minimal QUIC client endpoint (51 lines)
+- **service_server.hew** - Minimal QUIC server endpoint
+- **service_client.hew** - Minimal QUIC client endpoint
 
 ### Architecture
 ```
@@ -68,6 +71,8 @@ Create a minimal bounded remote/distributed service using only Hew code and publ
 
 ### Test Results
 
+Historical output from the archived probe branch:
+
 **Server output:**
 ```
 [server] starting minimal QUIC service...
@@ -97,7 +102,7 @@ The `std::net::quic` module provides everything needed for basic remote service 
 - **QUICEndpoint** - Bind server or create client with permissive TLS verifier
 - **QUICConnection** - Establish and manage connections to peers
 - **QUICStream** - Multiplexed bidirectional byte streams with independent flow control
-- **Trait methods** - All operations are accessible as methods on the handle types (e.g., `ep.accept()`, `conn.open_stream()`, `stream.send()`, `stream.recv()`)
+- **Trait methods** - All transport operations are accessible as methods on the handle types (e.g., `ep.accept()`, `conn.open_stream()`, `stream.send()`, `stream.recv()`)
 
 #### ✅ TLS and Certificates Work Out-of-the-Box
 - `quic.new_server(addr)` auto-generates self-signed certificates for development
@@ -115,10 +120,10 @@ The `std::net::quic` module provides everything needed for basic remote service 
 - **Workaround:** Remove explicit error checks; rely on subsequent operations to fail gracefully or use the `observe()` methods to check status
 - This is acceptable for a minimal probe but would need refinement for production services
 
-#### ✅ Bytes ↔ String Conversion
-- Used `unsafe { hew_string_to_bytes() }` and `unsafe { hew_bytes_to_string() }` for string marshaling
-- These are unstable helpers exposed via FFI but are necessary for message encoding
-- Alternative: Could define custom message protocols using raw bytes
+#### ⚠️ String Marshaling Still Uses Unsafe Helpers
+- The checked-in probe sends and receives raw bytes via `stream.send()` / `stream.recv()`
+- It declares `hew_string_to_bytes()` and `hew_bytes_to_string()` locally to turn demo strings into bytes and back
+- That keeps the transport layer on the public QUIC surface, but the example is **not** a pure no-FFI sample yet
 
 ### Public Surface Assessment
 
@@ -139,10 +144,11 @@ The `std::net::quic` module provides everything needed for basic remote service 
 ### Blockers: None Found
 
 The probe successfully demonstrates that:
-1. **No blockers exist** for building minimal distributed services using public QUIC API
-2. The stdlib is sufficient for two-endpoint patterns
-3. Bounded shutdown is straightforward with the provided cleanup methods
-4. Error handling can be improved with better public APIs for zero-value detection, but not a blocker
+1. **No blockers exist** for building minimal distributed services on the public QUIC transport API
+2. The stdlib is sufficient for two-endpoint patterns once payload encoding is defined
+3. The archived sample still needs two unsafe string-conversion helpers for textual payloads
+4. Bounded shutdown is straightforward with the provided cleanup methods
+5. Error handling can be improved with better public APIs for zero-value detection, but not a blocker
 
 ### Alternative Approaches Not Needed
 
@@ -155,11 +161,11 @@ This probe intentionally avoided:
 ### Conclusion
 
 The Hew public stdlib's QUIC API is **production-ready for basic distributed services**. The probe successfully:
-1. ✅ Compiles without errors
-2. ✅ Runs end-to-end with real network communication
+1. ✅ Compiled and ran end-to-end on the original probe branch
+2. ✅ Demonstrated real network communication
 3. ✅ Demonstrates two-endpoint remote interaction
 4. ✅ Shows clean, bounded resource management
-5. ✅ Uses only public Hew code and stdlib
+5. ✅ Uses public QUIC transport APIs with a small explicit UTF-8 helper shim
 
 The only path to more advanced patterns (transparent remote actor calls, cross-node service discovery) would require building on top of this foundation or using the higher-level Node API.
 

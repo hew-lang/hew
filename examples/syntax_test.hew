@@ -5,9 +5,10 @@
 /* This is a block comment */
 
 // === Imports ===
-// std::io and std::collections are not yet implemented
+// std::io is available, and Vec/HashMap are built-in types rather than
+// std::collections imports.
 // import std::io;
-// import std::collections::{Vec, HashMap};
+// import std::collections::hashset;
 // import std::net::*;
 
 // === Constants ===

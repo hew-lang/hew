@@ -1194,31 +1194,18 @@ worker2.configure(config.clone());  // Both workers share same Config
 | `Rc<T>` | No | Non-atomic | Shared within actor |
 | `Arc<T>` | Yes (if `T: Frozen`) | Atomic | Large immutable shared data |
 
-#### 3.7.6 Allocator Interface
+#### 3.7.6 Allocation Surface (not yet public)
 
-Hew provides an explicit allocator interface for fine-grained memory control:
+Earlier drafts of this spec described a user-visible allocator interface with
+types such as `GlobalAllocator`, `ArenaAllocator`, and `PoolAllocator`, plus
+collection constructors such as `Vec::new_in(arena)`. That surface is **not**
+part of Hew v0.2.0.
 
-```hew
-trait Allocator {
-    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, String>;
-    fn dealloc(a: Self, ptr: *var u8, size: usize, align: usize);
-    fn realloc(a: Self, ptr: *var u8, old_size: usize, new_size: usize, align: usize)
-        -> Result<*var u8, String>;
-}
-```
-
-**Standard allocators:**
-
-- `GlobalAllocator` — Default system allocator
-- `ArenaAllocator` — Bump allocation with bulk deallocation
-- `PoolAllocator` — Fixed-size object pools
-
-**Collections accept allocators:**
-
-```hew
-let items = Vec::new();              // uses default allocator
-let temp = Vec::new_in(arena);       // uses provided arena
-```
+Today, the public collection APIs use the default runtime allocator. In user
+code, prefer the shipped `Vec::new()` API or collection literals such as
+`[1, 2, 3]`. The arena discussion in the next section describes
+compiler/runtime optimization strategies, not a stable user-facing allocator
+API.
 
 #### 3.7.7 Compiler Optimizations (Implementation Details)
 
@@ -1579,7 +1566,7 @@ let sum = numbers.reduce((a, b) => a + b);
 fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
 
 // T=i32, U=String inferred from usage
-let strings = map(vec![1, 2, 3], (x) => x.to_string());  // x: i32 inferred
+let strings = map([1, 2, 3], (x) => x.to_string());  // x: i32 inferred
 ```
 
 **Actor message type inference:**
@@ -1642,7 +1629,7 @@ where
 
 // All constraints automatically verified:
 // - i32: Send ✓, Clone ✓, Display ✓
-let results = process(vec![1, 2, 3], (x) => {
+let results = process([1, 2, 3], (x) => {
     print(f"Processing: {x}");  // Display bound allows this
     x * 2
 });

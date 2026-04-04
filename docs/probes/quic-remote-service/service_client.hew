@@ -1,13 +1,14 @@
-// haiku_quic_service_client.hew — Minimal QUIC remote service client
+// service_client.hew — Minimal QUIC remote service client
 //
 // Demonstrates:
 //   - Using std::net::quic public API to create a QUIC client endpoint
 //   - Dialing a remote QUIC server
 //   - Opening a stream and sending messages
+//   - Converting demo payload strings to/from bytes at the edge
 //   - Clean shutdown
 //
 // Run after server is listening:
-//   hew run haiku_quic_service_client.hew
+//   hew run service_client.hew
 
 import std::net::quic;
 
@@ -29,7 +30,8 @@ fn main() {
     
     // Send a message to the server.
     let msg = "Hello from client";
-    let result = stream.send(unsafe { hew_string_to_bytes(msg) });
+    let payload = unsafe { hew_string_to_bytes(msg) };
+    let result = stream.send(payload);
     if result != 0 {
         println("[client] failed to send message");
     } else {
@@ -40,8 +42,8 @@ fn main() {
     stream.finish();
     
     // Receive response from server.
-    let response = stream.recv();
-    let resp_msg = unsafe { hew_bytes_to_string(response) };
+    let reply = stream.recv();
+    let resp_msg = unsafe { hew_bytes_to_string(reply) };
     println(f"[client] received: {resp_msg}");
     
     // Clean shutdown of stream.

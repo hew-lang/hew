@@ -686,6 +686,20 @@ wasm_no_mangle! {
 
 // ── Close ───────────────────────────────────────────────────────────────
 
+pub(crate) unsafe fn mailbox_close_once(mb: *mut HewMailboxWasm) -> bool {
+    if mb.is_null() {
+        return false;
+    }
+    // WASM divergence (intentional): native uses AtomicBool to coordinate
+    // cross-thread visibility. WASM is single-threaded, so plain bool reads and
+    // writes are sufficient.
+    // SAFETY: Caller guarantees `mb` is valid.
+    let was_closed = unsafe { (*mb).closed };
+    // SAFETY: Caller guarantees `mb` is valid.
+    unsafe { (*mb).closed = true };
+    !was_closed
+}
+
 wasm_no_mangle! {
     /// Close the mailbox, rejecting future sends.
     ///
@@ -693,14 +707,8 @@ wasm_no_mangle! {
     ///
     /// `mb` must be a valid mailbox pointer.
     pub unsafe extern "C" fn hew_mailbox_close(mb: *mut HewMailboxWasm) {
-        if !mb.is_null() {
-            // WASM divergence (intentional): native writes `closed` as
-            // `AtomicBool::store(true, Ordering::Release)` to make the flag
-            // visible across threads.  WASM is single-threaded — there is no
-            // concurrent reader — so a plain store is equivalent.
-            // SAFETY: Caller guarantees `mb` is valid.
-            unsafe { (*mb).closed = true };
-        }
+        // SAFETY: Caller guarantees `mb` is a valid mailbox pointer.
+        let _ = unsafe { mailbox_close_once(mb) };
     }
 }
 

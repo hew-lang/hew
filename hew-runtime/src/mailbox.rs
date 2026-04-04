@@ -1051,12 +1051,15 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
 /// # Safety
 ///
 /// `mb` must be a valid mailbox pointer.
-pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
+pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) -> bool {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-    mb.closed.store(true, Ordering::Release);
-    // Wake any senders blocked on a full mailbox.
-    mb.not_full.notify_all();
+    let was_closed = mb.closed.swap(true, Ordering::AcqRel);
+    if !was_closed {
+        // Wake any senders blocked on a full mailbox.
+        mb.not_full.notify_all();
+    }
+    !was_closed
 }
 
 /// Returns `true` if the mailbox has been closed.

@@ -15,6 +15,14 @@ import std::fs;
 
 import std::os;
 
+// hew_bytes_to_string converts a stdlib `bytes` value to a String.
+// Declared here because it is the only non-stdlib FFI needed: conn.read()
+// returns the raw byte vector before NUL stripping, which is required for
+// accurate byte counting and correct EOF detection.
+extern "C" {
+    fn hew_bytes_to_string(data: bytes) -> String;
+}
+
 // Parse host and path from an http:// URL.
 // Returns "host" via the first call, "path" via the second.
 fn parse_host(url: String) -> String {
@@ -114,17 +122,18 @@ fn main() {
     let reporter = spawn (bytes_so_far: i32) => {
         print(f"  Progress: {bytes_so_far} bytes received");
     };
-    // Read response in chunks
+    // Read response in chunks; count raw bytes before any NUL stripping.
     var total_bytes: i32 = 0;
     var full_response: String = "";
     var reading = true;
     while reading {
-        let chunk = conn.read_string();
-        let chunk_len = chunk.len();
+        let raw = conn.read();
+        let chunk_len = raw.len() as i32;
         if chunk_len == 0 {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
+            let chunk = unsafe { hew_bytes_to_string(raw) };
             full_response = full_response + chunk;
             reporter.send(total_bytes);
         }

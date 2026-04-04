@@ -1474,3 +1474,27 @@ fn bounds_not_satisfied_missing_trait_impl() {
         output.errors
     );
 }
+
+// ── String::chars() — gated at typecheck until codegen/runtime exists ───────
+
+#[test]
+fn string_chars_is_rejected_at_typecheck() {
+    // String::chars() typechecked but had no codegen/runtime path; it must
+    // now be rejected with UndefinedMethod so the compiler is fail-closed.
+    let output = typecheck(
+        r#"
+        fn main() {
+            let s = "hello";
+            let cs = s.chars();
+        }
+    "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedMethod),
+        "Expected UndefinedMethod for String::chars(), got: {:?}",
+        output.errors
+    );
+}

@@ -6974,10 +6974,18 @@ impl Checker {
                 }
                 Ty::I64
             }
-            "chars" => Ty::Named {
-                name: "Vec".to_string(),
-                args: vec![Ty::Char],
-            },
+            "chars" => {
+                // String::chars() has no codegen or runtime backing yet.
+                // Reject here (fail-closed) until the full codegen path exists.
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    "no method `chars` on string: `String::chars()` is not yet implemented; \
+                     use `char_at(i)` to access individual characters"
+                        .to_string(),
+                );
+                Ty::Error
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,

@@ -694,10 +694,37 @@ wasm_no_mangle! {
     /// `mb` must be a valid mailbox pointer.
     pub unsafe extern "C" fn hew_mailbox_close(mb: *mut HewMailboxWasm) {
         if !mb.is_null() {
+            // WASM divergence (intentional): native writes `closed` as
+            // `AtomicBool::store(true, Ordering::Release)` to make the flag
+            // visible across threads.  WASM is single-threaded — there is no
+            // concurrent reader — so a plain store is equivalent.
             // SAFETY: Caller guarantees `mb` is valid.
             unsafe { (*mb).closed = true };
         }
     }
+}
+
+/// Return `true` if the mailbox has been closed.
+///
+/// # WASM divergence
+///
+/// The native counterpart (`mailbox::mailbox_is_closed`) reads
+/// `HewMailbox.closed: AtomicBool` with `Ordering::Acquire` to pair with the
+/// `Ordering::Release` write in `hew_mailbox_close`, ensuring cross-thread
+/// visibility.  `HewMailboxWasm.closed` is a plain `bool` (consistent with
+/// every other scalar field in this struct, per the single-threaded design of
+/// the WASM mailbox).  On a single-threaded WASM runtime all operations are
+/// sequentially ordered on one thread, so the plain read is unconditionally
+/// equivalent to `Acquire` — there is no other thread that could observe a
+/// stale value.
+///
+/// # Safety
+///
+/// `mb` must be a valid, non-null pointer to a [`HewMailboxWasm`].
+pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailboxWasm) -> bool {
+    // SAFETY: Caller guarantees `mb` is non-null and valid.
+    // Single-threaded WASM: plain read is equivalent to Acquire (see doc above).
+    unsafe { (*mb).closed }
 }
 
 // ── Cleanup ─────────────────────────────────────────────────────────────

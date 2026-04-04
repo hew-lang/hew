@@ -335,6 +335,10 @@ pub enum TypeErrorKind {
     UnresolvedImport,
     /// Blocking call inside an actor receive function can starve the scheduler
     BlockingCallInReceiveFn,
+    /// Returning an `Rc<T>` parameter without `.clone()` borrows the caller's
+    /// reference — the raw pointer is aliased, causing a double-free when both
+    /// caller and callee-result drops fire.
+    BorrowedRcReturn,
 }
 
 #[cfg(test)]

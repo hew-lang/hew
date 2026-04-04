@@ -692,3 +692,104 @@ fn range_literal_assigned_to_range_i32() {
         output.errors
     );
 }
+
+/// Returning an Rc parameter as a bare identifier must warn about the
+/// double-free risk under borrow-on-call semantics.
+#[test]
+fn rc_param_return_warns_borrowed_rc() {
+    // Trailing expression (implicit return) — bare identifier
+    let output = typecheck_inline(
+        r"
+        fn identity(r: Rc<int>) -> Rc<int> {
+            r
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "returning Rc param as trailing expr should emit BorrowedRcReturn warning, got: {:#?}",
+        output.warnings
+    );
+}
+
+/// Explicit `return rc_param` must also trigger the warning.
+#[test]
+fn rc_param_explicit_return_warns_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn early(r: Rc<int>, flag: bool) -> Rc<int> {
+            if flag {
+                return r;
+            }
+            Rc::new(0)
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "explicit return of Rc param should emit BorrowedRcReturn warning, got: {:#?}",
+        output.warnings
+    );
+}
+
+/// Returning `rc_param.clone()` should NOT trigger the warning — it creates
+/// an owned copy with an incremented refcount.
+#[test]
+fn rc_param_clone_return_no_warning() {
+    let output = typecheck_inline(
+        r"
+        fn safe_identity(r: Rc<int>) -> Rc<int> {
+            r.clone()
+        }
+        fn main() {}
+        ",
+    );
+    let rc_warnings: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_warnings.is_empty(),
+        "returning rc.clone() should not warn, got: {rc_warnings:#?}",
+    );
+}
+
+/// Passing an Rc to a function that reads it (borrow) should be clean — no
+/// errors or Rc-related warnings.
+#[test]
+fn rc_pass_to_fn_borrow_clean() {
+    let output = typecheck_inline(
+        r"
+        fn read_rc(r: Rc<int>) -> int {
+            r.get()
+        }
+        fn main() {
+            let rc = Rc::new(42);
+            println(read_rc(rc));
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Rc borrow through function call should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+    let rc_warnings: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_warnings.is_empty(),
+        "Rc borrow (read-only callee) should not emit BorrowedRcReturn, got: {rc_warnings:#?}",
+    );
+}

@@ -23,6 +23,9 @@ hew version                       # Print version info
 
 `hew file.hew` is shorthand for `hew build file.hew`.
 
+For common import-resolution, type-checking, and build failures, see
+[`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
 ## Multi-file projects
 
 All CLI commands accept a **single entry-point file**. The compiler resolves

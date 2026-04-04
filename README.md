@@ -161,7 +161,8 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 
 Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 
-Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.sh)**
+- Local troubleshooting guide: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+- Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.sh)**
 
 ## Building from Source
 

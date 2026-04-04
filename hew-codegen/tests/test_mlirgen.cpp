@@ -1324,6 +1324,115 @@ fn main() {
 }
 
 // ============================================================================
+// Test: statement-style match unmatched panic blocks do not fall through
+//
+// The MLIR match lowering already emits hew.panic for the unmatched path, but
+// the lowered CFG must also terminate that block so a corrupt enum tag cannot
+// continue into the post-match continuation.
+// ============================================================================
+static void test_stmt_match_unmatched_panic_block_does_not_fall_through() {
+  TEST(stmt_match_unmatched_panic_block_does_not_fall_through);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+enum Status {
+    Active;
+    Done;
+}
+
+extern "C" {
+    fn status() -> Status;
+}
+
+fn f(x: Status) {
+    match x {
+        Active => println(1),
+        Done => println(2),
+    }
+    println(9);
+}
+
+fn main() {
+    unsafe {
+        f(status());
+    }
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for statement match panic CFG test");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for statement match panic CFG test");
+    return;
+  }
+
+  llvm::BasicBlock *panicBlock = nullptr;
+  llvm::BasicBlock *continueBlock = nullptr;
+  for (auto &fn : *llvmModule) {
+    if (fn.isDeclaration())
+      continue;
+    for (auto &block : fn) {
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee)
+          continue;
+
+        if (callee->getName() == "hew_panic")
+          panicBlock = &block;
+
+        if (callee->getName() == "hew_println_i64") {
+          auto *value = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+          if (value && value->equalsInt(9))
+            continueBlock = &block;
+        }
+      }
+    }
+  }
+
+  if (!panicBlock) {
+    FAIL("expected lowered statement match to contain an unmatched hew_panic block");
+    return;
+  }
+
+  if (!continueBlock) {
+    FAIL("expected lowered statement match to contain the post-match continuation");
+    return;
+  }
+
+  if (panicBlock->getParent() != continueBlock->getParent()) {
+    FAIL("panic block and continuation should remain in the same lowered function");
+    return;
+  }
+
+  for (auto *pred : llvm::predecessors(continueBlock)) {
+    if (pred == panicBlock) {
+      FAIL("unmatched statement-style match must not fall through into the continuation");
+      return;
+    }
+  }
+
+  if (!llvm::isa<llvm::UnreachableInst>(panicBlock->getTerminator())) {
+    FAIL("unmatched statement-style match panic block must terminate with unreachable");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Trailing void if/match use statement lowering
 // ============================================================================
 static void test_void_trailing_if_match_stmt_lowering() {
@@ -3141,6 +3250,7 @@ int main() {
   test_void_function();
   test_void_trailing_if_match_stmt_lowering();
   test_stmt_match_last_arm_emits_panic();
+  test_stmt_match_unmatched_panic_block_does_not_fall_through();
   test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

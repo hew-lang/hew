@@ -648,6 +648,12 @@ enum SendOutcome {
 /// matching [`hew_mailbox_send`]) or *before* (`false`, matching
 /// [`hew_mailbox_try_push`]).
 ///
+/// `non_blocking` controls whether `Block` (at both the top-level and the
+/// Coalesce fallback) waits on the condvar (`false`) or immediately returns
+/// [`SendOutcome::Failed`] (`true`). Set to `true` for [`hew_mailbox_try_send`]
+/// to preserve its non-blocking contract while still applying `DropOld` and
+/// `Coalesce` policies.
+///
 /// # Safety
 ///
 /// - `mb` must reference a valid, live [`HewMailbox`].
@@ -663,6 +669,7 @@ unsafe fn send_with_overflow(
     data: *const c_void,
     data_size: usize,
     drop_old_alloc_under_lock: bool,
+    non_blocking: bool,
     reply_channel: *mut c_void,
 ) -> SendOutcome {
     if mb.closed.load(Ordering::Acquire) {
@@ -677,6 +684,10 @@ unsafe fn send_with_overflow(
                 HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
                 HewOverflowPolicy::Fail => return SendOutcome::Failed,
                 HewOverflowPolicy::Block => {
+                    // Non-blocking callers (try_send) must not wait.
+                    if non_blocking {
+                        return SendOutcome::Failed;
+                    }
                     // Wait on condvar until space is available.
                     let mut q = mb.slow_path.lock_or_recover();
                     loop {
@@ -743,6 +754,10 @@ unsafe fn send_with_overflow(
                         HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
                         HewOverflowPolicy::Fail => return SendOutcome::Failed,
                         HewOverflowPolicy::Block => {
+                            // Non-blocking callers must not wait.
+                            if non_blocking {
+                                return SendOutcome::Failed;
+                            }
                             loop {
                                 if mb.closed.load(Ordering::Acquire) {
                                     return SendOutcome::Closed;
@@ -874,7 +889,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, true, ptr::null_mut()) } {
+    match unsafe { send_with_overflow(mb, msg_type, data, size, true, false, ptr::null_mut()) } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -907,7 +922,7 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, true, reply_channel) } {
+    match unsafe { send_with_overflow(mb, msg_type, data, size, true, false, reply_channel) } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -917,7 +932,18 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
     }
 }
 
-/// Non-blocking send that always fails immediately when at capacity.
+/// Non-blocking send that applies overflow policies without ever blocking.
+///
+/// Behaves identically to [`hew_mailbox_send`] for `DropOld` and `Coalesce`
+/// policies (the oldest message is evicted / a matching queued message is
+/// replaced in-place). For `Block`, `DropNew`, and `Fail` policies the call
+/// returns [`HewError::ErrMailboxFull`] immediately rather than waiting.
+///
+/// Returns `0` ([`HewError::Ok`]) on success (including eviction under
+/// `DropOld`/`Coalesce`), `-1` ([`HewError::ErrMailboxFull`]) if the mailbox
+/// is full and the policy does not permit eviction, `-4`
+/// ([`HewError::ErrClosed`]) if the mailbox is closed, or `-5`
+/// ([`HewError::ErrOom`]) if allocation fails.
 ///
 /// # Safety
 ///
@@ -931,37 +957,15 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
 ) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-
-    if mb.closed.load(Ordering::Acquire) {
-        return HewError::ErrActorStopped as i32;
-    }
-
-    if mb.capacity > 0 {
-        let cur = mb.count.load(Ordering::Acquire);
-        if cur >= mb.capacity {
-            return HewError::ErrMailboxFull as i32;
+    // SAFETY: Caller guarantees `data` points to `size` readable bytes.
+    match unsafe { send_with_overflow(mb, msg_type, data, size, false, true, ptr::null_mut()) } {
+        SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
+            HewError::Ok as i32
         }
+        SendOutcome::Closed => HewError::ErrClosed as i32,
+        SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
+        SendOutcome::Oom => HewError::ErrOom as i32,
     }
-
-    // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
-    if node.is_null() {
-        return HewError::ErrOom as i32;
-    }
-
-    if mb.use_slow_path {
-        let mut q = mb.slow_path.lock_or_recover();
-        q.user_queue.push_back(node);
-    } else {
-        // SAFETY: `node` was just allocated with next == null.
-        unsafe { mb.user_fast.enqueue(node) };
-    }
-
-    mb.count.fetch_add(1, Ordering::Release);
-    update_high_water_mark(mb);
-    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-
-    HewError::Ok as i32
 }
 
 /// Send a system message, bypassing capacity limits.
@@ -1021,7 +1025,17 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
     // SAFETY: Caller guarantees `mb` is valid.
     let mbr = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `data_size` readable bytes.
-    match unsafe { send_with_overflow(mbr, msg_type, data, data_size, false, ptr::null_mut()) } {
+    match unsafe {
+        send_with_overflow(
+            mbr,
+            msg_type,
+            data,
+            data_size,
+            false,
+            false,
+            ptr::null_mut(),
+        )
+    } {
         SendOutcome::Enqueued => 0,
         SendOutcome::Dropped => 1,
         SendOutcome::DroppedOld => 2,
@@ -1308,6 +1322,148 @@ mod tests {
             assert_eq!(
                 hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrMailboxFull as i32
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_drop_old_policy() {
+        // try_send with DropOld should evict the oldest message instead of
+        // failing when the mailbox is full.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(2, HewOverflowPolicy::DropOld);
+            let a: i32 = 1;
+            let b: i32 = 2;
+            let c: i32 = 3;
+
+            // Fill the mailbox.
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const a).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const b).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            // Full — DropOld should evict a=1 and admit c=3.
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const c).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32,
+                "try_send with DropOld must succeed when full"
+            );
+            assert_eq!(hew_mailbox_len(mb), 2, "queue length must stay at capacity");
+
+            // Oldest message (a=1) was dropped; b=2 and c=3 remain in order.
+            let n1 = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*n1).data.cast::<i32>()), 2);
+            hew_msg_node_free(n1);
+
+            let n2 = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*n2).data.cast::<i32>()), 3);
+            hew_msg_node_free(n2);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_coalesce_policy() {
+        // try_send with Coalesce should replace a matching queued message when
+        // the mailbox is full, rather than failing.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            // Use the symbol field as the coalesce key.
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let first = PriceUpdate {
+                symbol: 42,
+                price: 10,
+            };
+            let updated = PriceUpdate {
+                symbol: 42,
+                price: 99,
+            };
+
+            // Enqueue the first message.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            // Full — same key: should coalesce (replace payload) and return Ok.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const updated).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32,
+                "try_send with Coalesce must coalesce a matching queued message"
+            );
+            // Queue length unchanged — only one entry.
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            let got = *((*node).data.cast::<PriceUpdate>());
+            assert_eq!(
+                got.price, 99,
+                "coalesced message must have the updated payload"
+            );
+            hew_msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_block_policy_fails_immediately() {
+        // Block policy must fail immediately on try_send (non-blocking contract).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            // Full with Block policy — must return ErrMailboxFull immediately.
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::ErrMailboxFull as i32,
+                "try_send with Block must fail immediately, not block"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_closed_returns_err_closed() {
+        // try_send on a closed mailbox must return ErrClosed (-4), matching the
+        // WASM mailbox parity contract (not ErrActorStopped).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            mailbox_close(mb);
+
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::ErrClosed as i32,
+                "try_send on closed mailbox must return ErrClosed, not ErrActorStopped"
             );
 
             hew_mailbox_free(mb);

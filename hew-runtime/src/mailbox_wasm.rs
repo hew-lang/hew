@@ -1337,4 +1337,117 @@ mod tests {
             hew_mailbox_free(ptr::null_mut());
         }
     }
+
+    // ── try_send parity tests (WASM side) ───────────────────────────────
+    // These mirror the corresponding tests in mailbox.rs to make the
+    // native/WASM parity contract explicit and catch future regressions.
+
+    #[test]
+    fn try_send_drop_old_policy() {
+        // try_send with DropOld must evict the oldest message rather than fail.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(2, HewOverflowPolicy::DropOld);
+            let a: i32 = 1;
+            let b: i32 = 2;
+            let c: i32 = 3;
+
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const a).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const b).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            // Full — DropOld should evict a=1 and admit c=3.
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, (&raw const c).cast_mut().cast(), size_of::<i32>()),
+                HewError::Ok as i32,
+                "try_send with DropOld must succeed when full"
+            );
+            assert_eq!(hew_mailbox_len(mb), 2);
+
+            let n1 = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*n1).data.cast::<i32>()), 2);
+            msg_node_free(n1);
+            let n2 = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*n2).data.cast::<i32>()), 3);
+            msg_node_free(n2);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_coalesce_policy() {
+        // try_send with Coalesce must replace a matching queued message.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let first = PriceUpdate {
+                symbol: 42,
+                price: 10,
+            };
+            let updated = PriceUpdate {
+                symbol: 42,
+                price: 99,
+            };
+
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            // Full — same key: should coalesce and return Ok.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const updated).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32,
+                "try_send with Coalesce must coalesce a matching queued message"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            let got = *((*node).data.cast::<PriceUpdate>());
+            assert_eq!(
+                got.price, 99,
+                "coalesced message must carry updated payload"
+            );
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_closed_returns_err_closed() {
+        // try_send on a closed mailbox must return ErrClosed (-4).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            hew_mailbox_close(mb);
+
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::ErrClosed as i32,
+                "try_send on closed mailbox must return ErrClosed"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
 }

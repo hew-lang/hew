@@ -1415,6 +1415,60 @@ fn rc_assignment_taint_return_errors() {
     );
 }
 
+/// Read-only method `contains(r)` must NOT taint the receiver.
+/// Under borrow-on-call, the method borrows `r` and returns independently.
+#[test]
+fn rc_readonly_method_does_not_taint() {
+    let output = typecheck_inline(
+        r"
+        fn ok(r: Rc<int>) -> Vec<int> {
+            let v = Vec::new();
+            v.contains(r.get());
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "v.contains(...) is read-only and must not taint v, got: {rc_errors:#?}",
+    );
+}
+
+/// Field-assignment escape: `s.field = r; return s;` stores a borrowed
+/// param into a struct field, then returns the struct — aliasing double-free.
+#[test]
+fn rc_field_assignment_escape_errors() {
+    let output = typecheck_inline(
+        r"
+        type Wrapper {
+            value: Rc<int>,
+        }
+        fn bad(r: Rc<int>) -> Wrapper {
+            var s = Wrapper { value: Rc::new(0) };
+            s.value = r;
+            s
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "s.value = r; return s must fire BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  UnsafeCollectionElement — Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1611,7 +1665,5 @@ fn hashset_int_insert_ok() {
 //    stores `r` into a container.  Requires cross-function analysis.
 //
 // 2. Deeply nested non-constructor call chains are not caught.
-//
-// 3. Field-assignment escapes: `s.field = r; return s;` — not yet tracked.
 //
 // These are tracked as future escape-analysis work.

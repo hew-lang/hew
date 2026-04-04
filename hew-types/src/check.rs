@@ -6779,6 +6779,10 @@ impl Checker {
     /// processed.  Control-flow bodies are scanned unconditionally
     /// (fail-closed: if a dangerous param is stored inside a branch, the
     /// local is tainted regardless of the branch condition).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "forward taint tracks many statement kinds"
+    )]
     fn collect_tainted_locals(
         stmts: &[Spanned<Stmt>],
         rc_params: &[&str],
@@ -6821,17 +6825,47 @@ impl Checker {
                         tainted.insert(target_name.clone(), resolved);
                     }
                 }
-                Stmt::Expression((Expr::MethodCall { receiver, args, .. }, _)) => {
-                    if let Expr::Identifier(recv_name) = &receiver.0 {
-                        for arg in args {
-                            let (e, _) = arg.expr();
-                            if let Some(source) = Self::expr_mentions_dangerous_param(e, &dangerous)
-                            {
-                                let resolved =
-                                    Self::resolve_taint_source(&source, param_tags, tainted);
-                                tainted.insert(recv_name.clone(), resolved);
-                                break;
+                Stmt::Expression((
+                    Expr::MethodCall {
+                        receiver,
+                        method,
+                        args,
+                        ..
+                    },
+                    _,
+                )) => {
+                    // Only taint the receiver for methods that actually store
+                    // the argument.  Read-only methods (contains, index, len,
+                    // etc.) borrow the arg and return independently.
+                    const STORING_METHODS: &[&str] = &["push", "set", "insert", "extend", "append"];
+                    if STORING_METHODS.contains(&method.as_str()) {
+                        if let Expr::Identifier(recv_name) = &receiver.0 {
+                            for arg in args {
+                                let (e, _) = arg.expr();
+                                if let Some(source) =
+                                    Self::expr_mentions_dangerous_param(e, &dangerous)
+                                {
+                                    let resolved =
+                                        Self::resolve_taint_source(&source, param_tags, tainted);
+                                    tainted.insert(recv_name.clone(), resolved);
+                                    break;
+                                }
                             }
+                        }
+                    }
+                }
+                // Field-assignment escape: `s.field = r;` stores a dangerous
+                // param into a struct, tainting the struct variable.
+                Stmt::Assign {
+                    target: (Expr::FieldAccess { object, .. }, _),
+                    value: (expr, _),
+                    ..
+                } => {
+                    if let Expr::Identifier(obj_name) = &object.0 {
+                        if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous)
+                        {
+                            let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
+                            tainted.insert(obj_name.clone(), resolved);
                         }
                     }
                 }

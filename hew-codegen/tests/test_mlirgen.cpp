@@ -93,6 +93,15 @@ static int countRuntimeCallsByCallee(mlir::Operation *op, llvm::StringRef callee
   return count;
 }
 
+static int countDropOpsByDropFn(mlir::Operation *op, llvm::StringRef dropFn, bool isUserDrop) {
+  int count = 0;
+  op->walk([&](hew::DropOp drop) {
+    if (drop.getDropFn() == dropFn && drop.getIsUserDrop() == isUserDrop)
+      count++;
+  });
+  return count;
+}
+
 static int countLLVMCallsByCallee(llvm::Function *function, llvm::StringRef callee) {
   if (!function)
     return 0;
@@ -2792,6 +2801,82 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: imported json.Value metadata drives scope-exit auto-drop
+// ============================================================================
+
+static void test_imported_json_value_scope_drop_uses_metadata() {
+  TEST(imported_json_value_scope_drop_uses_metadata);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::encoding::json;
+
+fn main() {
+    let val = json.parse("{\"name\":\"Hew\"}");
+    let name = val.get_field("name");
+    println(name.get_string());
+    println(val.stringify());
+}
+  )",
+                           program)) {
+    FAIL("failed to load typed json scope-drop program");
+    return;
+  }
+
+  bool jsonValueInHandleTypes =
+      std::find(program.handle_types.begin(), program.handle_types.end(), "json.Value") !=
+      program.handle_types.end();
+  if (!jsonValueInHandleTypes) {
+    FAIL("json.Value missing from handle metadata");
+    return;
+  }
+
+  auto dropIt = program.drop_funcs.find("json.Value");
+  if (dropIt == program.drop_funcs.end() || dropIt->second != "hew_json_free") {
+    FAIL("expected json.Value drop metadata to map to hew_json_free");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, program);
+  if (!module) {
+    FAIL("MLIR generation failed for json.Value scope-drop program");
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("expected main function for json.Value scope-drop program");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto dropWrapper = lookupFuncBySuffix(module, "json.ValueF4drop");
+  if (!dropWrapper) {
+    FAIL("expected a generated json.Value drop wrapper");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(dropWrapper, "hew_json_free") < 1) {
+    FAIL("expected generated json.Value drop wrapper to call hew_json_free");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(mainFn, dropWrapper.getName(), true) < 2) {
+    FAIL("expected scope-exit auto-drop to emit user drop ops for imported json.Value locals");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: typeExprToHandleString uses program.handle_types (drift fix)
 //
 // Regression guard: knownHandleTypes is populated from program.handle_types
@@ -3363,6 +3448,7 @@ int main() {
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
+  test_imported_json_value_scope_drop_uses_metadata();
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_remote_actor_void_ask_does_not_free_reply();

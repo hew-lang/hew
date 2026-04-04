@@ -475,6 +475,18 @@ mod tests {
             info.handle_types.contains(&"json.Value".to_string()),
             "json module should declare json.Value handle type"
         );
+        assert!(
+            info.drop_types.contains(&"json.Value".to_string()),
+            "json module should mark json.Value as a drop type"
+        );
+        assert_eq!(
+            info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "json.Value")
+                .map(|(_, func)| func.as_str()),
+            Some("hew_json_free"),
+            "json.Value drop func should be hew_json_free"
+        );
 
         // Should have clean name mapping for "parse"
         let has_parse = info.clean_names.iter().any(|(clean, _)| clean == "parse");

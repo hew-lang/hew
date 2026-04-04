@@ -18,7 +18,6 @@ fn main() {
     let obj = json.parse("{\"a\": 1}");
     let missing = obj.get_field("nonexistent");
     println(missing.type_of());
-    obj.free();
 
     println("=== Done ===");
 }

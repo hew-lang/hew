@@ -16,25 +16,19 @@ fn main() {
     // Verify all fields survived
     let lang = parsed.get_field("language");
     println(lang.get_string());
-    lang.free();
 
     let year = parsed.get_field("year");
     println(year.get_int());
-    year.free();
 
     let compiled = parsed.get_field("compiled");
     println(compiled.get_bool());
-    compiled.free();
 
     let pi = parsed.get_field("pi");
     println(pi.get_float());
-    pi.free();
 
     // Stringify the re-parsed value should match
     let s2 = parsed.stringify();
     println(s2);
 
-    parsed.free();
-    val.free();
     println("=== Done ===");
 }

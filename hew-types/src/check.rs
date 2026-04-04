@@ -7025,10 +7025,13 @@ impl Checker {
                 }
                 Ty::I64
             }
-            "chars" => Ty::Named {
-                name: "Vec".to_string(),
-                args: vec![Ty::Char],
-            },
+            "chars" => {
+                self.check_arity(args, 0, "`String::chars`", span);
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![Ty::Char],
+                }
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,

@@ -669,6 +669,31 @@ pub unsafe extern "C" fn hew_string_lines(s: *const c_char) -> *mut crate::vec::
     v
 }
 
+/// Returns a `Vec<i32>` containing the Unicode scalar value of each character in `s`.
+///
+/// Characters are decoded as UTF-8.  Invalid UTF-8 sequences cause an early return
+/// of whatever elements were collected before the error.
+///
+/// # Safety
+///
+/// `s` must be a valid NUL-terminated C string (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_chars(s: *const c_char) -> *mut crate::vec::HewVec {
+    // SAFETY: hew_vec_new has no preconditions.
+    let v = unsafe { crate::vec::hew_vec_new() };
+    cabi_guard!(s.is_null(), v);
+    // SAFETY: s is a valid NUL-terminated C string per caller contract.
+    let Ok(rust_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+        return v;
+    };
+    for ch in rust_str.chars() {
+        // SAFETY: v is a valid HewVec allocated above.
+        // ch as i32: Unicode scalar values are ≤ 0x10_FFFF, which fits in i32.
+        unsafe { crate::vec::hew_vec_push_i32(v, ch as i32) };
+    }
+    v
+}
+
 /// Join a `Vec<String>` into a single string with `sep` between elements.
 /// Caller must `free` the result.
 ///
@@ -1646,6 +1671,69 @@ mod tests {
         let part = unsafe { crate::vec::hew_vec_get_str(v, 0) };
         // SAFETY: part is a valid C string.
         assert_eq!(unsafe { CStr::from_ptr(part) }.to_str().unwrap(), "line1");
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_chars_ascii() {
+        let s = CString::new("abc").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string.
+        let v = unsafe { hew_string_chars(s.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_chars.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
+        // SAFETY: index 0 is within bounds.
+        let c0 = unsafe { crate::vec::hew_vec_get_i32(v, 0) };
+        // SAFETY: index 1 is within bounds.
+        let c1 = unsafe { crate::vec::hew_vec_get_i32(v, 1) };
+        // SAFETY: index 2 is within bounds.
+        let c2 = unsafe { crate::vec::hew_vec_get_i32(v, 2) };
+        assert_eq!(c0, i32::from(b'a'));
+        assert_eq!(c1, i32::from(b'b'));
+        assert_eq!(c2, i32::from(b'c'));
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_chars_multibyte() {
+        // "é" is U+00E9 (two UTF-8 bytes), "中" is U+4E2D (three bytes).
+        let s = CString::new("é中").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string.
+        let v = unsafe { hew_string_chars(s.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_chars.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 2);
+        // SAFETY: index 0 is within bounds.
+        let c0 = unsafe { crate::vec::hew_vec_get_i32(v, 0) };
+        // SAFETY: index 1 is within bounds.
+        let c1 = unsafe { crate::vec::hew_vec_get_i32(v, 1) };
+        assert_eq!(c0, 0x00E9); // é
+        assert_eq!(c1, 0x4E2D); // 中
+                                // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_chars_empty() {
+        let s = CString::new("").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string.
+        let v = unsafe { hew_string_chars(s.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_chars.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 0);
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_chars_null() {
+        // SAFETY: null is the documented "skip" sentinel.
+        let v = unsafe { hew_string_chars(core::ptr::null()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_chars.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 0);
         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
     }

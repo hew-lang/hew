@@ -1735,18 +1735,43 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       if (!dropFuncName.empty()) {
         auto dropFnType = builder.getFunctionType({ptrType}, {});
         getOrCreateExternFunc(dropFuncName, dropFnType);
+
+        // The Rc runtime calls drop_fn(data_region_ptr), but drop functions
+        // (e.g. hew_string_drop) expect the *value* stored in the data
+        // region, not a pointer to the slot.  Generate a thin trampoline
+        // that loads the inner value before forwarding to the real drop.
+        std::string trampolineName = "__rc_inner_drop_" + dropFuncName;
+        if (!module.lookupSymbol<mlir::func::FuncOp>(trampolineName)) {
+          auto savedIP = builder.saveInsertionPoint();
+          builder.setInsertionPointToEnd(module.getBody());
+          auto trampoline = mlir::func::FuncOp::create(
+              builder, location, trampolineName, dropFnType);
+          trampoline.setVisibility(mlir::SymbolTable::Visibility::Private);
+          auto &entry = *trampoline.addEntryBlock();
+          builder.setInsertionPointToStart(&entry);
+          auto innerVal = mlir::LLVM::LoadOp::create(
+              builder, location, ptrType, entry.getArgument(0));
+          mlir::func::CallOp::create(builder, location, dropFuncName,
+                                      mlir::TypeRange{}, mlir::ValueRange{innerVal});
+          mlir::func::ReturnOp::create(builder, location);
+          builder.restoreInsertionPoint(savedIP);
+        }
+
         dropFnPtr = hew::FuncPtrOp::create(
                         builder, location, ptrType,
-                        mlir::SymbolRefAttr::get(&context, dropFuncName))
+                        mlir::SymbolRefAttr::get(&context, trampolineName))
                         .getResult();
       } else {
         dropFnPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
       }
     }
 
-    // Compute sizeof(T) at MLIR level using hew.sizeof.
+    // Compute sizeof(T) at MLIR level using hew.sizeof.  Use the LLVM
+    // storage type so that SizeOfOp receives a lowerable type (e.g.
+    // !llvm.ptr instead of !hew.string_ref).
+    auto storageType = toLLVMStorageType(valType);
     auto size =
-        hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(valType));
+        hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(storageType));
 
     // Allocate Rc with null data — runtime skips memcpy, leaves data region
     // uninitialised.  We then store val directly (move semantics).
@@ -1755,8 +1780,11 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         hew::RcNewOp::create(builder, location, ptrType, nullData, size, dropFnPtr)
             .getResult();
 
-    // Move val into the Rc data region.
-    mlir::LLVM::StoreOp::create(builder, location, val, rcPtr);
+    // Move val into the Rc data region.  Coerce Hew dialect types
+    // (e.g. !hew.string_ref) to their LLVM storage type so the
+    // llvm.store verifier accepts the operand.
+    auto storageVal = (storageType != valType) ? coerceType(val, storageType, location) : val;
+    mlir::LLVM::StoreOp::create(builder, location, storageVal, rcPtr);
     return rcPtr;
   }
 

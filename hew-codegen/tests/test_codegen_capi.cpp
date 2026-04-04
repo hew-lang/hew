@@ -493,6 +493,34 @@ static void test_rc_outlive_block_drop_registered() {
   PASS();
 }
 
+// Regression: Rc<String> must generate a trampoline drop wrapper
+// (__rc_inner_drop_hew_string_drop) that loads the inner String pointer
+// from the Rc data region before forwarding to hew_string_drop.
+// Without this, hew_string_drop receives an interior Rc pointer → crash.
+static void test_rc_string_inner_drop_trampoline() {
+  TEST(rc_string_inner_drop_trampoline);
+  auto ast = hewToMsgpack(
+      "fn main() { let rc = Rc::new(\"hello\"); print(rc.strong_count()); }");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  // Must contain the trampoline function
+  if (mlir.find("__rc_inner_drop_hew_string_drop") == std::string::npos) {
+    FAIL("Rc<String> missing __rc_inner_drop_hew_string_drop trampoline");
+    return;
+  }
+  // Trampoline must load the inner value and call hew_string_drop
+  if (mlir.find("hew_string_drop") == std::string::npos) {
+    FAIL("Rc<String> trampoline missing call to hew_string_drop");
+    return;
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -668,6 +696,7 @@ int main() {
   test_rc_scope_exit_drop_registered();
   test_rc_rebind_emits_clone_and_drop();
   test_rc_outlive_block_drop_registered();
+  test_rc_string_inner_drop_trampoline();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

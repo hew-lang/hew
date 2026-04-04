@@ -1,0 +1,10 @@
+// Rc<String> — verifies the inner-drop trampoline loads the String pointer
+// from the Rc data region before forwarding to hew_string_drop.
+// Without the trampoline, hew_string_drop would receive an interior Rc
+// pointer → heap corruption / crash.
+fn main() {
+    let rc = Rc::new("hello");
+    println(rc.strong_count());
+    let rc2 = rc.clone();
+    println(rc.strong_count());
+}

@@ -171,6 +171,18 @@ pub struct TraceEvent {
     pub timestamp_ns: u64,
 }
 
+impl TraceEvent {
+    /// Returns `true` for event types that drive the actionable trace UI views
+    /// (timeline, actor drill-down).  This is the single source of truth for
+    /// the "actionable event" predicate used throughout hew-observe.
+    pub fn is_actionable(&self) -> bool {
+        matches!(
+            self.event_type.as_str(),
+            "send" | "spawn" | "crash" | "stop"
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SupervisorRow {
     #[serde(default)]

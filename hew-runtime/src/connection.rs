@@ -43,7 +43,7 @@ use rand::RngExt;
 use crate::cluster::{
     hew_cluster_notify_connection_established, hew_cluster_notify_connection_lost, HewCluster,
 };
-use crate::routing::{hew_routing_add_route, hew_routing_remove_route, HewRoutingTable};
+use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::util::MutexExt;
@@ -1417,10 +1417,16 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // Now drop/join the reader thread after transport close.
     drop(conn);
 
-    if peer_node_id != 0 {
+    if peer_node_id != 0
         // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_remove_route(mgr.routing_table, peer_node_id) };
+        && unsafe { hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id) }
+    {
         // SAFETY: pointer validity is checked by the callee.
+        //
+        // Only emit the lost notification when this remove call actually
+        // retired the currently published route. A replacement connection for
+        // the same peer may have been installed while we were waiting for the
+        // reader thread to exit.
         let _ = unsafe { hew_cluster_notify_connection_lost(mgr.cluster, peer_node_id) };
     }
 
@@ -1981,6 +1987,182 @@ mod tests {
             drop(Box::from_raw(transport_ptr));
             drop(Box::from_raw(
                 close_impl.cast::<std::sync::mpsc::Sender<()>>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the full remove-vs-replacement ordering in one place"
+    )]
+    fn connmgr_remove_skips_stale_route_cleanup_after_replacement() {
+        extern "C" fn collect_membership_events(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: user_data points at the Vec<(u16, u8)> owned by this test.
+            let events = unsafe { &mut *user_data.cast::<Vec<(u16, u8)>>() };
+            events.push((node_id, event));
+        }
+
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
+        let mut membership_events: Vec<(u16, u8)> = Vec::new();
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let (reader_release_tx, reader_release_rx) = std::sync::mpsc::channel::<()>();
+        let (remove_result_tx, remove_result_rx) = std::sync::mpsc::channel::<c_int>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+
+        // SAFETY: all raw pointers are allocated in this test and remain valid
+        // until the matching free calls below.
+        unsafe {
+            let routing_table = crate::routing::hew_routing_table_new(1);
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!routing_table.is_null() && !cluster.is_null());
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut membership_events).cast(),
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.2:9000".as_ptr()),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut old_actor = ConnectionActor::new(11);
+            old_actor.peer_node_id = 2;
+            old_actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            old_actor.reader_handle = Some(std::thread::spawn(move || {
+                reader_release_rx
+                    .recv()
+                    .expect("reader should be released after replacement install");
+            }));
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(old_actor);
+            crate::routing::hew_routing_add_route(routing_table, 2, 11);
+
+            let mgr_send = SendConnMgr(mgr);
+            let remove_handle = std::thread::spawn(move || {
+                let mgr = mgr_send;
+                // SAFETY: mgr points at the live manager under test.
+                let result = hew_connmgr_remove(mgr.0, 11);
+                remove_result_tx
+                    .send(result)
+                    .expect("remove thread should report its result");
+            });
+
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should close the old transport before cleanup"),
+                11
+            );
+
+            let mut replacement_actor = Some({
+                let mut actor = ConnectionActor::new(22);
+                actor.peer_node_id = 2;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                actor
+            });
+            let replacement_installed = (0..50).any(|_| match (&*mgr).connections.try_lock() {
+                Ok(mut conns) => {
+                    conns.push(
+                        replacement_actor
+                            .take()
+                            .expect("replacement should install once"),
+                    );
+                    true
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    false
+                }
+                Err(std::sync::TryLockError::Poisoned(err)) => {
+                    err.into_inner().push(
+                        replacement_actor
+                            .take()
+                            .expect("replacement should install once"),
+                    );
+                    true
+                }
+            });
+            assert!(
+                replacement_installed,
+                "replacement connection should install while old remove waits on reader shutdown"
+            );
+            crate::routing::hew_routing_add_route(routing_table, 2, 22);
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_established(cluster, 2),
+                0
+            );
+
+            reader_release_tx
+                .send(())
+                .expect("reader release should succeed");
+            assert_eq!(
+                remove_result_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should complete once the old reader exits"),
+                0
+            );
+            remove_handle
+                .join()
+                .expect("remove thread should not panic");
+
+            assert_eq!(
+                crate::routing::hew_routing_lookup(routing_table, crate::pid::hew_pid_make(2, 0)),
+                22,
+                "stale remove should not delete the replacement route"
+            );
+            assert_eq!(
+                membership_events,
+                vec![(2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED)],
+                "stale remove should not emit a lost event after the replacement is established"
+            );
+            assert_eq!(hew_connmgr_count(mgr), 1);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            crate::routing::hew_routing_table_free(routing_table);
+        }
+
+        // SAFETY: transport_ptr and close_impl were allocated above and are no
+        // longer referenced after manager teardown.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
             ));
         }
         drop(ops);

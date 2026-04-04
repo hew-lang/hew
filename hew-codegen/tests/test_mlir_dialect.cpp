@@ -19,9 +19,11 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
 #include <cstdio>
+#include <string>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -42,6 +44,19 @@ static int tests_passed = 0;
   do {                                                                                             \
     printf("FAILED: %s\n", msg);                                                                   \
   } while (0)
+
+static std::string captureVerifyDiagnostics(mlir::Operation *op, bool &failed) {
+  std::string diagnostics;
+  llvm::raw_string_ostream os(diagnostics);
+  mlir::ScopedDiagnosticHandler handler(op->getContext(), [&](mlir::Diagnostic &diag) {
+    diag.print(os);
+    os << '\n';
+    return mlir::success();
+  });
+  failed = mlir::failed(mlir::verify(op));
+  os.flush();
+  return diagnostics;
+}
 
 //===----------------------------------------------------------------------===//
 // Test: Load dialect into context
@@ -2185,6 +2200,91 @@ static void test_enum_extract_payload_result_wrong_result_type() {
   PASS();
 }
 
+static void test_enum_extract_payload_result_negative_index_diagnostic() {
+  TEST(enum_extract_payload_result_negative_index_diagnostic);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto resType = hew::ResultEnumType::get(&ctx, i32Type, i64Type);
+  auto funcType = builder.getFunctionType({resType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  hew::EnumExtractPayloadOp::create(builder, loc, i32Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(-1));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  bool failed = false;
+  auto diagnostics = captureVerifyDiagnostics(module.getOperation(), failed);
+  if (!failed) {
+    FAIL("Should reject enum_extract_payload with field_index=-1 on !hew.result");
+    module->destroy();
+    return;
+  }
+  if (diagnostics.find("field_index for !hew.result must be 1 (ok) or 2 (err), got -1") ==
+      std::string::npos) {
+    FAIL("Expected enum_extract_payload negative !hew.result index diagnostic");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+static void test_enum_extract_payload_struct_negative_index_diagnostic() {
+  TEST(enum_extract_payload_struct_negative_index_diagnostic);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto enumType = mlir::LLVM::LLVMStructType::getLiteral(&ctx, {i32Type, i64Type});
+  auto funcType = builder.getFunctionType({enumType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  hew::EnumExtractPayloadOp::create(builder, loc, i64Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(-1));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  bool failed = false;
+  auto diagnostics = captureVerifyDiagnostics(module.getOperation(), failed);
+  if (!failed) {
+    FAIL("Should reject enum_extract_payload with field_index=-1 on LLVM struct enum");
+    module->destroy();
+    return;
+  }
+  if (diagnostics.find("field_index must be >= 1 for payload extraction, got -1") ==
+      std::string::npos) {
+    FAIL("Expected enum_extract_payload negative LLVM-struct index diagnostic");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
 //===----------------------------------------------------------------------===//
 // Test: Dead Vec NOT eliminated when vec has other uses
 //===----------------------------------------------------------------------===//
@@ -3640,6 +3740,8 @@ int main() {
   test_enum_extract_payload_option_wrong_result_type();
   test_enum_extract_payload_result_wrong_index();
   test_enum_extract_payload_result_wrong_result_type();
+  test_enum_extract_payload_result_negative_index_diagnostic();
+  test_enum_extract_payload_struct_negative_index_diagnostic();
   test_dead_vec_not_eliminated_with_uses();
   test_dead_hashmap_not_eliminated_with_uses();
 

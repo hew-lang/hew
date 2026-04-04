@@ -324,8 +324,14 @@ def Hew_EnumExtractTagOp : Hew_Op<"enum_extract_tag", [Pure]> {
 def Hew_EnumExtractPayloadOp : Hew_Op<"enum_extract_payload", [Pure]> {
   let summary = "Extract a payload field from an enum variant.";
   let description = [{
-    Extracts a single payload field from an enum value at the given
-    absolute position in the underlying struct.
+    Extracts a single payload field from an enum value.
+
+    - For lowered `!llvm.struct<...>` enum representations, `field_index`
+      is the absolute struct field position and must be >= 1.
+    - For `!hew.option<T>`, the only valid payload slot is 1 and the result
+      type must be `T`.
+    - For `!hew.result<T, E>`, valid payload slots are 1 (`Ok`) and 2
+      (`Err`), and the result type must match the selected slot.
   }];
 
   let arguments = (ins
@@ -776,6 +782,10 @@ def Hew_VecRemoveOp : Hew_Op<"vec.remove", [MemoryEffects<[MemRead, MemWrite]>]>
 
 def Hew_VecRemoveAtOp : Hew_Op<"vec.remove_at", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Remove element at index from a Vec.";
+  let description = [{
+    Removes the element at a runtime index from a `!hew.vec<T>`.
+    The verifier requires the `vec` operand to have `!hew.vec<T>` type.
+  }];
   let arguments = (ins AnyType:$vec, I64:$index);
   let assemblyFormat = "$vec `,` $index attr-dict `:` type($vec)";
   let hasVerifier = 1;
@@ -783,6 +793,10 @@ def Hew_VecRemoveAtOp : Hew_Op<"vec.remove_at", [MemoryEffects<[MemRead, MemWrit
 
 def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
   let summary = "Check if a Vec is empty.";
+  let description = [{
+    Checks whether a `!hew.vec<T>` contains any elements.
+    The verifier requires the `vec` operand to have `!hew.vec<T>` type.
+  }];
   let arguments = (ins AnyType:$vec);
   let results = (outs I1:$result);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
@@ -791,6 +805,10 @@ def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
 
 def Hew_VecClearOp : Hew_Op<"vec.clear"> {
   let summary = "Remove all elements from a Vec.";
+  let description = [{
+    Removes all elements from a `!hew.vec<T>`.
+    The verifier requires the `vec` operand to have `!hew.vec<T>` type.
+  }];
   let arguments = (ins AnyType:$vec);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
   let hasVerifier = 1;
@@ -1186,6 +1204,12 @@ def Hew_ArrayExtractOp : Hew_Op<"array.extract", [Pure]> {
 
 def Hew_TraitObjectCreateOp : Hew_Op<"trait_object.create", [Pure]> {
   let summary = "Create a trait object from a data pointer and vtable pointer.";
+  let description = [{
+    Creates a `!hew.trait_object<...>` using the Hew dialect's current
+    two-pointer representation: field 0 is the data pointer and field 1 is
+    the representation tag, which currently stores the vtable pointer.
+    Both operands must be `!llvm.ptr`.
+  }];
   let arguments = (ins AnyType:$data, AnyType:$vtable_ptr);
   let results = (outs AnyType:$result);
   let assemblyFormat = "`(` $data `,` $vtable_ptr `)` attr-dict `:` `(` type($data) `,` type($vtable_ptr) `)` `->` type($result)";
@@ -1194,6 +1218,11 @@ def Hew_TraitObjectCreateOp : Hew_Op<"trait_object.create", [Pure]> {
 
 def Hew_TraitObjectDataOp : Hew_Op<"trait_object.data", [Pure]> {
   let summary = "Extract the data pointer from a trait object.";
+  let description = [{
+    Extracts field 0 from a `!hew.trait_object<...>`.
+    The operand must be `!hew.trait_object<...>` and the result must be
+    `!llvm.ptr`.
+  }];
   let arguments = (ins AnyType:$trait_object);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$trait_object attr-dict `:` type($trait_object) `->` type($result)";
@@ -1203,6 +1232,12 @@ def Hew_TraitObjectDataOp : Hew_Op<"trait_object.data", [Pure]> {
 
 def Hew_TraitObjectTagOp : Hew_Op<"trait_object.tag", [Pure]> {
   let summary = "Extract the vtable pointer from a trait object.";
+  let description = [{
+    Extracts field 1 from a `!hew.trait_object<...>`.
+    In the current Hew dialect representation this field is the trait
+    object's tag and stores the vtable pointer, so the operand must be
+    `!hew.trait_object<...>` and the result must be `!llvm.ptr`.
+  }];
   let arguments = (ins AnyType:$trait_object);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$trait_object attr-dict `:` type($trait_object) `->` type($result)";

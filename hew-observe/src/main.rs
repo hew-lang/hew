@@ -11,8 +11,11 @@ mod discovery;
 mod theme;
 mod ui;
 
+use std::fmt;
 use std::io;
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use app::{App, Tab};
 use clap::Parser;
@@ -53,10 +56,47 @@ struct Cli {
     demo: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConnectError {
+    NoProfilerForPid(u32),
+    #[cfg(unix)]
+    MultipleProfilers(Vec<AmbiguousProfiler>),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AmbiguousProfiler {
+    pid: u32,
+    program: String,
+    uptime_secs: u64,
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoProfilerForPid(pid) => write!(f, "No profiler found for PID {pid}"),
+            #[cfg(unix)]
+            Self::MultipleProfilers(profilers) => {
+                write!(f, "Multiple profilers discovered — specify --pid:")?;
+                for profiler in profilers {
+                    write!(
+                        f,
+                        "\n  --pid {}  {}  (up {}s)",
+                        profiler.pid, profiler.program, profiler.uptime_secs,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
 /// Resolve which profiler(s) to connect to, returning the App.
-fn connect(cli: &Cli) -> App {
+fn connect(cli: &Cli) -> Result<App, ConnectError> {
     if cli.demo {
-        return App::new_demo();
+        return Ok(App::new_demo());
     }
 
     // Explicit --addr: TCP mode (backward compatible).
@@ -67,46 +107,18 @@ fn connect(cli: &Cli) -> App {
                 addrs.push(n.clone());
             }
         }
-        return App::new_tcp(&addrs);
+        return Ok(App::new_tcp(&addrs));
     }
 
     // Unix socket discovery (--pid, auto-discover).
     #[cfg(unix)]
     {
-        // Explicit --pid: look up via discovery.
-        if let Some(pid) = cli.pid {
-            if let Some(profiler) = discovery::find_by_pid(pid) {
-                return App::new_unix(&profiler.socket_path, &profiler.program);
-            }
-            eprintln!("No profiler found for PID {pid}");
-            std::process::exit(1);
-        }
-
-        // Auto-discovery: scan for running profilers.
-        // The app will re-scan periodically if nothing is found yet.
-        let profilers = discovery::scan_profilers();
-        match profilers.len() {
-            0 => {
-                // No profilers yet — start in waiting mode, re-discover will
-                // pick one up when it appears.
-                App::new_waiting()
-            }
-            1 => {
-                let p = &profilers[0];
-                App::new_discovered(&p.socket_path, &p.program)
-            }
-            _ => {
-                eprintln!("Multiple profilers discovered — specify --pid:");
-                for p in &profilers {
-                    let uptime = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs())
-                        .saturating_sub(p.started);
-                    eprintln!("  --pid {}  {}  (up {}s)", p.pid, p.program, uptime,);
-                }
-                std::process::exit(1);
-            }
-        }
+        connect_with(
+            cli,
+            discovery::find_by_pid,
+            discovery::scan_profilers,
+            unix_now_secs(),
+        )
     }
 
     // Non-unix fallback: no discovery available, use TCP default.
@@ -114,8 +126,58 @@ fn connect(cli: &Cli) -> App {
     {
         let _ = cli.pid; // suppress unused warning
         eprintln!("No profilers discovered, falling back to localhost:6060");
-        App::new_tcp(&["localhost:6060".to_owned()])
+        Ok(App::new_tcp(&["localhost:6060".to_owned()]))
     }
+}
+
+#[cfg(unix)]
+fn connect_with<FindByPid, ScanProfilers>(
+    cli: &Cli,
+    find_by_pid: FindByPid,
+    scan_profilers: ScanProfilers,
+    now_secs: u64,
+) -> Result<App, ConnectError>
+where
+    FindByPid: FnOnce(u32) -> Option<discovery::DiscoveredProfiler>,
+    ScanProfilers: FnOnce() -> Vec<discovery::DiscoveredProfiler>,
+{
+    if let Some(pid) = cli.pid {
+        let profiler = find_by_pid(pid).ok_or(ConnectError::NoProfilerForPid(pid))?;
+        return Ok(App::new_unix(&profiler.socket_path, &profiler.program));
+    }
+
+    let profilers = scan_profilers();
+    match profilers.len() {
+        0 => {
+            // No profilers yet — start in waiting mode, re-discover will
+            // pick one up when it appears.
+            Ok(App::new_waiting())
+        }
+        1 => {
+            let profiler = &profilers[0];
+            Ok(App::new_discovered(
+                &profiler.socket_path,
+                &profiler.program,
+            ))
+        }
+        _ => Err(ConnectError::MultipleProfilers(
+            profilers
+                .into_iter()
+                .map(|profiler| AmbiguousProfiler {
+                    pid: profiler.pid,
+                    program: profiler.program,
+                    uptime_secs: now_secs.saturating_sub(profiler.started),
+                })
+                .collect(),
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 #[cfg(unix)]
@@ -150,11 +212,9 @@ fn list_profilers() {
     }
 }
 
-fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn run_app(cli: &Cli, mut app: App) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-
-    let mut app = connect(cli);
     let refresh = Duration::from_millis(cli.refresh_ms);
     let mut last_refresh = Instant::now()
         .checked_sub(refresh)
@@ -208,12 +268,20 @@ fn main() {
         return;
     }
 
+    let app = match connect(&cli) {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
+
     enable_raw_mode().expect("failed to enable raw mode");
     io::stdout()
         .execute(EnterAlternateScreen)
         .expect("failed to enter alternate screen");
 
-    let result = run_app(&cli);
+    let result = run_app(&cli, app);
 
     // Always restore terminal, even on error
     let _ = disable_raw_mode();
@@ -285,5 +353,79 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             _ => {}
         },
         Tab::Overview | Tab::Cluster => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn cli(pid: Option<u32>) -> Cli {
+        Cli {
+            addr: None,
+            pid,
+            list: false,
+            node: Vec::new(),
+            refresh_ms: 1_000,
+            demo: false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn profiler(pid: u32, program: &str, started: u64) -> discovery::DiscoveredProfiler {
+        discovery::DiscoveredProfiler {
+            pid,
+            socket_path: std::path::PathBuf::from(format!("/tmp/hew-profilers-{pid}.sock")),
+            started,
+            program: program.to_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_pid_returns_error() {
+        let error = connect_with(
+            &cli(Some(42)),
+            |_| None,
+            || panic!("unexpected scan"),
+            1_000,
+        )
+        .expect_err("invalid --pid should fail");
+
+        assert_eq!(error, ConnectError::NoProfilerForPid(42));
+        assert_eq!(error.to_string(), "No profiler found for PID 42");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ambiguous_profilers_return_error() {
+        let error = connect_with(
+            &cli(None),
+            |_| panic!("unexpected pid lookup"),
+            || vec![profiler(101, "alpha", 900), profiler(202, "beta", 980)],
+            1_000,
+        )
+        .expect_err("ambiguous auto-discovery should fail");
+
+        assert_eq!(
+            error,
+            ConnectError::MultipleProfilers(vec![
+                AmbiguousProfiler {
+                    pid: 101,
+                    program: "alpha".to_owned(),
+                    uptime_secs: 100,
+                },
+                AmbiguousProfiler {
+                    pid: 202,
+                    program: "beta".to_owned(),
+                    uptime_secs: 20,
+                },
+            ]),
+        );
+        assert_eq!(
+            error.to_string(),
+            "Multiple profilers discovered — specify --pid:\n  --pid 101  alpha  (up 100s)\n  --pid 202  beta  (up 20s)",
+        );
     }
 }

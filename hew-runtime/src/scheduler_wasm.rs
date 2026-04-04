@@ -2237,7 +2237,7 @@ mod tests {
                 )
             };
             let _ = rc; // ignore error in test helper
-            // SAFETY: actor is a valid live WASM actor.
+                        // SAFETY: actor is a valid live WASM actor.
             unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
         }
 

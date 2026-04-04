@@ -2015,7 +2015,17 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         // Still emit PanicOp for MLIR's control flow analysis.
       }
     }
-    hew::PanicOp::create(builder, location);
+    // PanicOp carries the Terminator trait, so it must be the last op in its
+    // block.  scf.if regions require scf.yield as the last op instead, so
+    // use RuntimeCallOp when the insertion point is inside an scf region.
+    auto *parentOp = builder.getInsertionBlock()->getParentOp();
+    if (parentOp && mlir::isa<mlir::func::FuncOp>(parentOp)) {
+      hew::PanicOp::create(builder, location);
+    } else {
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, "hew_panic"),
+                                 mlir::ValueRange{});
+    }
     return nullptr;
   }
 

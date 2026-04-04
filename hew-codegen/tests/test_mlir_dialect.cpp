@@ -1141,8 +1141,141 @@ static void test_collection_effects() {
 }
 
 //===----------------------------------------------------------------------===//
-// Test: Pure ops report no side effects (enable CSE/DCE)
+// Test: VecIsEmpty/VecClear/VecFree/HashMapFree/Drop memory effects
 //===----------------------------------------------------------------------===//
+
+static void test_collection_free_effects() {
+  TEST(collection_free_memory_effects);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i64Type = builder.getI64Type();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+  auto vecType = hew::VecType::get(&ctx, i64Type);
+  auto mapType = hew::HashMapType::get(&ctx, i64Type, i64Type);
+
+  auto funcType = builder.getFunctionType({vecType, mapType, ptrType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_free_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  auto vec = block->getArgument(0);
+  auto map = block->getArgument(1);
+  auto ptr = block->getArgument(2);
+
+  // VecIsEmptyOp — MemRead only
+  auto isEmptyOp = hew::VecIsEmptyOp::create(builder, loc, builder.getI1Type(), vec);
+  auto isEmptyEffects =
+      mlir::dyn_cast<mlir::MemoryEffectOpInterface>(isEmptyOp.getOperation());
+  if (!isEmptyEffects || !isEmptyEffects.hasEffect<mlir::MemoryEffects::Read>()) {
+    FAIL("VecIsEmptyOp should have MemRead effect");
+    module->destroy();
+    return;
+  }
+  if (isEmptyEffects.hasEffect<mlir::MemoryEffects::Write>()) {
+    FAIL("VecIsEmptyOp should NOT have MemWrite effect");
+    module->destroy();
+    return;
+  }
+  if (isEmptyEffects.hasEffect<mlir::MemoryEffects::Free>()) {
+    FAIL("VecIsEmptyOp should NOT have MemFree effect");
+    module->destroy();
+    return;
+  }
+
+  // VecClearOp — MemRead + MemWrite
+  auto clearOp = hew::VecClearOp::create(builder, loc, vec);
+  auto clearEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(clearOp.getOperation());
+  if (!clearEffects || !clearEffects.hasEffect<mlir::MemoryEffects::Read>() ||
+      !clearEffects.hasEffect<mlir::MemoryEffects::Write>()) {
+    FAIL("VecClearOp should have both MemRead and MemWrite effects");
+    module->destroy();
+    return;
+  }
+
+  // VecFreeOp — MemFree
+  auto vecFreeOp = hew::VecFreeOp::create(builder, loc, vec);
+  auto vecFreeEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(vecFreeOp.getOperation());
+  if (!vecFreeEffects || !vecFreeEffects.hasEffect<mlir::MemoryEffects::Free>()) {
+    FAIL("VecFreeOp should have MemFree effect");
+    module->destroy();
+    return;
+  }
+
+  // HashMapFreeOp — MemFree
+  auto mapFreeOp = hew::HashMapFreeOp::create(builder, loc, map);
+  auto mapFreeEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(mapFreeOp.getOperation());
+  if (!mapFreeEffects || !mapFreeEffects.hasEffect<mlir::MemoryEffects::Free>()) {
+    FAIL("HashMapFreeOp should have MemFree effect");
+    module->destroy();
+    return;
+  }
+
+  // DropOp — MemRead + MemWrite
+  auto dropOp = hew::DropOp::create(builder, loc, ptr,
+                                    builder.getStringAttr("hew_rc_drop"),
+                                    /*is_user_drop=*/false);
+  auto dropEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(dropOp.getOperation());
+  if (!dropEffects || !dropEffects.hasEffect<mlir::MemoryEffects::Read>() ||
+      !dropEffects.hasEffect<mlir::MemoryEffects::Write>()) {
+    FAIL("DropOp should have both MemRead and MemWrite effects");
+    module->destroy();
+    return;
+  }
+
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{});
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
+// Test: PanicOp carries the Terminator trait
+//===----------------------------------------------------------------------===//
+
+static void test_panic_terminator_trait() {
+  TEST(panic_terminator_trait);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto funcType = builder.getFunctionType({}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "panic_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  auto panicOp = hew::PanicOp::create(builder, loc);
+
+  if (!panicOp->hasTrait<mlir::OpTrait::IsTerminator>()) {
+    FAIL("PanicOp should carry the IsTerminator trait");
+    module->destroy();
+    return;
+  }
+
+  // Verify the module — PanicOp as the last (and only) op in a func body block
+  // should pass MLIR verification.
+  if (mlir::failed(mlir::verify(module))) {
+    FAIL("Module with PanicOp as sole block terminator should verify successfully");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
 
 static void test_pure_ops_no_effects() {
   TEST(pure_ops_no_effects);
@@ -3719,6 +3852,8 @@ int main() {
 
   // Side-effect tests
   test_collection_effects();
+  test_collection_free_effects();
+  test_panic_terminator_trait();
   test_pure_ops_no_effects();
 
   // Canonicalization tests

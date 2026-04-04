@@ -656,12 +656,19 @@ def Hew_SleepOp : Hew_Op<"sleep"> {
 // hew.panic — Terminate the current actor with a crash
 //===----------------------------------------------------------------------===//
 
-def Hew_PanicOp : Hew_Op<"panic"> {
+def Hew_PanicOp : Hew_Op<"panic", [Terminator]> {
   let summary = "Terminate the current actor with a crash.";
   let description = [{
     Triggers a panic in the current actor.  The runtime signal handler
     catches it, marks the actor as crashed, and longjmps back to the
     scheduler's recovery point.
+
+    This op carries the `Terminator` trait so that MLIRGen helper logic
+    checking `hasTrait<IsTerminator>()` correctly identifies panic-terminated
+    blocks and suppresses dead `func.return` emission.  PanicOp must
+    therefore be the *last* operation in its block; emit
+    `hew.runtime_call @hew_panic` when the panic is a non-terminal side
+    effect inside an `scf.if` region.
 
     Example:
     ```mlir
@@ -791,7 +798,7 @@ def Hew_VecRemoveAtOp : Hew_Op<"vec.remove_at", [MemoryEffects<[MemRead, MemWrit
   let hasVerifier = 1;
 }
 
-def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
+def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty", [MemoryEffects<[MemRead]>]> {
   let summary = "Check if a Vec is empty.";
   let description = [{
     Checks whether a `!hew.vec<T>` contains any elements.
@@ -803,7 +810,7 @@ def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
   let hasVerifier = 1;
 }
 
-def Hew_VecClearOp : Hew_Op<"vec.clear"> {
+def Hew_VecClearOp : Hew_Op<"vec.clear", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Remove all elements from a Vec.";
   let description = [{
     Removes all elements from a `!hew.vec<T>`.
@@ -814,7 +821,7 @@ def Hew_VecClearOp : Hew_Op<"vec.clear"> {
   let hasVerifier = 1;
 }
 
-def Hew_VecFreeOp : Hew_Op<"vec.free"> {
+def Hew_VecFreeOp : Hew_Op<"vec.free", [MemoryEffects<[MemFree]>]> {
   let summary = "Free a Vec's memory.";
   let arguments = (ins AnyType:$vec);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
@@ -871,7 +878,7 @@ def Hew_HashMapLenOp : Hew_Op<"hashmap.len", [MemoryEffects<[MemRead]>]> {
   let hasVerifier = 1;
 }
 
-def Hew_HashMapFreeOp : Hew_Op<"hashmap.free"> {
+def Hew_HashMapFreeOp : Hew_Op<"hashmap.free", [MemoryEffects<[MemFree]>]> {
   let summary = "Free a HashMap's memory.";
   let arguments = (ins AnyType:$map);
   let assemblyFormat = "$map attr-dict `:` type($map)";
@@ -2015,7 +2022,7 @@ def Hew_SelectWaitOp : Hew_Op<"select.wait"> {
 // hew.drop — Drop (free/cleanup) a resource
 //===----------------------------------------------------------------------===//
 
-def Hew_DropOp : Hew_Op<"drop"> {
+def Hew_DropOp : Hew_Op<"drop", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Drop a resource by calling its drop function.";
   let description = [{
     The `hew.drop` operation frees or cleans up a resource by calling the

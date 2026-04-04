@@ -3279,6 +3279,38 @@ static void test_vec_len_verifier_wrong_vec_type() {
   PASS();
 }
 
+static void test_vec_free_verifier_wrong_vec_type() {
+  TEST(vec_free_verifier_wrong_vec_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i64Type = builder.getI64Type();
+  auto funcType = builder.getFunctionType({i64Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // Using i64 instead of !hew.vec<T> — verifier must reject this
+  hew::VecFreeOp::create(builder, loc, block->getArgument(0));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject vec.free with non-vec operand");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
 //===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
@@ -3342,6 +3374,7 @@ int main() {
   test_vec_pop_verifier_wrong_vec_type();
   test_vec_pop_verifier_wrong_result_type();
   test_vec_len_verifier_wrong_vec_type();
+  test_vec_free_verifier_wrong_vec_type();
   test_hashmap_insert_verifier_wrong_key_type();
   test_hashmap_insert_verifier_wrong_value_type();
   test_hashmap_get_verifier_wrong_key_type();

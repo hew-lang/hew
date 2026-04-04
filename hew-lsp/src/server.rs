@@ -4030,6 +4030,17 @@ impl Worker {
         }
     }
 
+    /// Returns a `file://` URI for `posix_path` that is valid on the current
+    /// platform.  On Windows, `file:///project/foo` lacks a drive letter and
+    /// `Url::to_file_path()` returns `Err`; prefixing with `C:` makes it a
+    /// well-formed Windows file URI while leaving Unix paths unchanged.
+    fn make_test_uri(posix_path: &str) -> Url {
+        #[cfg(windows)]
+        return Url::parse(&format!("file:///C:{posix_path}")).unwrap();
+        #[cfg(not(windows))]
+        return Url::parse(&format!("file://{posix_path}")).unwrap();
+    }
+
     /// Returns the `ImportDecl`s extracted from the parsed program, mirroring
     /// the extraction done in `goto_definition` before the cross-file search.
     fn collect_imports(source: &str) -> Vec<hew_parser::ast::ImportDecl> {
@@ -4050,8 +4061,8 @@ impl Worker {
         let main_source = "import counter::{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
-        let main_uri = Url::parse("file:///project/main.hew").unwrap();
-        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(main_uri.clone(), make_doc(main_source));
@@ -4071,8 +4082,8 @@ impl Worker {
         let main_source = "import counter::{ Counter as Cnt };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
-        let main_uri = Url::parse("file:///project/main.hew").unwrap();
-        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(main_uri.clone(), make_doc(main_source));
@@ -4093,8 +4104,8 @@ impl Worker {
         let main_source = "import counter::*;\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
-        let main_uri = Url::parse("file:///project/main.hew").unwrap();
-        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(main_uri.clone(), make_doc(main_source));
@@ -4114,8 +4125,8 @@ impl Worker {
         let main_source = "import counter::{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
-        let main_uri = Url::parse("file:///project/main.hew").unwrap();
-        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(main_uri.clone(), make_doc(main_source));
@@ -4132,8 +4143,8 @@ impl Worker {
         let main_source = "import counter::{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }\ntype Bar { x: i32 }";
 
-        let main_uri = Url::parse("file:///project/main.hew").unwrap();
-        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(main_uri.clone(), make_doc(main_source));

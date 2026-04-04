@@ -9,7 +9,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
-use crate::client::ConnectionStatus;
+use crate::client::{ConnectionInfo, ConnectionStatus, RouteEntry};
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -106,12 +106,24 @@ fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 fn draw_cluster(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
+    let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(44), Constraint::Min(0)])
         .split(area);
-    draw_cluster_topology(f, app, chunks[0]);
-    draw_cluster_members(f, app, chunks[1]);
+    draw_cluster_topology(f, app, vertical[0]);
+
+    let lower = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(vertical[1]);
+    draw_cluster_members(f, app, lower[0]);
+
+    let detail = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(lower[1]);
+    draw_cluster_connections(f, app, detail[0]);
+    draw_cluster_routes(f, app, detail[1]);
 }
 
 fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
@@ -157,6 +169,15 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
             }
             let m = &members[member_idx];
             let is_self = m.node_id == app.cluster_routing.local_node_id;
+            let connection = app
+                .cluster_connections
+                .iter()
+                .find(|c| c.peer_node_id == m.node_id);
+            let route = app
+                .cluster_routing
+                .routes
+                .iter()
+                .find(|r| r.node_id == m.node_id);
             let title = if is_self {
                 format!(" node:{} (self) ", m.node_id)
             } else {
@@ -166,15 +187,15 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
             let colour = theme::member_state_colour(&m.state);
             let state_bullet = Span::styled(format!("● {}", m.state), Style::default().fg(colour));
 
-            // Check if there is a connection to this node
             let conn_status = if is_self {
-                Span::raw("")
-            } else if app
-                .cluster_connections
-                .iter()
-                .any(|c| c.peer_node_id == m.node_id)
-            {
-                Span::styled(" ↔ connected", Style::default().fg(theme::STATE_HEALTHY))
+                Span::styled(" • local observer", theme::muted_style())
+            } else if let Some(connection) = connection {
+                Span::styled(
+                    format!(" ↔ {}", connection.state),
+                    Style::default().fg(theme::connection_state_colour(&connection.state)),
+                )
+            } else if route.is_some() {
+                Span::styled(" ↬ route only", Style::default().fg(theme::STATE_WARNING))
             } else {
                 Span::styled(" ✕ no conn", theme::dim_style())
             };
@@ -185,7 +206,15 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(theme::TEXT_PRIMARY),
                 )),
                 Line::from(vec![state_bullet, conn_status]),
-                Line::from(Span::styled("msg/s: \u{2014}", theme::dim_style())),
+                Line::from(Span::styled(
+                    cluster_member_debug_summary(
+                        connection,
+                        route,
+                        app.cluster_routing.routes.len(),
+                        is_self,
+                    ),
+                    theme::muted_style(),
+                )),
             ];
 
             let node_block = Block::default()
@@ -198,10 +227,6 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "last_seen_ms values are small enough for display"
-)]
 fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
     let header = Row::new(vec![
         Cell::from("Node"),
@@ -217,19 +242,12 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|m| {
             let colour = theme::member_state_colour(&m.state);
-            let last_seen = if m.last_seen_ms == 0 {
-                "\u{2014}".to_owned() // em-dash
-            } else if m.last_seen_ms >= 1000 {
-                format!("{:.1}s ago", m.last_seen_ms as f64 / 1000.0)
-            } else {
-                format!("{}ms ago", m.last_seen_ms)
-            };
             Row::new(vec![
                 Cell::from(format!("node:{}", m.node_id)),
                 Cell::from(m.state.as_str()).style(Style::default().fg(colour)),
                 Cell::from(format!("{}", m.incarnation)),
                 Cell::from(m.addr.as_str()),
-                Cell::from(last_seen),
+                Cell::from(format_relative_ms(m.last_seen_ms)),
             ])
         })
         .collect();
@@ -251,6 +269,182 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
             .title(" Cluster Members "),
     );
     f.render_widget(table, area);
+}
+
+fn draw_cluster_connections(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        " Connections [{} peers] ",
+        app.cluster_connections.len()
+    ));
+    if app.cluster_connections.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        draw_empty_state(f, inner, "No connection data");
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("Conn"),
+        Cell::from("Peer"),
+        Cell::from("State"),
+        Cell::from("Last"),
+        Cell::from("Routes"),
+    ])
+    .style(theme::header_style());
+
+    let rows: Vec<Row> = app
+        .cluster_connections
+        .iter()
+        .map(|connection| {
+            let routed_nodes =
+                route_targets_for_connection(&app.cluster_routing.routes, connection.conn_id);
+            Row::new(vec![
+                Cell::from(format!("{}", connection.conn_id)),
+                Cell::from(format!("node:{}", connection.peer_node_id)),
+                Cell::from(connection.state.as_str())
+                    .style(Style::default().fg(theme::connection_state_colour(&connection.state))),
+                Cell::from(format_relative_ms(connection.last_activity_ms)),
+                Cell::from(format_route_targets(&routed_nodes)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(10),
+            Constraint::Min(0),
+        ],
+    )
+    .header(header)
+    .block(block);
+    f.render_widget(table, area);
+}
+
+fn draw_cluster_routes(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        " Routing Table (local node:{}) ",
+        app.cluster_routing.local_node_id
+    ));
+    if app.cluster_routing.routes.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        draw_empty_state(f, inner, "No routing entries");
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("Target"),
+        Cell::from("Conn"),
+        Cell::from("Peer"),
+        Cell::from("State"),
+    ])
+    .style(theme::header_style());
+
+    let rows: Vec<Row> = app
+        .cluster_routing
+        .routes
+        .iter()
+        .map(|route| {
+            let connection = app
+                .cluster_connections
+                .iter()
+                .find(|connection| connection.conn_id == route.conn_id);
+            let state = connection.map_or("missing", |connection| connection.state.as_str());
+            Row::new(vec![
+                Cell::from(format!("node:{}", route.node_id)),
+                Cell::from(format!("{}", route.conn_id)),
+                Cell::from(connection.map_or("—".to_owned(), |connection| {
+                    format!("node:{}", connection.peer_node_id)
+                })),
+                Cell::from(state).style(Style::default().fg(match connection {
+                    Some(connection) => theme::connection_state_colour(&connection.state),
+                    None => theme::TEXT_DIM,
+                })),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Length(10),
+            Constraint::Min(0),
+        ],
+    )
+    .header(header)
+    .block(block);
+    f.render_widget(table, area);
+}
+
+fn route_targets_for_connection(routes: &[RouteEntry], conn_id: i32) -> Vec<u16> {
+    let mut targets: Vec<u16> = routes
+        .iter()
+        .filter(|route| route.conn_id == conn_id)
+        .map(|route| route.node_id)
+        .collect();
+    targets.sort_unstable();
+    targets
+}
+
+fn format_route_targets(targets: &[u16]) -> String {
+    if targets.is_empty() {
+        "\u{2014}".to_owned()
+    } else {
+        targets
+            .iter()
+            .map(|target| format!("node:{target}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "display formatting doesn't need full u64 precision"
+)]
+fn format_relative_ms(ms: u64) -> String {
+    if ms == 0 {
+        "\u{2014}".to_owned()
+    } else if ms >= 1000 {
+        format!("{:.1}s ago", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms ago")
+    }
+}
+
+fn cluster_member_debug_summary(
+    connection: Option<&ConnectionInfo>,
+    route: Option<&RouteEntry>,
+    total_route_count: usize,
+    is_self: bool,
+) -> String {
+    if is_self {
+        return format!("local node • {total_route_count} route(s) installed");
+    }
+
+    match (connection, route) {
+        (Some(connection), Some(route)) => format!(
+            "conn:{} ↔ node:{} • route:{} • {}",
+            connection.conn_id,
+            connection.peer_node_id,
+            route.conn_id,
+            format_relative_ms(connection.last_activity_ms),
+        ),
+        (Some(connection), None) => format!(
+            "conn:{} ↔ node:{} • no route • {}",
+            connection.conn_id,
+            connection.peer_node_id,
+            format_relative_ms(connection.last_activity_ms),
+        ),
+        (None, Some(route)) => format!("route:{} • no live connection", route.conn_id),
+        (None, None) => "no connection • no route".to_owned(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,5 +1415,79 @@ fn format_ns(ns: u64) -> String {
         format!("{:.1}µs", ns as f64 / 1000.0)
     } else {
         format!("{ns}ns")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cluster_member_debug_summary, format_relative_ms, format_route_targets,
+        route_targets_for_connection,
+    };
+    use crate::client::{ConnectionInfo, RouteEntry};
+
+    #[test]
+    fn format_relative_ms_formats_zero_subsecond_and_seconds() {
+        assert_eq!(format_relative_ms(0), "—");
+        assert_eq!(format_relative_ms(987), "987ms ago");
+        assert_eq!(format_relative_ms(4_500), "4.5s ago");
+    }
+
+    #[test]
+    fn route_targets_for_connection_returns_sorted_targets() {
+        let routes = vec![
+            RouteEntry {
+                node_id: 9,
+                conn_id: 3,
+            },
+            RouteEntry {
+                node_id: 4,
+                conn_id: 3,
+            },
+            RouteEntry {
+                node_id: 7,
+                conn_id: 8,
+            },
+        ];
+
+        let targets = route_targets_for_connection(&routes, 3);
+
+        assert_eq!(targets, vec![4, 9]);
+        assert_eq!(format_route_targets(&targets), "node:4, node:9");
+    }
+
+    #[test]
+    fn cluster_member_debug_summary_highlights_route_without_connection() {
+        let summary = cluster_member_debug_summary(
+            None,
+            Some(&RouteEntry {
+                node_id: 42,
+                conn_id: 7,
+            }),
+            3,
+            false,
+        );
+
+        assert_eq!(summary, "route:7 • no live connection");
+    }
+
+    #[test]
+    fn cluster_member_debug_summary_highlights_connection_details() {
+        let summary = cluster_member_debug_summary(
+            Some(&ConnectionInfo {
+                conn_id: 7,
+                peer_node_id: 42,
+                state: "active".to_owned(),
+                last_activity_ms: 1_250,
+            }),
+            Some(&RouteEntry {
+                node_id: 42,
+                conn_id: 7,
+            }),
+            1,
+            false,
+        );
+
+        assert_eq!(summary, "conn:7 ↔ node:42 • route:7 • 1.2s ago");
     }
 }

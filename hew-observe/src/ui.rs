@@ -1001,11 +1001,11 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
-    let mut sorted = app.actors.clone();
-    sorted.sort_by(|a, b| b.msgs.cmp(&a.msgs));
-    sorted.truncate(5);
+    let mut top: Vec<&_> = app.actors.iter().collect();
+    top.sort_by(|a, b| b.msgs.cmp(&a.msgs));
+    top.truncate(5);
 
-    let bars: Vec<Bar> = sorted
+    let bars: Vec<Bar> = top
         .iter()
         .map(|a| {
             Bar::default()

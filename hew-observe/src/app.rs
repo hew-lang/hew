@@ -979,3 +979,74 @@ fn flatten_node(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn demo_app() -> App {
+        App::new_demo()
+    }
+
+    /// Pressing `/` to re-activate filter mode must NOT clear an existing filter.
+    #[test]
+    fn filter_text_survives_reactivation() {
+        let mut app = demo_app();
+        app.filter_text = "running".to_owned();
+        app.filter_active = false;
+
+        // Simulate pressing `/` — only set filter_active, do NOT clear filter_text.
+        app.filter_active = true;
+
+        assert_eq!(
+            app.filter_text, "running",
+            "filter text must survive re-activation"
+        );
+    }
+
+    /// Pressing Esc (explicit clear) must reset both `filter_active` and `filter_text`.
+    #[test]
+    fn esc_clears_filter_explicitly() {
+        let mut app = demo_app();
+        app.filter_text = "running".to_owned();
+        app.filter_active = true;
+
+        // Simulate Esc handler.
+        app.filter_active = false;
+        app.filter_text.clear();
+        app.clamp_selections();
+
+        assert!(!app.filter_active);
+        assert!(app.filter_text.is_empty(), "Esc must clear filter text");
+    }
+
+    /// `filter_text` and `sort_column` must survive `next_tab` / `prev_tab` round-trips.
+    #[test]
+    fn filter_and_sort_persist_across_tab_switch() {
+        let mut app = demo_app();
+        app.filter_text = "actor42".to_owned();
+        app.sort_column = SortColumn::Messages;
+        let start_tab = app.active_tab;
+
+        app.next_tab();
+        app.next_tab();
+        app.prev_tab();
+        app.prev_tab();
+
+        assert_eq!(app.active_tab, start_tab);
+        assert_eq!(app.filter_text, "actor42");
+        assert_eq!(app.sort_column, SortColumn::Messages);
+    }
+
+    /// `cycle_sort` advances through all columns and wraps around.
+    #[test]
+    fn cycle_sort_advances_and_wraps() {
+        let mut app = demo_app();
+        app.sort_column = SortColumn::Id;
+        let total = SORT_COLUMNS.len();
+        for _ in 0..total {
+            app.cycle_sort();
+        }
+        assert_eq!(app.sort_column, SortColumn::Id, "sort must wrap back to Id");
+    }
+}

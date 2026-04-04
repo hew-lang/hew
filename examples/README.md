@@ -15,6 +15,9 @@ hew build examples/fibonacci.hew -o fibonacci
 ./fibonacci
 ```
 
+If an example fails to import, typecheck, or link, start with
+[`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
 ## Expected Output Files
 
 Many examples — especially those under `ux/` and `progressive/` — ship with a sibling `.expected` file containing the exact stdout the program should produce. These files are used by the automated test suite, and you can use them locally to verify your build is correct:

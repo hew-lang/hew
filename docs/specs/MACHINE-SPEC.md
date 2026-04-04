@@ -25,10 +25,15 @@ A `machine` declaration introduces a new nominal type with three components:
 
 A machine value is always in exactly one state. The only way to change state is via the generated `step()` method, which accepts an event and mutates the machine in place (like `Vec.push()`). It does not return a value.
 
-### §1.1 Non-goals (v0.1)
+### §1.1 Non-goals (v0.1) — superseded notes
+
+> **v0.2.0 update:** Guard conditions (`when`) were listed as a non-goal in
+> the original v0.1 draft but are **implemented and shipping** in v0.2.0.
+> See §3.11.4 in `HEW-SPEC.md` and the `e2e_machine/machine_guard.hew` test
+> for the current behaviour.  The remaining items below are still non-goals.
 
 - No hierarchical/nested states.
-- No guard conditions on transitions.
+- ~~No guard conditions on transitions.~~ _(implemented — see note above)_
 - No entry/exit hooks.
 - No side effects in transition bodies (pure transformation only).
 - No `initial` keyword (the caller constructs the initial state explicitly).

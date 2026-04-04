@@ -87,8 +87,17 @@ impl ReplSession {
             };
         }
 
-        // Compile and execute via native pipeline.
-        match compile_and_execute(&program.source) {
+        // Preserve the module registry for the in-process codegen path.
+        let module_registry = checker.into_module_registry();
+
+        // Compile and execute in-process, reusing the parse + typecheck work
+        // already done above instead of spawning a `hew build` subprocess.
+        match run_inprocess_compiled(
+            parse_result.program,
+            &tco,
+            &module_registry,
+            &program.source,
+        ) {
             Ok(output) => {
                 // On success, persist the input into session state.
                 match &program.kind {
@@ -292,39 +301,37 @@ impl ReplSession {
     }
 }
 
-/// Compile Hew source to a native binary via `hew build` and execute it.
-fn compile_and_execute(source: &str) -> Result<String, String> {
-    let hew_binary = crate::util::find_hew_binary()?;
-
+/// Compile the given already-parsed, already-type-checked program to a native
+/// binary in a temporary directory and execute it, returning its stdout.
+///
+/// This eliminates the subprocess `hew build` hop: parse and typecheck have
+/// already been done by the REPL, so we carry those results straight into the
+/// codegen/link/run stages.
+fn run_inprocess_compiled(
+    program: hew_parser::ast::Program,
+    tco: &hew_types::check::TypeCheckOutput,
+    module_registry: &hew_types::module_registry::ModuleRegistry,
+    source: &str,
+) -> Result<String, String> {
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
-
-    let src_path = tmp_dir.path().join("eval.hew");
-    std::fs::write(&src_path, source).map_err(|e| format!("cannot write temp source: {e}"))?;
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
     let bin_path = tmp_dir.path().join(bin_name);
+    let bin_path_str = bin_path
+        .to_str()
+        .ok_or_else(|| "temp binary path is not valid UTF-8".to_string())?;
 
-    // Compile.
-    let compile = Command::new(&hew_binary)
-        .arg("build")
-        .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
-        .output()
-        .map_err(|e| format!("cannot invoke hew build: {e}"))?;
+    crate::compile::compile_from_source_checked(
+        program,
+        tco,
+        module_registry,
+        source,
+        "<repl>",
+        bin_path_str,
+        &crate::compile::CompileOptions::default(),
+    )?;
 
-    if !compile.status.success() {
-        let stderr = String::from_utf8_lossy(&compile.stderr);
-        let stdout = String::from_utf8_lossy(&compile.stdout);
-        let msg = if stderr.is_empty() {
-            stdout.to_string()
-        } else {
-            stderr.to_string()
-        };
-        return Err(msg);
-    }
-
-    // Execute.
+    // Execute the compiled binary and capture its stdout.
     let run = Command::new(&bin_path)
         .output()
         .map_err(|e| format!("cannot execute compiled program: {e}"))?;
@@ -505,28 +512,45 @@ Input types:
 mod tests {
     use super::*;
 
-    /// Verifies the full compilation toolchain is available by attempting a
-    /// trivial `hew build`. Returns false (and prints a skip message) when
-    /// `hew-codegen` or `libhew_runtime.a` aren't built yet.
+    /// Verifies the in-process codegen pipeline is available by compiling a
+    /// trivial program.  Returns false (and prints a skip message) when the
+    /// embedded `hew-codegen` backend or `libhew_runtime.a` aren't built yet.
     fn require_toolchain() -> bool {
         static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *OK.get_or_init(|| {
-            let Ok(hew) = crate::util::find_hew_binary() else {
-                eprintln!("REPL integration tests skipped: hew binary not found");
-                return false;
-            };
             let dir = tempfile::tempdir().expect("temp dir");
-            let src = dir.path().join("probe.hew");
-            std::fs::write(&src, "fn main() { println(\"ok\"); }\n").expect("write");
-            let ok = std::process::Command::new(&hew)
-                .args(["build", src.to_str().unwrap(), "-o"])
-                .arg(dir.path().join("probe"))
-                .output()
-                .is_ok_and(|o| o.status.success());
+            let bin_name = format!("probe{}", crate::platform::exe_suffix());
+            let bin_path = dir.path().join(bin_name);
+            let source = "fn main() { println(\"ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("REPL integration tests skipped: probe parse failed");
+                return false;
+            }
+            let mut checker =
+                hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+                    hew_types::module_registry::build_module_search_paths(),
+                ));
+            let tco = checker.check_program(&parse_result.program);
+            if !tco.errors.is_empty() {
+                eprintln!("REPL integration tests skipped: probe typecheck failed");
+                return false;
+            }
+            let module_registry = checker.into_module_registry();
+            let ok = crate::compile::compile_from_source_checked(
+                parse_result.program,
+                &tco,
+                &module_registry,
+                source,
+                "<repl-probe>",
+                bin_path.to_str().unwrap_or("probe"),
+                &crate::compile::CompileOptions::default(),
+            )
+            .is_ok();
             if !ok {
                 eprintln!(
                     "REPL integration tests skipped: \
-                     hew build failed (codegen/runtime not available)"
+                     in-process compile failed (codegen/runtime not available)"
                 );
             }
             ok

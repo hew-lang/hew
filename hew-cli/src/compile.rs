@@ -724,6 +724,87 @@ pub fn compile(
     compile_and_link(&ast_data, input, output, &target, options)
 }
 
+/// Run the codegen and link stages on a program already parsed and
+/// type-checked in-process, skipping the file-read and typecheck steps.
+///
+/// This is the fast path for `hew eval`: the REPL has already done
+/// parse + typecheck; we carry those results forward and only run the
+/// remaining pipeline stages (enrich → serialize → link).
+///
+/// `source` is the Hew source string (used for diagnostic metadata and
+/// implicit-import detection; no file is written).  `source_label` is a
+/// synthetic path label used wherever a file name is needed (use something
+/// like `"<repl>"` for interactive sessions).  `output_path` is where the
+/// linked executable should be written.
+///
+/// Implicit stdlib imports (regex literals, wire type annotations) are
+/// injected before the enrichment stage so that all codegen contracts are
+/// satisfied identically to the normal `compile()` path.
+///
+/// # Errors
+///
+/// Returns a human-readable message when any pipeline stage fails.
+pub(crate) fn compile_from_source_checked(
+    mut program: hew_parser::ast::Program,
+    tco: &hew_types::check::TypeCheckOutput,
+    module_registry: &hew_types::module_registry::ModuleRegistry,
+    source: &str,
+    source_label: &str,
+    output_path: &str,
+    options: &CompileOptions,
+) -> Result<(), String> {
+    let target = TargetSpec::from_requested(options.target.as_deref())?;
+
+    // Inject implicit stdlib imports (regex, wire types) identical to the
+    // normal pipeline.  For most REPL programs this is a no-op.
+    inject_implicit_imports(&mut program.items, source);
+
+    // Build the module graph.  REPL synthetic programs have no file imports,
+    // so resolve_file_imports is effectively a no-op here.  Module-path
+    // imports added by inject_implicit_imports (e.g. std::text::regex) are
+    // resolved normally via the standard search paths.
+    let project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let source_path = Path::new(source_label);
+    let mut import_ctx = ImportResolutionContext {
+        imported: HashSet::new(),
+        manifest_deps: None,
+        extra_pkg_path: options.pkg_path.as_deref(),
+        locked_versions: None,
+        package_name: None,
+        project_dir: &project_dir,
+    };
+    let module_graph = build_module_graph(source_path, &mut program.items, None, &mut import_ctx)
+        .map_err(|errs| errs.join("\n"))?;
+    program.module_graph = Some(module_graph);
+
+    // Stage 5: enrich AST with inferred types, flatten imports, mark tail calls.
+    let expr_type_map = enrich_program_ast(
+        &mut program,
+        Some(tco),
+        module_registry,
+        source,
+        source_label,
+    )?;
+
+    // Stage 6: build codegen metadata.
+    let meta = build_codegen_metadata(module_registry, source_label, source, options);
+
+    // Serialize to msgpack.
+    let ast_data = hew_serialize::serialize_to_msgpack(
+        &program,
+        expr_type_map,
+        meta.handle_types,
+        meta.handle_type_repr,
+        meta.abs_source_path.as_deref(),
+        meta.line_map.as_deref(),
+    );
+
+    // Stage 7: codegen to object file and link executable.
+    compile_and_link(&ast_data, source_label, Some(output_path), &target, options)?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Embedded backend bridge
 // ---------------------------------------------------------------------------

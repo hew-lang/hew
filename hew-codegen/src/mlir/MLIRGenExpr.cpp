@@ -4168,7 +4168,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
     std::string handleType;
     // Prefer resolved type from the type checker
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      handleType = typeExprToHandleString(*typeExpr);
+      handleType = typeExprToHandleString(*typeExpr, knownHandleTypes);
     // Fall back to identifier-based map lookup
     if (handleType.empty()) {
       if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {

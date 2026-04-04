@@ -4519,7 +4519,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;
     {
-      auto handleStr = typeExprToHandleString(paramTy);
+      auto handleStr = typeExprToHandleString(paramTy, knownHandleTypes);
       if (!handleStr.empty())
         handleVarTypes[paramName] = handleStr;
       auto actorName = typeExprToActorName(paramTy);

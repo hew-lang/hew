@@ -11,6 +11,8 @@
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/HewTypes.h"
 
+#include <unordered_set>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -94,28 +96,20 @@ inline std::string typeExprToCollectionString(
 }
 
 /// Extract a handle type string from a TypeExpr.
-/// Returns "http.Server", "net.Listener", "regex.Pattern", "process.Child",
-/// etc., or "" if not a handle type.
+/// Returns the handle type name (e.g. "http.Server", "regex.Pattern") or ""
+/// if the type is not in the metadata-driven known-handle set.
 ///
-/// SHIM: This hardcoded list duplicates the `knownHandleTypes` set that
-/// MLIRGen builds from msgpack metadata at load time. Free helper functions
-/// outside the MLIRGen class cannot easily reach that set, so this list
-/// exists as a workaround. When these call sites are moved into the MLIRGen
-/// class (or receive a context parameter), replace this list with a lookup
-/// against the metadata-driven set.
-inline std::string typeExprToHandleString(const ast::TypeExpr &te) {
+/// \p knownHandles must be the set built from program.handle_types by
+/// MLIRGen::generate() — NOT a hardcoded list — so that the lookup stays in
+/// sync with the Rust type-checker's handle-type registry.
+inline std::string
+typeExprToHandleString(const ast::TypeExpr &te,
+                       const std::unordered_set<std::string> &knownHandles) {
   auto *named = std::get_if<ast::TypeNamed>(&te.kind);
   if (!named)
     return "";
-  // Handle types use module-qualified names in the type checker
-  static const std::string handleTypes[] = {
-      "http.Server",   "http.Request",  "net.Listener",  "net.Connection", "regex.Pattern",
-      "process.Child", "json.Value",    "csv.Table",     "toml.Value",     "yaml.Value",
-      "sqlite.Db",     "sqlite.Result", "postgres.Conn", "postgres.Result"};
-  for (const auto &ht : handleTypes) {
-    if (named->name == ht)
-      return ht;
-  }
+  if (knownHandles.count(named->name))
+    return named->name;
   return "";
 }
 

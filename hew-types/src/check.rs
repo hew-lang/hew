@@ -6547,13 +6547,33 @@ impl Checker {
         let param_names: Vec<&str> = dangerous_params.iter().map(|(n, _)| *n).collect();
         let param_tags: HashMap<&str, &str> = dangerous_params.iter().copied().collect();
 
+        // Collect locals tainted by storing a dangerous param via method
+        // calls (v.push(r)), direct aliasing (let v = r), or aggregate
+        // wrapping (let v = Some(r)).  Taint propagates forward so that
+        // `let a = r; v.push(a);` taints both `a` and `v`.
+        let mut tainted: HashMap<String, (String, String)> = HashMap::new();
+        Self::collect_tainted_locals(&fd.body.stmts, &param_names, &param_tags, &mut tainted);
+
+        // Build extended name/tag sets including tainted locals so the
+        // return-position checker also flags `return v` when v is tainted.
+        let tainted_tag_storage: Vec<(String, String)> = tainted
+            .iter()
+            .map(|(local, (source, tag))| (local.clone(), format!("tainted:{source}:{tag}")))
+            .collect();
+        let mut all_names: Vec<&str> = param_names.clone();
+        let mut all_tags: HashMap<&str, &str> = param_tags.clone();
+        for (name, tag) in &tainted_tag_storage {
+            all_names.push(name.as_str());
+            all_tags.insert(name.as_str(), tag.as_str());
+        }
+
         // Check trailing expression (implicit return).
         if let Some(trailing) = &fd.body.trailing_expr {
-            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, &param_names, &param_tags);
+            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, &all_names, &all_tags);
         }
 
         // Scan statements for explicit `return <ident>` / `break <ident>`.
-        self.scan_stmts_for_rc_param_return(&fd.body.stmts, &param_names, &param_tags);
+        self.scan_stmts_for_rc_param_return(&fd.body.stmts, &all_names, &all_tags);
     }
 
     /// If `expr` is a bare identifier matching one of `rc_params` (or a block
@@ -6572,7 +6592,30 @@ impl Checker {
         match expr {
             Expr::Identifier(name) if rc_params.contains(&name.as_str()) => {
                 let tag = param_tags.get(name.as_str()).copied().unwrap_or("Rc");
-                let (message, note, suggestion) = if tag == "Rc" {
+                let (message, note, suggestion) = if let Some(rest) = tag.strip_prefix("tainted:") {
+                    // Tainted local: tag = "tainted:<source_param>:<source_tag>"
+                    let (source_param, source_tag) = rest.split_once(':').unwrap_or((rest, "Rc"));
+                    (
+                        format!(
+                            "returning local `{name}` which contains borrowed parameter \
+                             `{source_param}` — the parameter was stored without cloning, \
+                             causing a double-free when both the caller's local and the \
+                             return value are dropped"
+                        ),
+                        format!(
+                            "parameter `{source_param}` is borrowed under call-boundary \
+                             ownership; storing it in `{name}` does not transfer ownership"
+                        ),
+                        if source_tag == "Rc" {
+                            format!("clone the parameter before storing: `{source_param}.clone()`")
+                        } else {
+                            format!(
+                                "add a `Copy` bound (`{source_tag}: Copy`) or clone \
+                                 `{source_param}` before storing"
+                            )
+                        },
+                    )
+                } else if tag == "Rc" {
                     (
                         format!(
                             "returning Rc parameter `{name}` transfers a borrowed reference \
@@ -6665,6 +6708,193 @@ impl Checker {
                 matches!(&object.0, Expr::Identifier(name) if name.starts_with(char::is_uppercase))
             }
             _ => false,
+        }
+    }
+
+    /// Check if `expr` directly names or structurally contains an identifier
+    /// in `dangerous`.  Returns the first match or `None`.
+    ///
+    /// Structural descent mirrors `check_expr_is_rc_param_return`: constructors
+    /// (uppercase-initial calls), tuples, struct inits, and blocks are
+    /// containers that embed the value.  Regular lowercase function/method
+    /// calls are borrows under call-boundary ownership — the return value is
+    /// unrelated, so we do NOT recurse into those.
+    fn expr_mentions_dangerous_param(expr: &Expr, dangerous: &HashSet<String>) -> Option<String> {
+        match expr {
+            Expr::Identifier(name) if dangerous.contains(name) => Some(name.clone()),
+            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+                for arg in args {
+                    let (e, _) = arg.expr();
+                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Expr::Tuple(elems) => {
+                for (e, _) in elems {
+                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Expr::StructInit { fields, .. } => {
+                for (_, (e, _)) in fields {
+                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Expr::Block(blk) => blk
+                .trailing_expr
+                .as_deref()
+                .and_then(|(e, _)| Self::expr_mentions_dangerous_param(e, dangerous)),
+            _ => None,
+        }
+    }
+
+    /// Forward-scan statements to find local variables tainted by storing a
+    /// dangerous parameter (Rc or non-Copy generic param).
+    ///
+    /// A local is "tainted" when:
+    /// 1. Direct alias: `let v = r;`
+    /// 2. Aggregate wrap: `let v = Some(r);`
+    /// 3. Method-call store: `v.push(r);`
+    ///
+    /// Taint propagates forward: `let a = r; v.push(a);` taints both `a`
+    /// and `v` because `a` enters the dangerous set before the `push` is
+    /// processed.  Control-flow bodies are scanned unconditionally
+    /// (fail-closed: if a dangerous param is stored inside a branch, the
+    /// local is tainted regardless of the branch condition).
+    fn collect_tainted_locals(
+        stmts: &[Spanned<Stmt>],
+        rc_params: &[&str],
+        param_tags: &HashMap<&str, &str>,
+        tainted: &mut HashMap<String, (String, String)>,
+    ) {
+        for (stmt, _span) in stmts {
+            // Rebuild the dangerous set each iteration to include newly
+            // tainted locals.  Uses owned Strings to avoid borrow conflicts
+            // when inserting into `tainted` below.
+            let dangerous: HashSet<String> = rc_params
+                .iter()
+                .map(|s| (*s).to_string())
+                .chain(tainted.keys().cloned())
+                .collect();
+
+            match stmt {
+                Stmt::Let {
+                    pattern: (Pattern::Identifier(name), _),
+                    value: Some((expr, _)),
+                    ..
+                }
+                | Stmt::Var {
+                    name,
+                    value: Some((expr, _)),
+                    ..
+                } => {
+                    if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous) {
+                        let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
+                        tainted.insert(name.clone(), resolved);
+                    }
+                }
+                Stmt::Assign {
+                    target: (Expr::Identifier(target_name), _),
+                    value: (expr, _),
+                    ..
+                } => {
+                    if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous) {
+                        let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
+                        tainted.insert(target_name.clone(), resolved);
+                    }
+                }
+                Stmt::Expression((Expr::MethodCall { receiver, args, .. }, _)) => {
+                    if let Expr::Identifier(recv_name) = &receiver.0 {
+                        for arg in args {
+                            let (e, _) = arg.expr();
+                            if let Some(source) = Self::expr_mentions_dangerous_param(e, &dangerous)
+                            {
+                                let resolved =
+                                    Self::resolve_taint_source(&source, param_tags, tainted);
+                                tainted.insert(recv_name.clone(), resolved);
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Recurse into control flow — fail-closed: if a dangerous
+                // param is stored inside a branch, the local is tainted
+                // unconditionally.
+                Stmt::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    Self::collect_tainted_locals(&then_block.stmts, rc_params, param_tags, tainted);
+                    if let Some(else_blk) = else_block {
+                        if let Some(if_stmt) = &else_blk.if_stmt {
+                            Self::collect_tainted_locals(
+                                std::slice::from_ref(if_stmt.as_ref()),
+                                rc_params,
+                                param_tags,
+                                tainted,
+                            );
+                        }
+                        if let Some(blk) = &else_blk.block {
+                            Self::collect_tainted_locals(
+                                &blk.stmts, rc_params, param_tags, tainted,
+                            );
+                        }
+                    }
+                }
+                Stmt::IfLet {
+                    body, else_body, ..
+                } => {
+                    Self::collect_tainted_locals(&body.stmts, rc_params, param_tags, tainted);
+                    if let Some(else_blk) = else_body {
+                        Self::collect_tainted_locals(
+                            &else_blk.stmts,
+                            rc_params,
+                            param_tags,
+                            tainted,
+                        );
+                    }
+                }
+                Stmt::For { body, .. }
+                | Stmt::While { body, .. }
+                | Stmt::WhileLet { body, .. }
+                | Stmt::Loop { body, .. } => {
+                    Self::collect_tainted_locals(&body.stmts, rc_params, param_tags, tainted);
+                }
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        if let Expr::Block(blk) = &arm.body.0 {
+                            Self::collect_tainted_locals(
+                                &blk.stmts, rc_params, param_tags, tainted,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Trace a taint source back to the original parameter.  If `source` is
+    /// itself a tainted local, follow the chain to the root param.
+    fn resolve_taint_source(
+        source: &str,
+        param_tags: &HashMap<&str, &str>,
+        tainted: &HashMap<String, (String, String)>,
+    ) -> (String, String) {
+        if let Some(tag) = param_tags.get(source) {
+            (source.to_string(), (*tag).to_string())
+        } else if let Some((orig, tag)) = tainted.get(source) {
+            (orig.clone(), tag.clone())
+        } else {
+            (source.to_string(), "Rc".to_string())
         }
     }
 

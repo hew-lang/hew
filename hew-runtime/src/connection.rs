@@ -71,7 +71,8 @@ const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
 const HEW_PROTOCOL_VERSION: u16 = 1;
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
-const HEW_FEATURE_SUPPORTS_REMOTE_SPAWN: u32 = 1 << 2;
+// Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
+// bootstrap-based remote-spawn path is implemented.
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -485,7 +486,7 @@ fn reconnect_worker_loop(
 }
 
 fn local_feature_flags() -> u32 {
-    let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN;
+    let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP;
     #[cfg(feature = "encryption")]
     {
         flags |= HEW_FEATURE_SUPPORTS_ENCRYPTION;
@@ -1866,7 +1867,7 @@ mod tests {
             protocol_version: HEW_PROTOCOL_VERSION,
             node_id: 42,
             schema_hash: 0x1234_5678,
-            feature_flags: HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN,
+            feature_flags: HEW_FEATURE_SUPPORTS_GOSSIP,
             static_noise_pubkey: [7; NOISE_STATIC_PUBKEY_LEN],
         };
         let encoded = hs.serialize();

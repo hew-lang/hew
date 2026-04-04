@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -43,6 +43,7 @@ pub struct ExprTypeEntry {
 /// - `"expr_types"`
 /// - `"handle_types"`
 /// - `"handle_type_repr"`
+/// - `"drop_funcs"`
 /// - `"module_graph"` when module graph data is available
 /// - `"source_path"` when source path metadata is available
 /// - `"line_map"` when line mapping metadata is available
@@ -62,6 +63,12 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Default is `"handle"` (opaque pointer via `HandleType`).
     /// `"i32"` means the type is represented as a 32-bit integer (e.g., file descriptors).
     handle_type_repr: HashMap<String, String>,
+    /// C drop functions for stdlib handle types with `impl Drop`.
+    ///
+    /// Maps qualified type name (e.g. `"http.Request"`) to the C function that
+    /// frees it (e.g. `"hew_http_request_free"`). C++ codegen uses this map in
+    /// `dropFuncForMLIRType` instead of the hardcoded handle-drop table.
+    drop_funcs: Vec<(String, String)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     module_graph: Option<ModuleGraphRepr>,
     /// Absolute path to the source .hew file.
@@ -77,11 +84,16 @@ struct TypedProgram<'a, ModuleGraphRepr> {
 }
 
 impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal constructor: all args are required fields of the wire format"
+    )]
     fn new(
         program: &'a hew_parser::ast::Program,
         expr_types: &'a [ExprTypeEntry],
         handle_types: Vec<String>,
         handle_type_repr: HashMap<String, String>,
+        drop_funcs: Vec<(String, String)>,
         module_graph: Option<ModuleGraphRepr>,
         source_path: Option<&'a str>,
         line_map: Option<&'a [usize]>,
@@ -93,6 +105,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             expr_types,
             handle_types,
             handle_type_repr,
+            drop_funcs,
             module_graph,
             source_path,
             line_map,
@@ -120,6 +133,7 @@ pub fn serialize_to_msgpack(
     expr_types: Vec<ExprTypeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
+    drop_funcs: Vec<(String, String)>,
     source_path: Option<&str>,
     line_map: Option<&[usize]>,
 ) -> Vec<u8> {
@@ -128,6 +142,7 @@ pub fn serialize_to_msgpack(
         &expr_types,
         handle_types,
         handle_type_repr,
+        drop_funcs,
         program.module_graph.as_ref(),
         source_path,
         line_map,
@@ -165,6 +180,7 @@ pub fn serialize_to_json(
     expr_types: Vec<ExprTypeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
+    drop_funcs: Vec<(String, String)>,
     source_path: Option<&str>,
     line_map: Option<&[usize]>,
 ) -> String {
@@ -178,6 +194,7 @@ pub fn serialize_to_json(
         &expr_types,
         handle_types,
         handle_type_repr,
+        drop_funcs,
         module_graph_json,
         source_path,
         line_map,
@@ -243,7 +260,8 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+        let bytes =
+            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -301,7 +319,8 @@ mod tests {
             module_graph: Some(graph),
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+        let bytes =
+            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -317,7 +336,8 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+        let bytes =
+            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
     }
@@ -380,7 +400,8 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+        let bytes =
+            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -398,7 +419,8 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+        let bytes =
+            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
 
         // Deserialize into a serde_json::Value to inspect the schema_version field.
         // rmp_serde can deserialize msgpack into any Deserialize type, and

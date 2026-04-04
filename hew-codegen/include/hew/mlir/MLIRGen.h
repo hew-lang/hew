@@ -798,6 +798,12 @@ private:
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
+  /// Drop functions for stdlib handle types, populated from msgpack metadata.
+  ///
+  /// Maps qualified type name (e.g. `"http.Request"`) to C drop function
+  /// (e.g. `"hew_http_request_free"`).  Replaces the hardcoded handle-kind
+  /// table in `dropFuncForMLIRType` for types that have `impl Drop` in stdlib.
+  std::unordered_map<std::string, std::string> stdlibDropFuncs;
   /// Defining-module-mangled user Drop symbols already processed. Prevents
   /// flattened root-module clones from re-generating imported Drop impls.
   std::unordered_set<std::string> generatedUserDropImpls;

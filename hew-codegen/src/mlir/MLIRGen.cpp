@@ -2386,6 +2386,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     knownHandleTypes.insert(ht);
   }
   handleTypeRepr = program.handle_type_repr;
+  stdlibDropFuncs = program.drop_funcs;
 
   // Register built-in Option/Result variant names so that match patterns
   // (None, Some(x), Ok(x), Err(_)) resolve correctly via variantLookup.
@@ -5816,10 +5817,14 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type,
     const auto kind = handleTy.getHandleKind();
     if (kind == "HashSet")
       return "hew_hashset_free";
-    if (kind == "http.Request")
-      return "hew_http_request_free";
-    if (kind == "http.Server")
-      return "hew_http_server_close";
+    // Prefer metadata-driven drop funcs for handle types with `impl Drop`.
+    // These are populated from stdlib .hew files via the msgpack boundary,
+    // eliminating the need for hardcoded type→function entries.
+    auto stdlibIt = stdlibDropFuncs.find(kind.str());
+    if (stdlibIt != stdlibDropFuncs.end())
+      return stdlibIt->second;
+    // DROP-TODO: regex.Pattern does not yet have `impl Drop` in stdlib.
+    // Remove once regex.hew gains `impl Drop for Pattern`.
     if (kind == "regex.Pattern")
       return "hew_regex_free";
   }

@@ -241,6 +241,23 @@ pub fn program_parser() -> &'static str {
     prog.line_map = parseVec<size_t>(
         *lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
 
+  // Drop function metadata: maps qualified handle type name → C drop function.
+  // Populated from `impl Drop` blocks in stdlib .hew files.
+  // Fail closed: if the key is present it must be a map of string pairs.
+  const auto *df = mapGet(obj, "drop_funcs");
+  if (df && !isNil(*df)) {
+    if (df->type != msgpack::type::ARRAY)
+      fail("expected array for drop_funcs, got type " + std::to_string(df->type));
+    for (uint32_t i = 0; i < df->via.array.size; ++i) {
+      const auto &pair = df->via.array.ptr[i];
+      if (pair.type != msgpack::type::ARRAY || pair.via.array.size != 2)
+        fail("drop_funcs entry must be a 2-element array");
+      std::string ty = getString(pair.via.array.ptr[0]);
+      std::string func = getString(pair.via.array.ptr[1]);
+      prog.drop_funcs[ty] = func;
+    }
+  }
+
   return prog;
 }"#
 }
@@ -1259,6 +1276,15 @@ mod tests {
         // Optional fields checked with mapGet
         assert!(src.contains("mapGet(obj, \"module_doc\")"));
         assert!(src.contains("mapGet(obj, \"module_graph\")"));
+        // drop_funcs: optional (absent for programs with no stdlib handle drops)
+        assert!(
+            src.contains("mapGet(obj, \"drop_funcs\")"),
+            "program parser must read drop_funcs"
+        );
+        assert!(
+            src.contains("prog.drop_funcs[ty] = func"),
+            "program parser must populate drop_funcs map"
+        );
     }
 
     #[test]

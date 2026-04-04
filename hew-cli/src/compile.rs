@@ -124,6 +124,8 @@ struct TypeCheckResult {
 struct CodegenMetadata {
     handle_types: Vec<String>,
     handle_type_repr: std::collections::HashMap<String, String>,
+    /// C drop functions for stdlib handle types with `impl Drop`.
+    drop_funcs: Vec<(String, String)>,
     abs_source_path: Option<String>,
     line_map: Option<Vec<usize>>,
 }
@@ -549,10 +551,12 @@ fn build_codegen_metadata(
         .map_or_else(|_| input.to_string(), |p| p.display().to_string());
     let abs_source_path = Some(path);
     let line_map = Some(line_map_from_source(source));
+    let drop_funcs = module_registry.all_drop_funcs();
 
     CodegenMetadata {
         handle_types,
         handle_type_repr,
+        drop_funcs,
         abs_source_path,
         line_map,
     }
@@ -686,6 +690,7 @@ pub fn compile(
             expr_type_map,
             meta.handle_types,
             meta.handle_type_repr,
+            meta.drop_funcs,
             meta.abs_source_path.as_deref(),
             meta.line_map.as_deref(),
         );
@@ -698,6 +703,7 @@ pub fn compile(
         expr_type_map,
         meta.handle_types,
         meta.handle_type_repr,
+        meta.drop_funcs,
         meta.abs_source_path.as_deref(),
         meta.line_map.as_deref(),
     );

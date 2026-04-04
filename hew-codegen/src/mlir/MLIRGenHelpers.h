@@ -96,6 +96,13 @@ inline std::string typeExprToCollectionString(
 /// Extract a handle type string from a TypeExpr.
 /// Returns "http.Server", "net.Listener", "regex.Pattern", "process.Child",
 /// etc., or "" if not a handle type.
+///
+/// SHIM: This hardcoded list duplicates the `knownHandleTypes` set that
+/// MLIRGen builds from msgpack metadata at load time. Free helper functions
+/// outside the MLIRGen class cannot easily reach that set, so this list
+/// exists as a workaround. When these call sites are moved into the MLIRGen
+/// class (or receive a context parameter), replace this list with a lookup
+/// against the metadata-driven set.
 inline std::string typeExprToHandleString(const ast::TypeExpr &te) {
   auto *named = std::get_if<ast::TypeNamed>(&te.kind);
   if (!named)

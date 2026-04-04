@@ -27,6 +27,11 @@ pub struct ModuleInfo {
     pub wrapper_fns: Vec<(String, Vec<Ty>, Ty)>,
     /// Types with `impl Drop` — move-only, not Copy.
     pub drop_types: Vec<String>,
+    /// Drop function for each type with `impl Drop`: (`qualified_type_name`, `c_func_name`).
+    ///
+    /// Extracted from the body of `fn drop` inside `impl Drop for T` blocks.
+    /// Only populated when the drop body is a single direct C call.
+    pub drop_funcs: Vec<(String, String)>,
 }
 
 /// Load type information for a module from its `.hew` file.
@@ -103,6 +108,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         handle_methods: Vec::new(),
         wrapper_fns: Vec::new(),
         drop_types: Vec::new(),
+        drop_funcs: Vec::new(),
     };
 
     for (item, _span) in &program.items {
@@ -149,7 +155,8 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                 info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {
-                // Detect `impl Drop for T` — collect as drop types
+                // Detect `impl Drop for T` — collect as drop types and extract
+                // the C drop function name from the `fn drop` body.
                 if let Some(ref tb) = impl_decl.trait_bound {
                     if tb.name == "Drop" {
                         if let TypeExpr::Named { ref name, .. } = impl_decl.target_type.0 {
@@ -158,7 +165,15 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                             } else {
                                 format!("{module_short}.{name}")
                             };
-                            info.drop_types.push(qualified);
+                            info.drop_types.push(qualified.clone());
+                            // Extract the C drop function from `fn drop { ... }`.
+                            if let Some(drop_method) =
+                                impl_decl.methods.iter().find(|m| m.name == "drop")
+                            {
+                                if let Some((c_func, _)) = extract_call_target(&drop_method.body) {
+                                    info.drop_funcs.push((qualified, c_func));
+                                }
+                            }
                         }
                     }
                 }
@@ -670,6 +685,41 @@ mod tests {
             info.drop_types.contains(&"http.Request".to_string()),
             "http.Request should be a drop type, got: {:?}",
             info.drop_types
+        );
+
+        assert!(
+            info.drop_types.contains(&"http.Server".to_string()),
+            "http.Server should be a drop type, got: {:?}",
+            info.drop_types
+        );
+    }
+
+    #[test]
+    fn drop_funcs_extracted() {
+        let info = load_module("std::net::http", &test_root()).unwrap();
+
+        let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
+        assert!(
+            request_drop.is_some(),
+            "http.Request should have a drop func, got: {:?}",
+            info.drop_funcs
+        );
+        assert_eq!(
+            request_drop.unwrap().1,
+            "hew_http_request_free",
+            "http.Request drop func should be hew_http_request_free"
+        );
+
+        let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
+        assert!(
+            server_drop.is_some(),
+            "http.Server should have a drop func, got: {:?}",
+            info.drop_funcs
+        );
+        assert_eq!(
+            server_drop.unwrap().1,
+            "hew_http_server_close",
+            "http.Server drop func should be hew_http_server_close"
         );
     }
 

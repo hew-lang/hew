@@ -22,6 +22,8 @@ pub struct ModuleRegistry {
     handle_types: HashSet<String>,
     /// Accumulated drop types from all loaded modules.
     drop_types: HashSet<String>,
+    /// Accumulated drop functions from all loaded modules: `type_name` → C func name.
+    drop_funcs: HashMap<String, String>,
 }
 
 /// Build the default module search-path list used by both the CLI and LSP.
@@ -135,6 +137,7 @@ impl ModuleRegistry {
             search_paths,
             handle_types: HashSet::new(),
             drop_types: HashSet::new(),
+            drop_funcs: HashMap::new(),
         }
     }
 
@@ -167,6 +170,9 @@ impl ModuleRegistry {
                 for dt in &info.drop_types {
                     self.drop_types.insert(dt.clone());
                 }
+                for (ty, func) in &info.drop_funcs {
+                    self.drop_funcs.insert(ty.clone(), func.clone());
+                }
 
                 self.modules.insert(module_path.to_string(), info);
                 return Ok(&self.modules[module_path]);
@@ -195,6 +201,24 @@ impl ModuleRegistry {
     #[must_use]
     pub fn is_drop_type(&self, name: &str) -> bool {
         self.drop_types.contains(name)
+    }
+
+    /// Return the C drop function for a fully-qualified type name, if known.
+    ///
+    /// Only populated for types with an `impl Drop` block whose `fn drop` body
+    /// is a direct C call (the common stdlib pattern).
+    #[must_use]
+    pub fn drop_func_for(&self, type_name: &str) -> Option<&str> {
+        self.drop_funcs.get(type_name).map(String::as_str)
+    }
+
+    /// Return all `(type_name, c_drop_func)` pairs from all loaded modules.
+    #[must_use]
+    pub fn all_drop_funcs(&self) -> Vec<(String, String)> {
+        self.drop_funcs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// If an unqualified name matches a handle type, return the fully-qualified form.
@@ -334,6 +358,28 @@ mod tests {
             reg.is_drop_type("http.Request"),
             "http.Request should be a drop type"
         );
+        assert!(
+            reg.is_drop_type("http.Server"),
+            "http.Server should be a drop type"
+        );
+    }
+
+    #[test]
+    fn drop_funcs_accumulated() {
+        let mut reg = registry();
+        reg.load("std::net::http").unwrap();
+        assert_eq!(
+            reg.drop_func_for("http.Request"),
+            Some("hew_http_request_free"),
+            "http.Request drop func should be hew_http_request_free"
+        );
+        assert_eq!(
+            reg.drop_func_for("http.Server"),
+            Some("hew_http_server_close"),
+            "http.Server drop func should be hew_http_server_close"
+        );
+        let all = reg.all_drop_funcs();
+        assert!(all.len() >= 2, "should have at least 2 drop funcs");
     }
 
     #[test]

@@ -140,6 +140,13 @@ impl Drop for Request {
     }
 }
 
+impl Drop for Server {
+    /// Close the server and release the listening socket.
+    fn drop(srv: Server) {
+        unsafe { hew_http_server_close(srv) };
+    }
+}
+
 // ── Module-level functions ────────────────────────────────────────────
 
 /// Create a new HTTP server listening on the given address.

@@ -135,7 +135,7 @@ static void test_single_byte_garbage_rejects() {
 // Error handling: structurally valid msgpack, semantically wrong AST
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Helper: pack a map with schema_version = 2 and the given extra fields
+// Helper: pack a map with schema_version = 3 and the given extra fields
 static std::vector<uint8_t> packWithSchema(
     std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFields, int extraCount) {
   msgpack::sbuffer buf;
@@ -144,7 +144,7 @@ static std::vector<uint8_t> packWithSchema(
   // handle_types, handle_type_repr
   pk.pack_map(5 + extraCount);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(2));
+  pk.pack(static_cast<uint64_t>(3));
   pk.pack(std::string("items"));
   pk.pack_array(0); // empty array
   pk.pack(std::string("expr_types"));
@@ -188,7 +188,7 @@ static void test_items_wrong_type_rejects() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(2);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(2));
+  pk.pack(static_cast<uint64_t>(3));
   pk.pack(std::string("items"));
   pk.pack(42); // should be array
   EXPECT_REJECTS(
@@ -201,8 +201,8 @@ static void test_minimal_valid_program_parses() {
   auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.schema_version != 2) {
-      FAIL("schema_version should be 2");
+    if (prog.schema_version != 3) {
+      FAIL("schema_version should be 3");
       return;
     }
     if (!prog.items.empty()) {
@@ -214,6 +214,93 @@ static void test_minimal_valid_program_parses() {
     FAIL(detail.c_str());
     return;
   }
+  PASS();
+}
+
+// ─── drop_funcs parsing ──────────────────────────────────────────────────────
+
+static void test_drop_funcs_roundtrip() {
+  TEST(drop_funcs_roundtrip);
+  // Build a minimal program payload that includes a drop_funcs array.
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(6); // 5 required + drop_funcs
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(3));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+  pk.pack(std::string("drop_funcs"));
+  pk.pack_array(2);
+  pk.pack_array(2);
+  pk.pack(std::string("http.Request"));
+  pk.pack(std::string("hew_http_request_free"));
+  pk.pack_array(2);
+  pk.pack(std::string("http.Server"));
+  pk.pack(std::string("hew_http_server_close"));
+
+  auto data = std::vector<uint8_t>(
+      reinterpret_cast<const uint8_t *>(buf.data()),
+      reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    auto it = prog.drop_funcs.find("http.Request");
+    if (it == prog.drop_funcs.end() || it->second != "hew_http_request_free") {
+      FAIL("http.Request drop func not parsed correctly");
+      return;
+    }
+    auto it2 = prog.drop_funcs.find("http.Server");
+    if (it2 == prog.drop_funcs.end() || it2->second != "hew_http_server_close") {
+      FAIL("http.Server drop func not parsed correctly");
+      return;
+    }
+    if (prog.drop_funcs.size() != 2) {
+      FAIL("expected exactly 2 drop_funcs entries");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
+static void test_drop_funcs_absent_gives_empty_map() {
+  TEST(drop_funcs_absent_gives_empty_map);
+  // A payload without drop_funcs should produce an empty map (field is optional).
+  auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (!prog.drop_funcs.empty()) {
+      FAIL("drop_funcs should be empty when absent from payload");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
+static void test_drop_funcs_wrong_type_rejects() {
+  TEST(drop_funcs_wrong_type_rejects);
+  // drop_funcs must be an array, not a map.
+  auto data = packWithSchema(
+      [](msgpack::packer<msgpack::sbuffer> &pk) {
+        pk.pack(std::string("drop_funcs"));
+        pk.pack_map(1); // wrong: should be array
+        pk.pack(std::string("http.Request"));
+        pk.pack(std::string("hew_http_request_free"));
+      },
+      1);
+  EXPECT_REJECTS(hew::parseMsgpackAST(data.data(), data.size()));
   PASS();
 }
 
@@ -235,6 +322,11 @@ int main() {
   test_wrong_schema_version_rejects();
   test_items_wrong_type_rejects();
   test_minimal_valid_program_parses();
+
+  // drop_funcs field
+  test_drop_funcs_roundtrip();
+  test_drop_funcs_absent_gives_empty_map();
+  test_drop_funcs_wrong_type_rejects();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

@@ -44,6 +44,18 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
   - `02_geometry/` — peer files sharing a type across functions; selective `import mod::{A, B}`
   - `03_text_stats/` — two-level hierarchy; `import parent;` vs `import parent::child;`
 
+### From Examples to Stdlib
+
+The learning paths here are mostly language-focused. When you want shipped library APIs, use [`../std/README.md`](../std/README.md) as the canonical index, then use this map to jump to the right modules quickly:
+
+| After this part of `examples/` | Start with these modules | Why |
+| --- | --- | --- |
+| `ux/` and `progressive/` | `std::string`, `std::fmt`, `std::vec`, `std::option`, `std::result`, `std::math` | Next stop after the core syntax, collections, and expression lessons |
+| Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo` | `std::io`, `std::fs`, `std::path`, `std::os`, `std::string`, `std::text::regex` | CLI I/O, files, paths, env access, and text scanning |
+| Root-level networking examples such as `http_server`, `static_server`, `curl_client`, and `chat_*` | `std::net`, `std::net::http`, `std::net::mime`, `std::net::url` | TCP, HTTP, content types, and URLs |
+| Root-level async/concurrency examples such as `async_demo` and `scope_*` | `std::stream`, `std::channel::channel`, `std::semaphore` | Stream pipelines, MPSC channels, and coordination primitives |
+| `benchmark_demo.hew` and `benchmarks/` | `std::bench`, `std::net::http` | Benchmark harness plus the HTTP surfaces used in the server comparison |
+
 ### Topic Collections
 
 - **playground/** -- Grouped by topic:

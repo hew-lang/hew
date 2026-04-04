@@ -403,49 +403,21 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
 
 /// Send a UTF-8 string on a QUIC stream.
 ///
-/// Module-level wrapper used by the `send_string` method via AST enrichment.
 /// Converts `msg` to bytes using the runtime string helper, then delegates
 /// to the underlying `hew_quic_stream_send` FFI.
 pub fn stream_send_string(strm: QUICStream, msg: String) -> i32 {
-    let data = _quic_string_to_bytes(msg);
-    _quic_stream_send(strm, data)
+    let data = unsafe { hew_string_to_bytes(msg) };
+    unsafe { hew_quic_stream_send(strm, data) }
 }
 
 /// Receive a UTF-8 string from a QUIC stream.
 ///
-/// Module-level wrapper used by the `recv_string` method via AST enrichment.
 /// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
 /// `String` using the runtime string helper.
 pub fn stream_recv_string(strm: QUICStream) -> String {
-    let data = _quic_stream_recv(strm);
-    _quic_bytes_to_string(data)
+    let data = unsafe { hew_quic_stream_recv(strm) };
+    unsafe { hew_bytes_to_string(data) }
 }
-
-// Private helpers — each wraps a single FFI call so the public wrappers
-// above can use `let data = plain_call(); …`.
-//
-// Both alternative forms are broken for non-void functions with the current
-// compiler (hew-codegen ≤ HEAD):
-//
-//   (a) let data = unsafe { ffi(…) }; ffi2(data)
-//       generateBlock enables useReturnGuards (parent op is FuncOp even for
-//       an inline unsafe block), stores the unsafe result in returnSlot, and
-//       returns nullptr.  generateLetStmt bails → `data` never bound.
-//
-//   (b) unsafe { ffi2(unsafe { ffi(…) }) }   ← same bug, different symptom
-//       The inner unsafe fires useReturnGuards as an argument, attempts to
-//       coerce its bytes result into the outer function's i32 returnSlot,
-//       and fails with "no known conversion from '!hew.vec<i32>' to 'i32'".
-//
-// Both failure modes are confirmed in hew-codegen ≤ current HEAD.
-// Tracked by the reject test:
-//   hew-codegen/tests/examples/e2e_negative/unsafe_nonvoid_let_binding.hew
-// Remove these helpers (and use form (b)) once that reject test starts
-// failing (i.e. the codegen bug is fixed).
-fn _quic_string_to_bytes(s: String) -> bytes { unsafe { hew_string_to_bytes(s) } }
-fn _quic_bytes_to_string(b: bytes) -> String { unsafe { hew_bytes_to_string(b) } }
-fn _quic_stream_send(strm: QUICStream, b: bytes) -> i32 { unsafe { hew_quic_stream_send(strm, b) } }
-fn _quic_stream_recv(strm: QUICStream) -> bytes { unsafe { hew_quic_stream_recv(strm) } }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 

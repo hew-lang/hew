@@ -241,7 +241,8 @@ void MLIRGen::generateLoopBodyWithContinueGuards(
 // Block generation
 // ============================================================================
 
-mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPosition) {
+mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPosition,
+                                    bool isFunctionBodyBlock) {
   // Create a new scope for variables in this block
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
@@ -256,14 +257,14 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
   // NOTE: pendingFunctionParamDrops drain point — currently disabled until
   // null-after-move tracking prevents double-frees from consumed params.
 
-  // Determine if this block is the direct function body (for return guard logic).
-  // Only use the returnFlag guarded path at the function body level when a
-  // returnSlot exists (non-void functions), not in nested blocks or void functions.
-  bool useReturnGuards = false;
-  if (returnFlag && returnSlot) {
-    auto *parentOp = builder.getInsertionBlock()->getParentOp();
-    useReturnGuards = mlir::isa<mlir::func::FuncOp>(parentOp);
-  }
+  // Only activate the return-guard path when generating the actual function
+  // body block in a non-void function.  Inline sub-blocks (unsafe { … },
+  // block expressions, if/else bodies) share the FuncOp's insertion block in
+  // the MLIR IR, so a parentOp check on the insertion block is insufficient —
+  // it would fire for every inline block inside a non-void function.
+  // Callers that generate the true function body pass isFunctionBodyBlock=true;
+  // all other callers use the default false.
+  bool useReturnGuards = isFunctionBodyBlock && returnFlag && returnSlot;
 
   const auto &stmts = block.stmts;
 

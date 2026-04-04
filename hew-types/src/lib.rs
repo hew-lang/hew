@@ -4,6 +4,7 @@
 //! automatic marker trait derivation (Send, Frozen, Copy),
 //! and exhaustive pattern match checking.
 
+pub mod builtin_names;
 pub mod check;
 pub mod cycle;
 pub mod env;

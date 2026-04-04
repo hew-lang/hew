@@ -4423,6 +4423,32 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
   if (!callee) {
+    // Demand-gated struct encode/decode wrappers on the instance path:
+    // p.to_json(), p.to_yaml(), p.to_toml(), p.from_json(...), etc.
+    // Mirror the same gate used in generateModuleMethodCall for the
+    // static-dispatch path (TypeName.to_json(p)).
+    if (encodeEligibleStructs_.count(resolvedTypeName)) {
+      static const std::unordered_map<std::string, std::pair<bool, std::string>>
+          kStructSerialMethods = {
+            {"to_json",   {true,  "json"}},
+            {"from_json", {false, "json"}},
+            {"to_yaml",   {true,  "yaml"}},
+            {"from_yaml", {false, "yaml"}},
+            {"to_toml",   {true,  "toml"}},
+            {"from_toml", {false, "toml"}},
+          };
+      auto it = kStructSerialMethods.find(methodName);
+      if (it != kStructSerialMethods.end()) {
+        const auto &[isTo, format] = it->second;
+        if (isTo)
+          generateStructToSerial(resolvedTypeName, format);
+        else
+          generateStructFromSerial(resolvedTypeName, format);
+        callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+      }
+    }
+  }
+  if (!callee) {
     emitError(location) << "undefined method '" << methodName << "' on type '"
                         << resolvedTypeName << "'";
     return nullptr;

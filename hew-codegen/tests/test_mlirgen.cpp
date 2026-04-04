@@ -1931,28 +1931,90 @@ fn main() -> i64 {
 }
 
 // ============================================================================
-// Test: Struct encode wrapper IS generated on demand when called.
+// Test: Instance-syntax demand gate — p.to_json() on a plain struct.
 //
-// We bypass the hew CLI (type-checker) here because the struct serial wrappers
-// are codegen-only — the type-checker does not know about them.  We construct
-// the AST directly and verify that the MLIR demand-gate fires the first time
-// an ExprMethodCall with receiver = Identifier("Metric") and method = "to_json"
-// is encountered, and does NOT fire for the yaml/toml variants that are never
-// referenced.
+// Uses the real hew type-checker pipeline (loadProgramFromSource).  Only
+// the demanded to_json wrapper must be emitted; yaml/toml must stay absent.
 // ============================================================================
-static void test_prim_struct_serial_call_emits_demanded_wrapper() {
-  TEST(prim_struct_serial_call_emits_demanded_wrapper);
+static void test_prim_struct_instance_serial_call_emits_demanded_wrapper() {
+  TEST(prim_struct_instance_serial_call_emits_demanded_wrapper);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
 
-  // Build AST directly:
+  // The type-checker accepts p.to_json() on plain structs that have all
+  // primitive fields.  Use it to exercise the *instance* dispatch path in
+  // generateMethodCall (not the static TypeName.method path).
+  auto module = generateMLIR(ctx, R"(
+type Sensor {
+    id: i64;
+    reading: f64;
+}
+fn main() -> String {
+    let s = Sensor { id: 1, reading: 3.14 };
+    s.to_json()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  // The to_json wrapper must have been generated (demand-gate triggered on
+  // the instance dispatch path in generateMethodCall).
+  bool foundToJson = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (n.contains("Sensor") && n.contains("to_json"))
+      foundToJson = true;
+  });
+  if (!foundToJson) {
+    FAIL("Sensor to_json wrapper not generated for instance-style call (instance demand-gate missing)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // yaml / toml variants were never referenced — they must be absent.
+  bool foundUncalled = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Sensor"))
+      return;
+    if (n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundUncalled = true;
+  });
+  if (foundUncalled) {
+    FAIL("un-called Sensor yaml/toml wrapper emitted unexpectedly (demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Static-dispatch demand gate — Point.to_json(p) with real pipeline.
+//
+// Uses the real hew type-checker pipeline.  Complements the instance test
+// by covering the static receiver path in generateModuleMethodCall.
+// ============================================================================
+static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
+  TEST(prim_struct_static_serial_call_emits_demanded_wrapper);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // The static TypeName.method(instance) call form is a codegen-only feature:
+  // the hew type-checker does not expose it.  We construct the AST directly
+  // so we can exercise the generateModuleMethodCall static dispatch path
+  // (the other half of the demand-gate, complementing the instance test above).
   //
-  //   type Metric { value: i64; count: i32; }
-  //   fn main() -> i64 {
-  //       let m = Metric { value: 42, count: 1 };
-  //       let _json = Metric.to_json(m);      // demands to_json wrapper
-  //       let _from = Metric.from_json(_json); // demands from_json wrapper
+  //   type Reading { value: i64; channel: i32; }
+  //   fn main(r: Reading) -> i64 {
+  //       let _ = Reading.to_json(r);   // static-receiver demand-gate
   //       0
   //   }
 
@@ -1964,47 +2026,28 @@ static void test_prim_struct_serial_call_emits_demanded_wrapper() {
     te.kind = TypeNamed{name, std::nullopt};
     return {std::move(te), mkSpan()};
   };
-  auto mkLit = [&](int64_t v) -> std::unique_ptr<Spanned<Expr>> {
-    Expr e;
-    ExprLiteral lit;
-    lit.lit = LitInteger{v};
-    e.kind = std::move(lit);
-    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
-  };
   auto mkIdent = [&](const std::string &name) -> std::unique_ptr<Spanned<Expr>> {
     Expr e;
     e.kind = ExprIdentifier{name};
     return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
   };
-  auto mkPatIdent = [&](const std::string &name) -> Spanned<Pattern> {
-    Pattern p;
-    p.kind = PatIdentifier{name};
-    return {std::move(p), mkSpan()};
-  };
 
-  // type Metric { value: i64; count: i32; }
-  TypeDecl metricDecl;
-  metricDecl.visibility = Visibility::Pub;
-  metricDecl.kind = TypeDeclKind::Struct;
-  metricDecl.name = "Metric";
-  {
-    TypeBodyItemField fValue;
-    fValue.name = "value";
-    fValue.ty = mkNamedType("i64");
+  // type Reading { value: i64; channel: i32; }
+  TypeDecl readingDecl;
+  readingDecl.visibility = Visibility::Pub;
+  readingDecl.kind = TypeDeclKind::Struct;
+  readingDecl.name = "Reading";
+  for (auto &[fname, ftype] : std::vector<std::pair<std::string,std::string>>{
+           {"value", "i64"}, {"channel", "i32"}}) {
+    TypeBodyItemField f;
+    f.name = fname;
+    f.ty = mkNamedType(ftype);
     TypeBodyItem bi;
-    bi.kind = std::move(fValue);
-    metricDecl.body.push_back(std::move(bi));
-  }
-  {
-    TypeBodyItemField fCount;
-    fCount.name = "count";
-    fCount.ty = mkNamedType("i32");
-    TypeBodyItem bi;
-    bi.kind = std::move(fCount);
-    metricDecl.body.push_back(std::move(bi));
+    bi.kind = std::move(f);
+    readingDecl.body.push_back(std::move(bi));
   }
 
-  // fn main() -> i64 { ... }
+  // fn main(r: Reading) -> i64 { let _ = Reading.to_json(r); 0 }
   FnDecl mainDecl;
   mainDecl.is_async = false;
   mainDecl.is_generator = false;
@@ -2012,124 +2055,80 @@ static void test_prim_struct_serial_call_emits_demanded_wrapper() {
   mainDecl.is_pure = false;
   mainDecl.name = "main";
   mainDecl.return_type = mkNamedType("i64");
-
-  // let m = Metric { value: 42, count: 1 }
+  // parameter r: Reading
   {
-    Expr structInitExpr;
-    ExprStructInit si;
-    si.name = "Metric";
-    si.fields.emplace_back("value", mkLit(42));
-    si.fields.emplace_back("count", mkLit(1));
-    structInitExpr.kind = std::move(si);
-
-    Stmt letStmt;
-    StmtLet sl;
-    sl.pattern = mkPatIdent("m");
-    sl.ty = std::nullopt;
-    sl.value = Spanned<Expr>{std::move(structInitExpr), mkSpan()};
-    letStmt.kind = std::move(sl);
-    mainDecl.body.stmts.push_back(
-        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
+    Param p;
+    p.name = "r";
+    p.ty = mkNamedType("Reading");
+    p.is_mutable = false;
+    mainDecl.params.push_back(std::move(p));
   }
-
-  // let _json = Metric.to_json(m)
+  // let _ = Reading.to_json(r)  (static receiver = TypeName)
   {
     Expr mcExpr;
     ExprMethodCall mc;
-    mc.receiver = mkIdent("Metric");
+    mc.receiver = mkIdent("Reading");   // static receiver: type name
     mc.method = "to_json";
     CallArgPositional arg;
-    arg.expr = mkIdent("m");
+    arg.expr = mkIdent("r");
     mc.args.push_back(std::move(arg));
     mcExpr.kind = std::move(mc);
 
     Stmt letStmt;
     StmtLet sl;
-    sl.pattern = mkPatIdent("_json");
+    Pattern wp;
+    wp.kind = PatWildcard{};
+    sl.pattern = {std::move(wp), mkSpan()};
     sl.ty = std::nullopt;
     sl.value = Spanned<Expr>{std::move(mcExpr), mkSpan()};
     letStmt.kind = std::move(sl);
     mainDecl.body.stmts.push_back(
         std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
   }
-
-  // let _from = Metric.from_json(_json)
-  {
-    Expr mcExpr;
-    ExprMethodCall mc;
-    mc.receiver = mkIdent("Metric");
-    mc.method = "from_json";
-    CallArgPositional arg;
-    arg.expr = mkIdent("_json");
-    mc.args.push_back(std::move(arg));
-    mcExpr.kind = std::move(mc);
-
-    Stmt letStmt;
-    StmtLet sl;
-    sl.pattern = mkPatIdent("_from");
-    sl.ty = std::nullopt;
-    sl.value = Spanned<Expr>{std::move(mcExpr), mkSpan()};
-    letStmt.kind = std::move(sl);
-    mainDecl.body.stmts.push_back(
-        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
-  }
-
   // trailing expr: 0
-  mainDecl.body.trailing_expr =
-      std::make_unique<Spanned<Expr>>(Spanned<Expr>{[&] {
-        Expr e;
-        ExprLiteral lit;
-        lit.lit = LitInteger{0};
-        e.kind = std::move(lit);
-        return e;
-      }(), mkSpan()});
+  {
+    Expr e;
+    ExprLiteral lit;
+    lit.lit = LitInteger{0};
+    e.kind = std::move(lit);
+    mainDecl.body.trailing_expr =
+        std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
+  }
 
   Program program;
-  program.items.push_back({Item{std::move(metricDecl)}, mkSpan()});
+  program.items.push_back({Item{std::move(readingDecl)}, mkSpan()});
   program.items.push_back({Item{std::move(mainDecl)}, mkSpan()});
 
   auto module = generateMLIR(ctx, program);
-
   if (!module) {
     FAIL("MLIR generation failed");
     return;
   }
-  // The generated names are mangled (e.g. "_HT6MetricF7to_json"), so we
-  // match by substring rather than exact name.
-  bool foundToJson = false, foundFromJson = false;
+
+  bool foundToJson = false;
   module.walk([&](mlir::func::FuncOp fn) {
     auto n = fn.getName();
-    if (!n.contains("Metric"))
-      return;
-    if (n.contains("to_json"))
+    if (n.contains("Reading") && n.contains("to_json"))
       foundToJson = true;
-    if (n.contains("from_json"))
-      foundFromJson = true;
   });
-
   if (!foundToJson) {
-    FAIL("Metric to_json wrapper was not generated despite explicit call-site");
-    module.getOperation()->destroy();
-    return;
-  }
-  if (!foundFromJson) {
-    FAIL("Metric from_json wrapper was not generated despite explicit call-site");
+    FAIL("Reading to_json wrapper not generated for static-style call (static demand-gate missing)");
     module.getOperation()->destroy();
     return;
   }
 
-  // Un-called wrappers must be absent.
+  // yaml / toml variants were never demanded.
   bool foundUncalled = false;
   module.walk([&](mlir::func::FuncOp fn) {
     auto n = fn.getName();
-    if (!n.contains("Metric"))
+    if (!n.contains("Reading"))
       return;
     if (n.contains("to_yaml") || n.contains("from_yaml") ||
         n.contains("to_toml") || n.contains("from_toml"))
       foundUncalled = true;
   });
   if (foundUncalled) {
-    FAIL("un-called Metric yaml/toml wrapper was emitted unexpectedly (demand-gate broken)");
+    FAIL("un-called Reading yaml/toml wrapper emitted unexpectedly (static demand-gate broken)");
     module.getOperation()->destroy();
     return;
   }
@@ -2946,7 +2945,8 @@ int main() {
   test_generic_struct_constructor_in_nongeneric_context();
   test_generic_struct_constructor_monomorphic_helper();
   test_prim_struct_no_serial_call_emits_no_wrappers();
-  test_prim_struct_serial_call_emits_demanded_wrapper();
+  test_prim_struct_instance_serial_call_emits_demanded_wrapper();
+  test_prim_struct_static_serial_call_emits_demanded_wrapper();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

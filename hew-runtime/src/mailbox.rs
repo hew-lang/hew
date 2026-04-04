@@ -1471,6 +1471,58 @@ mod tests {
     }
 
     #[test]
+    fn try_send_coalesce_block_fallback_no_match_fails_immediately() {
+        // Coalesce with a Block fallback and no matching key: try_send must
+        // return ErrMailboxFull without blocking.  This exercises the second
+        // `if non_blocking` guard inside send_with_overflow's Coalesce fallback
+        // arm — the path that is dead for hew_mailbox_send (blocking allowed)
+        // but live for hew_mailbox_try_send (non-blocking required).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            // Configure Block as the fallback so a cache-miss at capacity
+            // would normally wait on the condvar.
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::Block);
+
+            let first = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            let different = PriceUpdate {
+                symbol: 2,
+                price: 20,
+            }; // different key → no coalesce match
+
+            // Fill the mailbox with symbol=1.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            // Full, no key match, fallback is Block — must fail immediately.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const different).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::ErrMailboxFull as i32,
+                "Coalesce+Block fallback with no key match must fail immediately on try_send"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1, "queue length must be unchanged");
+
+            let node = hew_mailbox_try_recv(mb);
+            hew_msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
     fn sys_messages_have_priority() {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {

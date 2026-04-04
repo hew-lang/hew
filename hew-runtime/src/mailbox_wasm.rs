@@ -1450,4 +1450,80 @@ mod tests {
             hew_mailbox_free(mb);
         }
     }
+
+    #[test]
+    fn try_send_block_policy_fails_immediately() {
+        // Block policy must degrade to ErrMailboxFull on try_send (WASM has no
+        // condvar, so Block always fails without waiting — parity mirror of the
+        // native try_send_block_policy_fails_immediately test).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::Ok as i32
+            );
+            // Full with Block policy — must return ErrMailboxFull, not block.
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
+                HewError::ErrMailboxFull as i32,
+                "try_send with Block must fail immediately on WASM"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_send_coalesce_block_fallback_no_match_fails_immediately() {
+        // Coalesce with a Block fallback and no matching key: try_send must
+        // return ErrMailboxFull without blocking.  This exercises the second
+        // non_blocking guard inside send_with_overflow's Coalesce fallback arm.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            // Configure Block as the fallback so a cache-miss at capacity
+            // would normally wait on the condvar.
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::Block);
+
+            let first = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            let different = PriceUpdate {
+                symbol: 2,
+                price: 20,
+            }; // different key → no coalesce match
+
+            // Fill the mailbox with symbol=1.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            // Full, no key match, fallback is Block — must fail immediately.
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const different).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::ErrMailboxFull as i32,
+                "Coalesce+Block fallback with no key match must fail immediately on try_send"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1, "queue length must be unchanged");
+
+            let node = hew_mailbox_try_recv(mb);
+            msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
 }

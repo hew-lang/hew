@@ -50,6 +50,17 @@ namespace {
 
 constexpr llvm::StringLiteral kHewDebugParamNameAttr = "hew.debug.param_name";
 
+llvm::StringRef shortTypeName(llvm::StringRef name) {
+  auto dotPos = name.rfind('.');
+  return dotPos == llvm::StringRef::npos ? name : name.substr(dotPos + 1);
+}
+
+bool isPointerBackedHandleName(llvm::StringRef name) {
+  auto shortName = shortTypeName(name);
+  return shortName == "Stream" || shortName == "Sink" || shortName == "StreamPair" ||
+         shortName == "Sender" || shortName == "Receiver" || shortName == "ChannelPair";
+}
+
 void setDebugParamNameAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
                             mlir::Builder &builder) {
   for (size_t i = 0; i < params.size(); ++i)
@@ -508,23 +519,23 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
     // method dispatch uses resolvedTypeOf to detect Rc receivers.
     if (name == "Rc")
       return mlir::LLVM::LLVMPointerType::get(&context);
-    // Stream<T> and Sink<T>: opaque heap pointers to HewStream / HewSink
-    if (name == "Stream" || name == "Sink" || name == "stream.Stream" || name == "stream.Sink" ||
-        name == "StreamPair" || name == "stream.StreamPair")
-      return mlir::LLVM::LLVMPointerType::get(&context);
-    // Sender<T> and Receiver<T>: opaque MPSC channel handles
-    if (name == "Sender" || name == "Receiver" ||
-        name == "channel.Sender" || name == "channel.Receiver" ||
-        name == "ChannelPair" || name == "channel.ChannelPair")
-      return mlir::LLVM::LLVMPointerType::get(&context);
-    // Data-driven handle type recognition (replaces hardcoded list).
-    // Handle type metadata flows from the Rust type checker via serialization.
+    // Data-driven handle type recognition.
+    // Imported / qualified handle annotations arrive via msgpack metadata.
+    // Some stdlib handles are pointer-backed in MLIR even though they flow through
+    // the same metadata path.
     if (knownHandleTypes.count(name)) {
+      if (isPointerBackedHandleName(name))
+        return mlir::LLVM::LLVMPointerType::get(&context);
       auto reprIt = handleTypeRepr.find(name);
       if (reprIt != handleTypeRepr.end() && reprIt->second == "i32")
         return builder.getI32Type();
       return hew::HandleType::get(&context, builder.getStringAttr(name));
     }
+    // Fallback for compiling the defining stdlib module itself: current-module
+    // handle decls are not present in Program.handle_types, so bare short names
+    // still need explicit lowering here.
+    if (isPointerBackedHandleName(name))
+      return mlir::LLVM::LLVMPointerType::get(&context);
     // Actor type names resolve to typed actor refs
     if (actorRegistry.count(name))
       return hew::TypedActorRefType::get(&context, builder.getStringAttr(name));
@@ -2391,7 +2402,8 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   }
 
   // Populate handle type metadata from the Rust type checker.
-  // This replaces hardcoded handle type lists in convertType().
+  // convertType() uses this for imported / qualified handles; the defining
+  // stdlib module still falls back to local bare-name cases for self-compiles.
   for (const auto &ht : program.handle_types) {
     knownHandleTypes.insert(ht);
   }

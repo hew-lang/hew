@@ -3340,11 +3340,15 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
     }
   }
 
-  // Generate serialization functions for struct types with all-encodable fields.
+  // Track struct types eligible for on-demand serialization wrappers.
   // Wire types handle their own serialization; skip actors and generic templates.
+  //
+  // Wrappers (to_json / from_json / to_yaml / from_yaml / to_toml / from_toml) are
+  // NOT generated here.  They are generated lazily in generateStaticOrTypeMethodCall
+  // the first time a call-site like `Foo.to_json(...)` is encountered, so that
+  // programs that never serialize a type pay no MLIR bloat for it.
   if (decl.kind == ast::TypeDeclKind::Struct && !decl.wire.has_value() &&
       !decl.type_params.has_value()) {
-    // Check if all field types are serialization-compatible (primitive, string, bool, float)
     bool allEncodable = true;
     for (const auto &ft : fieldTypes) {
       if (ft.isInteger(1) || ft.isInteger(8) || ft.isInteger(16) || ft.isInteger(32) ||
@@ -3356,7 +3360,7 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       break;
     }
     if (allEncodable && !fieldTypes.empty()) {
-      generateStructEncodeWrappers(declName);
+      encodeEligibleStructs_.insert(declName);
     }
   }
 }

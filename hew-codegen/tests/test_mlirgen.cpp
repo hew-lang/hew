@@ -1989,6 +1989,262 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Struct with all-primitive fields does NOT get encode wrappers unless
+//       they are actually called (demand-gating).
+// ============================================================================
+static void test_prim_struct_no_serial_call_emits_no_wrappers() {
+  TEST(prim_struct_no_serial_call_emits_no_wrappers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  // Point has all-primitive fields, but main() never calls Point.to_json /
+  // Point.from_json / etc.  The demand-gate must suppress all 6 wrappers.
+  auto module = generateMLIR(ctx, R"(
+type Point {
+    x: i64;
+    y: i64;
+}
+fn main() -> i64 {
+    let p = Point { x: 1, y: 2 };
+    p.x
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  // The generated names are mangled (e.g. "_HT5PointF7to_json") so we match
+  // by substring rather than exact name.
+  bool foundAnyWrapper = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Point"))
+      return;
+    if (n.contains("to_json") || n.contains("from_json") ||
+        n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundAnyWrapper = true;
+  });
+  if (foundAnyWrapper) {
+    FAIL("a Point encode/decode wrapper was emitted despite no call-site (demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Instance-syntax demand gate — p.to_json() on a plain struct.
+//
+// Uses the real hew type-checker pipeline (loadProgramFromSource).  Only
+// the demanded to_json wrapper must be emitted; yaml/toml must stay absent.
+// ============================================================================
+static void test_prim_struct_instance_serial_call_emits_demanded_wrapper() {
+  TEST(prim_struct_instance_serial_call_emits_demanded_wrapper);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // The type-checker accepts p.to_json() on plain structs that have all
+  // primitive fields.  Use it to exercise the *instance* dispatch path in
+  // generateMethodCall (not the static TypeName.method path).
+  auto module = generateMLIR(ctx, R"(
+type Sensor {
+    id: i64;
+    reading: f64;
+}
+fn main() -> String {
+    let s = Sensor { id: 1, reading: 3.14 };
+    s.to_json()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  // The to_json wrapper must have been generated (demand-gate triggered on
+  // the instance dispatch path in generateMethodCall).
+  bool foundToJson = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (n.contains("Sensor") && n.contains("to_json"))
+      foundToJson = true;
+  });
+  if (!foundToJson) {
+    FAIL("Sensor to_json wrapper not generated for instance-style call (instance demand-gate missing)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // yaml / toml variants were never referenced — they must be absent.
+  bool foundUncalled = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Sensor"))
+      return;
+    if (n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundUncalled = true;
+  });
+  if (foundUncalled) {
+    FAIL("un-called Sensor yaml/toml wrapper emitted unexpectedly (demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Static-dispatch demand gate — Point.to_json(p) with real pipeline.
+//
+// Uses the real hew type-checker pipeline.  Complements the instance test
+// by covering the static receiver path in generateModuleMethodCall.
+// ============================================================================
+static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
+  TEST(prim_struct_static_serial_call_emits_demanded_wrapper);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // The static TypeName.method(instance) call form is a codegen-only feature:
+  // the hew type-checker does not expose it.  We construct the AST directly
+  // so we can exercise the generateModuleMethodCall static dispatch path
+  // (the other half of the demand-gate, complementing the instance test above).
+  //
+  //   type Reading { value: i64; channel: i32; }
+  //   fn main(r: Reading) -> i64 {
+  //       let _ = Reading.to_json(r);   // static-receiver demand-gate
+  //       0
+  //   }
+
+  using namespace hew::ast;
+
+  auto mkSpan = []() -> Span { return {0, 0}; };
+  auto mkNamedType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr te;
+    te.kind = TypeNamed{name, std::nullopt};
+    return {std::move(te), mkSpan()};
+  };
+  auto mkIdent = [&](const std::string &name) -> std::unique_ptr<Spanned<Expr>> {
+    Expr e;
+    e.kind = ExprIdentifier{name};
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
+  };
+
+  // type Reading { value: i64; channel: i32; }
+  TypeDecl readingDecl;
+  readingDecl.visibility = Visibility::Pub;
+  readingDecl.kind = TypeDeclKind::Struct;
+  readingDecl.name = "Reading";
+  for (auto &[fname, ftype] : std::vector<std::pair<std::string,std::string>>{
+           {"value", "i64"}, {"channel", "i32"}}) {
+    TypeBodyItemField f;
+    f.name = fname;
+    f.ty = mkNamedType(ftype);
+    TypeBodyItem bi;
+    bi.kind = std::move(f);
+    readingDecl.body.push_back(std::move(bi));
+  }
+
+  // fn main(r: Reading) -> i64 { let _ = Reading.to_json(r); 0 }
+  FnDecl mainDecl;
+  mainDecl.is_async = false;
+  mainDecl.is_generator = false;
+  mainDecl.visibility = Visibility::Pub;
+  mainDecl.is_pure = false;
+  mainDecl.name = "main";
+  mainDecl.return_type = mkNamedType("i64");
+  // parameter r: Reading
+  {
+    Param p;
+    p.name = "r";
+    p.ty = mkNamedType("Reading");
+    p.is_mutable = false;
+    mainDecl.params.push_back(std::move(p));
+  }
+  // let _ = Reading.to_json(r)  (static receiver = TypeName)
+  {
+    Expr mcExpr;
+    ExprMethodCall mc;
+    mc.receiver = mkIdent("Reading");   // static receiver: type name
+    mc.method = "to_json";
+    CallArgPositional arg;
+    arg.expr = mkIdent("r");
+    mc.args.push_back(std::move(arg));
+    mcExpr.kind = std::move(mc);
+
+    Stmt letStmt;
+    StmtLet sl;
+    Pattern wp;
+    wp.kind = PatWildcard{};
+    sl.pattern = {std::move(wp), mkSpan()};
+    sl.ty = std::nullopt;
+    sl.value = Spanned<Expr>{std::move(mcExpr), mkSpan()};
+    letStmt.kind = std::move(sl);
+    mainDecl.body.stmts.push_back(
+        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
+  }
+  // trailing expr: 0
+  {
+    Expr e;
+    ExprLiteral lit;
+    lit.lit = LitInteger{0};
+    e.kind = std::move(lit);
+    mainDecl.body.trailing_expr =
+        std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
+  }
+
+  Program program;
+  program.items.push_back({Item{std::move(readingDecl)}, mkSpan()});
+  program.items.push_back({Item{std::move(mainDecl)}, mkSpan()});
+
+  auto module = generateMLIR(ctx, program);
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  bool foundToJson = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (n.contains("Reading") && n.contains("to_json"))
+      foundToJson = true;
+  });
+  if (!foundToJson) {
+    FAIL("Reading to_json wrapper not generated for static-style call (static demand-gate missing)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // yaml / toml variants were never demanded.
+  bool foundUncalled = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Reading"))
+      return;
+    if (n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundUncalled = true;
+  });
+  if (foundUncalled) {
+    FAIL("un-called Reading yaml/toml wrapper emitted unexpectedly (static demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Select emits explicit send-failure cleanup and panic paths
 // ============================================================================
 static void test_select_emits_send_failure_cleanup() {
@@ -2796,6 +3052,9 @@ int main() {
   test_remote_actor_ask_panics_on_null_reply();
   test_generic_struct_constructor_in_nongeneric_context();
   test_generic_struct_constructor_monomorphic_helper();
+  test_prim_struct_no_serial_call_emits_no_wrappers();
+  test_prim_struct_instance_serial_call_emits_demanded_wrapper();
+  test_prim_struct_static_serial_call_emits_demanded_wrapper();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

@@ -1,0 +1,37 @@
+fn main() {
+    let tiny: i8 = -12;
+    let narrow: i16 = -1234;
+    let signed32: i32 = -56789;
+    let signed64: i64 = -9876543210;
+    let byte: u8 = 250;
+    let wide: u16 = 65530;
+    let count32: u32 = 4000000000;
+    let count64: u64 = 9000000000000;
+    let ratio32: f32 = 3.5;
+    let ratio64: f64 = 42.25;
+
+    print("i8=");
+    println(tiny);
+    print("i16=");
+    println(narrow);
+    print("i32=");
+    println(signed32);
+    print("i64=");
+    println(signed64);
+    print("u8=");
+    println(byte);
+    print("u16=");
+    println(wide);
+    print("u32=");
+    println(count32);
+    print("u64=");
+    println(count64);
+    print("f32=");
+    println(ratio32);
+    print("f64=");
+    println(ratio64);
+    print("bool=");
+    println(true);
+    print("str=");
+    println("hello");
+}

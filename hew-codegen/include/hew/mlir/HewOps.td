@@ -103,8 +103,8 @@ def Hew_PrintOp : Hew_Op<"print", [MemoryEffects<[MemWrite]>]> {
   let summary = "Print a value to stdout.";
   let description = [{
     The `hew.print` operation prints a value to standard output. It is
-    polymorphic over the type of its input and dispatches to the appropriate
-    runtime function (hew_print_i64, hew_print_f64, hew_print_str, etc.).
+    polymorphic over the type of its input and lowers to the generic
+    `hew_print_value` runtime entrypoint with a type tag plus payload bits.
 
     An optional `newline` attribute controls whether a trailing newline is
     emitted (default: true).

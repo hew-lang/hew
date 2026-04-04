@@ -73,6 +73,7 @@
 #include "llvm/Transforms/Coroutines/CoroElide.h"
 #include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <climits>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -122,7 +123,17 @@ mlir::func::FuncOp getOrInsertFuncDecl(mlir::ModuleOp module, mlir::OpBuilder &b
   return funcOp;
 }
 
-/// Lower hew.print -> func.call to the appropriate runtime print function.
+enum class RuntimePrintKind : uint8_t {
+  I32 = 0,
+  I64 = 1,
+  F64 = 2,
+  Bool = 3,
+  Str = 4,
+  U32 = 5,
+  U64 = 6,
+};
+
+/// Lower hew.print -> func.call to the generic runtime print dispatcher.
 struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
   using OpConversionPattern<hew::PrintOp>::OpConversionPattern;
 
@@ -136,8 +147,10 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
                       op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
-    std::string funcName;
-    mlir::FunctionType funcType;
+    auto i8Type = rewriter.getIntegerType(8);
+    auto i64Type = rewriter.getI64Type();
+    RuntimePrintKind kind;
+    mlir::Value payload;
 
     // Promote sub-i32 integer types (e.g. i8 from u8/byte) to i32.
     // Use zero-extension for unsigned source types.
@@ -150,42 +163,46 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     }
 
     if (inputType.isInteger(32)) {
-      if (isUnsigned) {
-        funcName = newline ? "hew_println_u32" : "hew_print_u32";
-      } else {
-        funcName = newline ? "hew_println_i32" : "hew_print_i32";
-      }
-      funcType = rewriter.getFunctionType({rewriter.getI32Type()}, {});
+      kind = isUnsigned ? RuntimePrintKind::U32 : RuntimePrintKind::I32;
+      if (isUnsigned)
+        payload = mlir::arith::ExtUIOp::create(rewriter, loc, i64Type, inputVal);
+      else
+        payload = mlir::arith::ExtSIOp::create(rewriter, loc, i64Type, inputVal);
     } else if (inputType.isInteger(64)) {
-      if (isUnsigned) {
-        funcName = newline ? "hew_println_u64" : "hew_print_u64";
-      } else {
-        funcName = newline ? "hew_println_i64" : "hew_print_i64";
-      }
-      funcType = rewriter.getFunctionType({rewriter.getI64Type()}, {});
+      kind = isUnsigned ? RuntimePrintKind::U64 : RuntimePrintKind::I64;
+      payload = inputVal;
     } else if (inputType.isF64()) {
-      funcName = newline ? "hew_println_f64" : "hew_print_f64";
-      funcType = rewriter.getFunctionType({rewriter.getF64Type()}, {});
+      kind = RuntimePrintKind::F64;
+      payload = mlir::arith::BitcastOp::create(rewriter, loc, i64Type, inputVal);
     } else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(inputType);
                floatType && floatType.getWidth() == 32) {
       // f32: Promote to f64 for printing
-      inputVal = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), inputVal);
-      funcName = newline ? "hew_println_f64" : "hew_print_f64";
-      funcType = rewriter.getFunctionType({rewriter.getF64Type()}, {});
+      auto widened = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), inputVal);
+      kind = RuntimePrintKind::F64;
+      payload = mlir::arith::BitcastOp::create(rewriter, loc, i64Type, widened);
     } else if (inputType.isInteger(1)) {
-      funcName = newline ? "hew_println_bool" : "hew_print_bool";
-      funcType = rewriter.getFunctionType({rewriter.getI1Type()}, {});
+      kind = RuntimePrintKind::Bool;
+      payload = mlir::arith::ExtUIOp::create(rewriter, loc, i64Type, inputVal);
     } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(inputType)) {
-      funcName = newline ? "hew_println_str" : "hew_print_str";
-      funcType =
-          rewriter.getFunctionType({mlir::LLVM::LLVMPointerType::get(rewriter.getContext())}, {});
+      auto ptrIntType = getSizeType(rewriter.getContext(), module);
+      payload = mlir::LLVM::PtrToIntOp::create(rewriter, loc, ptrIntType, inputVal);
+      if (!ptrIntType.isInteger(64))
+        payload = mlir::arith::ExtUIOp::create(rewriter, loc, i64Type, payload);
+      kind = RuntimePrintKind::Str;
     } else {
       return op->emitError("unsupported type for print");
     }
 
+    auto kindVal = mlir::arith::ConstantOp::create(
+        rewriter, loc, rewriter.getIntegerAttr(i8Type, static_cast<int64_t>(kind)));
+    auto newlineVal = mlir::arith::ConstantOp::create(
+        rewriter, loc, rewriter.getIntegerAttr(rewriter.getI1Type(), newline));
+    auto funcName = llvm::StringRef("hew_print_value");
+    auto funcType = rewriter.getFunctionType({i8Type, i64Type, rewriter.getI1Type()}, {});
+
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
     mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
-                               mlir::ValueRange{inputVal});
+                               mlir::ValueRange{kindVal, payload, newlineVal});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -479,8 +496,7 @@ static mlir::Value emitEntryAlloca(mlir::ConversionPatternRewriter &rewriter, ml
 /// responsible for nulling them in the source memory if needed.
 static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewriter,
                                         mlir::Location loc, mlir::ModuleOp module,
-                                        mlir::Value structVal,
-                                        mlir::DictionaryAttr cloneAttr) {
+                                        mlir::Value structVal, mlir::DictionaryAttr cloneAttr) {
   auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
   if (!structTy || !structTy.isIdentified() || !cloneAttr)
     return structVal;
@@ -502,43 +518,43 @@ static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewrite
       continue;
     }
 
-    auto fieldVal = mlir::LLVM::ExtractValueOp::create(
-        rewriter, loc, rebuilt, llvm::ArrayRef<int64_t>{fieldIdx});
+    auto fieldVal = mlir::LLVM::ExtractValueOp::create(rewriter, loc, rebuilt,
+                                                       llvm::ArrayRef<int64_t>{fieldIdx});
 
     if (cloneFunc == "__recurse") {
       auto clonedField = deepCopyStructFields(rewriter, loc, module, fieldVal, cloneAttr);
-      rebuilt = mlir::LLVM::InsertValueOp::create(
-          rewriter, loc, rebuilt, clonedField, llvm::ArrayRef<int64_t>{fieldIdx});
+      rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedField,
+                                                  llvm::ArrayRef<int64_t>{fieldIdx});
     } else if (cloneFunc == "__closure_clone") {
       // Closure fields are !llvm.struct<(ptr, ptr)> — extract env ptr,
       // clone it via hew_rc_clone, rebuild the closure struct.
       auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType());
       if (closureType && closureType.getBody().size() == 2) {
-        auto fnPtr = mlir::LLVM::ExtractValueOp::create(
-            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{0}).getResult();
-        auto envPtr = mlir::LLVM::ExtractValueOp::create(
-            rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{1}).getResult();
+        auto fnPtr =
+            mlir::LLVM::ExtractValueOp::create(rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{0})
+                .getResult();
+        auto envPtr =
+            mlir::LLVM::ExtractValueOp::create(rewriter, loc, fieldVal, llvm::ArrayRef<int64_t>{1})
+                .getResult();
         auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
         getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
         auto clonedEnv = mlir::func::CallOp::create(
-            rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType},
-            mlir::ValueRange{envPtr});
+            rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
         mlir::Value newClosure = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
-        newClosure = mlir::LLVM::InsertValueOp::create(
-            rewriter, loc, newClosure, fnPtr, llvm::ArrayRef<int64_t>{0});
+        newClosure = mlir::LLVM::InsertValueOp::create(rewriter, loc, newClosure, fnPtr,
+                                                       llvm::ArrayRef<int64_t>{0});
         newClosure = mlir::LLVM::InsertValueOp::create(
             rewriter, loc, newClosure, clonedEnv.getResult(0), llvm::ArrayRef<int64_t>{1});
-        rebuilt = mlir::LLVM::InsertValueOp::create(
-            rewriter, loc, rebuilt, newClosure, llvm::ArrayRef<int64_t>{fieldIdx});
+        rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, newClosure,
+                                                    llvm::ArrayRef<int64_t>{fieldIdx});
       }
     } else {
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, cloneFunc, ft);
       auto clonedField = mlir::func::CallOp::create(
           rewriter, loc, cloneFunc, mlir::TypeRange{ptrType}, mlir::ValueRange{fieldVal});
-      rebuilt = mlir::LLVM::InsertValueOp::create(
-          rewriter, loc, rebuilt, clonedField.getResult(0),
-          llvm::ArrayRef<int64_t>{fieldIdx});
+      rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedField.getResult(0),
+                                                  llvm::ArrayRef<int64_t>{fieldIdx});
     }
   }
   return rebuilt;
@@ -546,9 +562,8 @@ static mlir::Value deepCopyStructFields(mlir::ConversionPatternRewriter &rewrite
 
 /// Null out handle fields inside a struct value stored at a memory
 /// address, so the sender's drop becomes a no-op for transferred handles.
-static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter,
-                                      mlir::Location loc, mlir::Value structAddr,
-                                      mlir::LLVM::LLVMStructType structTy,
+static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
+                                      mlir::Value structAddr, mlir::LLVM::LLVMStructType structTy,
                                       mlir::DictionaryAttr cloneAttr) {
   if (!cloneAttr)
     return;
@@ -567,8 +582,7 @@ static void nullOutStructHandleFields(mlir::ConversionPatternRewriter &rewriter,
       auto bodyTypes = structTy.getBody();
       if (fieldIdx < 0 || static_cast<size_t>(fieldIdx) >= bodyTypes.size())
         continue;
-      auto nestedStructTy =
-          mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyTypes[fieldIdx]);
+      auto nestedStructTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyTypes[fieldIdx]);
       if (!nestedStructTy || !nestedStructTy.isIdentified())
         continue;
       nullOutStructHandleFields(rewriter, loc, fieldPtr, nestedStructTy, cloneAttr);
@@ -642,14 +656,12 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
         auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, convArg.getType());
         mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, loadOp.getAddr());
       }
-    } else if (auto structTy =
-                   mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType())) {
+    } else if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType())) {
       // Identified structs may contain owned fields (String, Vec, HashMap)
       // and/or nested structs with owned fields.  Use the module attribute
       // emitted by MLIRGen and the recursive deepCopyStructFields helper.
       if (structTy.isIdentified()) {
-        auto cloneAttr =
-            module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+        auto cloneAttr = module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
         auto cloned = deepCopyStructFields(rewriter, loc, module, convArg, cloneAttr);
         result.push_back(cloned);
         // If the struct contains handle fields, null them out in the
@@ -1049,10 +1061,9 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
         auto terminateFuncRef = mlir::func::ConstantOp::create(
             rewriter, loc, terminateFuncType,
             mlir::SymbolRefAttr::get(rewriter.getContext(), terminateName));
-        auto terminatePtr =
-            mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType,
-                                                     terminateFuncRef.getResult())
-                .getResult(0);
+        auto terminatePtr = mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType,
+                                                                     terminateFuncRef.getResult())
+                                .getResult(0);
 
         auto setTerminateFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_actor_set_terminate", setTerminateFuncType);
@@ -1156,10 +1167,9 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
       auto askFuncType =
           rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType, sizeType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_node_api_ask", askFuncType);
-      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_node_api_ask",
-                                             mlir::TypeRange{ptrType},
-                                             mlir::ValueRange{targetVal, msgTypeVal, dataPtr,
-                                                              dataSize, replySize});
+      auto call = mlir::func::CallOp::create(
+          rewriter, loc, "hew_node_api_ask", mlir::TypeRange{ptrType},
+          mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize, replySize});
       auto replyPtr = call.getResult(0);
 
       // Void-return handler: erase the op. Remote void success returns a
@@ -1176,12 +1186,12 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
       auto nullReplyPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
       auto missingReply = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
                                                      replyPtr, nullReplyPtr);
-      auto failIfOp = mlir::scf::IfOp::create(rewriter, loc, missingReply, /*withElseRegion=*/false);
+      auto failIfOp =
+          mlir::scf::IfOp::create(rewriter, loc, missingReply, /*withElseRegion=*/false);
       rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
       auto panicFuncType = rewriter.getFunctionType({}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
-      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
-                                 mlir::ValueRange{});
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
       rewriter.setInsertionPointAfter(failIfOp);
 
       // Load the non-void result from the reply pointer.
@@ -1238,8 +1248,8 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
 
     // hew_actor_ask returns null when the local ask cannot be submitted.
     auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
-    auto askFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
-                                                replyPtr, nullPtr);
+    auto askFailed =
+        mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq, replyPtr, nullPtr);
     auto panicFuncType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
     auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
@@ -1852,8 +1862,8 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       // signature-converted yet when this pattern fires.
       auto *tc = getTypeConverter();
       auto lowerType = [&](mlir::Type t) -> mlir::Type {
-        if (mlir::isa<mlir::LLVM::LLVMPointerType, mlir::LLVM::LLVMStructType,
-                      mlir::IntegerType, mlir::FloatType, mlir::IndexType>(t))
+        if (mlir::isa<mlir::LLVM::LLVMPointerType, mlir::LLVM::LLVMStructType, mlir::IntegerType,
+                      mlir::FloatType, mlir::IndexType>(t))
           return t;
         if (auto c = tc->convertType(t))
           return c;
@@ -1904,18 +1914,18 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       if (hasReturnType) {
         // Call handler and capture return value (use lowered result types
         // so AllocaOp/emitSizeOf always receive LLVM-legal types).
-        auto callOp = mlir::func::CallOp::create(rewriter, loc, handlerName,
-                                                 loweredResults, callArgs);
+        auto callOp =
+            mlir::func::CallOp::create(rewriter, loc, handlerName, loweredResults, callArgs);
         auto resultVal = callOp.getResult(0);
         auto resultType = resultVal.getType();
 
         // Check if a reply channel is present (non-null).
         auto replyChan = mlir::func::CallOp::create(rewriter, loc, "hew_get_reply_channel",
-                                                     mlir::TypeRange{ptrType}, mlir::ValueRange{})
+                                                    mlir::TypeRange{ptrType}, mlir::ValueRange{})
                              .getResult(0);
         auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
         auto hasReply = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
-                                                    replyChan, nullPtr);
+                                                   replyChan, nullPtr);
 
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
@@ -1940,11 +1950,11 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         // If a reply channel was set (caller used `await c.handler()`),
         // signal completion with an empty reply so the caller is unblocked.
         auto replyChan = mlir::func::CallOp::create(rewriter, loc, "hew_get_reply_channel",
-                                                     mlir::TypeRange{ptrType}, mlir::ValueRange{})
+                                                    mlir::TypeRange{ptrType}, mlir::ValueRange{})
                              .getResult(0);
         auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
         auto hasReply = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
-                                                    replyChan, nullPtr);
+                                                   replyChan, nullPtr);
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
@@ -3197,7 +3207,7 @@ struct DropOpLowering : public mlir::OpConversionPattern<hew::DropOp> {
     if (op.getIsUserDrop()) {
       if (auto existingFunc = module.lookupSymbol<mlir::func::FuncOp>(funcName)) {
         mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
-                                    mlir::ValueRange{argVal});
+                                   mlir::ValueRange{argVal});
         rewriter.eraseOp(op);
         return mlir::success();
       }
@@ -3980,8 +3990,8 @@ struct FuncPtrOpLowering : public mlir::OpConversionPattern<hew::FuncPtrOp> {
       auto ct = tc->convertType(t);
       convertedResults.push_back(ct ? ct : t);
     }
-    auto convertedFuncType = mlir::FunctionType::get(
-        rewriter.getContext(), convertedInputs, convertedResults);
+    auto convertedFuncType =
+        mlir::FunctionType::get(rewriter.getContext(), convertedInputs, convertedResults);
     auto funcRef =
         mlir::func::ConstantOp::create(rewriter, loc, convertedFuncType,
                                        mlir::SymbolRefAttr::get(rewriter.getContext(), funcName));
@@ -5393,13 +5403,11 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
     std::string error;
     auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target)
-      throw std::runtime_error("cannot find target for triple '" + triple.str() +
-                               "': " + error);
+      throw std::runtime_error("cannot find target for triple '" + triple.str() + "': " + error);
     llvm::TargetOptions tOpts;
     auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
     if (!tm)
-      throw std::runtime_error("cannot create target machine for triple '" +
-                               triple.str() + "'");
+      throw std::runtime_error("cannot create target machine for triple '" + triple.str() + "'");
     auto dl = tm->createDataLayout().getStringRepresentation();
     module->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
                     mlir::StringAttr::get(&context, dl));

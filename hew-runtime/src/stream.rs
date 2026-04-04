@@ -848,7 +848,7 @@ pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void 
         Some(item) => {
             let len = item.len();
             // Allocate len + 1 for a NUL terminator so the buffer can be
-            // used as a C string by hew_print_str / println.
+            // used as a C string by the generic hew_print_value string path.
             // For empty items, this yields a 1-byte buffer containing '\0'.
             // SAFETY: libc::malloc returns a valid aligned pointer or null.
             let buf = unsafe { libc::malloc(len + 1) };

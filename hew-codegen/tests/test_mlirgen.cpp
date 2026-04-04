@@ -13,9 +13,6 @@
 #include "hew/msgpack_reader.h"
 #include "test_utils.h"
 
-#include "llvm/IR/CFG.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Instructions.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -25,8 +22,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
+#include "llvm/IR/CFG.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Instructions.h"
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <utility>
 
@@ -109,6 +110,36 @@ static int countLLVMCallsByCallee(llvm::Function *function, llvm::StringRef call
   return count;
 }
 
+enum class RuntimePrintKind : uint64_t {
+  I32 = 0,
+  I64 = 1,
+  F64 = 2,
+  Bool = 3,
+  Str = 4,
+  U32 = 5,
+  U64 = 6,
+};
+
+static llvm::CallBase *findLLVMCallByCallee(llvm::Function *function, llvm::StringRef callee) {
+  if (!function)
+    return nullptr;
+
+  for (auto &block : *function) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *called = call ? call->getCalledFunction() : nullptr;
+      if (called && called->getName() == callee)
+        return call;
+    }
+  }
+  return nullptr;
+}
+
+static bool llvmCallHasConstIntArg(llvm::CallBase *call, unsigned argIndex, uint64_t expected) {
+  auto *value = call ? llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(argIndex)) : nullptr;
+  return value && value->getZExtValue() == expected;
+}
+
 static int countPanicOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::PanicOp) { count++; });
@@ -158,7 +189,7 @@ static bool loadProgramFromSource(const std::string &source, hew::ast::Program &
   // Write source to a temp file
   std::string tmpPath = (std::filesystem::temp_directory_path() /
                          ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
-                             .string();
+                            .string();
   {
     std::ofstream tmp(tmpPath);
     if (!tmp) {
@@ -494,9 +525,17 @@ fn main() -> int {
     return;
   }
 
-  if (countLLVMCallsByCallee(mainFn, "hew_println_i64") != 1 ||
+  if (countLLVMCallsByCallee(mainFn, "hew_print_value") != 1 ||
+      countLLVMCallsByCallee(mainFn, "hew_println_i64") != 0 ||
       countLLVMCallsByCallee(mainFn, "hew_print_i64") != 0) {
-    FAIL("expected println lowering to call only hew_println_i64");
+    FAIL("expected println lowering to call only hew_print_value");
+    return;
+  }
+
+  auto *printCall = findLLVMCallByCallee(mainFn, "hew_print_value");
+  if (!llvmCallHasConstIntArg(printCall, 0, static_cast<uint64_t>(RuntimePrintKind::I64)) ||
+      !llvmCallHasConstIntArg(printCall, 2, 1)) {
+    FAIL("expected println lowering to pass I64 kind with newline=true");
     return;
   }
 
@@ -561,9 +600,140 @@ fn main() -> int {
     return;
   }
 
-  if (countLLVMCallsByCallee(mainFn, "hew_print_i64") != 1 ||
+  if (countLLVMCallsByCallee(mainFn, "hew_print_value") != 1 ||
+      countLLVMCallsByCallee(mainFn, "hew_print_i64") != 0 ||
       countLLVMCallsByCallee(mainFn, "hew_println_i64") != 0) {
-    FAIL("expected print lowering to call only hew_print_i64");
+    FAIL("expected print lowering to call only hew_print_value");
+    return;
+  }
+
+  auto *printCall = findLLVMCallByCallee(mainFn, "hew_print_value");
+  if (!llvmCallHasConstIntArg(printCall, 0, static_cast<uint64_t>(RuntimePrintKind::I64)) ||
+      !llvmCallHasConstIntArg(printCall, 2, 0)) {
+    FAIL("expected print lowering to pass I64 kind with newline=false");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: print lowering routes scalar/string kinds through the generic runtime
+// dispatcher, including narrow integer promotion and f32 -> f64 widening.
+// ============================================================================
+static void test_print_runtime_dispatch_kinds() {
+  TEST(print_runtime_dispatch_kinds);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let small: i8 = -7;
+    let wide: u16 = 42;
+    let huge: u64 = 99;
+    let ratio: f32 = 3.5;
+    let precise: f64 = 4.5;
+    println(small);
+    println(wide);
+    println(huge);
+    println(ratio);
+    println(precise);
+    println(true);
+    println("ok");
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for generic print dispatch");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  int legacyPrintCalls = 0;
+  int i32Calls = 0;
+  int u32Calls = 0;
+  int u64Calls = 0;
+  int f64Calls = 0;
+  int boolCalls = 0;
+  int strCalls = 0;
+  bool newlineOk = true;
+  bool kindOk = true;
+
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (!callee)
+        continue;
+
+      auto calleeName = callee->getName();
+      if (calleeName.starts_with("hew_print") && calleeName != "hew_print_value")
+        legacyPrintCalls++;
+
+      if (calleeName != "hew_print_value")
+        continue;
+
+      auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+      auto *newline = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+      if (!kind || !newline || !newline->isOne()) {
+        newlineOk = false;
+        continue;
+      }
+
+      switch (kind->getZExtValue()) {
+      case static_cast<uint64_t>(RuntimePrintKind::I32):
+        i32Calls++;
+        break;
+      case static_cast<uint64_t>(RuntimePrintKind::U32):
+        u32Calls++;
+        break;
+      case static_cast<uint64_t>(RuntimePrintKind::U64):
+        u64Calls++;
+        break;
+      case static_cast<uint64_t>(RuntimePrintKind::F64):
+        f64Calls++;
+        break;
+      case static_cast<uint64_t>(RuntimePrintKind::Bool):
+        boolCalls++;
+        break;
+      case static_cast<uint64_t>(RuntimePrintKind::Str):
+        strCalls++;
+        break;
+      default:
+        kindOk = false;
+        break;
+      }
+    }
+  }
+
+  if (legacyPrintCalls != 0) {
+    FAIL("expected lowering to avoid typed print runtime wrappers");
+    return;
+  }
+  if (!newlineOk) {
+    FAIL("expected generic print calls to preserve newline=true");
+    return;
+  }
+  if (!kindOk || i32Calls != 1 || u32Calls != 1 || u64Calls != 1 || f64Calls != 2 ||
+      boolCalls != 1 || strCalls != 1) {
+    FAIL("expected generic print call kinds for i8/u16/u64/f32/f64/bool/string");
     return;
   }
 
@@ -833,7 +1003,8 @@ fn main() -> int {
   // causing the last StmtIf inside those blocks to be lowered via
   // generateIfStmtAsExpr → unnecessary resultful scf.if.
   if (countResultfulIfOps(computeFn) > 1) {
-    FAIL("nested statement-position if inside non-void function should not produce extra resultful scf.if");
+    FAIL("nested statement-position if inside non-void function should not produce extra resultful "
+         "scf.if");
     module.getOperation()->destroy();
     return;
   }
@@ -1404,9 +1575,10 @@ fn main() {
         if (callee->getName() == "hew_panic")
           panicBlock = &block;
 
-        if (callee->getName() == "hew_println_i64") {
-          auto *value = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
-          if (value && value->equalsInt(9))
+        if (callee->getName() == "hew_print_value" &&
+            llvmCallHasConstIntArg(call, 0, static_cast<uint64_t>(RuntimePrintKind::I64))) {
+          auto *value = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(1));
+          if (value && value->equalsInt(9) && llvmCallHasConstIntArg(call, 2, 1))
             continueBlock = &block;
         }
       }
@@ -2016,8 +2188,8 @@ fn main() -> int {
     return;
   }
 
-  for (const char *fnName : {"ReviewStatus_to_json", "ReviewStatus_from_json", "ReviewStatus_to_yaml",
-                             "ReviewStatus_from_yaml"}) {
+  for (const char *fnName : {"ReviewStatus_to_json", "ReviewStatus_from_json",
+                             "ReviewStatus_to_yaml", "ReviewStatus_from_yaml"}) {
     if (!module.lookupSymbol<mlir::func::FuncOp>(fnName)) {
       FAIL("expected wire enum JSON/YAML helper function to be generated");
       module.getOperation()->destroy();
@@ -2141,7 +2313,6 @@ fn main() {
   PASS();
 }
 
-
 static void test_unresolved_generic_substitution_type_fails() {
   TEST(unresolved_generic_substitution_type_fails);
 
@@ -2252,9 +2423,8 @@ fn main() -> i64 {
     auto n = fn.getName();
     if (!n.contains("Point"))
       return;
-    if (n.contains("to_json") || n.contains("from_json") ||
-        n.contains("to_yaml") || n.contains("from_yaml") ||
-        n.contains("to_toml") || n.contains("from_toml"))
+    if (n.contains("to_json") || n.contains("from_json") || n.contains("to_yaml") ||
+        n.contains("from_yaml") || n.contains("to_toml") || n.contains("from_toml"))
       foundAnyWrapper = true;
   });
   if (foundAnyWrapper) {
@@ -2307,7 +2477,8 @@ fn main() -> String {
       foundToJson = true;
   });
   if (!foundToJson) {
-    FAIL("Sensor to_json wrapper not generated for instance-style call (instance demand-gate missing)");
+    FAIL("Sensor to_json wrapper not generated for instance-style call (instance demand-gate "
+         "missing)");
     module.getOperation()->destroy();
     return;
   }
@@ -2318,8 +2489,8 @@ fn main() -> String {
     auto n = fn.getName();
     if (!n.contains("Sensor"))
       return;
-    if (n.contains("to_yaml") || n.contains("from_yaml") ||
-        n.contains("to_toml") || n.contains("from_toml"))
+    if (n.contains("to_yaml") || n.contains("from_yaml") || n.contains("to_toml") ||
+        n.contains("from_toml"))
       foundUncalled = true;
   });
   if (foundUncalled) {
@@ -2374,8 +2545,8 @@ static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
   readingDecl.visibility = Visibility::Pub;
   readingDecl.kind = TypeDeclKind::Struct;
   readingDecl.name = "Reading";
-  for (auto &[fname, ftype] : std::vector<std::pair<std::string,std::string>>{
-           {"value", "i64"}, {"channel", "i32"}}) {
+  for (auto &[fname, ftype] :
+       std::vector<std::pair<std::string, std::string>>{{"value", "i64"}, {"channel", "i32"}}) {
     TypeBodyItemField f;
     f.name = fname;
     f.ty = mkNamedType(ftype);
@@ -2404,7 +2575,7 @@ static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
   {
     Expr mcExpr;
     ExprMethodCall mc;
-    mc.receiver = mkIdent("Reading");   // static receiver: type name
+    mc.receiver = mkIdent("Reading"); // static receiver: type name
     mc.method = "to_json";
     CallArgPositional arg;
     arg.expr = mkIdent("r");
@@ -2449,7 +2620,8 @@ static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
       foundToJson = true;
   });
   if (!foundToJson) {
-    FAIL("Reading to_json wrapper not generated for static-style call (static demand-gate missing)");
+    FAIL(
+        "Reading to_json wrapper not generated for static-style call (static demand-gate missing)");
     module.getOperation()->destroy();
     return;
   }
@@ -2460,8 +2632,8 @@ static void test_prim_struct_static_serial_call_emits_demanded_wrapper() {
     auto n = fn.getName();
     if (!n.contains("Reading"))
       return;
-    if (n.contains("to_yaml") || n.contains("from_yaml") ||
-        n.contains("to_toml") || n.contains("from_toml"))
+    if (n.contains("to_yaml") || n.contains("from_yaml") || n.contains("to_toml") ||
+        n.contains("from_toml"))
       foundUncalled = true;
   });
   if (foundUncalled) {
@@ -2825,8 +2997,7 @@ fn main() {}
 
   // http.Request must appear in the metadata-driven knownHandleTypes.
   bool httpRequestInHandleTypes =
-      std::find(programWithHandle.handle_types.begin(),
-                programWithHandle.handle_types.end(),
+      std::find(programWithHandle.handle_types.begin(), programWithHandle.handle_types.end(),
                 "http.Request") != programWithHandle.handle_types.end();
   if (!httpRequestInHandleTypes) {
     FAIL("http.Request missing from program.handle_types — Rust metadata not populated");
@@ -2865,8 +3036,7 @@ fn main() {}
   }
 
   bool csvTableInHandleTypes =
-      std::find(programWithCsv.handle_types.begin(),
-                programWithCsv.handle_types.end(),
+      std::find(programWithCsv.handle_types.begin(), programWithCsv.handle_types.end(),
                 "csv.Table") != programWithCsv.handle_types.end();
   if (csvTableInHandleTypes) {
     FAIL("csv.Table incorrectly listed in program.handle_types — it is a struct");
@@ -2951,11 +3121,10 @@ fn main() -> int {
     if (!icmp || icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
       continue;
 
-    bool comparesAskToNull =
-        (icmp->getOperand(0) == askCall &&
-         llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(1))) ||
-        (icmp->getOperand(1) == askCall &&
-         llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(0)));
+    bool comparesAskToNull = (icmp->getOperand(0) == askCall &&
+                              llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(1))) ||
+                             (icmp->getOperand(1) == askCall &&
+                              llvm::isa<llvm::ConstantPointerNull>(icmp->getOperand(0)));
     if (!comparesAskToNull)
       continue;
 
@@ -3100,8 +3269,7 @@ fn main() {
         continue;
       if (callee->getName() == "hew_node_api_ask")
         askCall = call;
-      if (callee->getName() == "free" && call->arg_size() == 1 &&
-          call->getArgOperand(0) == askCall)
+      if (callee->getName() == "free" && call->arg_size() == 1 && call->getArgOperand(0) == askCall)
         freesAskReply = true;
     }
   }
@@ -3281,9 +3449,8 @@ fn main() -> int {
 
       auto *lhs = icmp->getOperand(0);
       auto *rhs = icmp->getOperand(1);
-      bool comparesAskAgainstNull =
-          (lhs == askCall && llvm::isa<llvm::ConstantPointerNull>(rhs)) ||
-          (rhs == askCall && llvm::isa<llvm::ConstantPointerNull>(lhs));
+      bool comparesAskAgainstNull = (lhs == askCall && llvm::isa<llvm::ConstantPointerNull>(rhs)) ||
+                                    (rhs == askCall && llvm::isa<llvm::ConstantPointerNull>(lhs));
       if (comparesAskAgainstNull) {
         nullReplyCheck = icmp;
         break;
@@ -3320,8 +3487,6 @@ fn main() -> int {
   PASS();
 }
 
-
-
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -3330,6 +3495,7 @@ int main() {
   test_mutable_variables();
   test_print();
   test_print_no_newline();
+  test_print_runtime_dispatch_kinds();
   test_while_loop();
   test_if_else_expr();
   test_statement_position_if_and_match_lower_without_results();

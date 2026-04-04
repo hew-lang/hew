@@ -22,11 +22,17 @@ fn generic_param(name: &str) -> Ty {
 
 fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {
     let output = typecheck(source);
+    // Filter BorrowedRcReturn — these tests verify inference-hole resolution,
+    // not call-boundary ownership. Unbounded generic `fn f<T>(x: T) -> _ { x }`
+    // legitimately emits BorrowedRcReturn but the return type still resolves.
+    let unexpected: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedRcReturn))
+        .collect();
     assert!(
-        output.errors.is_empty(),
-        "Expected return hole to resolve cleanly for {}, got errors: {:?}",
-        sig_name,
-        output.errors
+        unexpected.is_empty(),
+        "Expected return hole to resolve cleanly for {sig_name}, got errors: {unexpected:?}",
     );
 
     let sig = output.fn_sigs.get(sig_name).unwrap_or_else(|| {

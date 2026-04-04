@@ -1694,14 +1694,20 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   }
 
   // Rc::new(val) -> *opaque  (hew_rc data pointer)
+  //
   // Codegen:
   //   1. Evaluate the inner value.
-  //   2. LLVM alloca a slot so we have a stable pointer to pass to hew_rc_new.
-  //   3. Store the value into the alloca.
-  //   4. Call hew_rc_new(data_ptr, sizeof(T), null_drop_fn); the runtime copies
-  //      the bytes and returns a pointer to the data region of the Rc header.
-  //   Note: hew_rc_new copies `size` bytes from data into its own allocation;
-  //   after the call the local alloca is no longer referenced.
+  //   2. Look up the drop function for T using the type-checker annotation
+  //      (handles String→hew_string_drop, Vec→hew_vec_free, Rc→hew_rc_drop,
+  //      user Drop impls via userDropFuncs, etc.).  Primitives / Copy types
+  //      with no owned resources get a null drop pointer.
+  //   3. Compute sizeof(T).
+  //   4. Call RcNewOp(null_data, size, drop_fn) — allocates the Rc header +
+  //      data region without memcpy-ing anything (null data skips the copy in
+  //      hew_rc_new, leaving the data region uninitialised).
+  //   5. Store `val` directly into the data region (move, not memcpy-alias).
+  //      This is safe: `val` is now owned exclusively by the Rc; the type-
+  //      checker's move analysis prevents any further use of the source.
   if (name == "Rc::new") {
     if (args.size() != 1) {
       emitError(location) << "Rc::new requires exactly one argument";
@@ -1715,30 +1721,43 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto szType = sizeType(); // platform-correct: i64 native, i32 WASM32
     auto valType = val.getType();
 
-    // Stack-allocate a slot for `val` and store into it so hew_rc_new can
-    // copy the bytes.  Use an LLVM alloca (element count = 1).
-    auto llvmAlloca = mlir::LLVM::AllocaOp::create(
-        builder, location, ptrType, valType,
-        mlir::arith::ConstantIntOp::create(builder, location, szType, 1));
-    mlir::LLVM::StoreOp::create(builder, location, val, llvmAlloca);
+    // Resolve drop function for T.  Prefer the AST annotation (covers all
+    // named types registered in dropFuncForType); fall back to MLIR type
+    // introspection for hew dialect types (ClosureType, StringRefType, etc.)
+    // not reachable via the AST path.
+    mlir::Value dropFnPtr;
+    {
+      std::string dropFuncName;
+      if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+        dropFuncName = dropFuncForType(*argType);
+      if (dropFuncName.empty())
+        dropFuncName = dropFuncForMLIRType(valType, /*includeStructTypes=*/false);
+      if (!dropFuncName.empty()) {
+        auto dropFnType = builder.getFunctionType({ptrType}, {});
+        getOrCreateExternFunc(dropFuncName, dropFnType);
+        dropFnPtr = hew::FuncPtrOp::create(
+                        builder, location, ptrType,
+                        mlir::SymbolRefAttr::get(&context, dropFuncName))
+                        .getResult();
+      } else {
+        dropFnPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+      }
+    }
 
     // Compute sizeof(T) at MLIR level using hew.sizeof.
-    auto size = hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(valType));
+    auto size =
+        hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(valType));
 
-    // Null pointer for drop_fn.
-    // Safe because the type-checker's BoundsNotSatisfied guard on Rc::new
-    // restricts T to Copy — Copy types carry no ownership, so no destructor
-    // is ever needed when the Rc's strong count reaches zero.
-    auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    // Allocate Rc with null data — runtime skips memcpy, leaves data region
+    // uninitialised.  We then store val directly (move semantics).
+    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto rcPtr =
+        hew::RcNewOp::create(builder, location, ptrType, nullData, size, dropFnPtr)
+            .getResult();
 
-    // Call hew_rc_new(data_ptr, size, drop_fn) -> *u8 (data region of the Rc).
-    auto rcNewFuncType =
-        builder.getFunctionType({ptrType, szType, ptrType}, {ptrType});
-    auto rcNewFunc = getOrCreateExternFunc("hew_rc_new", rcNewFuncType);
-    return mlir::func::CallOp::create(
-               builder, location, rcNewFunc,
-               mlir::ValueRange{llvmAlloca, size, nullDropFn})
-        .getResult(0);
+    // Move val into the Rc data region.
+    mlir::LLVM::StoreOp::create(builder, location, val, rcPtr);
+    return rcPtr;
   }
 
   // duration::from_nanos(x) -> i64: identity passthrough (duration is i64 nanos)

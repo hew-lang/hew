@@ -402,19 +402,33 @@ fn rc_rejected_at_actor_send_boundary() {
     );
 }
 
-/// `Rc::new` must be rejected when `T` is not `Copy`.
-/// A null `drop_fn` and a bare `LoadOp` are only sound for Copy types; restricting
-/// construction at the type-checker level makes both codegen invariants hold.
+/// `Rc::new` must accept non-Copy `T`; the codegen passes the real drop function.
+/// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]
-fn rc_new_non_copy_inner_rejected() {
-    // String is a heap-allocated non-Copy type.
-    let output = typecheck_inline(r#"fn main() { let _rc = Rc::new("hello"); }"#);
+fn rc_non_copy_construction_ok() {
+    // String is non-Copy; Rc::new should accept it (codegen will pass a real
+    // drop function instead of null).
+    let output = typecheck_inline(r#"fn main() { let _rc: Rc<String> = Rc::new("hello"); }"#);
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with a non-Copy inner type should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_get_non_copy_rejected() {
+    // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
+    // Copy types.  Calling it on Rc<String> must be rejected.
+    let output = typecheck_inline(
+        r#"fn main() { let rc: Rc<String> = Rc::new("hello"); let _ = rc.get(); }"#,
+    );
     assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::BoundsNotSatisfied),
-        "Rc::new with a non-Copy inner type should fail with BoundsNotSatisfied, got: {:#?}",
+        "Rc::get on a non-Copy inner type should fail with BoundsNotSatisfied, got: {:#?}",
         output.errors
     );
 }

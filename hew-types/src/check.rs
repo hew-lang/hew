@@ -6622,39 +6622,6 @@ impl Checker {
                 }
             }
 
-            // For Rc::new, verify T: Copy.
-            //
-            // The user-facing Rc::new lowering always passes a null drop_fn to
-            // hew_rc_new (safe for Copy types, which have no destructor).
-            // Rc::get() lowers to LLVM::LoadOp (a bitwise copy), which is also
-            // only sound for Copy.  Restricting construction to T: Copy makes
-            // both invariants hold for the lifetime of any Rc<T> value.
-            //
-            // Non-Copy shared ownership is deferred to Arc<T> (a later slice).
-            if func_name == "Rc::new" {
-                let resolved_ret = self.subst.resolve(&freshened_ret);
-                if let Ty::Named { args, .. } = &resolved_ret {
-                    if let Some(inner) = args.first() {
-                        let inner_resolved = self.subst.resolve(inner);
-                        if !self
-                            .registry
-                            .implements_marker(&inner_resolved, MarkerTrait::Copy)
-                        {
-                            self.report_error(
-                                TypeErrorKind::BoundsNotSatisfied,
-                                span,
-                                format!(
-                                    "`Rc::new` requires `T: Copy`; `{}` is not `Copy` — \
-                                     use `Arc<T>` for non-Copy shared ownership",
-                                    inner_resolved.user_facing()
-                                ),
-                            );
-                            return Ty::Error;
-                        }
-                    }
-                }
-            }
-
             return freshened_ret;
         }
 
@@ -7160,11 +7127,27 @@ impl Checker {
                 self.check_arity(args, 0, "`Rc::clone`", span);
                 Ty::rc(inner_ty)
             }
-            // rc.get() returns the inner value.
-            // Sound because Rc::new enforces T: Copy; the LoadOp bitwise-copies
-            // a value that carries no ownership, so no double-free can occur.
+            // rc.get() copies the inner value out of the Rc.
+            // `LoadOp` performs a bitwise copy, which is only sound for `Copy`
+            // types (no ownership to duplicate).  For non-Copy `T`, callers
+            // share access via `rc.clone()` instead.
             "get" => {
                 self.check_arity(args, 0, "`Rc::get`", span);
+                if !self
+                    .registry
+                    .implements_marker(&inner_ty, MarkerTrait::Copy)
+                {
+                    self.report_error(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span,
+                        format!(
+                            "`Rc::get` requires `T: Copy`; `{}` is not `Copy` — \
+                             use `rc.clone()` to share the reference instead",
+                            inner_ty.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 inner_ty
             }
             // rc.strong_count() returns the current reference count as i64

@@ -3672,8 +3672,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
       if (method == "get") {
         // Bitwise load of the inner value from the Rc data region.
-        // Sound because the type-checker restricts Rc::new to T: Copy, so the
-        // LoadOp duplicates a value with no ownership — no double-free possible.
+        // The type-checker enforces T: Copy on `rc.get()`, so the LoadOp
+        // duplicates a value with no ownership — no double-free possible.
         mlir::Type innerMlirType;
         if (rcNamed && rcNamed->type_args && !rcNamed->type_args->empty()) {
           innerMlirType = convertType((*rcNamed->type_args)[0].value);

@@ -209,6 +209,12 @@ pub struct HewMailboxWasm {
     high_water_mark: i64,
     /// Whether the mailbox has been closed.
     closed: bool,
+    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "field is only used by wasm-only stop semantics")
+    )]
+    stop_signal_sent: bool,
 }
 
 /// Update the high-water mark after incrementing `count`.
@@ -393,6 +399,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -414,6 +421,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -446,6 +454,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -583,6 +592,33 @@ wasm_no_mangle! {
         let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
         mb.sys_queue.push_back(node);
     }
+}
+
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "helper is only referenced by wasm-only actor stop code"
+    )
+)]
+pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool {
+    if mb.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &mut *mb };
+
+    // SAFETY: stop signals carry no payload.
+    let node = unsafe { msg_node_alloc(-1, ptr::null(), 0) };
+    if mb.stop_signal_sent {
+        // SAFETY: `node` was allocated above and was not published to the queue.
+        unsafe { msg_node_free(node) };
+        return false;
+    }
+
+    mb.stop_signal_sent = true;
+    mb.sys_queue.push_back(node);
+    true
 }
 
 // ── Receive (consumer side) ─────────────────────────────────────────────

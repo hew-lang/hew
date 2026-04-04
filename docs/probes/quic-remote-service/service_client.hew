@@ -3,8 +3,8 @@
 // Demonstrates:
 //   - Using std::net::quic public API to create a QUIC client endpoint
 //   - Dialing a remote QUIC server
-//   - Opening a stream and sending messages
-//   - Converting demo payload strings to/from bytes at the edge
+//   - Opening a stream and sending UTF-8 string messages
+//   - Preserving the finish/recv/close ordering used by the working loopback test
 //   - Clean shutdown
 //
 // Run after server is listening:
@@ -22,16 +22,21 @@ fn main() {
     // Connect to the remote QUIC server.
     // server_name is the TLS SNI field; localhost is used for permissive dev verification.
     let conn = ep.connect("127.0.0.1:4433", "localhost");
+    let connected = ep.on_event();
+    assert_eq(connected.kind(), 0);
+    connected.free();
     println("[client] connected to server");
     
     // Open a new stream on the connection.
     let stream = conn.open_stream();
+    let opened = conn.on_event();
+    assert_eq(opened.kind(), 2);
+    opened.free();
     println("[client] opened stream");
     
     // Send a message to the server.
     let msg = "Hello from client";
-    let payload = unsafe { hew_string_to_bytes(msg) };
-    let result = stream.send(payload);
+    let result = stream.send_string(msg);
     if result != 0 {
         println("[client] failed to send message");
     } else {
@@ -41,13 +46,17 @@ fn main() {
     // Signal end of send (but we can still receive).
     stream.finish();
     
-    // Receive response from server.
-    let reply = stream.recv();
-    let resp_msg = unsafe { hew_bytes_to_string(reply) };
+    // Receive response from server, then drain to EOF before close.
+    let resp_msg = stream.recv_string();
     println(f"[client] received: {resp_msg}");
-    
+    let eof = stream.recv();
+    assert_eq(eof.len(), 0);
+
     // Clean shutdown of stream.
     stream.close();
+    let closed = conn.on_event();
+    assert_eq(closed.kind(), 3);
+    closed.free();
     
     // Clean shutdown of connection.
     conn.disconnect();
@@ -55,9 +64,4 @@ fn main() {
     // Clean shutdown of endpoint.
     ep.close();
     println("[client] shutdown complete");
-}
-
-extern "C" {
-    fn hew_string_to_bytes(s: String) -> bytes;
-    fn hew_bytes_to_string(b: bytes) -> String;
 }

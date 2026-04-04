@@ -406,8 +406,10 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
 /// Converts `msg` to bytes using the runtime string helper, then delegates
 /// to the underlying `hew_quic_stream_send` FFI.
 pub fn stream_send_string(strm: QUICStream, msg: String) -> i32 {
-    let data = unsafe { hew_string_to_bytes(msg) };
-    unsafe { hew_quic_stream_send(strm, data) }
+    unsafe {
+        let payload = hew_string_to_bytes(msg);
+        hew_quic_stream_send(strm, payload)
+    }
 }
 
 /// Receive a UTF-8 string from a QUIC stream.
@@ -415,8 +417,10 @@ pub fn stream_send_string(strm: QUICStream, msg: String) -> i32 {
 /// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
 /// `String` using the runtime string helper.
 pub fn stream_recv_string(strm: QUICStream) -> String {
-    let data = unsafe { hew_quic_stream_recv(strm) };
-    unsafe { hew_bytes_to_string(data) }
+    unsafe {
+        let payload = hew_quic_stream_recv(strm);
+        hew_bytes_to_string(payload)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

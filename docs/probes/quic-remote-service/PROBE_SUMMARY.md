@@ -1,7 +1,7 @@
 # Haiku Remote Service Probe - Summary
 
 ## Objective
-Create a minimal bounded remote/distributed service using Hew code plus the public `std::net::quic` transport surface, and accurately document the remaining edge: the archived probe still uses unsafe string-conversion helpers at the byte boundary.
+Create a minimal bounded remote/distributed service using only Hew code and the public `std::net::quic` transport surface, demonstrating a small textual round-trip without relying on runtime internals or user-authored FFI helpers.
 
 > **Archive refresh note:** This summary now matches the checked-in probe files in
 > `docs/probes/quic-remote-service/`.
@@ -9,7 +9,7 @@ Create a minimal bounded remote/distributed service using Hew code plus the publ
 ## Constraints Satisfied
 ✅ **Only public stdlib transport modules** - Used `std::net::quic` endpoint/connection/stream APIs
 ✅ **No runtime internals** - Did not use `Node`, `Actor` transport mechanisms, or undocumented internals
-⚠️ **String marshaling still uses unsafe helpers** - The probe declares `hew_string_to_bytes()` / `hew_bytes_to_string()` locally for UTF-8 payload conversion
+✅ **No user-authored FFI helpers** - String payloads use `stream.send_string()` / `stream.recv_string()`
 ✅ **Clean bounded runtime** - Both server and client initialize, run, and gracefully shut down
 ✅ **Two-endpoint interaction** - Real client-server QUIC communication with bidirectional streams
 
@@ -55,7 +55,7 @@ Create a minimal bounded remote/distributed service using Hew code plus the publ
 3. Upon connection, block on conn.accept_stream() → waits for client stream
 4. Receive message: "Hello from client"
 5. Send response: "Echo from server"
-6. Clean shutdown: finish stream → close stream → disconnect conn → close endpoint
+6. Clean shutdown: finish stream → close stream → wait for close/disconnect events → disconnect conn → close endpoint
 ```
 
 **Client:**
@@ -66,12 +66,12 @@ Create a minimal bounded remote/distributed service using Hew code plus the publ
 4. Send message: "Hello from client"
 5. Finish send side (signal EOF for client→server direction)
 6. Receive response: "Echo from server"
-7. Clean shutdown: close stream → disconnect conn → close endpoint
+7. Drain EOF, then close stream → wait for stream-closed event → disconnect conn → close endpoint
 ```
 
 ### Test Results
 
-Historical output from the archived probe branch:
+Expected output with the checked-in probe:
 
 **Server output:**
 ```
@@ -97,12 +97,12 @@ Historical output from the archived probe branch:
 
 ### Key Findings
 
-#### ✅ Public QUIC API is Viable
-The `std::net::quic` module provides everything needed for basic remote service patterns:
+#### ✅ Public QUIC API is Viable for This Probe
+The `std::net::quic` module provides everything this archived round-trip probe needs:
 - **QUICEndpoint** - Bind server or create client with permissive TLS verifier
 - **QUICConnection** - Establish and manage connections to peers
 - **QUICStream** - Multiplexed bidirectional byte streams with independent flow control
-- **Trait methods** - All transport operations are accessible as methods on the handle types (e.g., `ep.accept()`, `conn.open_stream()`, `stream.send()`, `stream.recv()`)
+- **Trait methods** - All transport operations are accessible as methods on the handle types (e.g., `ep.accept()`, `conn.open_stream()`, `stream.send_string()`, `stream.recv_string()`)
 
 #### ✅ TLS and Certificates Work Out-of-the-Box
 - `quic.new_server(addr)` auto-generates self-signed certificates for development
@@ -120,10 +120,10 @@ The `std::net::quic` module provides everything needed for basic remote service 
 - **Workaround:** Remove explicit error checks; rely on subsequent operations to fail gracefully or use the `observe()` methods to check status
 - This is acceptable for a minimal probe but would need refinement for production services
 
-#### ⚠️ String Marshaling Still Uses Unsafe Helpers
-- The checked-in probe sends and receives raw bytes via `stream.send()` / `stream.recv()`
-- It declares `hew_string_to_bytes()` and `hew_bytes_to_string()` locally to turn demo strings into bytes and back
-- That keeps the transport layer on the public QUIC surface, but the example is **not** a pure no-FFI sample yet
+#### ✅ Public String Helpers Remove Manual Byte Plumbing
+- The checked-in probe uses `stream.send_string()` and `stream.recv_string()` for UTF-8 payloads
+- These are convenience wrappers over the underlying byte stream; they do **not** add message framing
+- They are suitable for UTF-8 text payloads, not binary or NUL-bearing protocols
 
 ### Public Surface Assessment
 
@@ -131,6 +131,7 @@ The `std::net::quic` module provides everything needed for basic remote service 
 - ✅ Server-side: bind endpoint, accept connections, accept streams
 - ✅ Client-side: create endpoint, dial remote server, open streams
 - ✅ Bidirectional communication: send and receive on streams
+- ✅ UTF-8 payload helpers: `send_string()` and `recv_string()`
 - ✅ Clean shutdown: graceful close of streams, connections, endpoints
 - ✅ Observation/telemetry: `endpoint.observe()`, `conn.observe()`, `stream.observe()`
 - ✅ Multiple streams per connection: fully multiplexed and independent
@@ -141,14 +142,13 @@ The `std::net::quic` module provides everything needed for basic remote service 
 - Actor-based remote dispatch (requires Node/actor runtime)
 - RPC frameworks (would need to be built on top)
 
-### Blockers: None Found
+### Blockers: None Found for This Archived Probe
 
 The probe successfully demonstrates that:
-1. **No blockers exist** for building minimal distributed services on the public QUIC transport API
-2. The stdlib is sufficient for two-endpoint patterns once payload encoding is defined
-3. The archived sample still needs two unsafe string-conversion helpers for textual payloads
-4. Bounded shutdown is straightforward with the provided cleanup methods
-5. Error handling can be improved with better public APIs for zero-value detection, but not a blocker
+1. **No blockers remain** for this minimal archived QUIC round-trip on the public transport API
+2. The stdlib is sufficient for two-endpoint patterns with textual payloads
+3. Bounded shutdown depends on preserving the finish/recv/close ordering in the sample
+4. Error handling can be improved with better public APIs for zero-value detection, but not a blocker
 
 ### Alternative Approaches Not Needed
 
@@ -160,12 +160,12 @@ This probe intentionally avoided:
 
 ### Conclusion
 
-The Hew public stdlib's QUIC API is **production-ready for basic distributed services**. The probe successfully:
-1. ✅ Compiled and ran end-to-end on the original probe branch
-2. ✅ Demonstrated real network communication
+The Hew public stdlib's QUIC API is sufficient for this archived textual probe. The checked-in sample now:
+1. ✅ Compiles without errors
+2. ✅ Runs end-to-end with real network communication
 3. ✅ Demonstrates two-endpoint remote interaction
 4. ✅ Shows clean, bounded resource management
-5. ✅ Uses public QUIC transport APIs with a small explicit UTF-8 helper shim
+5. ✅ Uses only public Hew code and stdlib
 
 The only path to more advanced patterns (transparent remote actor calls, cross-node service discovery) would require building on top of this foundation or using the higher-level Node API.
 
@@ -174,4 +174,4 @@ The only path to more advanced patterns (transparent remote actor calls, cross-n
 **Archive location:** `docs/probes/quic-remote-service/`
 **Original branch:** `probe/haiku-remote-service` (archived, closed Apr 2026)
 **Date:** 2026-04-03
-**Status:** ✅ Successful probe, no blockers identified
+**Status:** ✅ Successful archived probe refresh

@@ -208,6 +208,52 @@ unsafe fn hew_msg_node_free(node: *mut HewMsgNode) {
     unsafe { crate::mailbox_wasm::hew_msg_node_free(node.cast()) }
 }
 
+// ── Arena lifecycle shim ─────────────────────────────────────────────────
+//
+// On native (test builds) the full arena module is available and we wire
+// up real `set_current_arena` / `hew_arena_reset` calls.  On wasm32 the
+// arena module is not compiled; the stubs are no-ops so the call sites
+// compile and will activate automatically once WASM arena support lands.
+//
+// WASM-TODO: replace the wasm32 stubs below with a real allocator once a
+// wasm32-compatible arena (backed by `memory.grow` or a slab) is added.
+
+/// Install `arena` as the per-activation current arena and return the
+/// previously active arena pointer. Mirrors `crate::arena::set_current_arena`.
+#[cfg(not(target_arch = "wasm32"))]
+fn arena_install(arena: *mut c_void) -> *mut c_void {
+    crate::arena::set_current_arena(arena.cast::<crate::arena::ActorArena>()).cast::<c_void>()
+}
+
+/// WASM-TODO: arena install stub — no-op until wasm32 arena support lands.
+#[cfg(target_arch = "wasm32")]
+fn arena_install(_arena: *mut c_void) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
+/// Reset `arena` for reuse after a completed dispatch cycle.
+/// Mirrors `crate::arena::hew_arena_reset`. Safe to call with null.
+///
+/// # Safety
+///
+/// `arena` must be either null or a valid pointer previously returned by
+/// `hew_arena_new()` that has not yet been freed.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn arena_reset(arena: *mut c_void) {
+    if !arena.is_null() {
+        // SAFETY: caller guarantees arena is valid.
+        unsafe { crate::arena::hew_arena_reset(arena.cast::<crate::arena::ActorArena>()) };
+    }
+}
+
+/// WASM-TODO: arena reset stub — no-op until wasm32 arena support lands.
+///
+/// # Safety
+///
+/// No-op; always safe on wasm32.
+#[cfg(target_arch = "wasm32")]
+unsafe fn arena_reset(_arena: *mut c_void) {}
+
 // ── Global state (single-threaded, no atomics needed) ───────────────────
 
 static mut RUN_QUEUE: Option<VecDeque<*mut HewActor>> = None;
@@ -458,13 +504,24 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     let prev_actor =
         crate::actor::set_current_actor(actor.cast::<c_void>().cast::<crate::actor::HewActor>());
 
+    // Install the actor's arena as the current arena so that
+    // `hew_arena_malloc` inside dispatch routes through it.  The return
+    // value is the arena that was active before this activation (null when
+    // no outer activation is running, or the outer actor's arena during a
+    // re-entrant activation).  We stash it in PREV_ARENA so that the
+    // restore step below can put it back.  The reentrancy save/restore
+    // around PREV_ARENA keeps the outer activation's value intact.
+    //
     // SAFETY: Single-threaded global state access.
     unsafe {
         ACTIVATING = true;
-        PREV_ARENA = std::ptr::null_mut();
+        PREV_ARENA = arena_install(a.arena);
     }
 
     let mailbox = a.mailbox;
+    // Cache the arena pointer now — after dispatch the actor may have been
+    // freed by a terminate callback, making `a.arena` a dangling read.
+    let actor_arena = a.arena;
     let mut msgs_processed: u32 = 0;
 
     if !mailbox.is_null() {
@@ -520,6 +577,28 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // Restore per-activation globals so the outer activation (if any) sees its
     // own actor, arena, and reply channel again (Bug #1 + Bug #2 fix).
     crate::actor::set_current_actor(prev_actor);
+    // Restore the arena that was active before this activation and reset the
+    // actor's arena for the next dispatch cycle.  Mirroring the native
+    // scheduler: install prev_arena (stored in PREV_ARENA) back as current,
+    // then reset the actor's bump allocator so the next activation starts
+    // with a clean cursor.  The null-arena fast-path is intentional: today
+    // all WASM actors carry a null arena and both calls are lightweight
+    // no-ops in that case.
+    // SAFETY: arena_install and arena_reset are safe with null pointers.
+    // PREV_ARENA was set at activation entry; actor_arena was captured above.
+    unsafe {
+        // Discard the return value (the just-installed actor arena) — we are
+        // restoring the previous arena, not saving a new one here.
+        let _ = arena_install(PREV_ARENA);
+
+        // Native skips arena_reset when the actor crashed (crash recovery via
+        // siglongjmp resets the arena itself on the crash path).  WASM has no
+        // signal/siglongjmp mechanism today, so there is no separate crash
+        // recovery path that could issue a competing reset.  Unconditional
+        // reset here is therefore safe and correct for WASM until a crash
+        // handling mechanism is added.
+        arena_reset(actor_arena);
+    }
     // SAFETY: Single-threaded global state access.
     unsafe {
         PREV_ARENA = saved_prev_arena;
@@ -918,6 +997,9 @@ mod tests {
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
             ptr::addr_of_mut!(MESSAGES_RECEIVED).write(0);
+            // Clear the thread-local current arena so arena lifecycle tests
+            // start from a clean slate regardless of test ordering.
+            crate::arena::set_current_arena(ptr::null_mut());
         }
     }
 
@@ -1961,6 +2043,288 @@ mod tests {
             TERMINATE_COUNT.load(Ordering::Relaxed),
             1,
             "terminate_fn must not be invoked twice after closed-mailbox stop"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    // ── Arena lifecycle parity tests ─────────────────────────────────────
+    //
+    // These tests verify that activate_actor_wasm installs/restores/resets
+    // arenas with the same lifecycle contract as the native scheduler.  The
+    // tests run on native (test build), where the full arena module is
+    // available.  On wasm32 the calls are no-ops until WASM arena support
+    // lands (WASM-TODO in arena_install / arena_reset shims above).
+
+    /// `hew_arena_malloc` must route through the actor's arena during
+    /// dispatch and fall back to libc malloc once activation finishes.
+    #[test]
+    fn arena_is_installed_during_dispatch_and_cleared_after() {
+        // Items must precede all statements to satisfy clippy::items_after_statements.
+        static ARENA_DURING_DISPATCH: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn capture_arena_dispatch(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            // Record current arena (as usize) via the internal getter.
+            let ptr = crate::arena::set_current_arena(ptr::null_mut()); // read-then-restore
+            crate::arena::set_current_arena(ptr); // put it back
+            ARENA_DURING_DISPATCH.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Create a real arena so we can detect whether alloc routes through it.
+        let actor_arena = crate::arena::hew_arena_new();
+        assert!(!actor_arena.is_null(), "arena creation must succeed");
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(capture_arena_dispatch);
+        actor.arena = actor_arena.cast::<c_void>();
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+
+        // Verify no arena is active before running.
+        assert_eq!(
+            crate::arena::set_current_arena(ptr::null_mut()) as usize,
+            0,
+            "no arena should be active before activation"
+        );
+
+        hew_sched_run();
+
+        // Dispatch must have seen the actor's arena.
+        assert_eq!(
+            ARENA_DURING_DISPATCH.load(std::sync::atomic::Ordering::Relaxed),
+            actor_arena as usize,
+            "dispatch must run with the actor's arena installed"
+        );
+
+        // After activation the current arena must be restored to null.
+        let post_arena = crate::arena::set_current_arena(ptr::null_mut());
+        assert!(
+            post_arena.is_null(),
+            "current arena must be null after activation completes"
+        );
+
+        // SAFETY: mailbox and arena were allocated for this test.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+            crate::arena::hew_arena_free_all(actor_arena);
+        }
+        hew_sched_shutdown();
+    }
+
+    /// After activation the arena cursor must be reset to zero (ready for
+    /// the next dispatch cycle).
+    #[test]
+    fn arena_is_reset_after_activation() {
+        // Items must precede all statements to satisfy clippy::items_after_statements.
+        // Dispatch allocates from the arena so the cursor advances.
+        unsafe extern "C" fn alloc_in_dispatch(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            // SAFETY: arena is installed by the scheduler before dispatch.
+            unsafe { crate::arena::hew_arena_malloc(64) };
+        }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let actor_arena = crate::arena::hew_arena_new();
+        assert!(!actor_arena.is_null());
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(alloc_in_dispatch);
+        actor.arena = actor_arena.cast::<c_void>();
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        // After activation the arena must be reset: allocating again should
+        // return the same base pointer as the very first allocation would.
+        // We verify by allocating from the (now-reset) arena directly and
+        // confirming the cursor is back at the start.
+        // SAFETY: arena is valid and not currently installed.
+        let p1 = unsafe { (*actor_arena).alloc(1, 1) };
+        assert!(!p1.is_null(), "post-reset alloc must succeed");
+        // SAFETY: same arena — reset once more so subsequent tests are clean.
+        unsafe { (*actor_arena).reset() };
+        // SAFETY: arena is valid and cursor is at zero after reset.
+        let p2 = unsafe { (*actor_arena).alloc(1, 1) };
+        // Both allocations from a freshly-reset arena share the same base.
+        assert_eq!(p1, p2, "arena cursor must be at zero after reset");
+
+        // SAFETY: mailbox and arena were allocated for this test.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+            crate::arena::hew_arena_free_all(actor_arena);
+        }
+        hew_sched_shutdown();
+    }
+
+    /// Nested (re-entrant) activation must restore the outer actor's arena
+    /// when the inner activation completes.
+    #[test]
+    fn arena_restored_on_reentrant_activation() {
+        // Items must precede all statements to satisfy clippy::items_after_statements.
+
+        // We record what arena was active after the inner activation returns.
+        static OUTER_POST_DISPATCH: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        // Outer dispatch: enqueues and runs the inner actor inline (simulating
+        // re-entrant activation through hew_actor_ask / hew_sched_run).
+        unsafe extern "C" fn outer_dispatch(
+            state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            // SAFETY: state was set to a valid *mut HewActor pointer by the test.
+            let inner: *mut HewActor = unsafe { *state.cast::<*mut HewActor>() };
+            // SAFETY: inner is a valid live actor; sched_enqueue and hew_sched_run
+            // are safe to call from within a dispatch on the same single thread.
+            unsafe {
+                sched_enqueue(inner);
+                queue_wasm_message_static(inner, 0);
+                // Run the inner actor inline — this is the re-entrant path.
+                hew_sched_run();
+            }
+            // After inner activation completes, current arena must be outer's.
+            let current = crate::arena::set_current_arena(ptr::null_mut());
+            crate::arena::set_current_arena(current); // restore
+            OUTER_POST_DISPATCH.store(current as usize, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // We can't call `queue_wasm_message` (which uses a local static) from
+        // inside an extern "C" fn body, so we need a plain-fn wrapper.
+        unsafe fn queue_wasm_message_static(actor: *mut HewActor, value: i32) {
+            let mut payload = value;
+            // SAFETY: actor is a valid live actor with an initialized mailbox.
+            let rc = unsafe {
+                crate::mailbox_wasm::hew_mailbox_send(
+                    (*actor).mailbox.cast(),
+                    1,
+                    (&raw mut payload).cast(),
+                    std::mem::size_of::<i32>(),
+                )
+            };
+            let _ = rc; // ignore error in test helper
+                        // SAFETY: actor is a valid live WASM actor.
+            unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
+        }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Two separate arenas — one per actor.
+        let outer_arena = crate::arena::hew_arena_new();
+        let inner_arena = crate::arena::hew_arena_new();
+        assert!(!outer_arena.is_null() && !inner_arena.is_null());
+
+        // Inner actor: simple no-op dispatch (no dispatch fn set → messages freed).
+        let mut inner_actor = stub_actor();
+        inner_actor.id = 2;
+        inner_actor.arena = inner_arena.cast::<c_void>();
+        // SAFETY: test exclusively owns this mailbox.
+        inner_actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        let mut inner_ptr: *mut HewActor = (&raw mut inner_actor).cast();
+
+        let mut outer_actor = stub_actor();
+        outer_actor.id = 1;
+        outer_actor.arena = outer_arena.cast::<c_void>();
+        outer_actor.dispatch = Some(outer_dispatch);
+        // Pass inner_ptr via state so outer_dispatch can enqueue it.
+        outer_actor.state = (&raw mut inner_ptr).cast::<c_void>();
+        // SAFETY: test exclusively owns this mailbox.
+        outer_actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        let outer_ptr: *mut HewActor = (&raw mut outer_actor).cast();
+
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(outer_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(outer_ptr, 0) };
+        hew_sched_run();
+
+        // After the inner activation finished and returned to outer_dispatch,
+        // outer_dispatch must have seen *outer*'s arena still installed.
+        assert_eq!(
+            OUTER_POST_DISPATCH.load(std::sync::atomic::Ordering::Relaxed),
+            outer_arena as usize,
+            "outer actor's arena must be active when inner activation returns"
+        );
+
+        // After everything, no arena must be active.
+        let post = crate::arena::set_current_arena(ptr::null_mut());
+        assert!(
+            post.is_null(),
+            "current arena must be null after all activations complete"
+        );
+
+        // SAFETY: mailboxes and arenas were allocated for this test.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(outer_actor.mailbox.cast());
+            crate::mailbox_wasm::hew_mailbox_free(inner_actor.mailbox.cast());
+            crate::arena::hew_arena_free_all(outer_arena);
+            crate::arena::hew_arena_free_all(inner_arena);
+        }
+        hew_sched_shutdown();
+    }
+
+    /// With null arena (current WASM default), activation is a no-op for
+    /// arena lifecycle but must not leave any arena installed.
+    #[test]
+    fn null_arena_activation_leaves_no_arena_installed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor(); // arena field is ptr::null_mut()
+                                      // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.dispatch = Some(noisy_dispatch);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        let post = crate::arena::set_current_arena(ptr::null_mut());
+        assert!(
+            post.is_null(),
+            "null arena actor must leave current arena as null after activation"
         );
 
         // SAFETY: mailbox was allocated for this test.

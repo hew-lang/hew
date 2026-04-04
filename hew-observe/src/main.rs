@@ -254,7 +254,6 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Char('s') => app.cycle_sort(),
             KeyCode::Char('/') => {
                 app.filter_active = true;
-                app.filter_text.clear();
             }
             _ => {}
         },

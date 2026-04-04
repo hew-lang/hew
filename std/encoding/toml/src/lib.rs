@@ -27,9 +27,27 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
     Box::into_raw(Box::new(HewTomlValue { inner: v }))
 }
 
+std::thread_local! {
+    static LAST_PARSE_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_parse_last_error(msg: impl Into<String>) {
+    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_parse_last_error() {
+    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_parse_last_error() -> String {
+    LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
 /// Parse a TOML string into an opaque [`HewTomlValue`].
 ///
 /// Returns null on parse error or invalid input.
+/// Call [`hew_toml_last_error`] to retrieve the current thread's parse failure.
 ///
 /// # Safety
 ///
@@ -37,18 +55,34 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
 #[no_mangle]
 pub unsafe extern "C" fn hew_toml_parse(s: *const c_char) -> *mut HewTomlValue {
     if s.is_null() {
+        set_parse_last_error("invalid TOML input: null pointer");
         return std::ptr::null_mut();
     }
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let Ok(rust_str) = unsafe { CStr::from_ptr(s) }.to_str() else {
+        set_parse_last_error("invalid TOML input: input was not valid UTF-8");
         return std::ptr::null_mut();
     };
     match rust_str.parse::<toml::Table>() {
-        Ok(table) => Box::into_raw(Box::new(HewTomlValue {
-            inner: toml::Value::Table(table),
-        })),
-        Err(_) => std::ptr::null_mut(),
+        Ok(table) => {
+            clear_parse_last_error();
+            Box::into_raw(Box::new(HewTomlValue {
+                inner: toml::Value::Table(table),
+            }))
+        }
+        Err(err) => {
+            set_parse_last_error(err.to_string());
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Return the last TOML parse error recorded on the current thread.
+///
+/// Returns an empty string when no parse error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_toml_last_error() -> *mut c_char {
+    str_to_malloc(&get_parse_last_error())
 }
 
 /// Return the type of a TOML value.
@@ -763,6 +797,8 @@ mod tests {
         // SAFETY: testing null handling.
         unsafe {
             assert!(hew_toml_parse(std::ptr::null()).is_null());
+            let err = read_and_free_cstr(hew_toml_last_error());
+            assert!(!err.is_empty());
             assert_eq!(hew_toml_type(std::ptr::null()), -1);
             assert!(hew_toml_get_string(std::ptr::null()).is_null());
             assert_eq!(hew_toml_get_int(std::ptr::null()), 0);
@@ -774,6 +810,37 @@ mod tests {
             assert!(hew_toml_stringify(std::ptr::null()).is_null());
             hew_toml_free(std::ptr::null_mut()); // must not crash
         }
+    }
+
+    #[test]
+    fn test_parse_failure_sets_last_error() {
+        let input = CString::new("not = [valid toml").expect("CString::new failed");
+        // SAFETY: input is a valid CString for the TOML parser.
+        let root = unsafe { hew_toml_parse(input.as_ptr()) };
+        assert!(root.is_null());
+
+        // SAFETY: hew_toml_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free_cstr(hew_toml_last_error()) };
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_parse_success_clears_last_error() {
+        let bad_input = CString::new("not = [valid toml").expect("CString::new failed");
+        // SAFETY: bad_input is a valid CString for the TOML parser.
+        assert!(unsafe { hew_toml_parse(bad_input.as_ptr()) }.is_null());
+
+        let good_input = CString::new("key = \"value\"").expect("CString::new failed");
+        // SAFETY: good_input is a valid CString for the TOML parser.
+        let root = unsafe { hew_toml_parse(good_input.as_ptr()) };
+        assert!(!root.is_null());
+
+        // SAFETY: hew_toml_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free_cstr(hew_toml_last_error()) };
+        assert!(err.is_empty());
+
+        // SAFETY: root was allocated by this module.
+        unsafe { hew_toml_free(root) };
     }
 
     #[test]

@@ -1,0 +1,21 @@
+import std::encoding::toml;
+
+fn main() {
+    match toml.try_parse("title = \"Hew\"") {
+        Ok(doc) => {
+            let title = doc.get_field("title");
+            println(title.get_string());
+            title.free();
+            doc.free();
+        },
+        Err(err) => println(f"unexpected error: {err}"),
+    }
+
+    match toml.try_parse("not = [valid toml") {
+        Ok(doc) => {
+            println("unexpected ok");
+            doc.free();
+        },
+        Err(err) => println(err != ""),
+    }
+}

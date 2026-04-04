@@ -1,0 +1,21 @@
+import std::encoding::yaml;
+
+fn main() {
+    match yaml.try_parse("name: Hew\n") {
+        Ok(doc) => {
+            let name = doc.get_field("name");
+            println(name.get_string());
+            name.free();
+            doc.free();
+        },
+        Err(err) => println(f"unexpected error: {err}"),
+    }
+
+    match yaml.try_parse(": invalid ::: yaml") {
+        Ok(doc) => {
+            println("unexpected ok");
+            doc.free();
+        },
+        Err(err) => println(err != ""),
+    }
+}

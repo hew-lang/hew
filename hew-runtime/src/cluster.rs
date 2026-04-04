@@ -310,10 +310,8 @@ pub struct HewCluster {
     local_incarnation: u64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
-    /// Membership event callback.
-    membership_callback: Option<HewMembershipCallback>,
-    /// User data for [`HewMembershipCallback`].
-    membership_callback_user_data: *mut c_void,
+    /// Membership event callback binding.
+    membership_callback_binding: Mutex<MembershipCallbackBinding>,
     /// Tracks in-flight membership callback dispatches.
     membership_callback_epoch: Arc<MembershipCallbackEpoch>,
     /// Registry gossip callback.
@@ -343,8 +341,7 @@ impl HewCluster {
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: 1,
             callback: None,
-            membership_callback: None,
-            membership_callback_user_data: std::ptr::null_mut(),
+            membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
             membership_callback_epoch: Arc::new(MembershipCallbackEpoch::default()),
             registry_callback: None,
             registry_callback_user_data: std::ptr::null_mut(),
@@ -582,9 +579,6 @@ impl HewCluster {
         is_new_member: bool,
         old_state: Option<i32>,
     ) {
-        let Some(cb) = self.membership_callback else {
-            return;
-        };
         let event = match state {
             MEMBER_ALIVE => {
                 if is_new_member || matches!(old_state, Some(prev) if prev != MEMBER_ALIVE) {
@@ -599,9 +593,29 @@ impl HewCluster {
             _ => None,
         };
         if let Some(evt) = event {
-            let _dispatch_guard = self.membership_callback_epoch.begin_dispatch();
-            cb(node_id, evt, self.membership_callback_user_data);
+            let _ = self.with_membership_callback_dispatch(|callback, user_data| {
+                callback(node_id, evt, user_data);
+            });
         }
+    }
+
+    fn membership_callback_binding(&self) -> MembershipCallbackBinding {
+        *self.membership_callback_binding.lock_or_recover()
+    }
+
+    /// Snapshot the current membership callback binding and enter the
+    /// dispatch epoch before releasing the binding lock.
+    fn with_membership_callback_dispatch<R>(
+        &self,
+        invoke: impl FnOnce(HewMembershipCallback, *mut c_void) -> R,
+    ) -> Option<R> {
+        let binding_guard = self.membership_callback_binding.lock_or_recover();
+        let binding = *binding_guard;
+        let callback = binding.callback?;
+        let user_data = binding.user_data();
+        let _dispatch_guard = self.membership_callback_epoch.begin_dispatch();
+        drop(binding_guard);
+        Some(invoke(callback, user_data))
     }
 
     /// Get pending gossip events (up to `max_count`), incrementing
@@ -1214,10 +1228,7 @@ pub(crate) unsafe fn hew_cluster_membership_callback_binding(
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    MembershipCallbackBinding::new(
-        cluster.membership_callback,
-        cluster.membership_callback_user_data,
-    )
+    cluster.membership_callback_binding()
 }
 
 /// Clone the membership callback dispatch epoch for `cluster`.
@@ -1249,9 +1260,8 @@ pub(crate) unsafe fn hew_cluster_replace_membership_callback(
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
-    cluster.membership_callback = binding.callback;
-    cluster.membership_callback_user_data = binding.user_data();
+    let cluster = unsafe { &*cluster };
+    *cluster.membership_callback_binding.lock_or_recover() = binding;
 }
 
 #[cfg(test)]
@@ -1265,10 +1275,9 @@ pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    if let Some(callback) = cluster.membership_callback {
-        let _dispatch_guard = cluster.membership_callback_epoch.begin_dispatch();
-        callback(node_id, event, cluster.membership_callback_user_data);
-    }
+    let _ = cluster.with_membership_callback_dispatch(|callback, user_data| {
+        callback(node_id, event, user_data);
+    });
 }
 
 /// Register a callback for registry gossip events.
@@ -2985,8 +2994,14 @@ mod tests {
     fn alive_to_alive_upsert_skips_joined_callback() {
         let mut events: Vec<(u16, u8)> = Vec::new();
         let mut cluster = HewCluster::new(make_config(1));
-        cluster.membership_callback = Some(collect_membership_events);
-        cluster.membership_callback_user_data = (&raw mut events).cast();
+        // SAFETY: pointers are valid for the duration of this test.
+        unsafe {
+            hew_cluster_set_membership_callback(
+                &raw mut cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+        }
 
         cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
         // Same state, same incarnation — should NOT fire again.
@@ -2995,6 +3010,63 @@ mod tests {
         // Only one JOINED event for the initial insert.
         assert_eq!(events.len(), 1);
         assert_eq!(events[0], (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED));
+    }
+
+    #[test]
+    fn membership_callback_dispatch_snapshot_keeps_callback_and_user_data_paired() {
+        static OLD_USER_DATA: AtomicUsize = AtomicUsize::new(0);
+        static NEW_USER_DATA: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn record_old_user_data(_: u16, _: u8, user_data: *mut c_void) {
+            OLD_USER_DATA.store(user_data as usize, Ordering::Relaxed);
+        }
+
+        extern "C" fn record_new_user_data(_: u16, _: u8, user_data: *mut c_void) {
+            NEW_USER_DATA.store(user_data as usize, Ordering::Relaxed);
+        }
+
+        OLD_USER_DATA.store(0, Ordering::Relaxed);
+        NEW_USER_DATA.store(0, Ordering::Relaxed);
+
+        let mut old_tag = 0u8;
+        let mut new_tag = 0u8;
+        let mut cluster = HewCluster::new(make_config(1));
+        let cluster_ptr = &raw mut cluster;
+        let old_user_data = (&raw mut old_tag).cast();
+        let new_user_data = (&raw mut new_tag).cast();
+
+        // SAFETY: test owns the cluster and callback user data for this scope.
+        unsafe {
+            hew_cluster_replace_membership_callback(
+                cluster_ptr,
+                MembershipCallbackBinding::new(Some(record_old_user_data), old_user_data),
+            );
+        }
+
+        let dispatched = cluster.with_membership_callback_dispatch(|callback, user_data| {
+            // SAFETY: test owns the cluster and callback user data for this scope.
+            unsafe {
+                hew_cluster_replace_membership_callback(
+                    cluster_ptr,
+                    MembershipCallbackBinding::new(Some(record_new_user_data), new_user_data),
+                );
+            }
+            callback(7, HEW_MEMBERSHIP_EVENT_NODE_DEAD, user_data);
+        });
+        assert!(dispatched.is_some());
+        assert_eq!(
+            OLD_USER_DATA.load(Ordering::Relaxed),
+            old_user_data as usize
+        );
+        assert_eq!(NEW_USER_DATA.load(Ordering::Relaxed), 0);
+
+        let _ = cluster.with_membership_callback_dispatch(|callback, user_data| {
+            callback(7, HEW_MEMBERSHIP_EVENT_NODE_LEFT, user_data);
+        });
+        assert_eq!(
+            NEW_USER_DATA.load(Ordering::Relaxed),
+            new_user_data as usize
+        );
     }
 
     // ── registry gossip overflow ───────────────────────────────────────

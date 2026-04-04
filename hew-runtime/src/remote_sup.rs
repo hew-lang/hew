@@ -210,7 +210,7 @@ fn maybe_pause_membership_callback_before_context_retain() {
 
     let (state_lock, condvar) = membership_callback_retain_pause_state();
     let mut state = state_lock.lock_or_recover();
-    if !state.armed {
+    if !state.armed || state.entered {
         return;
     }
     state.entered = true;
@@ -292,7 +292,7 @@ fn maybe_pause_membership_callback_before_subscriptions_lock() {
 
     let (state_lock, condvar) = membership_callback_pause_state();
     let mut state = state_lock.lock_or_recover();
-    if !state.armed {
+    if !state.armed || state.entered {
         return;
     }
     state.entered = true;
@@ -766,32 +766,92 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
-    struct TestNode(*mut HewNode);
+    fn remote_sup_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn reset_membership_callback_pause_states() {
+        let (pause_lock, pause_condvar) = membership_callback_pause_state();
+        *pause_lock.lock_or_recover() = MembershipCallbackPauseState::default();
+        pause_condvar.notify_all();
+
+        let (retain_lock, retain_condvar) = membership_callback_retain_pause_state();
+        *retain_lock.lock_or_recover() = MembershipCallbackRetainPauseState::default();
+        retain_condvar.notify_all();
+    }
+
+    /// Serialize tests that spin up real nodes because the runtime exposes a
+    /// single process-global active node slot.
+    struct RemoteSupTestGuard {
+        _lock_guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl RemoteSupTestGuard {
+        fn acquire() -> Self {
+            let guard = remote_sup_test_lock().lock_or_recover();
+            reset_membership_callback_pause_states();
+            reap_retired_callback_contexts();
+            assert!(
+                cluster_subscriptions().lock_or_recover().is_empty(),
+                "remote supervisor subscriptions should be empty before each test"
+            );
+            assert!(
+                retired_callback_contexts().lock_or_recover().is_empty(),
+                "retired callback contexts should be empty before each test"
+            );
+            Self { _lock_guard: guard }
+        }
+    }
+
+    impl Drop for RemoteSupTestGuard {
+        fn drop(&mut self) {
+            reset_membership_callback_pause_states();
+            reap_retired_callback_contexts();
+            assert!(
+                cluster_subscriptions().lock_or_recover().is_empty(),
+                "remote supervisor subscriptions should be empty after each test"
+            );
+            assert!(
+                retired_callback_contexts().lock_or_recover().is_empty(),
+                "retired callback contexts should be empty after each test"
+            );
+        }
+    }
+
+    struct TestNode {
+        ptr: *mut HewNode,
+        _guard: RemoteSupTestGuard,
+    }
 
     impl TestNode {
         unsafe fn new(node_id: u16) -> Self {
+            let guard = RemoteSupTestGuard::acquire();
             let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
             // SAFETY: bind pointer is valid C string for this call.
             let node = unsafe { crate::hew_node::hew_node_new(node_id, bind.as_ptr()) };
             assert!(!node.is_null());
             // SAFETY: node pointer is valid.
             assert_eq!(unsafe { crate::hew_node::hew_node_start(node) }, 0);
-            Self(node)
+            Self {
+                ptr: node,
+                _guard: guard,
+            }
         }
 
         fn as_ptr(&self) -> *mut HewNode {
-            self.0
+            self.ptr
         }
     }
 
     impl Drop for TestNode {
         fn drop(&mut self) {
-            if self.0.is_null() {
+            if self.ptr.is_null() {
                 return;
             }
             // SAFETY: TestNode owns pointer from hew_node_new.
-            unsafe { crate::hew_node::hew_node_free(self.0) };
-            self.0 = ptr::null_mut();
+            unsafe { crate::hew_node::hew_node_free(self.ptr) };
+            self.ptr = ptr::null_mut();
         }
     }
 
@@ -1057,6 +1117,9 @@ mod tests {
             hew_remote_sup_set_callback(sup, Some(on_death));
             assert_eq!(hew_remote_sup_monitor(sup, remote_pid), 0);
             assert_eq!(hew_remote_sup_start(sup), 0);
+            // Let the heartbeat thread finish its initial tick and enter sleep
+            // so this test's manual callback owns the pause window.
+            thread::sleep(Duration::from_millis(20));
 
             let pause = MembershipCallbackPauseGuard::arm();
             let callback_cluster = cluster_ptr as usize;
@@ -1117,8 +1180,8 @@ mod tests {
         NEW_CALLED.store(0, Ordering::Relaxed);
 
         // SAFETY: node lifecycle handled by TestNode.
-        let node = unsafe { TestNode::new(3019) };
-        let remote_node_id = 3020;
+        let node = unsafe { TestNode::new(4019) };
+        let remote_node_id = 4020;
         let remote_pid = (u64::from(remote_node_id) << 48) | 0x51;
         let stale_name =
             CString::new("remote-sup-restart-old-generation-cleanup").expect("valid name");
@@ -1144,6 +1207,9 @@ mod tests {
             hew_remote_sup_set_callback(old_sup, Some(on_old_death));
             assert_eq!(hew_remote_sup_monitor(old_sup, remote_pid), 0);
             assert_eq!(hew_remote_sup_start(old_sup), 0);
+            // Let the heartbeat thread finish its initial tick and enter sleep
+            // so this test's manual callback owns the pause window.
+            thread::sleep(Duration::from_millis(20));
 
             let pause = MembershipCallbackPauseGuard::arm();
             let callback_cluster = cluster_ptr as usize;
@@ -1227,8 +1293,8 @@ mod tests {
         NEW_CALLED.store(0, Ordering::Relaxed);
 
         // SAFETY: node lifecycle handled by TestNode.
-        let node = unsafe { TestNode::new(3021) };
-        let remote_node_id = 3022;
+        let node = unsafe { TestNode::new(4021) };
+        let remote_node_id = 4022;
         let remote_pid = (u64::from(remote_node_id) << 48) | 0x61;
         let stale_name =
             CString::new("remote-sup-preretain-old-generation-cleanup").expect("valid name");
@@ -1254,6 +1320,9 @@ mod tests {
             hew_remote_sup_set_callback(old_sup, Some(on_old_death));
             assert_eq!(hew_remote_sup_monitor(old_sup, remote_pid), 0);
             assert_eq!(hew_remote_sup_start(old_sup), 0);
+            // Let the heartbeat thread finish its initial tick and enter sleep
+            // so this test's manual callback owns the pause window.
+            thread::sleep(Duration::from_millis(20));
 
             let pause = MembershipCallbackRetainPauseGuard::arm();
             let callback_cluster = cluster_ptr as usize;

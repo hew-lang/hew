@@ -93,6 +93,22 @@ static int countRuntimeCallsByCallee(mlir::Operation *op, llvm::StringRef callee
   return count;
 }
 
+static int countLLVMCallsByCallee(llvm::Function *function, llvm::StringRef callee) {
+  if (!function)
+    return 0;
+
+  int count = 0;
+  for (auto &block : *function) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *called = call ? call->getCalledFunction() : nullptr;
+      if (called && called->getName() == callee)
+        count++;
+    }
+  }
+  return count;
+}
+
 static int countPanicOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::PanicOp) { count++; });
@@ -409,7 +425,7 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Print operation (println → newline=true)
+// Test: println lowers to newline=true and the newline-print runtime call.
 // ============================================================================
 static void test_print() {
   TEST(print);
@@ -450,15 +466,36 @@ fn main() -> int {
     return;
   }
 
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
   module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for println");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  if (countLLVMCallsByCallee(mainFn, "hew_println_i64") != 1 ||
+      countLLVMCallsByCallee(mainFn, "hew_print_i64") != 0) {
+    FAIL("expected println lowering to call only hew_println_i64");
+    return;
+  }
+
   PASS();
 }
 
 // ============================================================================
-// Test: print (no newline) → newline=false
-// Regression: the walk-lambda false-green pattern was first caught here; a
-// separate test for print() vs println() makes the newline attribute
-// observable from both directions.
+// Test: print (no newline) lowers to newline=false and the non-newline runtime
+// call. Checking both directions keeps newline-lowering regressions from hiding
+// behind an attribute-only assertion hole.
 // ============================================================================
 static void test_print_no_newline() {
   TEST(print_no_newline);
@@ -496,7 +533,29 @@ fn main() -> int {
     return;
   }
 
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
   module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for print");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  if (countLLVMCallsByCallee(mainFn, "hew_print_i64") != 1 ||
+      countLLVMCallsByCallee(mainFn, "hew_println_i64") != 0) {
+    FAIL("expected print lowering to call only hew_print_i64");
+    return;
+  }
+
   PASS();
 }
 

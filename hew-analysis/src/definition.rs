@@ -26,6 +26,7 @@ pub fn find_definition(
             Item::TypeDecl(td) => Some(&td.name),
             Item::Wire(w) => Some(&w.name),
             Item::TypeAlias(ta) => Some(&ta.name),
+            Item::Machine(m) => Some(&m.name),
             _ => None,
         };
         if name.is_some_and(|n| n == word) {
@@ -122,4 +123,36 @@ pub fn find_definition(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    #[test]
+    fn definition_finds_machine_type() {
+        let source = "machine TrafficLight { state Green; state Red; }";
+        let pr = parse(source);
+        let result = find_definition(source, &pr, "TrafficLight");
+        assert!(
+            result.is_some(),
+            "go-to-definition should resolve machine type name"
+        );
+    }
+
+    #[test]
+    fn definition_machine_name_not_confused_with_state() {
+        let source = "machine TrafficLight { state Green; state Red; }";
+        let pr = parse(source);
+        // State names are not top-level items; only the machine name resolves.
+        let result = find_definition(source, &pr, "Green");
+        assert!(
+            result.is_none(),
+            "machine state names are not top-level definition sites"
+        );
+    }
 }

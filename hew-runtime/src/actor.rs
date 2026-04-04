@@ -1205,6 +1205,9 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
         let actor_id = a.id;
         crate::link::remove_all_links_for_actor(actor_id, actor);
         crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+        // SAFETY: actor is still live here, so named-node cleanup can
+        // resolve the owning node and unregister any names bound to this PID.
+        unsafe { crate::hew_node::unregister_actor_names(actor_id) };
     }
 
     // Remove from live tracking. If the actor was already consumed by

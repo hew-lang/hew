@@ -224,6 +224,7 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
     assert_eq!(Ty::from_name("int"), Some(Ty::I64));
     assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
+    assert_eq!(Ty::from_name("isize"), Some(Ty::I64));
 
     // Unsigned integers
     assert_eq!(Ty::from_name("u8"), Some(Ty::U8));
@@ -232,6 +233,7 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
     assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
+    assert_eq!(Ty::from_name("usize"), Some(Ty::U64));
 
     // Floats
     assert_eq!(Ty::from_name("f32"), Some(Ty::F32));

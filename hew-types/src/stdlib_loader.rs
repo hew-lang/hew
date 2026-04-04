@@ -707,6 +707,7 @@ mod tests {
             // aliases present in Ty::from_name but absent from the old local table
             ("str", Ty::String),
             ("uint", Ty::U64),
+            ("usize", Ty::U64),
             ("float", Ty::F64),
             ("Float", Ty::F64),
             ("byte", Ty::U8),
@@ -720,6 +721,7 @@ mod tests {
             ("i64", Ty::I64),
             ("int", Ty::I64),
             ("Int", Ty::I64),
+            ("isize", Ty::I64),
             ("u64", Ty::U64),
             ("f64", Ty::F64),
             ("bool", Ty::Bool),
@@ -748,7 +750,8 @@ mod tests {
         use hew_parser::ast::TypeExpr;
 
         let aliases = [
-            "str", "uint", "float", "Float", "byte", "Bool", "Char", "Bytes", "Duration",
+            "str", "uint", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
+            "Duration",
         ];
         for alias in aliases {
             let texpr = TypeExpr::Named {

@@ -131,7 +131,7 @@ impl ValueMethods for Value {
 // ── Module-level functions ────────────────────────────────────────────
 
 fn parse_error_message() -> String {
-    "json: parse failed"
+    unsafe { hew_json_last_error() }
 }
 
 /// Parse a JSON string into a `Value`.
@@ -144,7 +144,7 @@ pub fn parse(s: String) -> Value {
 
 /// Parse a JSON string into a `Value`.
 ///
-/// Returns `Err(String)` when parsing fails.
+/// Returns `Err(String)` with the native parser message when parsing fails.
 pub fn try_parse(s: String) -> Result<Value, String> {
     let val = parse(s);
     if val.type_of() >= 0 {
@@ -183,6 +183,7 @@ pub fn null() -> Value { unsafe { hew_json_from_null() } }
 
 extern "C" {
     fn hew_json_parse(json_str: String) -> Value;
+    fn hew_json_last_error() -> String;
     fn hew_json_stringify(val: Value) -> String;
     fn hew_json_type(val: Value) -> i32;
     fn hew_json_get_bool(val: Value) -> i32;

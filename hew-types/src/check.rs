@@ -4819,10 +4819,16 @@ impl Checker {
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::F64,
             Expr::Literal(Literal::String(_)) => Ty::String,
-            Expr::RegexLiteral(_) => Ty::Named {
-                name: "regex.Pattern".to_string(),
-                args: vec![],
-            },
+            Expr::RegexLiteral(_) => {
+                // The implicit `use std::text::regex` injected by the CLI is the
+                // provider of this type; mark it as used so the unused-import
+                // check doesn't fire a false-positive warning.
+                self.used_modules.borrow_mut().insert("regex".to_string());
+                Ty::Named {
+                    name: "regex.Pattern".to_string(),
+                    args: vec![],
+                }
+            }
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
                 for part in parts {

@@ -480,3 +480,29 @@ fn http_respond_four_arg_rejected() {
         "http respond with 4 args (old content_length form) should produce a type error"
     );
 }
+
+/// Regression: the CLI injects a synthetic `import std::text::regex` when regex
+/// literals appear in source. The type checker must mark that import as used when
+/// synthesising the `regex.Pattern` type so no false-positive unused-import
+/// warning is emitted.
+#[test]
+fn regex_literal_no_false_positive_unused_import_warning() {
+    let output = typecheck_inline(
+        r#"import std::text::regex;
+fn main() {
+    let pat = re"[0-9]+";
+    if "hello123" =~ pat {
+        println("match");
+    }
+}
+"#,
+    );
+    let has_unused_regex = output.warnings.iter().any(|w| {
+        w.kind == hew_types::error::TypeErrorKind::UnusedImport && w.message.contains("regex")
+    });
+    assert!(
+        !has_unused_regex,
+        "regex literal should mark the implicit `regex` import as used; got warnings: {:#?}",
+        output.warnings
+    );
+}

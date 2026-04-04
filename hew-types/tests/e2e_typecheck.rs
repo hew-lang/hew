@@ -1656,6 +1656,80 @@ fn hashset_int_insert_ok() {
     );
 }
 
+// ── Named-wrapper transitive Rc rejection ───────────────────────────────────────
+//
+// Regression coverage for the named-wrapper hole: a struct/enum that
+// *contains* Rc<T> in its fields must be rejected from collections even when
+// the type argument list of the outer container shows no Rc directly.
+
+#[test]
+fn rc_in_named_struct_field_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder {
+            val: Rc<int>
+        }
+        fn main() {
+            var v = Vec::new();
+            let h = Holder { val: Rc::new(1) };
+            v.push(h);
+        }",
+        "Vec.push(Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+    );
+}
+
+#[test]
+fn rc_in_named_struct_field_hashmap_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        type Holder {
+            val: Rc<int>
+        }
+        fn main() {
+            var m = HashMap::new();
+            let h = Holder { val: Rc::new(1) };
+            m.insert("k", h);
+        }"#,
+        "HashMap.insert(_, Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+    );
+}
+
+#[test]
+fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Inner {
+            x: Rc<int>
+        }
+        type Outer {
+            inner: Inner
+        }
+        fn main() {
+            var v = Vec::new();
+            let o = Outer { inner: Inner { x: Rc::new(1) } };
+            v.push(o);
+        }",
+        "Vec.push(Outer wrapping Inner wrapping Rc<int>) — doubly-nested named struct should be rejected",
+    );
+}
+
+#[test]
+fn plain_named_struct_no_rc_vec_push_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        type Point {
+            x: int,
+            y: int
+        }
+        fn main() {
+            var v = Vec::new();
+            let p = Point { x: 1, y: 2 };
+            v.push(p);
+        }",
+        "Vec<Point> with no Rc should be fine",
+    );
+}
+
 // ── Known limitations of BorrowedParamReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and

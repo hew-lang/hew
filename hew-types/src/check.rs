@@ -537,13 +537,57 @@ enum ConstValue {
     Float(f64),
 }
 
-/// Check if a type directly or transitively contains `Rc<T>`.
-fn ty_contains_rc(ty: &Ty) -> bool {
+/// Check if a type directly or transitively contains `Rc<T>`, walking into
+/// named struct/enum fields via `type_defs`.  `visiting` guards against cycles
+/// in recursive type definitions.
+fn ty_contains_rc_deep(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match ty {
         Ty::Named { name, args } if name == "Rc" => !args.is_empty(),
-        Ty::Named { args, .. } => args.iter().any(ty_contains_rc),
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_rc),
-        Ty::Array(inner, _) | Ty::Slice(inner) => ty_contains_rc(inner),
+        Ty::Named { name, args } => {
+            // First check explicit type arguments (handles Option<Rc<T>>, etc.)
+            if args
+                .iter()
+                .any(|a| ty_contains_rc_deep(a, type_defs, visiting))
+            {
+                return true;
+            }
+            // Cycle guard: if we're already walking this type stop here.
+            if visiting.contains(name.as_str()) {
+                return false;
+            }
+            // Walk into struct fields / enum variant payloads.
+            // Handle module-qualified names like "json.Value" by stripping prefix.
+            let td = type_defs
+                .get(name.as_str())
+                .or_else(|| name.rsplit_once('.').and_then(|(_, u)| type_defs.get(u)));
+            let Some(td) = td else {
+                return false;
+            };
+            visiting.insert(name.clone());
+            let result = td
+                .fields
+                .values()
+                .any(|f| ty_contains_rc_deep(f, type_defs, visiting))
+                || td.variants.values().any(|v| match v {
+                    VariantDef::Unit => false,
+                    VariantDef::Tuple(tys) => tys
+                        .iter()
+                        .any(|t| ty_contains_rc_deep(t, type_defs, visiting)),
+                    VariantDef::Struct(fields) => fields
+                        .iter()
+                        .any(|(_, t)| ty_contains_rc_deep(t, type_defs, visiting)),
+                });
+            visiting.remove(name.as_str());
+            result
+        }
+        Ty::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_rc_deep(e, type_defs, visiting)),
+        Ty::Array(inner, _) | Ty::Slice(inner) => ty_contains_rc_deep(inner, type_defs, visiting),
         _ => false,
     }
 }
@@ -7758,7 +7802,8 @@ impl Checker {
     /// collection elements, so storing `Rc<T>` causes refcount leaks.
     fn reject_rc_collection_element(&mut self, container: &str, elem_ty: &Ty, span: &Span) {
         let resolved = self.subst.resolve(elem_ty);
-        if ty_contains_rc(&resolved) {
+        let mut visiting = HashSet::new();
+        if ty_contains_rc_deep(&resolved, &self.type_defs, &mut visiting) {
             self.report_error(
                 TypeErrorKind::UnsafeCollectionElement,
                 span,

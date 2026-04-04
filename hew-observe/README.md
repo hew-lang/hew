@@ -23,6 +23,9 @@ hew-observe --addr localhost:6060
 
 # List all discovered profiler processes (Unix only)
 hew-observe --list
+
+# If multiple profilers are running, pick one explicitly (Unix only)
+hew-observe --pid 12345
 ```
 
 You can also run an already-compiled binary directly without `hew run`:

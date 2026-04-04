@@ -2041,6 +2041,151 @@ static void test_enum_construct_err_explicit_slot_verifier_accepts() {
 }
 
 //===----------------------------------------------------------------------===//
+// Test: EnumExtractPayloadOp — option/result upper-bound + result-type checks
+//===----------------------------------------------------------------------===//
+
+static void test_enum_extract_payload_option_wrong_index() {
+  TEST(enum_extract_payload_option_wrong_index);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto optType = hew::OptionEnumType::get(&ctx, i32Type);
+  auto funcType = builder.getFunctionType({optType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // field_index=2 is out of range for !hew.option (only field 1 exists)
+  hew::EnumExtractPayloadOp::create(builder, loc, i32Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(2));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject enum_extract_payload with field_index=2 on !hew.option");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_enum_extract_payload_option_wrong_result_type() {
+  TEST(enum_extract_payload_option_wrong_result_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  // !hew.option<i32> but result is i64
+  auto optType = hew::OptionEnumType::get(&ctx, i32Type);
+  auto funcType = builder.getFunctionType({optType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  hew::EnumExtractPayloadOp::create(builder, loc, i64Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(1));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject enum_extract_payload with wrong result type for !hew.option");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_enum_extract_payload_result_wrong_index() {
+  TEST(enum_extract_payload_result_wrong_index);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  // !hew.result<i32, i64> — valid indices are 1 (ok) and 2 (err)
+  auto resType = hew::ResultEnumType::get(&ctx, i32Type, i64Type);
+  auto funcType = builder.getFunctionType({resType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // field_index=3 is out of range
+  hew::EnumExtractPayloadOp::create(builder, loc, i32Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(3));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject enum_extract_payload with field_index=3 on !hew.result");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_enum_extract_payload_result_wrong_result_type() {
+  TEST(enum_extract_payload_result_wrong_result_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  // !hew.result<i32, i64> — ok type is i32 but result declared as i64
+  auto resType = hew::ResultEnumType::get(&ctx, i32Type, i64Type);
+  auto funcType = builder.getFunctionType({resType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // index 1 = ok payload (i32), but result type is i64
+  hew::EnumExtractPayloadOp::create(builder, loc, i64Type, block->getArgument(0),
+                                    builder.getI64IntegerAttr(1));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject enum_extract_payload with wrong result type for !hew.result ok slot");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Test: Dead Vec NOT eliminated when vec has other uses
 //===----------------------------------------------------------------------===//
 
@@ -2210,6 +2355,102 @@ static void test_vec_remove_verifier_wrong_elem_type() {
   mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
   if (mlir::succeeded(mlir::verify(module))) {
     FAIL("Should reject vec.remove with wrong element type");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_vec_remove_at_verifier_wrong_vec_type() {
+  TEST(vec_remove_at_verifier_wrong_vec_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i64Type = builder.getI64Type();
+  auto funcType = builder.getFunctionType({i64Type, i64Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // i64 instead of !hew.vec<T>
+  hew::VecRemoveAtOp::create(builder, loc, block->getArgument(0), block->getArgument(1));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject vec.remove_at with non-vec operand");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_vec_is_empty_verifier_wrong_vec_type() {
+  TEST(vec_is_empty_verifier_wrong_vec_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i64Type = builder.getI64Type();
+  auto funcType = builder.getFunctionType({i64Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // i64 instead of !hew.vec<T>
+  hew::VecIsEmptyOp::create(builder, loc, builder.getI1Type(), block->getArgument(0));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject vec.is_empty with non-vec operand");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+static void test_vec_clear_verifier_wrong_vec_type() {
+  TEST(vec_clear_verifier_wrong_vec_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i64Type = builder.getI64Type();
+  auto funcType = builder.getFunctionType({i64Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // i64 instead of !hew.vec<T>
+  hew::VecClearOp::create(builder, loc, block->getArgument(0));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject vec.clear with non-vec operand");
     module->destroy();
     return;
   }
@@ -2903,6 +3144,40 @@ static void test_trait_object_tag_verifier_wrong_operand_type() {
   PASS();
 }
 
+static void test_trait_object_tag_verifier_wrong_result_type() {
+  TEST(trait_object_tag_verifier_wrong_result_type);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto traitType = hew::HewTraitObjectType::get(&ctx, "Display");
+  auto i64Type = builder.getI64Type();
+  auto funcType = builder.getFunctionType({traitType}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *block = func.addEntryBlock();
+  builder.setInsertionPointToStart(block);
+
+  // result is i64 instead of !llvm.ptr
+  hew::TraitObjectTagOp::create(builder, loc, i64Type, block->getArgument(0));
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject trait_object.tag with non-ptr result type");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
 static void test_closure_create_verifier_wrong_fn_ptr_type() {
   TEST(closure_create_verifier_wrong_fn_ptr_type);
 
@@ -3361,12 +3636,19 @@ int main() {
   test_enum_extract_payload_fold_non_default_position();
   test_enum_construct_err_implicit_slot_verifier_rejects();
   test_enum_construct_err_explicit_slot_verifier_accepts();
+  test_enum_extract_payload_option_wrong_index();
+  test_enum_extract_payload_option_wrong_result_type();
+  test_enum_extract_payload_result_wrong_index();
+  test_enum_extract_payload_result_wrong_result_type();
   test_dead_vec_not_eliminated_with_uses();
   test_dead_hashmap_not_eliminated_with_uses();
 
   // Verifier negative tests — Collection ops
   test_vec_remove_verifier_wrong_vec_type();
   test_vec_remove_verifier_wrong_elem_type();
+  test_vec_remove_at_verifier_wrong_vec_type();
+  test_vec_is_empty_verifier_wrong_vec_type();
+  test_vec_clear_verifier_wrong_vec_type();
   test_vec_push_verifier_wrong_elem_type();
   test_vec_get_verifier_wrong_vec_type();
   test_vec_get_verifier_wrong_result_type();
@@ -3391,6 +3673,7 @@ int main() {
   test_trait_object_create_verifier_wrong_data_type();
   test_trait_object_data_verifier_wrong_operand_type();
   test_trait_object_tag_verifier_wrong_operand_type();
+  test_trait_object_tag_verifier_wrong_result_type();
   test_closure_create_verifier_wrong_fn_ptr_type();
   test_closure_get_fn_verifier_wrong_operand_type();
   test_closure_get_env_verifier_wrong_operand_type();

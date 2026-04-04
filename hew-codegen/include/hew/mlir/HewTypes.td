@@ -204,7 +204,9 @@ def Hew_TraitObjectType : Hew_Type<"HewTraitObject", "trait_object"> {
   let description = [{
     The `!hew.trait_object<"Display">` type represents a type-erased
     value implementing a trait.  At the LLVM level this lowers to
-    `!llvm.struct<(ptr, i32)>` — a data pointer plus a type tag.
+    `!llvm.struct<(ptr, ptr)>` — a data pointer (field 0) plus a vtable
+    pointer (field 1).  `trait_object.create` takes `(!llvm.ptr, !llvm.ptr)`
+    and `trait_object.data`/`trait_object.tag` each return `!llvm.ptr`.
   }];
   let parameters = (ins StringRefParameter<"trait name">:$traitName);
   let assemblyFormat = "`<` $traitName `>`";

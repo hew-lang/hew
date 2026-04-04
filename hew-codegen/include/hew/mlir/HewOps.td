@@ -778,6 +778,7 @@ def Hew_VecRemoveAtOp : Hew_Op<"vec.remove_at", [MemoryEffects<[MemRead, MemWrit
   let summary = "Remove element at index from a Vec.";
   let arguments = (ins AnyType:$vec, I64:$index);
   let assemblyFormat = "$vec `,` $index attr-dict `:` type($vec)";
+  let hasVerifier = 1;
 }
 
 def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
@@ -785,12 +786,14 @@ def Hew_VecIsEmptyOp : Hew_Op<"vec.is_empty"> {
   let arguments = (ins AnyType:$vec);
   let results = (outs I1:$result);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
+  let hasVerifier = 1;
 }
 
 def Hew_VecClearOp : Hew_Op<"vec.clear"> {
   let summary = "Remove all elements from a Vec.";
   let arguments = (ins AnyType:$vec);
   let assemblyFormat = "$vec attr-dict `:` type($vec)";
+  let hasVerifier = 1;
 }
 
 def Hew_VecFreeOp : Hew_Op<"vec.free"> {

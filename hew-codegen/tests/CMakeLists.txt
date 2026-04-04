@@ -123,6 +123,21 @@ find_program(HEW_LLDB NAMES lldb)
 find_program(HEW_ADDR2LINE NAMES addr2line llvm-addr2line)
 find_program(HEW_LLVM_SYMBOLIZER NAMES llvm-symbolizer)
 find_program(HEW_NM NAMES llvm-nm nm)
+find_program(HEW_PYTHON3 NAMES python3)
+
+# Absolute path to the Hew LLDB Python extension used by both LLDB tests.
+set(HEW_LLDB_SCRIPT "${CMAKE_SOURCE_DIR}/../scripts/debug/hew_lldb.py")
+
+# Pattern-unit test: runs outside LLDB; catches regex false-positive regressions.
+if(HEW_PYTHON3)
+  add_test(
+    NAME hew_lldb_pattern_unit
+    COMMAND ${HEW_PYTHON3}
+      ${CMAKE_SOURCE_DIR}/../scripts/debug/test_hew_lldb_patterns.py
+  )
+else()
+  message(STATUS "Skipping hew_lldb_pattern_unit — python3 not found")
+endif()
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
@@ -313,9 +328,7 @@ else()
 endif()
 
 if(HEW_LLDB)
-  # Keep this on main's declaration line for now: the current DWARF line table
-  # reliably maps function entry/declaration lines, while symbol-name
-  # breakpoints like `breakpoint set -n Pair.sum` remain a known gap.
+  # File/line breakpoint: verifies the DWARF line table maps main() correctly.
   add_test(
     NAME lldb_smoke_linked_binary
     COMMAND ${CMAKE_COMMAND}
@@ -325,6 +338,22 @@ if(HEW_LLDB)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/lldb_smoke_linked_binary${HEW_EXE_SUFFIX}
       -DBREAKPOINT_LINE=20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_smoke_test.cmake
+  )
+
+  # Name-breakpoint parity: verifies that
+  #   - plain -n add resolves via DW_AT_name (already worked before this slice)
+  #   - hew-break Pair.sum resolves via the Hew mangled-symbol regex helper
+  add_test(
+    NAME lldb_name_breakpoint_parity
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DLLDB=${HEW_LLDB}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/lldb_name_bp_parity${HEW_EXE_SUFFIX}
+      -DHEW_LLDB_SCRIPT=${HEW_LLDB_SCRIPT}
+      -DEXPECTED_ADD_LINE=16
+      -DEXPECTED_SUM_LINE=11
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_name_breakpoint_parity_test.cmake
   )
 else()
   message(STATUS "Skipping LLDB smoke test — lldb not found")

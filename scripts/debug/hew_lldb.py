@@ -159,6 +159,91 @@ def hew_break_receive_command(debugger, command, result, _internal_dict):
     result.AppendMessage("Try: (lldb) image lookup -r -n .*dispatch.*")
 
 
+def _dotted_name_pattern(type_name: str, method_name: str) -> str:
+    """Return the POSIX ERE regex that matches the Hew mangled symbol for
+    TypeName.method.
+
+    Hew mangles impl methods as ``_HM<len><module>T<len><Type>F<len><method>``.
+    Embedding the *exact* byte lengths for both type and method prevents
+    prefix false-positives: ``T4Pair`` will never match ``T8PairList``, and
+    ``F3sum`` will never match ``F7summary``.
+
+    The regex is anchored at ``$`` so no suffix can sneak in after the
+    method segment.  LLDB passes this to LLVM's POSIX ERE engine, which
+    does not support ``\\d``; we use literal digits instead.
+    """
+    import re as _re
+
+    t_len = len(type_name)
+    m_len = len(method_name)
+    # re.escape covers POSIX ERE specials for the name fragments; for plain
+    # identifiers it is a no-op, but guards against dots or underscores in
+    # type/method names that could otherwise widen the match.
+    return f"T{t_len}{_re.escape(type_name)}F{m_len}{_re.escape(method_name)}$"
+
+
+def hew_break_command(debugger, command, result, _internal_dict):
+    """Set a breakpoint on a Hew function or method by Hew-source name.
+
+    Usage:
+        hew-break <name>               # plain function: same as breakpoint set -n name
+        hew-break <TypeName>.<method>  # impl method: resolved via mangled-symbol regex
+
+    Plain names like ``add`` and ``main`` are passed directly to
+    BreakpointCreateByName, which matches DWARF DW_AT_name entries.
+
+    Dotted names like ``Pair.sum`` cannot be matched by plain -n because
+    LLDB has no Hew demangler.  The Hew mangler encodes them as:
+        _HM<len><module>T<len><TypeName>F<len><method>
+    so ``hew-break Pair.sum`` uses a regex breakpoint via
+    ``_dotted_name_pattern`` with exact length prefixes, which prevents
+    types whose names merely contain the requested name (e.g. PairList)
+    from being matched.
+    """
+    name = command.strip()
+    if not name:
+        result.AppendMessage(
+            "Usage: hew-break <name>  |  hew-break <TypeName>.<method>"
+        )
+        return
+
+    target = debugger.GetSelectedTarget()
+    if not target:
+        result.AppendMessage("No target selected.")
+        return
+
+    if "." in name:
+        parts = name.split(".", 1)
+        pattern = _dotted_name_pattern(parts[0], parts[1])
+        bp = target.BreakpointCreateByRegex(pattern)
+    else:
+        bp = target.BreakpointCreateByName(name)
+
+    n_locs = bp.GetNumLocations()
+    if n_locs > 0:
+        result.AppendMessage(f"Breakpoint {bp.GetID()}: {n_locs} location(s).")
+        for i in range(n_locs):
+            loc = bp.GetLocationAtIndex(i)
+            addr = loc.GetAddress()
+            line_entry = addr.GetLineEntry()
+            if line_entry.IsValid():
+                file_spec = line_entry.GetFileSpec()
+                result.AppendMessage(
+                    f"  where = {file_spec.GetFilename()}:{line_entry.GetLine()}"
+                )
+    else:
+        target.BreakpointDelete(bp.GetID())
+        result.AppendMessage(f"hew-break: no locations found for '{name}'.")
+        if "." in name:
+            result.AppendMessage(
+                "Tip: check that the type and method names match the Hew source."
+            )
+        else:
+            result.AppendMessage(
+                "Tip: try 'image lookup -r -n <name>' to inspect symbols."
+            )
+
+
 def hew_bt_command(debugger, command, result, _internal_dict):
     """Show a Hew-focused backtrace, filtering out runtime internals.
 
@@ -240,5 +325,9 @@ def __lldb_init_module(debugger, _internal_dict):
         "command script add -f hew_lldb.hew_break_receive_command hew-break-receive"
     )
     debugger.HandleCommand("command script add -f hew_lldb.hew_bt_command hew-bt")
+    debugger.HandleCommand("command script add -f hew_lldb.hew_break_command hew-break")
 
-    print("Hew LLDB extensions loaded. Commands: hew-actors, hew-break-receive, hew-bt")
+    print(
+        "Hew LLDB extensions loaded. "
+        "Commands: hew-actors, hew-break, hew-break-receive, hew-bt"
+    )

@@ -2,6 +2,7 @@
 ///
 /// Each test parses Hew source, formats via `format_source`, and checks that
 /// the result is idempotent (formatting already-formatted code is a no-op).
+use hew_parser::ast::{Expr, Item, Stmt};
 use hew_parser::fmt::{format_program, format_source};
 use hew_parser::parse;
 
@@ -475,6 +476,16 @@ fn fmt_multi_param_lambda() {
     let src = "fn main() { let add = (a, b) => a + b; }";
     let out = roundtrip(src);
     assert!(out.contains("(a, b) => a + b"), "output: {out}");
+}
+
+#[test]
+fn fmt_generic_lambda_type_params() {
+    let src = "fn main() { let id = <T: Display>(x: T) -> T => x; }";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("<T: Display>(x: T) -> T => x"),
+        "output: {out}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -975,6 +986,51 @@ fn fmt_char_literal() {
     let src = "fn main() { let c = 'a'; }";
     let out = roundtrip(src);
     assert!(out.contains("'a'"), "output: {out}");
+}
+
+#[test]
+fn fmt_byte_string_literal_escapes() {
+    let src = r#"fn main() { let bytes = b"quote\"slash\\line\n"; }"#;
+    let out = roundtrip(src);
+    assert!(out.contains(r#"b"quote\"slash\\line\n""#), "output: {out}");
+}
+
+#[test]
+fn fmt_regex_literal_escapes_delimiters() {
+    let mut parsed = parse(r#"fn main() { let rx = re"ok"; }"#);
+    assert!(
+        parsed.errors.is_empty(),
+        "Initial parse failed: {:?}",
+        parsed.errors
+    );
+
+    let Item::Function(func) = &mut parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let Stmt::Let {
+        value: Some((Expr::RegexLiteral(pattern), _)),
+        ..
+    } = &mut func.body.stmts[0].0
+    else {
+        panic!("expected let with regex literal");
+    };
+    *pattern = "a\"b\\".to_string();
+
+    let formatted = format_program(&parsed.program);
+    assert!(formatted.contains(r#"re"a\"b\\""#), "output: {formatted}");
+
+    let reparsed = parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "Re-parse of formatted output failed: {:?}\nFormatted:\n{formatted}",
+        reparsed.errors,
+    );
+
+    let reformatted = format_program(&reparsed.program);
+    assert_eq!(
+        formatted, reformatted,
+        "format_program is not idempotent.\nFirst:\n{formatted}\nSecond:\n{reformatted}",
+    );
 }
 
 // -----------------------------------------------------------------------

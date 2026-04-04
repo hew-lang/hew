@@ -1638,14 +1638,15 @@ impl<'a> Formatter<'a> {
             }
             Expr::Lambda {
                 is_move,
+                type_params,
                 params,
                 return_type,
                 body,
-                ..
             } => {
                 if *is_move {
                     self.write("move ");
                 }
+                self.format_opt_type_params(type_params.as_ref());
                 self.write("(");
                 self.format_lambda_params(params);
                 self.write(")");
@@ -1857,18 +1858,12 @@ impl<'a> Formatter<'a> {
 
             Expr::RegexLiteral(pattern) => {
                 self.write("re\"");
-                self.write(pattern);
+                self.write(&escape_regex_pattern(pattern));
                 self.write("\"");
             }
             Expr::ByteStringLiteral(data) => {
                 self.write("b\"");
-                for &b in data {
-                    if b.is_ascii_graphic() || b == b' ' {
-                        self.write(&(b as char).to_string());
-                    } else {
-                        self.write(&format!("\\x{b:02x}"));
-                    }
-                }
+                self.write(&escape_byte_string(data));
                 self.write("\"");
             }
             Expr::ByteArrayLiteral(data) => {
@@ -2115,6 +2110,49 @@ fn escape_string(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\0' => out.push_str("\\0"),
             other => out.push(other),
+        }
+    }
+    out
+}
+
+fn escape_regex_pattern(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            out.push('\\');
+            if let Some(next) = chars.next() {
+                out.push(next);
+            } else {
+                out.push('\\');
+            }
+        } else if c == '"' {
+            out.push_str("\\\"");
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn escape_byte_string(data: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(data) {
+        return escape_string(s);
+    }
+
+    let mut out = String::with_capacity(data.len());
+    for &b in data {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            b'\0' => out.push_str("\\0"),
+            b' '..=b'!' | b'#'..=b'[' | b']'..=b'~' => out.push(b as char),
+            _ => {
+                let _ = write!(out, "\\x{b:02x}");
+            }
         }
     }
     out

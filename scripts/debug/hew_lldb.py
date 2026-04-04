@@ -159,6 +159,72 @@ def hew_break_receive_command(debugger, command, result, _internal_dict):
     result.AppendMessage("Try: (lldb) image lookup -r -n .*dispatch.*")
 
 
+def hew_break_command(debugger, command, result, _internal_dict):
+    """Set a breakpoint on a Hew function or method by Hew-source name.
+
+    Usage:
+        hew-break <name>               # plain function: same as breakpoint set -n name
+        hew-break <TypeName>.<method>  # impl method: resolved via mangled-symbol regex
+
+    Plain names like ``add`` and ``main`` are passed directly to
+    BreakpointCreateByName, which matches DWARF DW_AT_name entries.
+
+    Dotted names like ``Pair.sum`` cannot be matched by plain -n because
+    LLDB has no Hew demangler.  The Hew mangler encodes them as:
+        _HM<len><module>T<len><TypeName>F<len><method>
+    so ``hew-break Pair.sum`` uses a regex breakpoint matching
+    ``T\\d+Pair.*F\\d+sum`` against the raw symbol table.
+    """
+    import re
+
+    name = command.strip()
+    if not name:
+        result.AppendMessage(
+            "Usage: hew-break <name>  |  hew-break <TypeName>.<method>"
+        )
+        return
+
+    target = debugger.GetSelectedTarget()
+    if not target:
+        result.AppendMessage("No target selected.")
+        return
+
+    if "." in name:
+        parts = name.split(".", 1)
+        type_name = re.escape(parts[0])
+        method_name = re.escape(parts[1])
+        # Match _HM<len><module>T<len><TypeName>F<len><method> in the raw symbol table.
+        # LLDB passes this to LLVM's POSIX ERE engine — use [0-9]+ not \d+.
+        pattern = f"T[0-9]+{type_name}.*F[0-9]+{method_name}$"
+        bp = target.BreakpointCreateByRegex(pattern)
+    else:
+        bp = target.BreakpointCreateByName(name)
+
+    n_locs = bp.GetNumLocations()
+    if n_locs > 0:
+        result.AppendMessage(f"Breakpoint {bp.GetID()}: {n_locs} location(s).")
+        for i in range(n_locs):
+            loc = bp.GetLocationAtIndex(i)
+            addr = loc.GetAddress()
+            line_entry = addr.GetLineEntry()
+            if line_entry.IsValid():
+                file_spec = line_entry.GetFileSpec()
+                result.AppendMessage(
+                    f"  where = {file_spec.GetFilename()}:{line_entry.GetLine()}"
+                )
+    else:
+        target.BreakpointDelete(bp.GetID())
+        result.AppendMessage(f"hew-break: no locations found for '{name}'.")
+        if "." in name:
+            result.AppendMessage(
+                "Tip: check that the type and method names match the Hew source."
+            )
+        else:
+            result.AppendMessage(
+                "Tip: try 'image lookup -r -n <name>' to inspect symbols."
+            )
+
+
 def hew_bt_command(debugger, command, result, _internal_dict):
     """Show a Hew-focused backtrace, filtering out runtime internals.
 
@@ -240,5 +306,9 @@ def __lldb_init_module(debugger, _internal_dict):
         "command script add -f hew_lldb.hew_break_receive_command hew-break-receive"
     )
     debugger.HandleCommand("command script add -f hew_lldb.hew_bt_command hew-bt")
+    debugger.HandleCommand("command script add -f hew_lldb.hew_break_command hew-break")
 
-    print("Hew LLDB extensions loaded. Commands: hew-actors, hew-break-receive, hew-bt")
+    print(
+        "Hew LLDB extensions loaded. "
+        "Commands: hew-actors, hew-break, hew-break-receive, hew-bt"
+    )

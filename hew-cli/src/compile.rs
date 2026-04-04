@@ -457,25 +457,9 @@ fn enrich_program_ast(
         let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
 
-        // Fail closed on unresolved inference variables — these are compiler
-        // bugs, not user errors, and must not silently produce wrong codegen.
-        // Error-sentinel diagnostics are suppressed here because type-checking
-        // already emitted the real error to the user.
-        {
-            let unresolved: Vec<_> = enrich_diagnostics
-                .diagnostics()
-                .iter()
-                .filter(|d| d.kind() == hew_serialize::TypeExprConversionKind::UnresolvedVar)
-                .collect();
-            if !unresolved.is_empty() {
-                let msgs: Vec<String> = unresolved.iter().map(|d| format!("  {d}")).collect();
-                return Err(format!(
-                    "Error: unresolved type variable(s) reached the serializer (inference bug):\n{}",
-                    msgs.join("\n")
-                ));
-            }
-        }
-
+        // These diagnostics come from best-effort inferred-type enrichment.
+        // Keep unresolved locals non-fatal here: required serializer contracts
+        // still fail closed via `Err`, while optional metadata is omitted.
         for diagnostic in collect_new_inferred_type_diagnostics(
             enrich_diagnostics.diagnostics(),
             input,
@@ -510,22 +494,6 @@ fn enrich_program_ast(
             }
         }
         let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
-
-        // Same triage for the expr-type-map pass.
-        {
-            let unresolved: Vec<_> = expr_type_map_build
-                .diagnostics()
-                .iter()
-                .filter(|d| d.kind() == hew_serialize::TypeExprConversionKind::UnresolvedVar)
-                .collect();
-            if !unresolved.is_empty() {
-                let msgs: Vec<String> = unresolved.iter().map(|d| format!("  {d}")).collect();
-                return Err(format!(
-                    "Error: unresolved type variable(s) reached the serializer (inference bug):\n{}",
-                    msgs.join("\n")
-                ));
-            }
-        }
 
         for diagnostic in collect_new_inferred_type_diagnostics(
             expr_type_map_build.diagnostics(),
@@ -1714,5 +1682,73 @@ fn main() {
 
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 0);
+    }
+
+    #[test]
+    fn unresolved_best_effort_inferred_types_do_not_abort_serialization() {
+        let expr_span = 10..18;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
+                                ty: None,
+                                value: Some((Expr::Identifier("input".into()), expr_span.clone())),
+                            },
+                            expr_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::Var(hew_types::ty::TypeVar(7)),
+        );
+
+        let expr_type_map = enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            "fn foo() { let value = input; }",
+            "main.hew",
+        )
+        .expect("best-effort inferred-type omissions should stay non-fatal");
+
+        assert!(
+            expr_type_map.is_empty(),
+            "unresolved best-effort expr types should be omitted from serialized metadata"
+        );
+        let Item::Function(function) = &program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let { ty, .. } = &function.body.stmts[0].0 else {
+            panic!("expected let statement");
+        };
+        assert!(
+            ty.is_none(),
+            "unresolved best-effort binding types should stay implicit"
+        );
     }
 }

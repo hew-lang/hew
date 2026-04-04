@@ -1,0 +1,44 @@
+// WASM parity test: nested struct with owned fields passed as actor
+// receive fn parameter.  Inner.label (String) must be deep-copied
+// recursively through the Outer wrapper at the actor boundary.
+// WASM variant of test_actor_nested_struct_message.hew (no sleep_ms).
+type Inner {
+    label: String;
+    score: int;
+}
+
+type Outer {
+    inner: Inner;
+    tag: int;
+}
+
+actor Collector {
+    let total: int;
+
+    receive fn collect(msg: Outer) {
+        total = total + msg.inner.score;
+        print(msg.inner.label);
+        print(":");
+        println(msg.inner.score);
+    }
+
+    receive fn get_total() -> int {
+        total
+    }
+}
+
+fn main() {
+    let c = spawn Collector(total: 0);
+    let o1 = Outer {
+        inner: Inner { label: "first", score: 10 },
+        tag: 1,
+    };
+    c.collect(o1);
+    let o2 = Outer {
+        inner: Inner { label: "second", score: 25 },
+        tag: 2,
+    };
+    c.collect(o2);
+    let t = await c.get_total();
+    println(t);
+}

@@ -1206,6 +1206,8 @@ add_wasm_file_test(actor_ref_passing   e2e_actors wasm_actor_ref_passing)
 add_wasm_file_test(actor_multi_receive e2e_actors wasm_actor_multi_receive)
 add_wasm_file_test(actor_self          e2e_actors wasm_actor_self)
 add_wasm_file_test(actor_capture       e2e_actors wasm_actor_capture)
+add_wasm_file_test(actor_struct_message         e2e_actors wasm_actor_struct_message)
+add_wasm_file_test(actor_nested_struct_message  e2e_actors wasm_actor_nested_struct_message)
 
 # WASM reject tests (verify unsupported ops produce compile errors)
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "is not supported on WASM")

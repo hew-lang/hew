@@ -837,19 +837,184 @@ fn rc_pass_to_fn_borrow_clean() {
     );
 }
 
-// ── Known limitations of BorrowedRcReturn (phase 1) ──────────────────────────
+// ── Aggregate escape tests ────────────────────────────────────────────────────
+
+/// Wrapping an Rc param in `Some(r)` is an aggregate escape — the borrowed
+/// pointer is embedded in the Option and escapes the function.
+#[test]
+fn rc_param_some_wrap_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            Some(r)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "Some(r) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Wrapping an Rc param in a tuple `(r, 0)` is an aggregate escape.
+#[test]
+fn rc_param_tuple_wrap_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> (Rc<int>, int) {
+            (r, 0)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "(r, 0) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Struct init with an Rc param field is an aggregate escape.
+#[test]
+fn rc_param_struct_init_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        type Holder {
+            val: Rc<int>,
+        }
+        fn wrap(r: Rc<int>) -> Holder {
+            Holder { val: r }
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "Holder {{ val: r }} should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// `Some(r.clone())` is safe — the Rc is cloned before embedding.
+#[test]
+fn rc_param_some_clone_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            Some(r.clone())
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Some(r.clone()) should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Returning `Rc::new(val)` should not trigger — it's a fresh allocation.
+#[test]
+fn rc_new_in_return_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn fresh(_r: Rc<int>) -> Rc<int> {
+            Rc::new(0)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Rc::new(0) should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Returning `return Some(r)` via explicit return also triggers the diagnostic.
+#[test]
+fn rc_param_explicit_return_some_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            return Some(r);
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "return Some(r) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Passing an Rc param to a regular (lowercase) function call that returns
+/// a non-Rc type should NOT trigger — regular calls are borrows, not escapes.
+#[test]
+fn rc_param_passed_to_regular_fn_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn extract(r: Rc<int>) -> int {
+            r.get()
+        }
+        fn delegate(r: Rc<int>) -> int {
+            extract(r)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "passing Rc param to a regular function should not error, got: {rc_errors:#?}",
+    );
+}
+
+// ── Known limitations of BorrowedRcReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and
 // are explicitly deferred to a future escape-analysis pass:
 //
 // 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` instantiated with Rc.
-//    Param type resolves to Ty::Var at definition time; would need
-//    monomorphization-time checking.
+//    Param type resolves to Ty::Var at definition time; would need either
+//    monomorphization-time checking or a non-Copy-bounded type param rule.
 //
-// 2. Aggregate escapes: returning `Some(r)`, `(r, 0)`, or struct construction
-//    with an Rc param field.  Requires data-flow tracking through constructors.
-//
-// 3. Rc param stored into a collection without clone: `v.push(r)`.  Requires
+// 2. Rc param stored into a collection without clone: `v.push(r)`.  Requires
 //    tracking ownership transfer through method calls.
 //
-// These are tracked as future escape-analysis work, not phase-1 scope.
+// These are tracked as future escape-analysis work.

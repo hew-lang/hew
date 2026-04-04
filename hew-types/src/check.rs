@@ -6548,7 +6548,48 @@ impl Checker {
                     self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, rc_params);
                 }
             }
+            // Aggregate escapes: enum-variant constructors like Some(r), Ok(r),
+            // Err(r) embed an Rc param in a container, transferring the borrowed
+            // pointer without a clone.  Only check calls whose callee looks like
+            // a constructor (uppercase-initial identifier or Type::Variant path)
+            // — regular lowercase function calls are borrows under call-boundary
+            // ownership and are safe.
+            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+                for arg in args {
+                    let (e, s) = arg.expr();
+                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                }
+            }
+            // Tuple literals: (r, 0), (r,) embed the borrowed Rc param.
+            Expr::Tuple(elems) => {
+                for (e, s) in elems {
+                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                }
+            }
+            // Struct initializers: MyStruct { field: r } embeds the borrowed Rc param.
+            Expr::StructInit { fields, .. } => {
+                for (_field_name, (e, s)) in fields {
+                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Returns `true` when the callee expression looks like a value constructor
+    /// (enum variant or type-associated constructor like `Rc::new`).
+    ///
+    /// Heuristic: an uppercase-initial bare identifier (`Some`, `Ok`, `Err`,
+    /// user-defined variants) or a `Type::method` / field-access path where
+    /// the receiver is uppercase-initial (`Rc::new`, `MyEnum::Variant`).
+    fn looks_like_constructor(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(name) => name.starts_with(char::is_uppercase),
+            Expr::FieldAccess { object, .. } => {
+                // Rc::new, MyEnum::Variant, etc.
+                matches!(&object.0, Expr::Identifier(name) if name.starts_with(char::is_uppercase))
+            }
+            _ => false,
         }
     }
 

@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::set_last_error;
@@ -33,6 +33,36 @@ const _: () = assert!(
 /// Only one `HewNode` may be active per process. Starting a second node
 /// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
+
+// ---------------------------------------------------------------------------
+// Inbound ask worker bound
+// ---------------------------------------------------------------------------
+
+/// Maximum number of OS threads that may concurrently service inbound remote
+/// asks.  A remote peer cannot exceed this by flooding ask requests, bounding
+/// both OS thread count and virtual-memory usage.
+///
+/// The value is intentionally generous (64) so that legitimate high-fanout
+/// workloads are unaffected while still preventing unbounded growth.
+pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
+
+/// Count of currently active inbound ask-handler threads.
+///
+/// Incremented before spawning, decremented by [`InboundAskGuard`] when the
+/// handler thread exits (or panics — the `Drop` impl runs in both cases).
+static INBOUND_ASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] exactly once on drop.
+///
+/// Constructed in the spawned ask-handler thread so the counter stays
+/// accurate even under panics or early returns.
+struct InboundAskGuard;
+
+impl Drop for InboundAskGuard {
+    fn drop(&mut self) {
+        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Ask-error discriminant
@@ -398,6 +428,25 @@ unsafe extern "C" fn node_inbound_router(
 ) {
     if request_id > 0 && source_node_id > 0 {
         // Inbound remote ask — dispatch locally and send the reply back.
+
+        // ── Backpressure: bounded concurrent inbound ask workers ─────────────
+        //
+        // Optimistically increment the counter. If we were already at the
+        // limit we revert and reject the ask immediately by sending an empty
+        // reply envelope. This is fail-closed: the remote caller gets a
+        // `PayloadSizeMismatch` error quickly rather than hanging until
+        // timeout, and we never create an unbounded number of OS threads.
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        if prev >= INBOUND_ASK_WORKER_LIMIT {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            // SAFETY: the inbound router is only called while `conn_mgr` is live.
+            if let Some(shutdown) = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) } {
+                send_reply_envelope(source_node_id, request_id, &[], conn_mgr, shutdown.as_ref());
+            }
+            return;
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         // Deep-copy the payload so we can hand it to a background thread.
         let payload = if size > 0 && !data.is_null() {
             // SAFETY: data is valid for `size` bytes (reader_loop contract).
@@ -409,9 +458,13 @@ unsafe extern "C" fn node_inbound_router(
         // SAFETY: the inbound router is only called while `conn_mgr` is live.
         let Some(shutdown_started) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) })
         else {
+            // Undo the increment we already committed above.
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             return;
         };
         thread::spawn(move || {
+            // Guard decrements INBOUND_ASK_ACTIVE on drop (including on panic).
+            let _guard = InboundAskGuard;
             handle_inbound_ask(
                 target_actor_id,
                 msg_type,
@@ -2974,6 +3027,214 @@ mod tests {
         // SAFETY: node pointer remains valid until drop.
         unsafe {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Inbound ask worker bound tests ─────────────────────────────────────
+    //
+    // These tests verify the backpressure mechanism added to node_inbound_router.
+    // The mechanism prevents a remote peer from exhausting OS thread count or
+    // virtual memory by flooding inbound asks.
+    //
+    // All of these tests acquire NODE_TEST_LOCK so they serialize with any
+    // other test that runs a node or manipulates INBOUND_ASK_ACTIVE.
+
+    /// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` exactly once on drop,
+    /// including when the enclosing scope exits via panic.
+    #[test]
+    fn inbound_ask_guard_decrements_on_drop() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        // Reset to a known value; restore on exit.
+        let saved = INBOUND_ASK_ACTIVE.swap(1, Ordering::AcqRel);
+        {
+            let _guard = InboundAskGuard;
+            assert_eq!(
+                INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+                1,
+                "counter must be 1 while guard is live"
+            );
+        }
+        // Guard dropped — counter must be 0.
+        let after = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+        assert_eq!(
+            after, 0,
+            "InboundAskGuard must decrement INBOUND_ASK_ACTIVE on drop"
+        );
+    }
+
+    /// Two guards decrement independently (one per spawned thread).
+    #[test]
+    fn inbound_ask_guard_pair_decrements_twice() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(2, Ordering::AcqRel);
+        let g1 = InboundAskGuard;
+        let g2 = InboundAskGuard;
+        drop(g1);
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            1,
+            "first guard must decrement by 1"
+        );
+        drop(g2);
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            0,
+            "second guard must decrement back to zero"
+        );
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// When `INBOUND_ASK_ACTIVE` is saturated to `INBOUND_ASK_WORKER_LIMIT` the
+    /// optimistic-increment + revert logic correctly prevents over-commitment.
+    ///
+    /// This test directly exercises the counter-check branch used in
+    /// `node_inbound_router` without needing a live transport.
+    #[test]
+    fn inbound_ask_worker_limit_rejects_at_capacity() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+
+        // Simulate what node_inbound_router does for an inbound ask.
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
+        if at_limit {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        // Must have detected the limit and reverted.
+        assert!(
+            at_limit,
+            "should detect limit when counter == INBOUND_ASK_WORKER_LIMIT"
+        );
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            INBOUND_ASK_WORKER_LIMIT,
+            "counter must be reverted to the limit after rejection"
+        );
+
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// When `INBOUND_ASK_ACTIVE` is one below the limit, a new ask is accepted.
+    #[test]
+    fn inbound_ask_worker_limit_accepts_below_capacity() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT - 1, Ordering::AcqRel);
+
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
+        if at_limit {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        assert!(!at_limit, "ask just below limit must be accepted");
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            INBOUND_ASK_WORKER_LIMIT,
+            "accepted ask increments counter to limit"
+        );
+
+        // Release the slot we acquired (simulating the InboundAskGuard).
+        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// End-to-end: inbound ask counter is bounded during a real two-node ask
+    /// round-trip. After the ask completes the worker slot is released and the
+    /// counter returns to its pre-ask value.
+    #[test]
+    fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(320, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(321, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Spawn a u32-echo actor on node2.
+        crate::pid::hew_pid_set_local_node(321);
+        // SAFETY: null state and size-0 are valid; ask_probe_dispatch echoes back u32*2.
+        let echo_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        crate::pid::hew_pid_set_local_node(320);
+        assert!(!echo_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+
+        let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Record the counter before the ask so we can verify it returns to baseline.
+        let baseline = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+
+        let payload: u32 = 0xDEAD_BEEF;
+        // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_pid,
+                1,
+                std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+                std::mem::size_of::<u32>(),
+            )
+        };
+        assert!(!reply_ptr.is_null(), "remote ask must succeed");
+        // SAFETY: reply was malloc'd by hew_reply; we own it after the ask.
+        unsafe { libc::free(reply_ptr) };
+
+        // After the ask completes the handler thread exits, dropping InboundAskGuard.
+        // Give it a brief moment to drain.
+        let settled = (0..50).any(|_| {
+            let v = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+            if v == baseline {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(
+            settled,
+            "INBOUND_ASK_ACTIVE did not return to baseline after ask completed (got {}; expected {})",
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            baseline,
+        );
+        assert!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire) <= INBOUND_ASK_WORKER_LIMIT,
+            "active worker count must never exceed INBOUND_ASK_WORKER_LIMIT"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and are still valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

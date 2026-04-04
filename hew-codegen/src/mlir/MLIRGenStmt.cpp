@@ -1314,6 +1314,37 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
+  // ── Resolved-type catch-all for Rc drop ──────────────────────────
+  // When an Rc value reaches a let binding through an indirect expression
+  // (block expression, if/else, match, etc.) the specific-case sections
+  // above may not recognise the value as owned Rc.  Use the type-checker's
+  // resolved type as a final safety net: if the binding is Rc-typed and no
+  // drop has been registered yet, register hew_rc_drop now.
+  if (value && mlir::isa<mlir::LLVM::LLVMPointerType>(value.getType())) {
+    bool rcDropRegistered = false;
+    if (!dropScopes.empty()) {
+      for (auto &e : dropScopes.back())
+        if (e.varName == varName) { rcDropRegistered = true; break; }
+    }
+    if (!rcDropRegistered) {
+      bool isRcByResolved = false;
+      // Check the RHS expression's resolved type
+      if (stmtValue && *stmtValue) {
+        if (auto *rt = resolvedTypeOf((*stmtValue)->span)) {
+          if (auto *named = std::get_if<ast::TypeNamed>(&rt->kind))
+            isRcByResolved = (named->name == "Rc");
+        }
+      }
+      // Also check the type annotation (e.g. `let x: Rc<int> = ...`)
+      if (!isRcByResolved && stmtTy && *stmtTy) {
+        if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind))
+          isRcByResolved = resolveTypeAlias(named->name) == "Rc";
+      }
+      if (isRcByResolved)
+        registerDroppable(varName, "hew_rc_drop");
+    }
+  }
+
   // ── dyn Trait variable type tracking ───────────────────────────────
   if (stmtTy && *stmtTy) {
     if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&(*stmtTy)->value.kind)) {

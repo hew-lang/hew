@@ -1,0 +1,14 @@
+// Rc alias escaping a block via trailing expression must keep
+// its payload alive after the original binding is dropped.
+fn main() {
+    let rc2 = {
+        let rc: Rc<int> = Rc::new(42);
+        let alias = rc;
+        // Both rc and alias share refcount 2
+        println(rc.strong_count());
+        alias
+    };
+    // rc dropped at block exit; rc2 survives with refcount 1
+    println(rc2.get());
+    println(rc2.strong_count());
+}

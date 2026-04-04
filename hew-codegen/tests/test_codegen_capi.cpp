@@ -454,6 +454,45 @@ static void test_rc_rebind_emits_clone_and_drop() {
   PASS();
 }
 
+static void test_rc_outlive_block_drop_registered() {
+  TEST(rc_outlive_block_drop_registered);
+  // Rc alias escaping a block as trailing expression must still get
+  // hew_rc_drop in the outer scope AND an hew.rc.clone inside the block.
+  auto ast = hewToMsgpack(
+      "fn main() { "
+      "  let rc2 = { "
+      "    let rc: Rc<int> = Rc::new(42); "
+      "    let alias = rc; "
+      "    alias "
+      "  }; "
+      "  println(rc2.get()); "
+      "}");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  // Must have hew.rc.clone for the inner rebinding
+  if (mlir.find("hew.rc.clone") == std::string::npos) {
+    FAIL("Rc outlive: missing hew.rc.clone for inner rebinding");
+    return;
+  }
+  // Must have TWO hew_rc_drop entries: one for inner `rc`, one for outer `rc2`
+  size_t pos = 0;
+  int dropCount = 0;
+  while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+    dropCount++;
+    pos += 11;
+  }
+  if (dropCount < 2) {
+    FAIL(("Rc outlive: expected >= 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+    return;
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -628,6 +667,7 @@ int main() {
   test_emit_mlir_produces_output();
   test_rc_scope_exit_drop_registered();
   test_rc_rebind_emits_clone_and_drop();
+  test_rc_outlive_block_drop_registered();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

@@ -51,6 +51,20 @@ for arg in "$@"; do
     esac
 done
 
+capture_screenshot() {
+    local file_name="$1"
+    local label="$2"
+    local marker="$3"
+    local capture_path="$SCREENSHOT_DIR/$file_name"
+
+    tmux capture-pane -t "$SESSION" -p >"$capture_path"
+    if ! grep -Fq -- "$marker" "$capture_path"; then
+        echo "✗ Screenshot validation failed for $file_name ($label): missing marker '$marker'."
+        exit 1
+    fi
+    echo "▸ Captured: $file_name ($label)"
+}
+
 cleanup() {
     # Kill any background workload
     if [[ -n "${WORKLOAD_PID:-}" ]]; then
@@ -132,55 +146,69 @@ else
 fi
 
 if [[ "$mode" == "screenshot" ]]; then
-    # Non-interactive: use tmux to run observe, capture panes
+    # Non-interactive: use tmux to run observe, capture panes in UI tab order.
+    # These markers are lightweight guards against the harness drifting from
+    # hew-observe's actual tab order again.
+    screenshot_files=(
+        "01-overview.txt"
+        "02-actors.txt"
+        "03-supervisors.txt"
+        "04-crashes.txt"
+        "05-cluster.txt"
+        "06-messages.txt"
+        "07-timeline.txt"
+    )
+    screenshot_labels=(
+        "Overview"
+        "Actors"
+        "Supervisors"
+        "Crashes"
+        "Cluster"
+        "Messages"
+        "Timeline"
+    )
+    screenshot_markers=(
+        "System Overview"
+        "Actor List"
+        "Supervision Tree"
+        "Crash Log"
+        "Cluster Topology"
+        "[f] filter actor"
+        "[+/-] zoom"
+    )
+    screenshot_delays=(
+        "3"
+        "1.5"
+        "1"
+        "1"
+        "1"
+        "1.5"
+        "1"
+    )
+
     mkdir -p "$SCREENSHOT_DIR"
+    rm -f "$SCREENSHOT_DIR"/*.txt
 
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     tmux new-session -d -s "$SESSION" -x 120 -y 40
 
-    # Tab 1: Overview (default)
     # shellcheck disable=SC2086  # OBSERVE_CMD is intentionally word-split
     tmux send-keys -t "$SESSION" "$OBSERVE_CMD" Enter
-    sleep 3 # let it fetch a few cycles
-
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/01-overview.txt"
-    echo "▸ Captured: 01-overview.txt"
-
-    # Tab 2: Actors
-    tmux send-keys -t "$SESSION" Tab
-    sleep 1.5
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/02-actors.txt"
-    echo "▸ Captured: 02-actors.txt"
-
-    # Tab 3: Supervisors
-    tmux send-keys -t "$SESSION" Tab
-    sleep 1
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/03-supervisors.txt"
-    echo "▸ Captured: 03-supervisors.txt"
-
-    # Tab 4: Messages
-    tmux send-keys -t "$SESSION" Tab
-    sleep 1.5
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/04-messages.txt"
-    echo "▸ Captured: 04-messages.txt"
-
-    # Tab 5: Timeline
-    tmux send-keys -t "$SESSION" Tab
-    sleep 1
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/05-timeline.txt"
-    echo "▸ Captured: 05-timeline.txt"
-
-    # Tab 6: Cluster
-    tmux send-keys -t "$SESSION" Tab
-    sleep 1
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/06-cluster.txt"
-    echo "▸ Captured: 06-cluster.txt"
+    for idx in "${!screenshot_files[@]}"; do
+        if [[ "$idx" -gt 0 ]]; then
+            tmux send-keys -t "$SESSION" Tab
+        fi
+        sleep "${screenshot_delays[$idx]}" # let the active tab refresh before capture
+        capture_screenshot \
+            "${screenshot_files[$idx]}" \
+            "${screenshot_labels[$idx]}" \
+            "${screenshot_markers[$idx]}"
+    done
 
     # Help overlay
     tmux send-keys -t "$SESSION" '?'
     sleep 0.5
-    tmux capture-pane -t "$SESSION" -p >"$SCREENSHOT_DIR/07-help.txt"
-    echo "▸ Captured: 07-help.txt"
+    capture_screenshot "08-help.txt" "Help" "Key Bindings"
 
     tmux send-keys -t "$SESSION" q
     echo ""

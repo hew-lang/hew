@@ -602,7 +602,7 @@ static void test_rc_call_boundary_borrow_no_clone() {
 // The callee's Rc param must have NO hew_rc_drop — function params are
 // borrowed under call-boundary ownership.  If this test starts failing,
 // it means param drop tracking was implemented and the call-boundary
-// contract has changed; update this test and the BorrowedRcReturn
+// contract has changed; update this test and the BorrowedParamReturn
 // diagnostic accordingly.
 static void test_rc_callee_param_no_drop_registered() {
   TEST(rc_callee_param_no_drop_registered);

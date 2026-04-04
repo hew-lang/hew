@@ -335,10 +335,16 @@ pub enum TypeErrorKind {
     UnresolvedImport,
     /// Blocking call inside an actor receive function can starve the scheduler
     BlockingCallInReceiveFn,
-    /// Returning an `Rc<T>` parameter without `.clone()` borrows the caller's
-    /// reference — the raw pointer is aliased, causing a double-free when both
-    /// caller and callee-result drops fire.  Fail-closed: always an error.
-    BorrowedRcReturn,
+    /// Returning a borrowed parameter (Rc<T>, non-Copy generic, or a local
+    /// tainted by storing such a parameter) without cloning aliases the
+    /// caller's pointer, causing a double-free.  Fail-closed: always an error.
+    BorrowedParamReturn,
+    /// Storing `Rc<T>` (or a type that transitively contains `Rc<T>`) inside
+    /// a collection (`Vec`, `HashMap`, `HashSet`).  The runtime collections do
+    /// not track ownership of pointer-valued elements — `hew_vec_free` does not
+    /// drop elements, and `HashMap` confuses Rc pointers with strings.  Until
+    /// the runtime properly manages owned-type element drops, this is unsound.
+    UnsafeCollectionElement,
 }
 
 #[cfg(test)]

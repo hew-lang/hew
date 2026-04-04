@@ -710,8 +710,8 @@ fn rc_param_return_errors_borrowed_rc() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "returning Rc param as trailing expr should emit BorrowedRcReturn error, got errors: {:#?}, warnings: {:#?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "returning Rc param as trailing expr should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
         output.errors, output.warnings
     );
 }
@@ -734,8 +734,8 @@ fn rc_param_explicit_return_errors_borrowed_rc() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "explicit return of Rc param should emit BorrowedRcReturn error, got errors: {:#?}, warnings: {:#?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "explicit return of Rc param should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
         output.errors, output.warnings
     );
 }
@@ -755,14 +755,14 @@ fn rc_param_break_value_errors_borrowed_rc() {
         ",
     );
     // Note: the type checker currently types `loop { break v; }` as Unit,
-    // so this also gets a ReturnTypeMismatch.  The BorrowedRcReturn error
+    // so this also gets a ReturnTypeMismatch.  The BorrowedParamReturn error
     // must still fire independently of that.
     assert!(
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "break-with-value of Rc param should emit BorrowedRcReturn error, got errors: {:#?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "break-with-value of Rc param should emit BorrowedParamReturn error, got errors: {:#?}",
         output.errors
     );
 }
@@ -782,8 +782,8 @@ fn rc_param_block_wrapped_return_errors_borrowed_rc() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "block-wrapped Rc param return should emit BorrowedRcReturn error, got errors: {:#?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "block-wrapped Rc param return should emit BorrowedParamReturn error, got errors: {:#?}",
         output.errors
     );
 }
@@ -803,7 +803,7 @@ fn rc_param_clone_return_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -812,7 +812,7 @@ fn rc_param_clone_return_no_error() {
 }
 
 /// Passing an Rc to a function that reads it (borrow) should be clean — no
-/// `BorrowedRcReturn` errors.
+/// `BorrowedParamReturn` errors.
 #[test]
 fn rc_pass_to_fn_borrow_clean() {
     let output = typecheck_inline(
@@ -829,11 +829,11 @@ fn rc_pass_to_fn_borrow_clean() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
-        "Rc borrow (read-only callee) should not emit BorrowedRcReturn, got: {rc_errors:#?}",
+        "Rc borrow (read-only callee) should not emit BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -854,12 +854,12 @@ fn rc_param_some_wrap_errors_borrowed_rc() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
         1,
-        "Some(r) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+        "Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -877,12 +877,12 @@ fn rc_param_tuple_wrap_errors_borrowed_rc() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
         1,
-        "(r, 0) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+        "(r, 0) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -903,12 +903,12 @@ fn rc_param_struct_init_errors_borrowed_rc() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
         1,
-        "Holder {{ val: r }} should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+        "Holder {{ val: r }} should trigger BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -926,7 +926,7 @@ fn rc_param_some_clone_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -948,7 +948,7 @@ fn rc_new_in_return_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -970,12 +970,12 @@ fn rc_param_explicit_return_some_errors_borrowed_rc() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
         1,
-        "return Some(r) should trigger BorrowedRcReturn, got: {rc_errors:#?}",
+        "return Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -997,7 +997,7 @@ fn rc_param_passed_to_regular_fn_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -1022,11 +1022,11 @@ fn rc_generic_passthrough_unbounded_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
-        "returning non-Copy generic param should emit BorrowedRcReturn, got errors: {:#?}",
+        "returning non-Copy generic param should emit BorrowedParamReturn, got errors: {:#?}",
         output.errors
     );
     // Verify the error message mentions the type parameter, not "Rc".
@@ -1051,11 +1051,33 @@ fn rc_generic_copy_bounded_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
         "Copy-bounded generic param should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Where-clause `T: Copy` bound also exempts the parameter from the check.
+#[test]
+fn rc_generic_where_clause_copy_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn id<T>(x: T) -> T where T: Copy {
+            x
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "where-clause Copy-bounded generic param should not error, got: {rc_errors:#?}",
     );
 }
 
@@ -1076,7 +1098,7 @@ fn rc_generic_passthrough_explicit_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
@@ -1099,7 +1121,7 @@ fn rc_generic_passthrough_some_wrap_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
@@ -1122,7 +1144,7 @@ fn rc_generic_mixed_bounds_selective_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
@@ -1154,12 +1176,12 @@ fn rc_method_call_store_and_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
         1,
-        "returning v after v.push(r) must fire BorrowedRcReturn, got: {rc_errors:#?}",
+        "returning v after v.push(r) must fire BorrowedParamReturn, got: {rc_errors:#?}",
     );
     assert!(
         rc_errors[0].message.contains("`v`") && rc_errors[0].message.contains("`r`"),
@@ -1184,7 +1206,7 @@ fn rc_method_call_store_explicit_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert_eq!(
         rc_errors.len(),
@@ -1208,11 +1230,11 @@ fn rc_direct_alias_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
-        "returning alias `v = r` must fire BorrowedRcReturn, got: {:#?}",
+        "returning alias `v = r` must fire BorrowedParamReturn, got: {:#?}",
         output.errors
     );
 }
@@ -1232,11 +1254,11 @@ fn rc_aggregate_alias_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
-        "returning alias `v = Some(r)` must fire BorrowedRcReturn, got: {:#?}",
+        "returning alias `v = Some(r)` must fire BorrowedParamReturn, got: {:#?}",
         output.errors
     );
 }
@@ -1258,7 +1280,7 @@ fn rc_transitive_taint_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
@@ -1284,7 +1306,7 @@ fn rc_method_call_store_no_return_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -1308,7 +1330,7 @@ fn rc_method_call_store_clone_no_error() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         rc_errors.is_empty(),
@@ -1334,7 +1356,7 @@ fn rc_method_call_store_in_branch_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
@@ -1359,7 +1381,7 @@ fn rc_generic_method_call_store_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
@@ -1384,16 +1406,203 @@ fn rc_assignment_taint_return_errors() {
     let rc_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
         .collect();
     assert!(
         !rc_errors.is_empty(),
-        "`v = r;` then return v must fire BorrowedRcReturn, got: {:#?}",
+        "`v = r;` then return v must fire BorrowedParamReturn, got: {:#?}",
         output.errors
     );
 }
 
-// ── Known limitations of BorrowedRcReturn ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UnsafeCollectionElement — Rc<T> in collections
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: assert that source produces at least one `UnsafeCollectionElement` error.
+fn assert_unsafe_collection_element(source: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::UnsafeCollectionElement)
+        .collect();
+    assert!(
+        !hits.is_empty(),
+        "{context}: expected UnsafeCollectionElement error, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Helper: assert that source produces NO `UnsafeCollectionElement` error.
+fn assert_no_unsafe_collection_element(source: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::UnsafeCollectionElement)
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "{context}: unexpected UnsafeCollectionElement error(s): {hits:#?}"
+    );
+}
+
+#[test]
+fn rc_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            let r = Rc::new(42);
+            var v = Vec::new();
+            v.push(r);
+        }",
+        "Vec.push(Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_vec_set_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v: Vec<Rc<int>> = Vec::new();
+            let r = Rc::new(99);
+            v.set(0, r);
+        }",
+        "Vec.set(_, Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_vec_extend_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v: Vec<Rc<int>> = Vec::new();
+            let w: Vec<Rc<int>> = Vec::new();
+            v.extend(w);
+        }",
+        "Vec.extend(Vec<Rc<int>>)",
+    );
+}
+
+#[test]
+fn rc_hashmap_insert_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            let r = Rc::new(42);
+            m.insert("key", r);
+        }"#,
+        "HashMap.insert(_, Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_hashmap_insert_key_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            let r = Rc::new(42);
+            m.insert(r, "val");
+        }"#,
+        "HashMap.insert(Rc<int>, _)",
+    );
+}
+
+#[test]
+fn rc_hashset_insert_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let r = Rc::new(42);
+            s.insert(r);
+        }",
+        "HashSet.insert(Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_nested_in_vec_element_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            let r = Rc::new(42);
+            v.push(Some(r));
+        }",
+        "Vec.push(Option<Rc<int>>)",
+    );
+}
+
+#[test]
+fn rc_tuple_in_vec_element_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            let r = Rc::new(42);
+            v.push((r, 0));
+        }",
+        "Vec.push((Rc<int>, int))",
+    );
+}
+
+// ── Safe patterns: collections with Copy / primitive types ──────────────
+
+#[test]
+fn vec_int_push_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            v.push(42);
+        }",
+        "Vec<int> push should be fine",
+    );
+}
+
+#[test]
+fn vec_string_push_ok() {
+    assert_no_unsafe_collection_element(
+        r#"
+        fn main() {
+            var v = Vec::new();
+            v.push("hello");
+        }"#,
+        "Vec<String> push should be fine",
+    );
+}
+
+#[test]
+fn hashmap_string_string_insert_ok() {
+    assert_no_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            m.insert("key", "value");
+        }"#,
+        "HashMap<String, String> insert should be fine",
+    );
+}
+
+#[test]
+fn hashset_int_insert_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            s.insert(42);
+        }",
+        "HashSet<int> insert should be fine",
+    );
+}
+
+// ── Known limitations of BorrowedParamReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and
 // are explicitly deferred to a future escape-analysis pass:

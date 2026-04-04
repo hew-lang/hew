@@ -537,6 +537,17 @@ enum ConstValue {
     Float(f64),
 }
 
+/// Check if a type directly or transitively contains `Rc<T>`.
+fn ty_contains_rc(ty: &Ty) -> bool {
+    match ty {
+        Ty::Named { name, args } if name == "Rc" => !args.is_empty(),
+        Ty::Named { args, .. } => args.iter().any(ty_contains_rc),
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_rc),
+        Ty::Array(inner, _) | Ty::Slice(inner) => ty_contains_rc(inner),
+        _ => false,
+    }
+}
+
 fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
     let Some(actual_info) = integer_type_info(actual) else {
         return false;
@@ -6647,7 +6658,7 @@ impl Checker {
                 };
                 self.errors.push(TypeError {
                     severity: crate::error::Severity::Error,
-                    kind: TypeErrorKind::BorrowedRcReturn,
+                    kind: TypeErrorKind::BorrowedParamReturn,
                     span: span.clone(),
                     message,
                     notes: vec![(span.clone(), note)],
@@ -7708,6 +7719,24 @@ impl Checker {
         }
     }
 
+    /// Reject `Rc<T>` (or types transitively containing `Rc<T>`) as a
+    /// collection element type.  The runtime does not drop owned-type
+    /// collection elements, so storing `Rc<T>` causes refcount leaks.
+    fn reject_rc_collection_element(&mut self, container: &str, elem_ty: &Ty, span: &Span) {
+        let resolved = self.subst.resolve(elem_ty);
+        if ty_contains_rc(&resolved) {
+            self.report_error(
+                TypeErrorKind::UnsafeCollectionElement,
+                span,
+                format!(
+                    "`{container}` cannot hold `{}`; Rc<T> in collections is not yet \
+                     supported (runtime does not track Rc ownership for collection elements)",
+                    resolved.user_facing()
+                ),
+            );
+        }
+    }
+
     fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -7734,6 +7763,8 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &val_ty);
                 }
+                self.reject_rc_collection_element("HashMap", &key_ty, span);
+                self.reject_rc_collection_element("HashMap", &val_ty, span);
                 Ty::Unit
             }
             "get" | "remove" => {
@@ -7797,6 +7828,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                self.reject_rc_collection_element("HashSet", &elem_ty, span);
                 Ty::Bool
             }
             "contains" | "remove" => {
@@ -7898,6 +7930,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 Ty::Unit
             }
             "pop" => elem_ty,
@@ -7931,6 +7964,7 @@ impl Checker {
                     let (expr, sp) = val.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 Ty::Unit
             }
             "append" | "extend" => {
@@ -7938,6 +7972,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, receiver_ty);
                 }
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 Ty::Unit
             }
             "join" => {
@@ -11069,7 +11104,7 @@ mod tests {
     #[test]
     fn typecheck_generic_call_with_explicit_type_args() {
         // This test exercises generic type-arg resolution, not Rc safety.
-        // The BorrowedRcReturn diagnostic on `identity` is expected and filtered.
+        // The BorrowedParamReturn diagnostic on `identity` is expected and filtered.
         let source = concat!(
             "fn identity<T>(x: T) -> T { x }\n",
             "fn main() {\n",
@@ -11090,7 +11125,7 @@ mod tests {
         let unexpected: Vec<_> = output
             .errors
             .iter()
-            .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedRcReturn))
+            .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
             .collect();
         assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
     }
@@ -11098,7 +11133,7 @@ mod tests {
     #[test]
     fn typecheck_generic_call_with_inferred_type_args() {
         // This test exercises generic type-arg resolution, not Rc safety.
-        // The BorrowedRcReturn diagnostic on `identity` is expected and filtered.
+        // The BorrowedParamReturn diagnostic on `identity` is expected and filtered.
         let source = concat!(
             "fn identity<T>(x: T) -> T { x }\n",
             "fn main() {\n",
@@ -11119,7 +11154,7 @@ mod tests {
         let unexpected: Vec<_> = output
             .errors
             .iter()
-            .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedRcReturn))
+            .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
             .collect();
         assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
     }

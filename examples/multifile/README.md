@@ -100,7 +100,7 @@ origin  = (0, 0)
 p       = (3, 4)
 q       = (6, 8)
 manhattan(o, p)   = 7
-chebyshev(p, q)   = 3
+chebyshev(p, q)   = 4
 bounding_area(o, q) = 48
 ```
 

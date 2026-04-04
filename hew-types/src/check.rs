@@ -334,6 +334,9 @@ pub struct Checker {
     in_for_binding: bool,
     /// Whether we are currently inside a `pure` function body.
     in_pure_function: bool,
+    /// Whether we are currently inside an actor receive function body.
+    /// Used to warn about blocking calls that can starve the scheduler.
+    in_receive_fn: bool,
     /// Whether we are currently inside an unsafe block.
     in_unsafe: bool,
     /// The module currently being processed (enables per-module scoping in future).
@@ -616,6 +619,7 @@ impl Checker {
             current_function: None,
             in_for_binding: false,
             in_pure_function: false,
+            in_receive_fn: false,
             in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),
@@ -3973,6 +3977,8 @@ impl Checker {
 
         let prev_in_pure = self.in_pure_function;
         self.in_pure_function = rf.is_pure;
+        let prev_in_receive_fn = self.in_receive_fn;
+        self.in_receive_fn = true;
         self.env.push_scope();
 
         // Set current_function so calls within this receive fn are recorded
@@ -4043,6 +4049,7 @@ impl Checker {
         );
 
         self.in_generator = prev_in_generator;
+        self.in_receive_fn = prev_in_receive_fn;
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
@@ -6277,6 +6284,42 @@ impl Checker {
         }
     }
 
+    /// Emit a `BlockingCallInReceiveFn` warning when a known blocking operation
+    /// is called from inside an actor receive function.
+    ///
+    /// Actor receive functions run synchronously on scheduler worker threads.
+    /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
+    /// for the duration of the wait, preventing other actors from being
+    /// scheduled and potentially causing deadlocks when all worker threads
+    /// are occupied by blocked receive handlers.
+    ///
+    /// `op_desc` should be a short human-readable label such as
+    /// `"Receiver::recv"` or `"net.Connection::read"`.
+    fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
+        if !self.in_receive_fn {
+            return;
+        }
+        self.warnings.push(TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::BlockingCallInReceiveFn,
+            span: span.clone(),
+            message: format!(
+                "blocking call `{op_desc}` inside an actor receive function \
+                 can stall the scheduler thread and cause deadlocks; \
+                 consider passing the value in via a message instead"
+            ),
+            notes: vec![(
+                span.clone(),
+                "actor receive functions run synchronously on scheduler worker threads".to_string(),
+            )],
+            suggestions: vec![
+                "send the blocking work to a dedicated actor or async task and \
+                 deliver the result as a message"
+                    .to_string(),
+            ],
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -7575,10 +7618,13 @@ impl Checker {
             (Ty::String, _) => self.check_string_method(method, args, span),
             // http.Server methods
             (Ty::Named { name, .. }, _) if name == "http.Server" => match method {
-                "accept" => Ty::Named {
-                    name: "http.Request".to_string(),
-                    args: vec![],
-                },
+                "accept" => {
+                    self.warn_if_blocking_in_receive_fn("http.Server::accept", span);
+                    Ty::Named {
+                        name: "http.Request".to_string(),
+                        args: vec![],
+                    }
+                }
                 "close" => Ty::Unit,
                 _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
             },
@@ -7629,10 +7675,13 @@ impl Checker {
             },
             // net.Listener methods
             (Ty::Named { name, .. }, _) if name == "net.Listener" => match method {
-                "accept" => Ty::Named {
-                    name: "net.Connection".to_string(),
-                    args: vec![],
-                },
+                "accept" => {
+                    self.warn_if_blocking_in_receive_fn("net.Listener::accept", span);
+                    Ty::Named {
+                        name: "net.Connection".to_string(),
+                        args: vec![],
+                    }
+                }
                 "close" => Ty::Unit,
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
@@ -7640,7 +7689,10 @@ impl Checker {
             },
             // net.Connection methods
             (Ty::Named { name, .. }, _) if name == "net.Connection" => match method {
-                "read" => Ty::Bytes,
+                "read" => {
+                    self.warn_if_blocking_in_receive_fn("net.Connection::read", span);
+                    Ty::Bytes
+                }
                 "write" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
@@ -7838,7 +7890,11 @@ impl Checker {
                     return Ty::Error;
                 }
                 match method {
-                    "recv" | "try_recv" => Ty::option(inner),
+                    "recv" => {
+                        self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
+                        Ty::option(inner)
+                    }
+                    "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
                     _ => self.check_named_method_fallback(
                         &resolved,

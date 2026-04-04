@@ -55,7 +55,7 @@ impl ReplSession {
         }
 
         // Build the synthetic program.
-        let program = self.session.build_program(trimmed);
+        let program = self.session.build_program_with_kind(trimmed, kind);
 
         // Parse.
         let parse_result = hew_parser::parse(&program.source);
@@ -564,6 +564,19 @@ mod tests {
         }
         let mut session = ReplSession::new();
         let r1 = session.eval("fn double(x: i64) -> i64 { x * 2 }");
+        assert!(!r1.had_errors, "errors: {:?}", r1.errors);
+        let r2 = session.eval("double(21)");
+        assert!(!r2.had_errors, "errors: {:?}", r2.errors);
+        assert_eq!(r2.output, "42\n");
+    }
+
+    #[test]
+    fn eval_doc_commented_function_persists() {
+        if !require_toolchain() {
+            return;
+        }
+        let mut session = ReplSession::new();
+        let r1 = session.eval("/// Doubles the input.\nfn double(x: i64) -> i64 { x * 2 }");
         assert!(!r1.had_errors, "errors: {:?}", r1.errors);
         let r2 = session.eval("double(21)");
         assert!(!r2.had_errors, "errors: {:?}", r2.errors);

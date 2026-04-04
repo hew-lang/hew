@@ -15,6 +15,23 @@ hew build examples/fibonacci.hew -o fibonacci
 ./fibonacci
 ```
 
+## Expected Output Files
+
+Many examples — especially those under `ux/` and `progressive/` — ship with a sibling `.expected` file containing the exact stdout the program should produce. These files are used by the automated test suite, and you can use them locally to verify your build is correct:
+
+```sh
+# Run an example and diff its output against the expected file
+diff <(hew run examples/ux/01_hello.hew) examples/ux/01_hello.expected
+
+# Run all ux examples and check output
+for f in examples/ux/*.hew; do
+    expected="${f%.hew}.expected"
+    diff <(hew run "$f") "$expected" && echo "OK: $f" || echo "FAIL: $f"
+done
+```
+
+If the diff is empty the output matches exactly. A non-empty diff means the program produced unexpected output or the binary is out of date.
+
 ## Directory Guide
 
 ### Learning Paths

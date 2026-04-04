@@ -7,7 +7,7 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 - **Structured concurrency with cooperative cancellation** (Swift-style model) ([docs.swift.org][3])
 - **Wire contracts with enforced schema evolution rules** (Protobuf best practices) ([protobuf.dev][4])
 
-This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
+This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, `machine` types, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
 
 **Release alignment note (v0.2.0):**
 
@@ -1841,6 +1841,50 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `HashMap<K, V>` is also built in. In v0.2.0, `HashMap.get()` returns
 `Option<V>`.
 
+**Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
+brace-colon syntax.  The parser disambiguates `{` as a map literal when the
+first token after `{` is a `StringLit` followed by `:`:
+
+```hew
+// Inferred: HashMap<String, i32>
+let scores = {"alice": 10, "bob": 20};
+
+// Explicit type annotation drives checking; each value must match V
+let env: HashMap<String, String> = {
+    "HOST": "localhost",
+    "PORT": "8080",
+};
+
+// Trailing comma is allowed
+let flags = {"debug": true, "verbose": false,};
+
+// Empty block {} coerces to HashMap<K,V> when the expected type is known
+let empty: HashMap<String, i32> = {};
+```
+
+Rules:
+
+- Keys must all have the same type; the key type is inferred from the first
+  entry.
+- Values must all have the same type; the value type is inferred from the
+  first entry.
+- The `{}` empty block coerces to `HashMap<K,V>` when the surrounding context
+  supplies an expected `HashMap` type.
+- Map literals compile to a `HashMap::new()` followed by one `insert` call per
+  entry; no heap-coalescing is performed at compile time.
+
+Available `HashMap` methods in v0.2.0:
+
+| Method                    | Returns         | Description                      |
+| ------------------------- | --------------- | -------------------------------- |
+| `HashMap::new()`          | `HashMap<K,V>`  | Create empty map                 |
+| `m.get(key)`              | `Option<V>`     | Look up a key                    |
+| `m.insert(key, value)`    | `()`            | Insert or overwrite              |
+| `m.remove(key)`           | `Option<V>`     | Remove a key                     |
+| `m.contains_key(key)`     | `bool`          | Test membership                  |
+| `m.len()`                 | `i64`           | Number of entries                |
+| `m.is_empty()`            | `bool`          | True if no entries               |
+
 #### 3.10.4 Shipped Collections, I/O, and Utility Modules
 
 The current release exposes concrete stdlib modules rather than a large trait
@@ -1988,6 +2032,224 @@ fn is_valid_email(s: string) -> bool {
     s =~ re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
 }
 ```
+
+---
+
+## 3.11 `machine` Types
+
+A `machine` is a **value type** that defines a closed set of named states, a
+closed set of named events, and transition rules mapping `(State, Event)` pairs
+to new states.  It compiles to a tagged union with a compiler-generated
+`step()` method.  Machines are not actors — they are pure data, like enums
+with per-state fields and compiler-checked transition logic.
+
+> **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
+> for the full normative reference.  This section summarises the implemented
+> surface in v0.2.0.
+
+**Design pillars:**
+
+- **Value semantics** — a machine is a tagged union (like `enum`), not a
+  reference type.
+- **Exhaustiveness** — the compiler verifies that every `(State, Event)` pair
+  is handled (via an explicit transition, a wildcard, or a `default` handler).
+- **Zero-cost** — compiles to an integer tag plus a C-style union of state
+  structs. No heap allocations, no threads.
+
+### 3.11.1 Declaration Syntax
+
+```hew
+machine Name {
+    // States — at least two required
+    state StateA;                           // unit state (no fields)
+    state StateB { field: Type; }          // state with data
+
+    // Events — at least one required
+    event EventX;                           // event with no payload
+    event EventY { payload: Type; }        // event with payload
+
+    // Transitions: on Event: Source -> Target { body }
+    on EventX: StateA -> StateB;           // body-less: target constructed implicitly
+    on EventX: StateB -> StateA { StateA } // explicit body returns target value
+    on EventY: StateA -> StateB { StateB { field: event.payload } }
+
+    // Wildcard — applies when no specific transition matches
+    on EventX: _ -> _ { state }            // _ -> _ means "stay in current state"
+
+    // Default handler — fallback for ALL unmatched (state, event) pairs
+    default { state }
+}
+```
+
+**Grammar (EBNF, from `docs/specs/grammar.ebnf`):**
+
+```ebnf
+MachineDecl   = "machine" Ident "{" { MachineItem } "}" ;
+MachineItem   = MachineState | MachineEvent | MachineTransition | MachineDefault ;
+MachineState  = "state" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineEvent  = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineTransition = "on" Ident ":" StatePattern "->" StatePattern
+                    ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
+MachineDefault = "default" (Block | ";") ;
+```
+
+### 3.11.2 Constraints
+
+| Constraint                                  | Error if violated                          |
+| ------------------------------------------- | ------------------------------------------ |
+| At least two states                         | `machine_one_state` negative test          |
+| At least one event                          | `machine_no_events` negative test          |
+| No duplicate explicit transition per (S, E) | `machine_dup_transition` negative test     |
+| No duplicate wildcard for same event        | `machine_dup_wildcard` negative test       |
+| All referenced states/events must be declared | `machine_unknown_state/event` negative tests |
+| All (S, E) pairs covered (exhaustiveness)   | `machine_exhaustive_fail` negative test    |
+
+Exhaustiveness can be satisfied by: explicit `on` rules, wildcard `on` rules,
+or a `default` handler.  A `default` handler alone covers all pairs that have
+no other matching rule.
+
+### 3.11.3 Transition Bodies
+
+Inside a transition body the compiler binds two implicit names:
+
+| Binding     | Type              | Meaning                                         |
+| ----------- | ----------------- | ----------------------------------------------- |
+| `state`     | source state type | Fields of the current (source) state            |
+| `event`     | event struct      | Payload fields of the incoming event (if any)   |
+
+```hew
+machine Elevator {
+    state Stopped { floor: Int; }
+    state Moving  { from: Int; to: Int; }
+
+    event GoTo  { floor: Int; }
+    event Arrive;
+
+    on GoTo: Stopped -> Moving {
+        Moving { from: state.floor, to: event.floor }   // state.floor, event.floor
+    }
+    on Arrive: Moving -> Stopped {
+        Stopped { floor: state.to }
+    }
+
+    default { state }
+}
+```
+
+**Elided target state name** — when the target state is unambiguous, the
+`TargetState { ... }` wrapper may be omitted and only the field initialiser
+list is written:
+
+```hew
+on Work: Active -> Active { count: state.count + event.amount }
+// equivalent to:
+// on Work: Active -> Active { Active { count: state.count + event.amount } }
+```
+
+**Body-less shorthand** — when a transition has no body, the compiler
+constructs the target state's zero-field (unit) variant automatically:
+
+```hew
+on Toggle: Off -> On;   // equivalent to: on Toggle: Off -> On { On }
+```
+
+### 3.11.4 Guard Conditions (`when`)
+
+A transition may carry a boolean guard expression after the target state name:
+
+```hew
+on Request: Allowing -> Allowing when state.tokens > 1 {
+    Allowing { tokens: state.tokens - 1 }
+}
+on Request: Allowing -> Throttled when state.tokens <= 1;
+```
+
+Guards are evaluated in declaration order.  The first transition whose event
+and source-state match *and* whose guard (if present) evaluates to `true` fires.
+If no guarded transition matches, evaluation falls through to wildcard rules and
+then to `default`.
+
+### 3.11.5 Wildcard Transitions and Priority
+
+`_` in the source position matches any state.  `_` in the target position means
+"return a value of the machine type" (any variant, not a specific one).  The
+conventional identity pattern `on E: _ -> _ { state }` keeps the current state
+unchanged.
+
+Priority order (highest to lowest):
+
+1. Explicit transitions (specific source state, no wildcard)
+2. Wildcard/`_`-source transitions
+3. `default` handler
+
+Specific transitions always win over wildcards for the same event.
+
+### 3.11.6 Generated API
+
+The compiler generates the following for every `machine Name { ... }`:
+
+| Generated item              | Signature / behaviour                                              |
+| ----------------------------| ------------------------------------------------------------------ |
+| State constructors          | `Name::State` (unit) or `Name::State { field: val }` (with data)  |
+| Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
+| Event constructors          | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }`  |
+| `step(event)` method        | `fn step(m: Name, event: NameEvent)` — mutates in place, no return |
+| `state_name()` method       | `fn state_name(m: Name) -> String` — returns current state name    |
+| Pattern-match support       | Machine values can be matched exactly like enum values             |
+
+**Calling `step()`** — both unqualified and qualified event constructors are
+accepted:
+
+```hew
+var light = Light::Off;
+light.step(Toggle);                // unqualified (preferred for brevity)
+light.step(LightEvent::Toggle);   // fully qualified (also valid)
+```
+
+**Pattern matching** — machine values can be destructured in `match`, `if let`,
+`while let`, and function parameters exactly like enums:
+
+```hew
+match cb {
+    Closed { failures } => println(f"failures = {failures}"),
+    Open                => println("open"),
+    HalfOpen            => println("half-open"),
+}
+```
+
+### 3.11.7 Using Machines Inside Actors
+
+Machines are values — they are commonly embedded as actor fields:
+
+```hew
+actor ConnectionManager {
+    var tcp: TcpState = TcpState::Closed;
+
+    receive fn handle(event: TcpStateEvent) {
+        tcp.step(event);
+        // React to the new state
+        match tcp {
+            Established { local_seq, remote_seq } => {
+                println(f"established seq={local_seq}/{remote_seq}");
+            },
+            _ => {},
+        }
+    }
+}
+```
+
+Because `machine` is a value type, assigning a machine variable copies it.
+The `step()` method mutates the variable in place — it does not return a new
+value.
+
+### 3.11.8 Type System Integration
+
+- A machine type is a nominal type; it does not implicitly unify with any
+  `enum` or other machine.
+- Machines satisfy `Send` if all their state fields satisfy `Send`
+  (same rule as structs).
+- Machines can be used as type parameters wherever the bound permits.
+- Generics over machines are not yet supported in v0.2.0 (non-goal).
 
 ---
 
@@ -4251,7 +4513,7 @@ Both files cover the currently documented v0.2.0 syntax: modules, traits,
 closures, pattern matching, control flow, `while let`, labelled loops,
 structured concurrency, actor messaging operators, concurrency expressions,
 generators, FFI, where clauses, f-string expressions, regex literals, match
-operators, and duration literals.
+operators, duration literals, `machine` declarations, and map literals.
 
 When the grammar files and this specification disagree, the parser implementation (`hew-parser/src/parser.rs`) is the authoritative source of truth.
 
@@ -4646,6 +4908,22 @@ If you want this to be directly executable as an engineering project, the next m
 ---
 
 ## Changelog
+
+### v0.2.1 (spec-machine-map-alignment)
+
+- **Added §3.11 `machine` Types** — syntax, states/events/transitions, guard
+  conditions (`when`), wildcard rules, `default` handler, elided target state
+  name shorthand, body-less transition shorthand, the `state`/`event` bindings
+  in transition bodies, generated `step()` and `state_name()` API, pattern
+  matching, and actor integration.  Grounded in `e2e_machine/` and
+  `e2e_negative/machine_*` codegen tests and `hew-types/tests/machine_typecheck.rs`.
+- **Added map literal documentation in §3.10.3** — `{"key": value, ...}`
+  syntax, inference rules, trailing-comma and empty-block coercion, and
+  `HashMap` method table.  Grounded in `e2e_collections/map_literal.hew`,
+  `hew-parser/src/parser.rs` (`parse_map_literal_entries`), and
+  `hew-types/src/check.rs` (`synthesize_map_literal`).
+- **Updated §11 intro** — added `machine` declarations and map literals to the
+  list of constructs covered by `grammar.ebnf` / `Hew.g4`.
 
 ### v0.2.0
 

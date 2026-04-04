@@ -15,10 +15,6 @@ import std::fs;
 
 import std::os;
 
-// hew_bytes_to_string converts a stdlib `bytes` value to a String.
-// Declared here because it is the only non-stdlib FFI needed: conn.read()
-// returns the raw byte vector before NUL stripping, which is required for
-// accurate byte counting and correct EOF detection.
 extern "C" {
     fn hew_bytes_to_string(data: bytes) -> String;
 }
@@ -114,26 +110,27 @@ fn main() {
         panic(err);
     }
     // Build and send HTTP request
-    conn.write_string(f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    let request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+    conn.write_string(request);
     println("  Request sent");
     println("");
 
     // Spawn a progress reporter actor
-    let reporter = spawn (bytes_so_far: i32) => {
+    let reporter = spawn (bytes_so_far: i64) => {
         print(f"  Progress: {bytes_so_far} bytes received");
     };
-    // Read response in chunks; count raw bytes before any NUL stripping.
-    var total_bytes: i32 = 0;
+    // Read response in chunks
+    var total_bytes: i64 = 0;
     var full_response: String = "";
     var reading = true;
     while reading {
-        let raw = conn.read();
-        let chunk_len = raw.len() as i32;
+        let chunk_bytes = conn.read();
+        let chunk_len = chunk_bytes.len();
         if chunk_len == 0 {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
-            let chunk = unsafe { hew_bytes_to_string(raw) };
+            let chunk = unsafe { hew_bytes_to_string(chunk_bytes) };
             full_response = full_response + chunk;
             reporter.send(total_bytes);
         }

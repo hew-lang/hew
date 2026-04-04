@@ -1,16 +1,17 @@
-// haiku_quic_service_server.hew — Minimal QUIC-based remote service
+// service_server.hew — Minimal QUIC-based remote service
 //
 // Demonstrates:
 //   - Using std::net::quic public API to bind a QUIC server endpoint
 //   - Accepting a remote connection
-//   - Receiving and sending messages over QUIC streams
+//   - Receiving and sending UTF-8 string messages over QUIC streams
+//   - Preserving the finish/close/disconnect ordering used by the working loopback test
 //   - Clean bounded shutdown
 //
 // Run in one terminal:
-//   hew run haiku_quic_service_server.hew
+//   hew run service_server.hew
 //
 // Then in another:
-//   hew run haiku_quic_service_client.hew
+//   hew run service_client.hew
 
 import std::net::quic;
 
@@ -24,25 +25,42 @@ fn main() {
     
     // Accept one incoming connection.
     let conn = ep.accept();
+    let connected = ep.on_event();
+    assert_eq(connected.kind(), 0);
+    connected.free();
     println("[server] accepted connection");
     
     // Accept a stream on that connection.
     let stream = conn.accept_stream();
+    let opened = conn.on_event();
+    assert_eq(opened.kind(), 2);
+    opened.free();
     println("[server] accepted stream");
     
-    // Receive data from the client.
-    let data = stream.recv();
-    let msg = unsafe { hew_bytes_to_string(data) };
+    // Receive a UTF-8 message from the client.
+    let msg = stream.recv_string();
     println(f"[server] received: {msg}");
     
     // Echo back a response.
     let response = "Echo from server";
-    stream.send(unsafe { hew_string_to_bytes(response) });
-    println("[server] sent response");
+    let send_result = stream.send_string(response);
+    if send_result == 0 {
+        println("[server] sent response");
+    } else {
+        println("[server] failed to send response");
+    }
     
     // Clean shutdown of stream.
     stream.finish();
     stream.close();
+
+    // Wait for stream close and peer disconnect before tearing down the connection.
+    let ev1 = conn.on_event();
+    assert_eq(ev1.kind(), 3);
+    ev1.free();
+    let ev2 = conn.on_event();
+    assert_eq(ev2.kind(), 1);
+    ev2.free();
     
     // Clean shutdown of connection.
     conn.disconnect();
@@ -50,9 +68,4 @@ fn main() {
     // Clean shutdown of endpoint.
     ep.close();
     println("[server] shutdown complete");
-}
-
-extern "C" {
-    fn hew_string_to_bytes(s: String) -> bytes;
-    fn hew_bytes_to_string(b: bytes) -> String;
 }

@@ -120,10 +120,6 @@ pub struct ClusterMember {
 
 /// Connection info from `/api/connections`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
 pub struct ConnectionInfo {
     #[serde(default)]
     pub conn_id: i32,
@@ -137,10 +133,6 @@ pub struct ConnectionInfo {
 
 /// Routing table snapshot from `/api/routing/table`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
 pub struct RoutingSnapshot {
     #[serde(default)]
     pub local_node_id: u16,
@@ -149,10 +141,6 @@ pub struct RoutingSnapshot {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
 pub struct RouteEntry {
     #[serde(default)]
     pub node_id: u16,

@@ -156,6 +156,16 @@ pub fn member_state_colour(state: &str) -> Color {
     }
 }
 
+/// Map a connection state string to its display colour.
+pub fn connection_state_colour(state: &str) -> Color {
+    match state {
+        "active" => STATE_HEALTHY,
+        "connecting" | "draining" => STATE_WARNING,
+        "closed" => STATE_ERROR,
+        _ => TEXT_PRIMARY,
+    }
+}
+
 /// Map a trace event type to its (glyph, colour) pair for the timeline chart.
 pub fn timeline_event_glyph(event_type: &str) -> (char, Color) {
     match event_type {

@@ -1,0 +1,10 @@
+// Regression: plain Rc rebinding must emit an implicit clone so both
+// aliases have independent refcount ownership and scope-exit drops are safe.
+fn main() {
+    let rc = Rc::new(42);
+    let rc2 = rc;
+    println(rc.strong_count());
+    println(rc2.strong_count());
+    println(rc.get());
+    println(rc2.get());
+}

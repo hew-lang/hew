@@ -1038,6 +1038,38 @@ void MLIRGen::registerDropsForVariable(
     }
   }
 
+  // ── Rc<T> implicit clone on rebinding ─────────────────────────────
+  // When `let rc2 = rc` (plain identifier) binds an existing Rc, the new
+  // binding aliases the same allocation.  Without a refcount increment
+  // both scope-exit drops would decrement the same count-1 cell, causing
+  // a use-after-free.  Emit an implicit RcCloneOp (matching the closure-
+  // env prior art at the bottom of this function) and register the drop.
+  //
+  // Detection: stmtValue is ExprIdentifier AND the resolved type (or the
+  // type annotation) is Rc.  We must NOT fire for Rc::new / .clone() /
+  // other call expressions — those are handled by the later sections.
+  if (value && stmtValue && *stmtValue &&
+      std::holds_alternative<ast::ExprIdentifier>((*stmtValue)->value.kind)) {
+    bool isRcRebind = false;
+    // Check type annotation first
+    if (stmtTy && *stmtTy) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind))
+        isRcRebind = resolveTypeAlias(named->name) == "Rc";
+    }
+    // Fall back to resolved type from type checker
+    if (!isRcRebind) {
+      if (auto *resolvedType = resolvedTypeOf((*stmtValue)->span)) {
+        if (auto *named = std::get_if<ast::TypeNamed>(&resolvedType->kind))
+          isRcRebind = (named->name == "Rc");
+      }
+    }
+    if (isRcRebind && mlir::isa<mlir::LLVM::LLVMPointerType>(value.getType())) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      hew::RcCloneOp::create(builder, location, ptrType, value);
+      registerDroppable(varName, "hew_rc_drop");
+    }
+  }
+
   // ── Type-annotation-based drops ────────────────────────────────────
   if (stmtTy && *stmtTy) {
     if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind)) {

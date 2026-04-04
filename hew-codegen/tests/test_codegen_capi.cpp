@@ -394,6 +394,66 @@ static void test_rc_scope_exit_drop_registered() {
   PASS();
 }
 
+// Regression: plain Rc rebinding (`let rc2 = rc`) must emit an implicit
+// RcCloneOp and register hew_rc_drop for the new binding, otherwise the
+// two aliases share a single refcount and double-drop on scope exit.
+static void test_rc_rebind_emits_clone_and_drop() {
+  TEST(rc_rebind_emits_clone_and_drop);
+  // Unannotated rebinding
+  {
+    auto ast = hewToMsgpack("fn main() { let rc = Rc::new(42); let rc2 = rc; println(rc.get()); }");
+    if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    // Must have an rc.clone for the rebinding
+    if (mlir.find("hew.rc.clone") == std::string::npos) {
+      FAIL("unannotated Rc rebinding missing hew.rc.clone");
+      return;
+    }
+    // Must have TWO hew_rc_drop entries (one per binding)
+    size_t pos = 0;
+    int dropCount = 0;
+    while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+      dropCount++;
+      pos += 11;
+    }
+    if (dropCount < 2) {
+      FAIL(("unannotated Rc rebinding: expected 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+      return;
+    }
+  }
+  // Annotated rebinding
+  {
+    auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); let rc2: Rc<int> = rc; println(rc.get()); }");
+    if (ast.empty()) { FAIL("failed to parse annotated Rc rebind test"); return; }
+    auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+    HewCodegenBuffer buf{};
+    int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+    if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+    std::string mlir(buf.data, buf.len);
+    hew_codegen_buffer_free(buf);
+    if (mlir.find("hew.rc.clone") == std::string::npos) {
+      FAIL("annotated Rc rebinding missing hew.rc.clone");
+      return;
+    }
+    size_t pos = 0;
+    int dropCount = 0;
+    while ((pos = mlir.find("hew_rc_drop", pos)) != std::string::npos) {
+      dropCount++;
+      pos += 11;
+    }
+    if (dropCount < 2) {
+      FAIL(("annotated Rc rebinding: expected 2 hew_rc_drop, got " + std::to_string(dropCount)).c_str());
+      return;
+    }
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -567,6 +627,7 @@ int main() {
   // Successful emission
   test_emit_mlir_produces_output();
   test_rc_scope_exit_drop_registered();
+  test_rc_rebind_emits_clone_and_drop();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

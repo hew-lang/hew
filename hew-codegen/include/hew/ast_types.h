@@ -1016,6 +1016,12 @@ struct Program {
   /// Handle type name → MLIR representation ("handle" or "i32").
   /// Types not in this map default to opaque pointer (HandleType).
   std::unordered_map<std::string, std::string> handle_type_repr;
+  /// Stdlib handle drop functions from `impl Drop` metadata.
+  ///
+  /// Maps qualified type name (e.g. `"http.Request"`) to the C function that
+  /// frees it (e.g. `"hew_http_request_free"`). Consumed by MLIRGen to drive
+  /// handle-drop codegen without hardcoded type→function tables.
+  std::unordered_map<std::string, std::string> drop_funcs;
   std::optional<ModuleGraph> module_graph;
 
   /// Source file path for DWARF debug info (empty if not provided).

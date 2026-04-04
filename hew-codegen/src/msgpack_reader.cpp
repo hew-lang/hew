@@ -148,7 +148,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 2;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 3;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1791,6 +1791,23 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   if (lm && !isNil(*lm))
     prog.line_map = parseVec<size_t>(
         *lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
+
+  // Drop function metadata: maps qualified handle type name → C drop function.
+  // Populated from `impl Drop` blocks in stdlib .hew files.
+  // Fail closed: if the key is present it must be a map of string pairs.
+  const auto *df = mapGet(obj, "drop_funcs");
+  if (df && !isNil(*df)) {
+    if (df->type != msgpack::type::ARRAY)
+      fail("expected array for drop_funcs, got type " + std::to_string(df->type));
+    for (uint32_t i = 0; i < df->via.array.size; ++i) {
+      const auto &pair = df->via.array.ptr[i];
+      if (pair.type != msgpack::type::ARRAY || pair.via.array.size != 2)
+        fail("drop_funcs entry must be a 2-element array");
+      std::string ty = getString(pair.via.array.ptr[0]);
+      std::string func = getString(pair.via.array.ptr[1]);
+      prog.drop_funcs[ty] = func;
+    }
+  }
 
   return prog;
 }

@@ -492,18 +492,31 @@ unsafe extern "C" fn node_inbound_router(
         // ── Backpressure: bounded concurrent inbound ask workers ─────────────
         //
         // Optimistically increment the counter. If we were already at the
-        // limit we revert and send a rejection reply envelope back to the
-        // requester (msg_type = HEW_REPLY_REJECT_MSG_TYPE). The connection
-        // reader on the originating node dispatches this sentinel to
-        // `fail_remote_reply`, which sets ReplyStatus::Failed with reason
+        // limit we revert and — if the source peer understands the rejection
+        // sentinel (HEW_FEATURE_SUPPORTS_ASK_REJECTION) — send a rejection
+        // reply envelope back (msg_type = HEW_REPLY_REJECT_MSG_TYPE). The
+        // connection reader on the originating node dispatches this sentinel
+        // to `fail_remote_reply`, which sets ReplyStatus::Failed with reason
         // WorkerAtCapacity so `hew_node_api_ask` returns the precise
         // discriminant — fail-closed for both void and non-void asks.
+        //
+        // If the source peer does NOT advertise the feature flag (old node),
+        // we send no reply at all.  The originating ask will time out through
+        // its normal deadline path — this is the safe fail-closed fallback: an
+        // old peer that never sends the sentinel cannot misinterpret 65535 as
+        // a void-success, and we avoid the silent-success regression.
         let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
         if prev >= INBOUND_ASK_WORKER_LIMIT {
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             // SAFETY: the inbound router is only called while `conn_mgr` is live.
-            if let Some(shutdown) = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) } {
-                send_rejection_reply(source_node_id, request_id, conn_mgr, shutdown.as_ref());
+            let peer_flags =
+                unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr, source_node_id) };
+            if connection::supports_ask_rejection(peer_flags) {
+                // SAFETY: conn_mgr is live for the duration of the inbound router call.
+                let shutdown = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) };
+                if let Some(shutdown) = shutdown {
+                    send_rejection_reply(source_node_id, request_id, conn_mgr, shutdown.as_ref());
+                }
             }
             return;
         }

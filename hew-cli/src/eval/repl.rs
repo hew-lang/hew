@@ -87,8 +87,11 @@ impl ReplSession {
             };
         }
 
-        // Compile and execute via native pipeline.
-        match compile_and_execute(&program.source) {
+        // Compile and execute in-process.  Import resolution and typecheck are
+        // re-run inside compile_from_source_checked with correct stage ordering
+        // (resolve imports BEFORE typecheck) so that stdlib type metadata is
+        // available to the enrichment and codegen passes.
+        match run_inprocess_compiled(parse_result.program, &program.source) {
             Ok(output) => {
                 // On success, persist the input into session state.
                 match &program.kind {
@@ -292,39 +295,35 @@ impl ReplSession {
     }
 }
 
-/// Compile Hew source to a native binary via `hew build` and execute it.
-fn compile_and_execute(source: &str) -> Result<String, String> {
-    let hew_binary = crate::util::find_hew_binary()?;
-
+/// Compile the given already-parsed program to a native binary in a temporary
+/// directory and execute it, returning its stdout.
+///
+/// Import resolution and typecheck are performed here (not by the caller)
+/// so that the codegen pipeline sees stdlib type information in the same order
+/// as the normal `compile()` path.  The REPL's fast in-process typecheck is
+/// kept for user-facing error reporting only; this function runs the full
+/// correctly-ordered pipeline for codegen.
+fn run_inprocess_compiled(
+    program: hew_parser::ast::Program,
+    source: &str,
+) -> Result<String, String> {
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
-
-    let src_path = tmp_dir.path().join("eval.hew");
-    std::fs::write(&src_path, source).map_err(|e| format!("cannot write temp source: {e}"))?;
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
     let bin_path = tmp_dir.path().join(bin_name);
+    let bin_path_str = bin_path
+        .to_str()
+        .ok_or_else(|| "temp binary path is not valid UTF-8".to_string())?;
 
-    // Compile.
-    let compile = Command::new(&hew_binary)
-        .arg("build")
-        .arg(&src_path)
-        .arg("-o")
-        .arg(&bin_path)
-        .output()
-        .map_err(|e| format!("cannot invoke hew build: {e}"))?;
+    crate::compile::compile_from_source_checked(
+        program,
+        source,
+        "<repl>",
+        bin_path_str,
+        &crate::compile::CompileOptions::default(),
+    )?;
 
-    if !compile.status.success() {
-        let stderr = String::from_utf8_lossy(&compile.stderr);
-        let stdout = String::from_utf8_lossy(&compile.stdout);
-        let msg = if stderr.is_empty() {
-            stdout.to_string()
-        } else {
-            stderr.to_string()
-        };
-        return Err(msg);
-    }
-
-    // Execute.
+    // Execute the compiled binary and capture its stdout.
     let run = Command::new(&bin_path)
         .output()
         .map_err(|e| format!("cannot execute compiled program: {e}"))?;
@@ -505,28 +504,33 @@ Input types:
 mod tests {
     use super::*;
 
-    /// Verifies the full compilation toolchain is available by attempting a
-    /// trivial `hew build`. Returns false (and prints a skip message) when
-    /// `hew-codegen` or `libhew_runtime.a` aren't built yet.
+    /// Verifies the in-process codegen pipeline is available by compiling a
+    /// trivial program.  Returns false (and prints a skip message) when the
+    /// embedded `hew-codegen` backend or `libhew_runtime.a` aren't built yet.
     fn require_toolchain() -> bool {
         static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *OK.get_or_init(|| {
-            let Ok(hew) = crate::util::find_hew_binary() else {
-                eprintln!("REPL integration tests skipped: hew binary not found");
-                return false;
-            };
             let dir = tempfile::tempdir().expect("temp dir");
-            let src = dir.path().join("probe.hew");
-            std::fs::write(&src, "fn main() { println(\"ok\"); }\n").expect("write");
-            let ok = std::process::Command::new(&hew)
-                .args(["build", src.to_str().unwrap(), "-o"])
-                .arg(dir.path().join("probe"))
-                .output()
-                .is_ok_and(|o| o.status.success());
+            let bin_name = format!("probe{}", crate::platform::exe_suffix());
+            let bin_path = dir.path().join(bin_name);
+            let source = "fn main() { println(\"ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("REPL integration tests skipped: probe parse failed");
+                return false;
+            }
+            let ok = crate::compile::compile_from_source_checked(
+                parse_result.program,
+                source,
+                "<repl-probe>",
+                bin_path.to_str().unwrap_or("probe"),
+                &crate::compile::CompileOptions::default(),
+            )
+            .is_ok();
             if !ok {
                 eprintln!(
                     "REPL integration tests skipped: \
-                     hew build failed (codegen/runtime not available)"
+                     in-process compile failed (codegen/runtime not available)"
                 );
             }
             ok
@@ -583,6 +587,22 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
+    /// Regression test: regex literals must produce valid MLIR via the
+    /// in-process codegen path.  The old implementation passed a stale `tco`
+    /// (computed before import resolution) to `enrich_program_ast`, causing a
+    /// call-site / declaration type mismatch for `hew_regex_new` in the
+    /// generated MLIR.
+    #[test]
+    fn eval_regex_literal() {
+        if !require_toolchain() {
+            return;
+        }
+        let mut session = ReplSession::new();
+        let result = session.eval(r#""hello" =~ re"h.*o""#);
+        assert!(!result.had_errors, "errors: {:?}", result.errors);
+        assert_eq!(result.output, "true\n");
+    }
+
     #[test]
     fn eval_clear_resets() {
         if !require_toolchain() {
@@ -634,8 +654,8 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let dir = std::env::temp_dir();
-        let path = dir.join("hew_eval_multiline_test.hew");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("hew_eval_multiline_test.hew");
         std::fs::write(
             &path,
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
@@ -643,6 +663,5 @@ mod tests {
         .unwrap();
         let result = eval_file(path.to_str().unwrap());
         assert!(result.is_ok(), "eval_file failed: {result:?}");
-        std::fs::remove_file(&path).ok();
     }
 }

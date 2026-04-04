@@ -922,6 +922,9 @@ static ast::FnDecl parseFnDecl(const msgpack::object &obj) {
   const auto *doc_comment = mapGet(obj, "doc_comment");
   if (doc_comment && !isNil(*doc_comment))
     result.doc_comment = getString(*doc_comment);
+  const auto *decl_span_ = mapGet(obj, "decl_span");
+  if (decl_span_ && !isNil(*decl_span_))
+    result.decl_span = parseSpan(*decl_span_);
   return result;
 }
 

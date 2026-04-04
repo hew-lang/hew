@@ -2920,7 +2920,11 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
   }
 
   auto funcType = builder.getFunctionType(paramTypes, resultTypes);
-  auto location = fallbackLoc.value_or(builder.getUnknownLoc());
+  auto location = [&]() -> mlir::Location {
+    if (fn.decl_span && fn.decl_span->end > fn.decl_span->start)
+      return loc(*fn.decl_span);
+    return fallbackLoc.value_or(builder.getUnknownLoc());
+  }();
 
   // Create a declaration (no body) at module scope
   auto savedIP = builder.saveInsertionPoint();
@@ -4212,7 +4216,15 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     }
   }
 
-  auto location = fallbackLoc.value_or(currentLoc);
+  // Prefer the per-function decl_span captured by the parser (points at the
+  // fn-name token) over the enclosing-item fallbackLoc.  This ensures impl
+  // methods get DW_AT_decl_line pointing at their own declaration line rather
+  // than the impl-block header line.
+  auto location = [&]() -> mlir::Location {
+    if (fn.decl_span && fn.decl_span->end > fn.decl_span->start)
+      return loc(*fn.decl_span);
+    return fallbackLoc.value_or(currentLoc);
+  }();
 
   // Create the function at module scope.
   // When nameOverride is provided, the caller has already mangled the name.

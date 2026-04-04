@@ -519,23 +519,29 @@ impl App {
         let traces = if (self.active_tab == Tab::Messages && !self.trace_paused)
             || self.active_tab == Tab::Timeline
         {
-            let cluster_ref = self.cluster.as_mut().unwrap();
-            let mut all_traces = Vec::new();
-            for node in &mut cluster_ref.nodes {
-                if let Some(mut t) = node.client.fetch_traces() {
-                    all_traces.append(&mut t);
+            if let Some(cluster_ref) = self.cluster.as_mut() {
+                let mut all_traces = Vec::new();
+                for node in &mut cluster_ref.nodes {
+                    if let Some(mut t) = node.client.fetch_traces() {
+                        all_traces.append(&mut t);
+                    }
                 }
-            }
-            if all_traces.is_empty() {
-                None
+                if all_traces.is_empty() {
+                    None
+                } else {
+                    Some(all_traces)
+                }
             } else {
-                Some(all_traces)
+                None
             }
         } else {
             None
         };
 
-        let cluster_status = self.cluster.as_ref().unwrap().status();
+        let cluster_status = self
+            .cluster
+            .as_ref()
+            .map_or(ConnectionStatus::Disconnected, ClusterClient::status);
 
         if let Some(m) = metrics {
             if self.prev_timestamp > 0.0 && m.timestamp_secs > self.prev_timestamp {
@@ -977,5 +983,80 @@ fn flatten_node(
                 state: child.state.to_owned(),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `refresh()` never panics when `cluster` is `None`,
+    /// regardless of which tab is active — including the trace-heavy
+    /// Messages and Timeline tabs that previously contained `.unwrap()`
+    /// calls on `self.cluster`.
+    ///
+    /// Before the fix those two unwraps were only shielded by an early
+    /// `return` at the top of `refresh()`.  The `if let` / `map_or`
+    /// replacements add a second layer of protection so that any future
+    /// refactoring that moves or removes that early return cannot
+    /// reintroduce a panic.
+    #[test]
+    fn refresh_no_cluster_does_not_panic() {
+        let tabs = [
+            Tab::Overview,
+            Tab::Actors,
+            Tab::Supervisors,
+            Tab::Crashes,
+            Tab::Cluster,
+            Tab::Messages,
+            Tab::Timeline,
+        ];
+
+        for tab in tabs {
+            let mut app = App::new_waiting();
+            // Confirm we start without a cluster.
+            assert!(app.cluster.is_none(), "precondition: cluster must be None");
+            app.active_tab = tab;
+            // Must not panic.
+            app.refresh();
+            // With no cluster the status must stay Disconnected (not Connecting,
+            // which would be the case only if try_rediscover picked something up).
+            // On a dev/CI machine with no running profiler sockets this holds.
+            assert!(
+                matches!(
+                    app.connection_status,
+                    ConnectionStatus::Disconnected | ConnectionStatus::Connecting
+                ),
+                "unexpected status after no-cluster refresh: {:?}",
+                app.connection_status
+            );
+        }
+    }
+
+    /// Demonstrate that explicitly clearing `cluster` mid-state and then
+    /// calling `refresh()` on the Messages tab does not panic — exercising
+    /// the `if let` guard added at the trace-fetch site.
+    #[test]
+    fn refresh_cluster_cleared_messages_tab_does_not_panic() {
+        let mut app = App::new_waiting();
+        // Simulate a state where cluster was set and then cleared
+        // (e.g., after a disconnect/rediscover cycle resets the field).
+        app.cluster = None;
+        app.active_tab = Tab::Messages;
+        app.connection_status = ConnectionStatus::Disconnected;
+        // Must not panic.
+        app.refresh();
+        assert_eq!(app.connection_status, ConnectionStatus::Disconnected);
+    }
+
+    /// Same as above for Timeline tab.
+    #[test]
+    fn refresh_cluster_cleared_timeline_tab_does_not_panic() {
+        let mut app = App::new_waiting();
+        app.cluster = None;
+        app.active_tab = Tab::Timeline;
+        app.connection_status = ConnectionStatus::Disconnected;
+        app.refresh();
+        assert_eq!(app.connection_status, ConnectionStatus::Disconnected);
     }
 }

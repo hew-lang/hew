@@ -245,11 +245,7 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     ));
                 }
                 ("Range", 1) => {
-                    let inner = match &args[0] {
-                        Ty::Var(_) => &Ty::I64,
-                        other => other,
-                    };
-                    let inner_expr = require_converted(inner, "Range element type")?;
+                    let inner_expr = require_converted(&args[0], "Range element type")?;
                     TypeExpr::Named {
                         name: "Range".into(),
                         type_args: Some(vec![inner_expr]),
@@ -2309,6 +2305,24 @@ mod tests {
         } else {
             panic!("expected Named Range");
         }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_range_with_var_is_unresolved_var() {
+        // Range<Ty::Var> must not be silently coerced to Range<i64>; it must
+        // surface as UnresolvedVar so the fail-closed path in compile.rs aborts.
+        use hew_types::ty::TypeVar;
+        let ty = Ty::range(Ty::Var(TypeVar(5)));
+        let err = unwrap_err(ty_to_type_expr(&ty));
+        assert_eq!(
+            err.kind(),
+            TypeExprConversionKind::UnresolvedVar,
+            "Range<Ty::Var> must produce UnresolvedVar, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("Range element type"),
+            "error context should mention Range element type, got: {err}"
+        );
     }
 
     #[test]

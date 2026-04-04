@@ -5760,14 +5760,18 @@ impl Checker {
                     params: expected_params,
                     ret,
                 },
-            ) => self.check_lambda(
-                type_params.as_deref(),
-                params,
-                return_type.as_ref(),
-                body,
-                Some((expected_params, ret)),
-                span,
-            ),
+            ) => {
+                let result = self.check_lambda(
+                    type_params.as_deref(),
+                    params,
+                    return_type.as_ref(),
+                    body,
+                    Some((expected_params, ret)),
+                    span,
+                );
+                self.record_type(span, &result);
+                result
+            }
 
             (
                 Expr::If {
@@ -13432,6 +13436,57 @@ fn main() {
         );
         let args = output.call_type_args.values().next().unwrap();
         assert_eq!(args.len(), 2, "expected two type args (A and B)");
+    }
+
+    #[test]
+    fn contextual_lambda_binding_records_lambda_expr_type() {
+        let source = concat!(
+            "fn main() {\n",
+            "    let f: fn(int) -> int = (x) => x + 1;\n",
+            "    let y = f(5);\n",
+            "}\n",
+        );
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let lambda_span = result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(fd) if fd.name == "main" => {
+                    fd.body.stmts.iter().find_map(|(stmt, _)| match stmt {
+                        Stmt::Let {
+                            value: Some((Expr::Lambda { .. }, span)),
+                            ..
+                        } => Some(span.clone()),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("main let-bound lambda should exist");
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
+        );
+
+        assert_eq!(
+            output.expr_types.get(&SpanKey::from(&lambda_span)),
+            Some(&Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::I64),
+            })
+        );
     }
 
     /// Regression: a generic lambda passed as a function *argument* (not

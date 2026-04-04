@@ -1544,6 +1544,7 @@ fn enrich_expr_with_diagnostics_inner(
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
+    let expr_span_key = SpanKey::from(&expr.1);
     match &mut expr.0 {
         Expr::MethodCall { receiver, args, .. } => {
             enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
@@ -1580,7 +1581,20 @@ fn enrich_expr_with_diagnostics_inner(
                 expr.0 = rewritten;
             }
         }
-        Expr::Lambda { body, .. } => {
+        Expr::Lambda { params, body, .. } => {
+            if let Some(Ty::Function {
+                params: inferred_params,
+                ..
+            }) = tco.expr_types.get(&expr_span_key)
+            {
+                for (param, inferred_ty) in params.iter_mut().zip(inferred_params.iter()) {
+                    if param.ty.is_none() {
+                        if let Ok(inferred_param_ty) = ty_to_type_expr(inferred_ty) {
+                            param.ty = Some(inferred_param_ty);
+                        }
+                    }
+                }
+            }
             enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Expr::Cast { expr: inner, .. } => {
@@ -2634,6 +2648,39 @@ mod tests {
         }
     }
 
+    fn parse_and_typecheck_main_lambda(source: &str) -> (Spanned<Expr>, TypeCheckOutput) {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parsed.errors
+        );
+
+        let lambda = parsed
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(fd) if fd.name == "main" => {
+                    fd.body.stmts.iter().find_map(|(stmt, _)| match stmt {
+                        Stmt::Let {
+                            value: Some(expr @ (Expr::Lambda { .. }, _)),
+                            ..
+                        } => Some(expr.clone()),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("main let-bound lambda should exist");
+
+        let mut checker =
+            hew_types::check::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+
+        (lambda, tco)
+    }
+
     #[test]
     fn test_enrich_user_module_call_rewritten() {
         use hew_parser::ast::CallArg;
@@ -2776,6 +2823,80 @@ mod tests {
                 assert_eq!(args.len(), 1, "observe() should prepend the receiver");
             }
             other => panic!("expected Call expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enrich_lambda_params_from_contextual_function_type() {
+        let source = concat!(
+            "fn main() {\n",
+            "    let f: fn(int) -> int = (x) => x + 1;\n",
+            "    let y = f(5);\n",
+            "}\n",
+        );
+        let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
+        assert!(
+            tco.errors.is_empty(),
+            "unexpected type check errors: {:?}",
+            tco.errors
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(
+            &mut expr,
+            &tco,
+            &mut diagnostics,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected enrichment diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(
+                    params[0].ty.as_ref().map(|(ty, _)| ty),
+                    Some(TypeExpr::Named { name, type_args: None }) if name == "i64"
+                ));
+            }
+            other => panic!("expected lambda expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enrich_lambda_params_leave_unresolved_types_untouched() {
+        let source = "fn main() { let f = (x) => x; }";
+        let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
+
+        assert!(matches!(
+            tco.expr_types.get(&SpanKey::from(&expr.1)),
+            Some(Ty::Function { params, ret })
+                if matches!(params.as_slice(), [Ty::Var(_)])
+                    && matches!(ret.as_ref(), Ty::Var(_))
+        ));
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(
+            &mut expr,
+            &tco,
+            &mut diagnostics,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unresolved lambda param enrichment should stay silent: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert!(params[0].ty.is_none());
+            }
+            other => panic!("expected lambda expr, got {other:?}"),
         }
     }
 

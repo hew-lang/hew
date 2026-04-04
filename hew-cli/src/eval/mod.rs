@@ -8,8 +8,8 @@
 //! # Architecture
 //!
 //! Each evaluation builds a synthetic Hew program from accumulated session
-//! state (prior items and bindings) plus the new input, compiles it to a
-//! native binary via `hew build`, and captures its stdout output.
+//! state (prior items and bindings) plus the new input, runs the in-process
+//! compile pipeline to produce a native binary, and captures its stdout output.
 
 pub mod classify;
 pub mod repl;

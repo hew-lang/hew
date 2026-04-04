@@ -654,8 +654,8 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let dir = std::env::temp_dir();
-        let path = dir.join("hew_eval_multiline_test.hew");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("hew_eval_multiline_test.hew");
         std::fs::write(
             &path,
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
@@ -663,6 +663,5 @@ mod tests {
         .unwrap();
         let result = eval_file(path.to_str().unwrap());
         assert!(result.is_ok(), "eval_file failed: {result:?}");
-        std::fs::remove_file(&path).ok();
     }
 }

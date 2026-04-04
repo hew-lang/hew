@@ -4507,6 +4507,48 @@ struct SetTailCallsPass
   }
 };
 
+// ── SealPanicBlocksPass — make direct hew_panic blocks fail closed ─────────
+//
+// Structured lowering sometimes keeps a merge block for IR validity even when a
+// branch ends in hew_panic. Once CFG lowering is complete, any block whose last
+// real op is a direct hew_panic call must end in llvm.unreachable so unmatched
+// statement matches cannot continue into their post-match path.
+
+struct SealPanicBlocksPass
+    : public mlir::PassWrapper<SealPanicBlocksPass, mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SealPanicBlocksPass)
+
+  void runOnOperation() override {
+    llvm::SmallVector<mlir::Operation *> terminatorsToReplace;
+
+    getOperation()->walk([&](mlir::LLVM::LLVMFuncOp funcOp) {
+      for (auto &block : funcOp.getBody().getBlocks()) {
+        auto *terminator = block.getTerminator();
+        if (!terminator || mlir::isa<mlir::LLVM::UnreachableOp>(terminator))
+          continue;
+
+        auto *prev = terminator->getPrevNode();
+        auto panicCall = prev ? mlir::dyn_cast<mlir::LLVM::CallOp>(prev) : nullptr;
+        if (!panicCall || panicCall.getCallee() != "hew_panic")
+          continue;
+
+        terminatorsToReplace.push_back(terminator);
+      }
+    });
+
+    for (auto *terminator : terminatorsToReplace) {
+      mlir::OpBuilder builder(terminator);
+      mlir::LLVM::UnreachableOp::create(builder, terminator->getLoc());
+      terminator->erase();
+    }
+  }
+
+  llvm::StringRef getArgument() const override { return "seal-panic-blocks"; }
+  llvm::StringRef getDescription() const override {
+    return "Replace panic fallthrough branches with llvm.unreachable";
+  }
+};
+
 // ── DevirtualizeTraitDispatchPass — direct-call when vtable is static ───────
 //
 // After canonicalization, trait_object.data/tag fold through
@@ -4755,6 +4797,8 @@ mlir::LogicalResult Codegen::lowerToLLVMDialect(mlir::ModuleOp module) {
   pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
   // Clean up unrealized casts from type converter boundaries
   pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  // Explicitly seal direct panic blocks once LLVM CFG lowering is complete.
+  pm.addPass(std::make_unique<SealPanicBlocksPass>());
 
   // Post-lowering cleanup — simplify LLVM dialect IR
   pm.addPass(mlir::createCanonicalizerPass());

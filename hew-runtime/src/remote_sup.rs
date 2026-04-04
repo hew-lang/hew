@@ -78,12 +78,31 @@ impl RemoteDeathDispatch {
 struct ClusterCallbackContext {
     cluster_key: usize,
     previous_callback: cluster::MembershipCallbackBinding,
+    callback_epoch: Arc<cluster::MembershipCallbackEpoch>,
 }
 
 #[derive(Debug)]
 struct ClusterSubscription {
     supervisors: Vec<usize>,
     callback_context: Arc<ClusterCallbackContext>,
+    callback_user_data_bits: usize,
+}
+
+impl ClusterSubscription {
+    fn callback_user_data(&self) -> *mut c_void {
+        self.callback_user_data_bits as *mut c_void
+    }
+}
+
+fn owned_callback_context_user_data(context: &Arc<ClusterCallbackContext>) -> *mut c_void {
+    Arc::into_raw(Arc::clone(context)).cast_mut().cast()
+}
+
+fn reclaim_owned_callback_context(user_data: *mut c_void) -> Arc<ClusterCallbackContext> {
+    let context_ptr = user_data.cast::<ClusterCallbackContext>();
+    // SAFETY: `user_data` was produced by `owned_callback_context_user_data()`
+    // and is reclaimed exactly once when its callback generation retires.
+    unsafe { Arc::from_raw(context_ptr) }
 }
 
 fn cluster_subscriptions() -> &'static Mutex<HashMap<usize, ClusterSubscription>> {
@@ -98,10 +117,9 @@ fn retired_callback_contexts() -> &'static Mutex<Vec<Arc<ClusterCallbackContext>
 
 fn retain_callback_context(user_data: *mut c_void) -> Arc<ClusterCallbackContext> {
     let context_ptr = user_data.cast::<ClusterCallbackContext>();
-    // SAFETY: active subscriptions retain a strong ref while installed, and
-    // teardown moves the same Arc into `retired_callback_contexts()` before the
-    // last installed ref is dropped, so callbacks can always promote `user_data`
-    // into a temporary `Arc` even after stop races with delivery.
+    // SAFETY: the installed callback binding owns a strong ref for `user_data`,
+    // and teardown moves that ref into `retired_callback_contexts()` until the
+    // cluster reports no in-flight membership callbacks for this generation.
     unsafe {
         Arc::increment_strong_count(context_ptr);
         Arc::from_raw(context_ptr)
@@ -115,7 +133,7 @@ fn retire_callback_context(context: Arc<ClusterCallbackContext>) {
 fn reap_retired_callback_contexts() {
     retired_callback_contexts()
         .lock_or_recover()
-        .retain(|context| Arc::strong_count(context) > 1);
+        .retain(|context| Arc::strong_count(context) > 1 || context.callback_epoch.in_flight() > 0);
 }
 
 fn forward_previous_membership_callback(context: &ClusterCallbackContext, node_id: u16, event: u8) {
@@ -138,7 +156,7 @@ fn unregister_remote_sup_subscription(
             entry.supervisors.retain(|addr| *addr != sup_addr);
             if entry.supervisors.is_empty() {
                 previous_callback = Some(entry.callback_context.previous_callback);
-                retired_context = Some(Arc::clone(&entry.callback_context));
+                retired_context = Some(reclaim_owned_callback_context(entry.callback_user_data()));
             }
         }
         if let Some(binding) = previous_callback {
@@ -159,6 +177,92 @@ fn unregister_remote_sup_subscription(
         retire_callback_context(context);
     }
     reap_retired_callback_contexts();
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct MembershipCallbackRetainPauseState {
+    armed: bool,
+    entered: bool,
+    released: bool,
+}
+
+#[cfg(test)]
+fn membership_callback_retain_pause_state() -> &'static (
+    Mutex<MembershipCallbackRetainPauseState>,
+    std::sync::Condvar,
+) {
+    static STATE: OnceLock<(
+        Mutex<MembershipCallbackRetainPauseState>,
+        std::sync::Condvar,
+    )> = OnceLock::new();
+    STATE.get_or_init(|| {
+        (
+            Mutex::new(MembershipCallbackRetainPauseState::default()),
+            std::sync::Condvar::new(),
+        )
+    })
+}
+
+#[cfg(test)]
+fn maybe_pause_membership_callback_before_context_retain() {
+    use crate::util::CondvarExt;
+
+    let (state_lock, condvar) = membership_callback_retain_pause_state();
+    let mut state = state_lock.lock_or_recover();
+    if !state.armed {
+        return;
+    }
+    state.entered = true;
+    condvar.notify_all();
+    while !state.released {
+        state = condvar.wait_or_recover(state);
+    }
+}
+
+#[cfg(test)]
+struct MembershipCallbackRetainPauseGuard;
+
+#[cfg(test)]
+impl MembershipCallbackRetainPauseGuard {
+    fn arm() -> Self {
+        let (state_lock, _) = membership_callback_retain_pause_state();
+        let mut state = state_lock.lock_or_recover();
+        *state = MembershipCallbackRetainPauseState {
+            armed: true,
+            entered: false,
+            released: false,
+        };
+        Self
+    }
+
+    fn wait_until_entered() {
+        use crate::util::CondvarExt;
+
+        let (state_lock, condvar) = membership_callback_retain_pause_state();
+        let mut state = state_lock.lock_or_recover();
+        while !state.entered {
+            state = condvar.wait_or_recover(state);
+        }
+    }
+
+    fn release() {
+        let (state_lock, condvar) = membership_callback_retain_pause_state();
+        let mut state = state_lock.lock_or_recover();
+        state.released = true;
+        condvar.notify_all();
+    }
+}
+
+#[cfg(test)]
+impl Drop for MembershipCallbackRetainPauseGuard {
+    fn drop(&mut self) {
+        let (state_lock, condvar) = membership_callback_retain_pause_state();
+        let mut state = state_lock.lock_or_recover();
+        state.armed = false;
+        state.released = true;
+        condvar.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -361,6 +465,8 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
         return;
     }
 
+    #[cfg(test)]
+    maybe_pause_membership_callback_before_context_retain();
     let callback_context = retain_callback_context(user_data);
     #[cfg(test)]
     maybe_pause_membership_callback_before_subscriptions_lock();
@@ -526,14 +632,19 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
                 previous_callback: unsafe {
                     cluster::hew_cluster_membership_callback_binding(node.cluster)
                 },
+                // SAFETY: cluster pointer is valid while node is alive.
+                callback_epoch: unsafe {
+                    cluster::hew_cluster_membership_callback_epoch(node.cluster)
+                },
             });
+            let callback_user_data = owned_callback_context_user_data(&callback_context);
             // SAFETY: cluster pointer is valid while node is alive.
             unsafe {
                 cluster::hew_cluster_replace_membership_callback(
                     node.cluster,
                     cluster::MembershipCallbackBinding::new(
                         Some(remote_sup_membership_callback),
-                        Arc::as_ptr(&callback_context) as *mut c_void,
+                        callback_user_data,
                     ),
                 );
             }
@@ -542,6 +653,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
                 ClusterSubscription {
                     supervisors: vec![sup_addr],
                     callback_context,
+                    callback_user_data_bits: callback_user_data as usize,
                 },
             );
         }
@@ -1061,6 +1173,116 @@ mod tests {
             );
 
             MembershipCallbackPauseGuard::release();
+            callback_thread.join().expect("callback thread");
+            drop(pause);
+
+            assert_eq!(OLD_CALLED.load(Ordering::Relaxed), 0);
+            assert_eq!(NEW_CALLED.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), stale_name.as_ptr()),
+                0
+            );
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), restarted_name.as_ptr()),
+                0
+            );
+
+            cluster.apply_registry_event(fresh_name.to_str().expect("utf8"), remote_pid, true);
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), fresh_name.as_ptr()),
+                remote_pid
+            );
+            cluster::hew_cluster_test_fire_membership_callback(
+                cluster_ptr,
+                remote_node_id,
+                HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+            );
+            assert_eq!(OLD_CALLED.load(Ordering::Relaxed), 0);
+            assert_eq!(NEW_CALLED.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), fresh_name.as_ptr()),
+                0
+            );
+
+            assert_eq!(hew_remote_sup_stop(new_sup), 0);
+            hew_remote_sup_free(new_sup);
+            hew_remote_sup_free(old_sup);
+        }
+    }
+
+    #[test]
+    fn pre_retain_inflight_membership_callback_survives_stop_and_restart() {
+        static OLD_CALLED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+        static NEW_CALLED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+        unsafe extern "C" fn on_old_death(_remote_pid: u64, _remote_node_id: u16, _reason: c_int) {
+            OLD_CALLED.fetch_add(1, Ordering::Relaxed);
+        }
+
+        unsafe extern "C" fn on_new_death(_remote_pid: u64, _remote_node_id: u16, _reason: c_int) {
+            NEW_CALLED.fetch_add(1, Ordering::Relaxed);
+        }
+
+        OLD_CALLED.store(0, Ordering::Relaxed);
+        NEW_CALLED.store(0, Ordering::Relaxed);
+
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3021) };
+        let remote_node_id = 3022;
+        let remote_pid = (u64::from(remote_node_id) << 48) | 0x61;
+        let stale_name =
+            CString::new("remote-sup-preretain-old-generation-cleanup").expect("valid name");
+        let restarted_name =
+            CString::new("remote-sup-preretain-new-generation-cleanup").expect("valid name");
+        let fresh_name =
+            CString::new("remote-sup-preretain-fresh-generation-cleanup").expect("valid name");
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let cluster_ptr = (*node.as_ptr()).cluster;
+            let cluster = &*cluster_ptr;
+            cluster.apply_registry_event(stale_name.to_str().expect("utf8"), remote_pid, true);
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), stale_name.as_ptr()),
+                remote_pid
+            );
+
+            let old_sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
+            assert!(!old_sup.is_null());
+            (*old_sup).dead_quarantine_ms = 0;
+            (*old_sup).heartbeat_interval_ms = 10;
+            hew_remote_sup_set_callback(old_sup, Some(on_old_death));
+            assert_eq!(hew_remote_sup_monitor(old_sup, remote_pid), 0);
+            assert_eq!(hew_remote_sup_start(old_sup), 0);
+
+            let pause = MembershipCallbackRetainPauseGuard::arm();
+            let callback_cluster = cluster_ptr as usize;
+            let callback_thread = thread::spawn(move || {
+                cluster::hew_cluster_test_fire_membership_callback(
+                    callback_cluster as *mut cluster::HewCluster,
+                    remote_node_id,
+                    HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+                );
+            });
+
+            MembershipCallbackRetainPauseGuard::wait_until_entered();
+            assert_eq!(hew_remote_sup_stop(old_sup), 0);
+
+            let new_sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
+            assert!(!new_sup.is_null());
+            (*new_sup).dead_quarantine_ms = 0;
+            (*new_sup).heartbeat_interval_ms = 10;
+            hew_remote_sup_set_callback(new_sup, Some(on_new_death));
+            assert_eq!(hew_remote_sup_monitor(new_sup, remote_pid), 0);
+            assert_eq!(hew_remote_sup_start(new_sup), 0);
+
+            cluster.apply_registry_event(restarted_name.to_str().expect("utf8"), remote_pid, true);
+            assert_eq!(
+                crate::hew_node::hew_node_lookup(node.as_ptr(), restarted_name.as_ptr()),
+                remote_pid
+            );
+
+            MembershipCallbackRetainPauseGuard::release();
             callback_thread.join().expect("callback thread");
             drop(pause);
 

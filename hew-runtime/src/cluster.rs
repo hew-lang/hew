@@ -44,7 +44,8 @@
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, Ordering};
+<<<<<<< HEAD
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ── Member states ──────────────────────────────────────────────────────
@@ -261,6 +262,35 @@ impl MembershipCallbackBinding {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct MembershipCallbackEpoch {
+    in_flight: AtomicUsize,
+}
+
+impl MembershipCallbackEpoch {
+    fn begin_dispatch(self: &Arc<Self>) -> MembershipCallbackDispatchGuard {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        MembershipCallbackDispatchGuard {
+            epoch: Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug)]
+struct MembershipCallbackDispatchGuard {
+    epoch: Arc<MembershipCallbackEpoch>,
+}
+
+impl Drop for MembershipCallbackDispatchGuard {
+    fn drop(&mut self) {
+        self.epoch.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -284,6 +314,8 @@ pub struct HewCluster {
     membership_callback: Option<HewMembershipCallback>,
     /// User data for [`HewMembershipCallback`].
     membership_callback_user_data: *mut c_void,
+    /// Tracks in-flight membership callback dispatches.
+    membership_callback_epoch: Arc<MembershipCallbackEpoch>,
     /// Registry gossip callback.
     registry_callback: Option<HewRegistryGossipCallback>,
     /// User data for [`HewRegistryGossipCallback`].
@@ -313,6 +345,7 @@ impl HewCluster {
             callback: None,
             membership_callback: None,
             membership_callback_user_data: std::ptr::null_mut(),
+            membership_callback_epoch: Arc::new(MembershipCallbackEpoch::default()),
             registry_callback: None,
             registry_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: 0,
@@ -566,6 +599,7 @@ impl HewCluster {
             _ => None,
         };
         if let Some(evt) = event {
+            let _dispatch_guard = self.membership_callback_epoch.begin_dispatch();
             cb(node_id, evt, self.membership_callback_user_data);
         }
     }
@@ -1186,6 +1220,22 @@ pub(crate) unsafe fn hew_cluster_membership_callback_binding(
     )
 }
 
+/// Clone the membership callback dispatch epoch for `cluster`.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+pub(crate) unsafe fn hew_cluster_membership_callback_epoch(
+    cluster: *mut HewCluster,
+) -> Arc<MembershipCallbackEpoch> {
+    if cluster.is_null() {
+        return Arc::new(MembershipCallbackEpoch::default());
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    Arc::clone(&cluster.membership_callback_epoch)
+}
+
 /// Replace the current membership callback binding.
 ///
 /// # Safety
@@ -1216,6 +1266,7 @@ pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
     if let Some(callback) = cluster.membership_callback {
+        let _dispatch_guard = cluster.membership_callback_epoch.begin_dispatch();
         callback(node_id, event, cluster.membership_callback_user_data);
     }
 }

@@ -376,7 +376,20 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
     match expr {
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
-                return Some((name.clone(), args.len()));
+                // Only treat as a simple C shim if every argument is a direct
+                // identifier (i.e. a parameter forwarded unchanged). A compound
+                // body such as `hew_bytes_to_string(hew_tcp_read(conn))` must
+                // NOT be registered as a single-step C pass-through, because
+                // the enricher would then rewrite `conn.read_string()` to
+                // `hew_bytes_to_string(conn)` — dropping the inner call and
+                // passing an i32 fd where bytes are expected.
+                let all_direct = args
+                    .iter()
+                    .all(|arg| matches!(&arg.expr().0, Expr::Identifier(_)));
+                if all_direct {
+                    return Some((name.clone(), args.len()));
+                }
+                return None;
             }
             None
         }

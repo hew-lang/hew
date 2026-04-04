@@ -902,16 +902,27 @@ fn reader_loop(
                     // deposited directly into the reply routing table, bypassing
                     // the normal inbound router.
                     if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                        let reply_payload =
-                            if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                std::slice::from_raw_parts(
-                                    envelope.payload,
-                                    envelope.payload_size as usize,
-                                )
-                            } else {
-                                &[]
-                            };
-                        crate::hew_node::complete_remote_reply(envelope.request_id, reply_payload);
+                        if envelope.msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE {
+                            // Rejection reply: the remote node hit its inbound
+                            // ask worker limit.  Mark the pending ask as failed
+                            // so the originating caller gets ConnectionDropped
+                            // for both void and non-void asks.
+                            crate::hew_node::fail_remote_reply(envelope.request_id);
+                        } else {
+                            let reply_payload =
+                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
+                                    std::slice::from_raw_parts(
+                                        envelope.payload,
+                                        envelope.payload_size as usize,
+                                    )
+                                } else {
+                                    &[]
+                                };
+                            crate::hew_node::complete_remote_reply(
+                                envelope.request_id,
+                                reply_payload,
+                            );
+                        }
                     } else {
                         router_fn(
                             envelope.target_actor_id,

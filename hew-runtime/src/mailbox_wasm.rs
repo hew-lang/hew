@@ -562,9 +562,10 @@ wasm_no_mangle! {
 wasm_no_mangle! {
     /// Send a system message, bypassing capacity limits.
     ///
-    /// System messages are always accepted (the sys queue is unbounded).
-    /// Returns `0` ([`HewError::Ok`]) on success or `-4`
-    /// ([`HewError::ErrClosed`]) if the mailbox is closed.
+    /// System messages (actor stop / restart / supervisor lifecycle signals)
+    /// are **always** accepted, even after the mailbox is closed. This matches
+    /// the native `hew_mailbox_send_sys` semantics, which has no closed check
+    /// and is effectively void-returning.
     ///
     /// # Safety
     ///
@@ -574,19 +575,13 @@ wasm_no_mangle! {
         msg_type: i32,
         data: *mut c_void,
         size: usize,
-    ) -> i32 {
+    ) {
         // SAFETY: Caller guarantees `mb` is valid.
         let mb = unsafe { &mut *mb };
-
-        if mb.closed {
-            return HewError::ErrClosed as i32;
-        }
 
         // SAFETY: `data` validity guaranteed by caller.
         let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
         mb.sys_queue.push_back(node);
-
-        HewError::Ok as i32
     }
 }
 
@@ -1085,10 +1080,30 @@ mod tests {
                 hew_mailbox_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrClosed as i32
             );
-            assert_eq!(
-                hew_mailbox_send_sys(mb, 0, p, size_of::<i32>()),
-                HewError::ErrClosed as i32
-            );
+
+            // sys messages must still be accepted even on a closed mailbox.
+            hew_mailbox_send_sys(mb, 0, p, size_of::<i32>());
+            assert_eq!(hew_mailbox_has_messages(mb), 1);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn sys_accepted_after_close() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 42;
+            let p = (&raw const val).cast_mut().cast();
+
+            // Close the mailbox first.
+            hew_mailbox_close(mb);
+
+            // send_sys must enqueue the node despite the closed flag; this is
+            // the intended native behaviour for lifecycle/shutdown signals.
+            hew_mailbox_send_sys(mb, -1, p, size_of::<i32>());
+            assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);
         }
@@ -1110,10 +1125,7 @@ mod tests {
                 HewError::ErrMailboxFull as i32
             );
             // System message should still succeed.
-            assert_eq!(
-                hew_mailbox_send_sys(mb, 99, p, size_of::<i32>()),
-                HewError::Ok as i32
-            );
+            hew_mailbox_send_sys(mb, 99, p, size_of::<i32>());
             assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);

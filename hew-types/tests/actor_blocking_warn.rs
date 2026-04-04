@@ -257,3 +257,36 @@ fn warning_message_mentions_scheduler_with_suggestion() {
         "warning should carry at least one suggestion"
     );
 }
+
+/// `http.Server::accept` inside a receive function triggers a warning.
+#[test]
+fn warn_http_server_accept_inside_receive_fn() {
+    let output = typecheck(
+        r"
+        import std::http;
+
+        actor HttpHandler {
+            receive fn serve(server: http.Server) {
+                let req = server.accept();
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    let blocking_warnings: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
+        .collect();
+    assert!(
+        !blocking_warnings.is_empty(),
+        "expected BlockingCallInReceiveFn warning for http.Server::accept, got: {:#?}",
+        output.warnings
+    );
+    assert!(
+        blocking_warnings[0].message.contains("http.Server::accept"),
+        "warning message should name the operation, got: {:?}",
+        blocking_warnings[0].message
+    );
+}

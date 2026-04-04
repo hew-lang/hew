@@ -804,9 +804,9 @@ statements.
   resolved recursively.
 - Duplicate `pub` names across the entry and its peers are a **compile error**.
   Each public symbol must have a unique name within the merged module.
-- There is no private sharing between peer files: each file's private items
-  remain private to that file. Use the entry file to re-export if cross-peer
-  access is needed.
+- Peer files participate in the same module body. Private items remain private
+  to the merged module from outside imports, but peer files are not isolated
+  from one another.
 
 A working example is at
 [`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).

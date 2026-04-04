@@ -373,6 +373,12 @@ pub struct Checker {
     /// (one with non-empty `type_params`).  Consumed immediately in the
     /// enclosing `Stmt::Let` handler to populate `lambda_poly_type_var_map`.
     last_lambda_generic_vars: Option<Vec<(String, TypeVar)>>,
+    /// Range bounds that were recorded with a coercible default (i64) during
+    /// synthesis but whose actual element type may be narrowed by body
+    /// inference.  Each entry is (span, element-TypeVar, literal-value-if-any).
+    /// Processed in `apply_deferred_range_bound_types` after all inference and
+    /// type defaulting is complete.
+    deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -636,6 +642,7 @@ impl Checker {
             call_type_args: HashMap::new(),
             lambda_poly_type_var_map: HashMap::new(),
             last_lambda_generic_vars: None,
+            deferred_range_bounds: Vec::new(),
         }
     }
 
@@ -3191,7 +3198,7 @@ impl Checker {
         }
 
         // Apply final substitutions to all recorded types
-        let expr_types: HashMap<SpanKey, Ty> = self
+        let mut expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
             .iter()
             .map(|(k, v)| (k.clone(), self.subst.resolve(v)))
@@ -3214,6 +3221,9 @@ impl Checker {
         self.emit_dead_code_warnings();
 
         self.default_unconstrained_range_types(&expr_types);
+        // Re-record range bound spans with their concrete element types
+        // (resolved after inference + defaulting) and validate fits.
+        self.apply_deferred_range_bound_types(&mut expr_types);
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -3634,6 +3644,61 @@ impl Checker {
                     }
                 }
             }
+        }
+    }
+
+    /// Re-record the spans of coercible range bounds with their concrete
+    /// resolved element type.
+    ///
+    /// When both bounds of a range literal are coercible integer literals
+    /// (e.g. `0..10`), `check_binary_op` creates a fresh `TypeVar` for the
+    /// element type and pushes each bound's span + literal value to
+    /// `deferred_range_bounds`.  After all inference and defaulting is
+    /// complete (including `default_unconstrained_range_types`), this pass
+    /// resolves each `TypeVar` to a concrete integer type, validates that the
+    /// literal fits, and re-records the span so codegen generates the constant
+    /// with the correct width (e.g. `i32` instead of the synthesis default of
+    /// `i64`).
+    fn apply_deferred_range_bound_types(&mut self, expr_types: &mut HashMap<SpanKey, Ty>) {
+        for (span, var, maybe_value) in std::mem::take(&mut self.deferred_range_bounds) {
+            let resolved = self.subst.resolve(&Ty::Var(var));
+            // If still unresolved or non-integer, the i64 recorded by synthesize
+            // is already correct — nothing to do.
+            if matches!(resolved, Ty::Var(_) | Ty::Error) || !resolved.is_integer() {
+                continue;
+            }
+            // Validate the literal value fits in the resolved type before
+            // re-recording.  Emit an error and skip re-recording on overflow.
+            if let Some(value) = maybe_value {
+                if value < 0 && !integer_type_info(&resolved).is_some_and(|i| i.signed) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &span,
+                        format!(
+                            "negative integer literal `{value}` cannot be used \
+                             in a range of type `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
+                    continue;
+                }
+                if !integer_fits_type(value, &resolved) {
+                    let (lo, hi) = integer_type_range(&resolved).unwrap_or((0, 0));
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &span,
+                        format!(
+                            "integer literal `{value}` does not fit in `{}` \
+                             (range {lo}..={hi})",
+                            resolved.user_facing()
+                        ),
+                    );
+                    continue;
+                }
+            }
+            // Re-record the span with the resolved element type so the codegen
+            // generates the bound constant with the correct integer width.
+            expr_types.insert(SpanKey::from(&span), resolved);
         }
     }
 
@@ -5717,6 +5782,28 @@ impl Checker {
                 }
             }
 
+            // Range literal `lo..hi` or `lo..=hi` with a known expected
+            // `Range<T>` type — check the bounds directly against the element
+            // type so they are recorded with the right concrete integer width.
+            (
+                Expr::Binary {
+                    left,
+                    op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                    right,
+                },
+                Ty::Named { name, args },
+            ) if name == "Range"
+                && args.len() == 1
+                && !matches!(&args[0], Ty::Error | Ty::Var(_)) =>
+            {
+                let elem_ty = args[0].clone();
+                self.check_against(&left.0, &left.1, &elem_ty);
+                self.check_against(&right.0, &right.1, &elem_ty);
+                let range_ty = Ty::range(elem_ty);
+                self.record_type(span, &range_ty);
+                range_ty
+            }
+
             // Integer literal can coerce to any integer type (with range check)
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
                 if let Some(value) = extract_integer_literal_value(expr) {
@@ -6187,7 +6274,21 @@ impl Checker {
                         // used).  If nothing constrains it, it stays as-is
                         // and defaults to the literal type (i64).
                         if left_is_coercible && right_is_coercible {
-                            Ty::range(Ty::Var(TypeVar::fresh()))
+                            let var_tv = TypeVar::fresh();
+                            // Stash the bound spans + literal values for the
+                            // post-inference pass that re-records them with
+                            // the concrete resolved element type.
+                            self.deferred_range_bounds.push((
+                                left.1.clone(),
+                                var_tv,
+                                extract_integer_literal_value(&left.0),
+                            ));
+                            self.deferred_range_bounds.push((
+                                right.1.clone(),
+                                var_tv,
+                                extract_integer_literal_value(&right.0),
+                            ));
+                            Ty::range(Ty::Var(var_tv))
                         } else {
                             Ty::range(common_ty)
                         }

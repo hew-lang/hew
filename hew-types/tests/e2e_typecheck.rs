@@ -506,3 +506,117 @@ fn main() {
         output.warnings
     );
 }
+
+// ── Range literal inference (PR #628 follow-up) ──────────────────────────────
+
+/// Range bounds recorded with the correct element type when the for-loop body
+/// constrains the induction variable to i32.
+#[test]
+fn for_range_infers_i32_from_body_usage() {
+    let output = typecheck_inline(
+        r"fn test() {
+    var sum: i32 = 0;
+    for i in 0..10 {
+        sum = sum + i;
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "for-range inferred i32 should type-check cleanly: {:#?}",
+        output.errors
+    );
+    // Verify bound spans are recorded as I32, not I64, so codegen generates
+    // the right constant width.
+    let i32_count = output
+        .expr_types
+        .values()
+        .filter(|ty| **ty == hew_types::Ty::I32)
+        .count();
+    let i64_bound_count = output
+        .expr_types
+        .values()
+        .filter(|ty| **ty == hew_types::Ty::I64)
+        .count();
+    // The loop body constrains the range to i32; there should be no spurious
+    // i64 entries for the bound literals (they should have been re-recorded).
+    assert!(
+        i32_count >= 2,
+        "expected at least 2 i32 entries for range bounds `0` and `10`, got {i32_count}"
+    );
+    assert_eq!(
+        i64_bound_count, 0,
+        "expected no i64 entries after i32 inference, got {i64_bound_count}"
+    );
+}
+
+/// Range literal passed to a function expecting `Range<i32>` should check
+/// cleanly — the bounds are coerced to i32.
+#[test]
+fn range_literal_check_against_range_i32() {
+    let output = typecheck_inline(
+        r"fn consume(_r: Range<i32>) {}
+fn test() {
+    consume(0..10);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "range literal passed to Range<i32> parameter should not error: {:#?}",
+        output.errors
+    );
+}
+
+/// Unconstrained range still defaults to i64.
+#[test]
+fn for_range_unconstrained_defaults_to_i64() {
+    let output = typecheck_inline(
+        r"fn test() {
+    for i in 0..10 {
+        let _: i64 = i;
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unconstrained range should default to i64: {:#?}",
+        output.errors
+    );
+}
+
+/// Range bound that doesn't fit in the inferred element type should error.
+#[test]
+fn for_range_bound_overflow_errors() {
+    let output = typecheck_inline(
+        r"fn test() {
+    for i in 0..300 {
+        let _: i8 = i;
+    }
+}
+",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "range bound 300 does not fit in i8 — should produce a type error"
+    );
+}
+
+/// `let r: Range<i32> = 0..10` should work without errors.
+#[test]
+fn range_literal_assigned_to_range_i32() {
+    let output = typecheck_inline(
+        r"fn test() {
+    let r: Range<i32> = 0..10;
+    let _: i32 = r.start;
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Range<i32> assignment should type-check cleanly: {:#?}",
+        output.errors
+    );
+}

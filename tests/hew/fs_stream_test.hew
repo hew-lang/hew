@@ -48,6 +48,93 @@ fn test_try_write_read_size_and_delete_roundtrip() {
 }
 
 #[test]
+fn test_try_rename_missing_source_returns_not_found() {
+    let source_path = "tests/hew/_fs_stream_rename_missing.txt";
+    let target_path = "tests/hew/_fs_stream_rename_missing_target.txt";
+    cleanup_file(source_path);
+    cleanup_file(target_path);
+
+    match fs.try_rename(source_path, target_path) {
+        Ok(_) => panic("expected missing source error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_try_rename_success() {
+    let source_path = "tests/hew/_fs_stream_rename_src.txt";
+    let target_path = "tests/hew/_fs_stream_rename_dst.txt";
+    cleanup_file(source_path);
+    cleanup_file(target_path);
+
+    match fs.try_write(source_path, "renamed") {
+        Ok(_) => {},
+        Err(_) => panic("expected source write to succeed"),
+    }
+
+    match fs.try_rename(source_path, target_path) {
+        Ok(_) => {},
+        Err(_) => panic("expected try_rename to succeed"),
+    }
+
+    testing.assert_true(fs.exists(source_path) == false);
+
+    match fs.try_read(target_path) {
+        Ok(data) => testing.assert_eq_str(data, "renamed"),
+        Err(_) => panic("expected renamed file to be readable"),
+    }
+
+    cleanup_file(target_path);
+}
+
+#[test]
+fn test_try_copy_missing_source_returns_not_found() {
+    let source_path = "tests/hew/_fs_stream_copy_missing.txt";
+    let target_path = "tests/hew/_fs_stream_copy_missing_target.txt";
+    cleanup_file(source_path);
+    cleanup_file(target_path);
+
+    match fs.try_copy(source_path, target_path) {
+        Ok(_) => panic("expected missing source error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_try_copy_success() {
+    let source_path = "tests/hew/_fs_stream_copy_src.txt";
+    let target_path = "tests/hew/_fs_stream_copy_dst.txt";
+    cleanup_file(source_path);
+    cleanup_file(target_path);
+
+    match fs.try_write(source_path, "copied") {
+        Ok(_) => {},
+        Err(_) => panic("expected source write to succeed"),
+    }
+
+    match fs.try_copy(source_path, target_path) {
+        Ok(_) => {},
+        Err(_) => panic("expected try_copy to succeed"),
+    }
+
+    testing.assert_true(fs.exists(source_path));
+
+    match fs.try_read(target_path) {
+        Ok(data) => testing.assert_eq_str(data, "copied"),
+        Err(_) => panic("expected copied file to be readable"),
+    }
+
+    cleanup_file(source_path);
+    cleanup_file(target_path);
+}
+
+#[test]
 fn test_try_append_and_try_read_bytes() {
     let file_path = "tests/hew/_fs_stream_bytes.txt";
     cleanup_file(file_path);

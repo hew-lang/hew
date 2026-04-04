@@ -1499,6 +1499,7 @@ struct PanicOpLowering : public mlir::OpConversionPattern<hew::PanicOp> {
     auto funcType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_panic", funcType);
     mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+    mlir::LLVM::UnreachableOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return mlir::success();
   }

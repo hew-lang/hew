@@ -115,6 +115,17 @@ static int countPanicOps(mlir::Operation *op) {
   return count;
 }
 
+/// Count both hew.panic ops and hew.runtime_call @hew_panic ops so that
+/// tests are agnostic to which form MLIRGen uses in different contexts.
+static int countAllPanics(mlir::Operation *op) {
+  int count = countPanicOps(op);
+  op->walk([&](hew::RuntimeCallOp call) {
+    if (call.getCallee().str() == "hew_panic")
+      count++;
+  });
+  return count;
+}
+
 static int countSelectAddOps(mlir::Operation *op) {
   int count = 0;
   op->walk([&](hew::SelectAddOp) { count++; });
@@ -1266,7 +1277,7 @@ fn main() {
 
   // The 'Done' arm is the last conditional arm.  Its else path must trap so
   // that a corrupt/unexpected discriminant value doesn't silently fall through.
-  if (countPanicOps(enumFn) < 1) {
+  if (countAllPanics(enumFn) < 1) {
     FAIL("last conditional arm of a statement-style match must emit hew.panic in its else path");
     module.getOperation()->destroy();
     return;
@@ -1307,7 +1318,7 @@ fn main() {
     return;
   }
 
-  if (countPanicOps(boolFn) < 1) {
+  if (countAllPanics(boolFn) < 1) {
     FAIL("last conditional arm of bool literal match must emit hew.panic in its else path");
     module2.getOperation()->destroy();
     return;
@@ -2516,7 +2527,7 @@ fn main() -> int {
     return;
   }
 
-  if (countPanicOps(mainFn) != 2) {
+  if (countAllPanics(mainFn) != 2) {
     FAIL("select should panic on failed sends");
     module.getOperation()->destroy();
     return;
@@ -2578,7 +2589,7 @@ fn main() -> int {
     return;
   }
 
-  if (countPanicOps(mainFn) != 2) {
+  if (countAllPanics(mainFn) != 2) {
     FAIL("join should panic on failed sends");
     module.getOperation()->destroy();
     return;

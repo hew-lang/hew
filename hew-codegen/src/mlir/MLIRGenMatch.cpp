@@ -15,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 
@@ -303,7 +304,11 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
                                             mlir::Type resultType, mlir::Location location) {
   if (idx >= arms.size()) {
     // No arm matched — non-exhaustive match at runtime. Trap.
-    hew::PanicOp::create(builder, location);
+    // Use RuntimeCallOp here because we may be inside an scf.if region
+    // where PanicOp (Terminator) cannot be the last op (scf.yield must be).
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_panic"),
+                               mlir::ValueRange{});
     if (resultType)
       return createDefaultValue(builder, location, resultType);
     return nullptr;

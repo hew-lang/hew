@@ -5961,7 +5961,11 @@ void MLIRGen::panicOnReplySendFailure(mlir::Value sendStatus,
   builder.setInsertionPointToStart(&failIf.getThenRegion().front());
   for (auto channel : pendingChannels)
     abandonReplyChannel(channel, location);
-  hew::PanicOp::create(builder, location);
+  // Use RuntimeCallOp here because we are inside an scf.if then-region where
+  // PanicOp (Terminator) cannot be the last op — scf.yield must be.
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, "hew_panic"),
+                             mlir::ValueRange{});
   builder.setInsertionPointAfter(failIf);
 }
 

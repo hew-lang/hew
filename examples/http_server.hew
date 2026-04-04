@@ -26,15 +26,13 @@ actor Handler {
             if fs.exists(file_path) {
                 let body = fs.read(file_path);
                 let content_type = mime.from_path(file_path);
-                let size = fs.size(file_path);
-                req.respond(200, content_type, size, body);
+                req.respond(200, content_type, body);
             } else {
                 let index_path = file_path + "/index.html";
                 if fs.exists(index_path) {
                     let body = fs.read(index_path);
                     let content_type = mime.from_path(index_path);
-                    let size = fs.size(index_path);
-                    req.respond(200, content_type, size, body);
+                    req.respond(200, content_type, body);
                 } else {
                     req.respond_text(404, "404 Not Found");
                 }

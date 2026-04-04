@@ -351,12 +351,12 @@ pub unsafe extern "C" fn hew_http_respond(
     }
 }
 
-/// Bridge for the Hew-side `respond(req, status, content_type, content_length, body)` ABI.
+/// Bridge for the Hew-side `respond(req, status, content_type, body)` ABI.
 ///
 /// Accepts arguments in the order emitted by codegen (matching the Hew API
 /// surface) and forwards to [`hew_http_respond`] with the correct C ABI
-/// argument order. `content_length` is accepted but ignored — the actual body
-/// length is derived from the NUL-terminated `body` string.
+/// argument order. The `Content-Length` header is derived from `body`
+/// automatically; callers must not pass it separately.
 ///
 /// # Safety
 ///
@@ -369,7 +369,6 @@ pub unsafe extern "C" fn hew_http_respond_bridge(
     req: *mut HewHttpRequest,
     status: i32,
     content_type: *const c_char,
-    _content_length: i64,
     body: *const c_char,
 ) -> i32 {
     let (body_ptr, body_len) = if body.is_null() {
@@ -1300,7 +1299,7 @@ mod tests {
         let body = c"hello";
         // SAFETY: null request is the tested scenario.
         let result = unsafe {
-            hew_http_respond_bridge(std::ptr::null_mut(), 200, ct.as_ptr(), 5, body.as_ptr())
+            hew_http_respond_bridge(std::ptr::null_mut(), 200, ct.as_ptr(), body.as_ptr())
         };
         assert_eq!(result, -1);
     }
@@ -1315,7 +1314,7 @@ mod tests {
         let body = c"hello";
         // SAFETY: req is valid with inner = None; all C strings are valid.
         let result =
-            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), 5, body.as_ptr()) };
+            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), body.as_ptr()) };
         assert_eq!(result, -1);
     }
 
@@ -1328,7 +1327,7 @@ mod tests {
         let ct = c"text/plain";
         // SAFETY: null body is valid (empty response); consumed request returns -1.
         let result =
-            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), 0, std::ptr::null()) };
+            unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), std::ptr::null()) };
         assert_eq!(result, -1);
     }
 
@@ -1340,9 +1339,8 @@ mod tests {
         };
         let body = c"hello";
         // SAFETY: null content_type is valid; consumed request returns -1.
-        let result = unsafe {
-            hew_http_respond_bridge(&raw mut req, 200, std::ptr::null(), 5, body.as_ptr())
-        };
+        let result =
+            unsafe { hew_http_respond_bridge(&raw mut req, 200, std::ptr::null(), body.as_ptr()) };
         assert_eq!(result, -1);
     }
 
@@ -1448,10 +1446,8 @@ mod tests {
 
         let ct = c"text/html";
         let body = c"<h1>Hello</h1>";
-        let body_len = 14_i64; // byte length of "<h1>Hello</h1>"
-                               // SAFETY: req, ct, and body are all valid.
-        let result =
-            unsafe { hew_http_respond_bridge(req, 200, ct.as_ptr(), body_len, body.as_ptr()) };
+        // SAFETY: req, ct, and body are all valid.
+        let result = unsafe { hew_http_respond_bridge(req, 200, ct.as_ptr(), body.as_ptr()) };
         assert_eq!(result, 0);
 
         let resp = handle.join().unwrap();
@@ -1490,7 +1486,7 @@ mod tests {
 
         let ct = c"text/plain";
         // SAFETY: req and ct are valid; null body means empty response.
-        let result = unsafe { hew_http_respond_bridge(req, 204, ct.as_ptr(), 0, std::ptr::null()) };
+        let result = unsafe { hew_http_respond_bridge(req, 204, ct.as_ptr(), std::ptr::null()) };
         assert_eq!(result, 0);
 
         let resp = handle.join().unwrap();

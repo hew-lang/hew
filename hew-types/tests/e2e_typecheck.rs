@@ -432,3 +432,51 @@ fn rc_get_non_copy_rejected() {
         output.errors
     );
 }
+
+// ── HTTP respond() ergonomics ────────────────────────────────────────────────
+
+/// `req.respond(status, content_type, body)` (3-arg form) must typecheck cleanly.
+///
+/// Confirms that `content_length` has been removed from the `respond` signature
+/// so callers no longer need to supply it.
+#[test]
+fn http_respond_three_arg_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        import std::net::http;
+
+        fn main() {
+            let server = http.listen(":8080");
+            let req = server.accept();
+            req.respond(200, "text/plain", "Hello, Hew!");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "http respond(status, content_type, body) should typecheck without errors, got: {:#?}",
+        output.errors
+    );
+}
+
+/// The old 4-arg form `req.respond(status, content_type, content_length, body)`
+/// must now produce a type error, confirming that the removed parameter is no
+/// longer accepted.
+#[test]
+fn http_respond_four_arg_rejected() {
+    let output = typecheck_inline(
+        r#"
+        import std::net::http;
+
+        fn main() {
+            let server = http.listen(":8080");
+            let req = server.accept();
+            req.respond(200, "text/plain", 11, "Hello, Hew!");
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "http respond with 4 args (old content_length form) should produce a type error"
+    );
+}

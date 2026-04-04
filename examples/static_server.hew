@@ -39,8 +39,7 @@ actor Handler {
             if fs.exists(file_path) {
                 let body = fs.read(file_path);
                 let content_type = mime.from_path(file_path);
-                let size = fs.size(file_path);
-                req.respond(200, content_type, size, body);
+                req.respond(200, content_type, body);
             } else {
                 req.respond_text(404, "404 Not Found");
             }

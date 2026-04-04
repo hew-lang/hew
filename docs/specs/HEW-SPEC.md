@@ -2188,13 +2188,13 @@ Specific transitions always win over wildcards for the same event.
 
 The compiler generates the following for every `machine Name { ... }`:
 
-| Generated item              | Signature / behaviour                                              |
+| Generated item              | Usage / behaviour                                                  |
 | ----------------------------| ------------------------------------------------------------------ |
 | State constructors          | `Name::State` (unit) or `Name::State { field: val }` (with data)  |
 | Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
 | Event constructors          | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }`  |
-| `step(event)` method        | `fn step(m: Name, event: NameEvent)` — mutates in place, no return |
-| `state_name()` method       | `fn state_name(m: Name) -> String` — returns current state name    |
+| `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
+| `m.state_name()`            | Returns the current state name as `String`                        |
 | Pattern-match support       | Machine values can be matched exactly like enum values             |
 
 **Calling `step()`** — both unqualified and qualified event constructors are

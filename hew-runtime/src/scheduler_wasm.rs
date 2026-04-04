@@ -593,6 +593,22 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 .store(HewActorState::Runnable as i32, Ordering::Relaxed);
             // SAFETY: actor is valid.
             unsafe { sched_enqueue(actor) };
+        } else if !mailbox.is_null()
+            // SAFETY: mailbox pointer is valid.
+            && unsafe { crate::mailbox_wasm::mailbox_is_closed(mailbox.cast()) }
+        {
+            // Mailbox closed while draining -> IDLE -> STOPPED.
+            // Mirrors the native scheduler's post-drain close-path (see
+            // scheduler.rs `Idle -> Stopped` branch).
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+            // call_terminate_fn has an internal `terminate_called` guard so
+            // cleanup paths are idempotent.
+            unsafe {
+                crate::actor::call_terminate_fn(actor.cast::<crate::actor::HewActor>());
+            }
         }
     }
 }
@@ -1835,6 +1851,112 @@ mod tests {
             TERMINATE_COUNT.load(Ordering::Relaxed),
             1,
             "terminate_fn must not be invoked twice even when cleanup path runs after scheduler"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// Post-drain mailbox-closed → `Stopped` parity with native scheduler.
+    ///
+    /// When the mailbox is closed after all messages are processed the WASM
+    /// scheduler must transition the actor `Idle → Stopped` and fire
+    /// `terminate_fn`, exactly as the native scheduler does on the same path.
+    #[test]
+    fn terminate_fn_fires_on_closed_mailbox_idle_to_stopped() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        TERMINATE_COUNT.store(0, Ordering::Relaxed);
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        // state must be non-null for call_terminate_fn to invoke the callback.
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.terminate_fn = Some(counting_terminate_fn);
+        // Use a no-op dispatch so the actor does not self-stop.
+        actor.dispatch = Some(inner_dispatch_noop);
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // Enqueue one message so the actor is activated and reaches Idle.
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox; payload is a stack-local i32.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+
+        // Close the mailbox *before* running the scheduler.  After dispatch
+        // drains the single message the recheck finds no new messages but the
+        // mailbox is closed, which should trigger Idle → Stopped.
+        // SAFETY: mailbox is valid and exclusively owned by this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(actor.mailbox.cast()) };
+
+        hew_sched_run();
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "actor must reach Stopped after closed-mailbox drain (WASM close-path parity)"
+        );
+        assert_eq!(
+            TERMINATE_COUNT.load(Ordering::Relaxed),
+            1,
+            "terminate_fn must fire exactly once on the closed-mailbox Idle→Stopped path"
+        );
+        assert!(
+            actor.terminate_called.load(Ordering::Acquire),
+            "terminate_called guard must be set on close path"
+        );
+        assert!(
+            actor.terminate_finished.load(Ordering::Acquire),
+            "terminate_finished guard must be set on close path"
+        );
+
+        // SAFETY: mailbox was allocated for this test (closed but not freed).
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// Idempotency: `terminate_fn` must not be invoked a second time if a
+    /// cleanup path runs after the close-path already fired it.
+    #[test]
+    fn terminate_fn_not_double_invoked_by_cleanup_after_closed_mailbox_stop() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        TERMINATE_COUNT.store(0, Ordering::Relaxed);
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.terminate_fn = Some(counting_terminate_fn);
+        actor.dispatch = Some(inner_dispatch_noop);
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox; payload is a stack-local i32.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        // SAFETY: mailbox is valid and exclusively owned by this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(actor.mailbox.cast()) };
+
+        hew_sched_run();
+
+        // Simulate a redundant cleanup call (e.g. hew_actor_close / process
+        // shutdown) after the scheduler already finalised the actor.
+        // SAFETY: actor is in Stopped state and not being dispatched.
+        unsafe {
+            crate::actor::call_terminate_fn(actor_ptr.cast::<crate::actor::HewActor>());
+        }
+
+        assert_eq!(
+            TERMINATE_COUNT.load(Ordering::Relaxed),
+            1,
+            "terminate_fn must not be invoked twice after closed-mailbox stop"
         );
 
         // SAFETY: mailbox was allocated for this test.

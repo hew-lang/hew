@@ -700,6 +700,16 @@ wasm_no_mangle! {
     }
 }
 
+/// Return `true` if the mailbox has been closed.
+///
+/// # Safety
+///
+/// `mb` must be a valid, non-null pointer to a [`HewMailboxWasm`].
+pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailboxWasm) -> bool {
+    // SAFETY: Caller guarantees `mb` is non-null and valid.
+    unsafe { (*mb).closed }
+}
+
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
 wasm_no_mangle! {

@@ -3397,9 +3397,18 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   if (method == "clone") {
-    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
-                                       builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
-        .getResult();
+    // Rc<T>.clone() must route to RcCloneOp (handled later in the Rc
+    // methods section), not the String clone path.
+    bool receiverIsRc = false;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind))
+        receiverIsRc = (named->name == "Rc");
+    }
+    if (!receiverIsRc) {
+      return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                         builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
+          .getResult();
+    }
   }
   if (method == "trim") {
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),

@@ -856,13 +856,24 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
     return hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(symName));
   }
 
-  // Single part — no concatenation needed
+  // Single-part interpolations built from an expression still need to produce
+  // an owned string. Returning the inner value directly aliases loop/variable
+  // storage (e.g. `f"{r}"` in a `for await` body), and the original owner may
+  // drop it before the interpolation result escapes. Route expression-only
+  // singletons through concat-with-empty to force a fresh string allocation.
   if (partValues.size() == 1) {
     auto result = partValues[0];
-    for (auto it = ownedTemps.begin(); it != ownedTemps.end(); ++it) {
-      if (*it == result) {
-        ownedTemps.erase(it);
-        break;
+    if (interp.parts.size() == 1 && std::holds_alternative<ast::StringPartExpr>(interp.parts[0])) {
+      auto emptySym = getOrCreateGlobalString("");
+      auto emptyStr =
+          hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(emptySym));
+      result = hew::StringConcatOp::create(builder, location, strRefType, emptyStr, result);
+    } else {
+      for (auto it = ownedTemps.begin(); it != ownedTemps.end(); ++it) {
+        if (*it == result) {
+          ownedTemps.erase(it);
+          break;
+        }
       }
     }
     for (auto temp : ownedTemps)

@@ -1141,6 +1141,8 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
         TypeErrorKind::MachineExhaustivenessError => "MachineExhaustivenessError",
         TypeErrorKind::UnresolvedImport => "UnresolvedImport",
         TypeErrorKind::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
+        TypeErrorKind::BorrowedParamReturn => "BorrowedParamReturn",
+        TypeErrorKind::UnsafeCollectionElement => "UnsafeCollectionElement",
     };
     serde_json::json!({
         "kind": kind_str,

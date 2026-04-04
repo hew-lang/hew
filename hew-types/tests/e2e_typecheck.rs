@@ -692,3 +692,879 @@ fn range_literal_assigned_to_range_i32() {
         output.errors
     );
 }
+
+/// Returning an Rc parameter as a bare identifier must be a fail-closed error
+/// under borrow-on-call semantics (double-free at runtime).
+#[test]
+fn rc_param_return_errors_borrowed_rc() {
+    // Trailing expression (implicit return) — bare identifier
+    let output = typecheck_inline(
+        r"
+        fn identity(r: Rc<int>) -> Rc<int> {
+            r
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "returning Rc param as trailing expr should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
+    );
+}
+
+/// Explicit `return rc_param` must also trigger the error.
+#[test]
+fn rc_param_explicit_return_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn early(r: Rc<int>, flag: bool) -> Rc<int> {
+            if flag {
+                return r;
+            }
+            Rc::new(0)
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "explicit return of Rc param should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
+    );
+}
+
+/// `break <rc_param>` inside a loop must trigger the error — the broken value
+/// escapes to the enclosing scope with the same aliasing hazard as `return`.
+#[test]
+fn rc_param_break_value_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn escape(r: Rc<int>) -> Rc<int> {
+            loop {
+                break r;
+            }
+        }
+        fn main() {}
+        ",
+    );
+    // Note: the type checker currently types `loop { break v; }` as Unit,
+    // so this also gets a ReturnTypeMismatch.  The BorrowedParamReturn error
+    // must still fire independently of that.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "break-with-value of Rc param should emit BorrowedParamReturn error, got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Block-wrapped return `{ r }` must be caught — `Expr::Block` descent.
+#[test]
+fn rc_param_block_wrapped_return_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrapped(r: Rc<int>) -> Rc<int> {
+            { r }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "block-wrapped Rc param return should emit BorrowedParamReturn error, got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Returning `rc_param.clone()` should NOT trigger the error — it creates
+/// an owned copy with an incremented refcount.
+#[test]
+fn rc_param_clone_return_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn safe_identity(r: Rc<int>) -> Rc<int> {
+            r.clone()
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "returning rc.clone() should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Passing an Rc to a function that reads it (borrow) should be clean — no
+/// `BorrowedParamReturn` errors.
+#[test]
+fn rc_pass_to_fn_borrow_clean() {
+    let output = typecheck_inline(
+        r"
+        fn read_rc(r: Rc<int>) -> int {
+            r.get()
+        }
+        fn main() {
+            let rc = Rc::new(42);
+            println(read_rc(rc));
+        }
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Rc borrow (read-only callee) should not emit BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+// ── Aggregate escape tests ────────────────────────────────────────────────────
+
+/// Wrapping an Rc param in `Some(r)` is an aggregate escape — the borrowed
+/// pointer is embedded in the Option and escapes the function.
+#[test]
+fn rc_param_some_wrap_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            Some(r)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Wrapping an Rc param in a tuple `(r, 0)` is an aggregate escape.
+#[test]
+fn rc_param_tuple_wrap_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> (Rc<int>, int) {
+            (r, 0)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "(r, 0) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Struct init with an Rc param field is an aggregate escape.
+#[test]
+fn rc_param_struct_init_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        type Holder {
+            val: Rc<int>,
+        }
+        fn wrap(r: Rc<int>) -> Holder {
+            Holder { val: r }
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "Holder {{ val: r }} should trigger BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// `Some(r.clone())` is safe — the Rc is cloned before embedding.
+#[test]
+fn rc_param_some_clone_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            Some(r.clone())
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Some(r.clone()) should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Returning `Rc::new(val)` should not trigger — it's a fresh allocation.
+#[test]
+fn rc_new_in_return_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn fresh(_r: Rc<int>) -> Rc<int> {
+            Rc::new(0)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Rc::new(0) should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Returning `return Some(r)` via explicit return also triggers the diagnostic.
+#[test]
+fn rc_param_explicit_return_some_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+            return Some(r);
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "return Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Passing an Rc param to a regular (lowercase) function call that returns
+/// a non-Rc type should NOT trigger — regular calls are borrows, not escapes.
+#[test]
+fn rc_param_passed_to_regular_fn_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn extract(r: Rc<int>) -> int {
+            r.get()
+        }
+        fn delegate(r: Rc<int>) -> int {
+            extract(r)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "passing Rc param to a regular function should not error, got: {rc_errors:#?}",
+    );
+}
+
+// ── Collection-store / taint-tracking tests ─────────────────────────────────
+
+/// `v.push(r); v` — Rc param stored in collection via method call then returned.
+#[test]
+fn rc_method_call_store_and_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+            var v = Vec::new();
+            v.push(r);
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "returning v after v.push(r) must fire BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+    assert!(
+        rc_errors[0].message.contains("`v`") && rc_errors[0].message.contains("`r`"),
+        "error should mention both `v` and `r`, got: {}",
+        rc_errors[0].message
+    );
+}
+
+/// `v.push(r); return v;` — explicit return of tainted local.
+#[test]
+fn rc_method_call_store_explicit_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+            var v = Vec::new();
+            v.push(r);
+            return v;
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "explicit `return v` after v.push(r) must fire, got: {rc_errors:#?}",
+    );
+}
+
+/// `let v = r; v` — direct alias of Rc param then returned.
+#[test]
+fn rc_direct_alias_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Rc<int> {
+            let v = r;
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "returning alias `v = r` must fire BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `let v = Some(r); v` — aggregate alias then returned.
+#[test]
+fn rc_aggregate_alias_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Option<Rc<int>> {
+            let v = Some(r);
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "returning alias `v = Some(r)` must fire BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Transitive taint: `let a = r; v.push(a); v` — taint propagates through alias.
+#[test]
+fn rc_transitive_taint_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+            let a = r;
+            var v = Vec::new();
+            v.push(a);
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "transitive taint (a = r; v.push(a); v) must fire, got: {:#?}",
+        output.errors
+    );
+}
+
+/// v.push(r) where v is NOT returned — no error (only return-path escapes
+/// are flagged by this check; drop-ordering issues are separate).
+#[test]
+fn rc_method_call_store_no_return_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn not_returned(r: Rc<int>) -> int {
+            var v = Vec::new();
+            v.push(r);
+            42
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "v.push(r) without returning v should not fire, got: {rc_errors:#?}",
+    );
+}
+
+/// v.push(r.clone()) then return v — safe because clone increments refcount.
+#[test]
+fn rc_method_call_store_clone_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn safe(r: Rc<int>) -> Vec<Rc<int>> {
+            var v = Vec::new();
+            v.push(r.clone());
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "v.push(r.clone()) then return v should be clean, got: {rc_errors:#?}",
+    );
+}
+
+/// Taint inside an if-branch is propagated unconditionally (fail-closed).
+#[test]
+fn rc_method_call_store_in_branch_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>, cond: bool) -> Vec<Rc<int>> {
+            var v = Vec::new();
+            if cond {
+                v.push(r);
+            }
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "v.push(r) inside branch then return v must fire, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Assignment-based taint: `v = r;` then return v.
+#[test]
+fn rc_assignment_taint_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn bad(r: Rc<int>) -> Rc<int> {
+            var v: Rc<int> = Rc::new(0);
+            v = r;
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "`v = r;` then return v must fire BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Read-only method `contains(r)` must NOT taint the receiver.
+/// Under borrow-on-call, the method borrows `r` and returns independently.
+#[test]
+fn rc_readonly_method_does_not_taint() {
+    let output = typecheck_inline(
+        r"
+        fn ok(r: Rc<int>) -> Vec<int> {
+            let v = Vec::new();
+            v.contains(r.get());
+            v
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "v.contains(...) is read-only and must not taint v, got: {rc_errors:#?}",
+    );
+}
+
+/// Field-assignment escape: `s.field = r; return s;` stores a borrowed
+/// param into a struct field, then returns the struct — aliasing double-free.
+#[test]
+fn rc_field_assignment_escape_errors() {
+    let output = typecheck_inline(
+        r"
+        type Wrapper {
+            value: Rc<int>,
+        }
+        fn bad(r: Rc<int>) -> Wrapper {
+            var s = Wrapper { value: Rc::new(0) };
+            s.value = r;
+            s
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "s.value = r; return s must fire BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  UnsafeCollectionElement — Rc<T> in collections
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: assert that source produces at least one `UnsafeCollectionElement` error.
+fn assert_unsafe_collection_element(source: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::UnsafeCollectionElement)
+        .collect();
+    assert!(
+        !hits.is_empty(),
+        "{context}: expected UnsafeCollectionElement error, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Helper: assert that source produces NO `UnsafeCollectionElement` error.
+fn assert_no_unsafe_collection_element(source: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::UnsafeCollectionElement)
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "{context}: unexpected UnsafeCollectionElement error(s): {hits:#?}"
+    );
+}
+
+#[test]
+fn rc_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            let r = Rc::new(42);
+            var v = Vec::new();
+            v.push(r);
+        }",
+        "Vec.push(Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_vec_set_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v: Vec<Rc<int>> = Vec::new();
+            let r = Rc::new(99);
+            v.set(0, r);
+        }",
+        "Vec.set(_, Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_vec_extend_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v: Vec<Rc<int>> = Vec::new();
+            let w: Vec<Rc<int>> = Vec::new();
+            v.extend(w);
+        }",
+        "Vec.extend(Vec<Rc<int>>)",
+    );
+}
+
+#[test]
+fn rc_hashmap_insert_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            let r = Rc::new(42);
+            m.insert("key", r);
+        }"#,
+        "HashMap.insert(_, Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_hashmap_insert_key_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            let r = Rc::new(42);
+            m.insert(r, "val");
+        }"#,
+        "HashMap.insert(Rc<int>, _)",
+    );
+}
+
+#[test]
+fn rc_hashset_insert_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let r = Rc::new(42);
+            s.insert(r);
+        }",
+        "HashSet.insert(Rc<int>)",
+    );
+}
+
+#[test]
+fn rc_nested_in_vec_element_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            let r = Rc::new(42);
+            v.push(Some(r));
+        }",
+        "Vec.push(Option<Rc<int>>)",
+    );
+}
+
+#[test]
+fn rc_tuple_in_vec_element_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            let r = Rc::new(42);
+            v.push((r, 0));
+        }",
+        "Vec.push((Rc<int>, int))",
+    );
+}
+
+// ── Safe patterns: collections with Copy / primitive types ──────────────
+
+#[test]
+fn vec_int_push_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        fn main() {
+            var v = Vec::new();
+            v.push(42);
+        }",
+        "Vec<int> push should be fine",
+    );
+}
+
+#[test]
+fn vec_string_push_ok() {
+    assert_no_unsafe_collection_element(
+        r#"
+        fn main() {
+            var v = Vec::new();
+            v.push("hello");
+        }"#,
+        "Vec<String> push should be fine",
+    );
+}
+
+#[test]
+fn hashmap_string_string_insert_ok() {
+    assert_no_unsafe_collection_element(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            m.insert("key", "value");
+        }"#,
+        "HashMap<String, String> insert should be fine",
+    );
+}
+
+#[test]
+fn hashset_int_insert_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            s.insert(42);
+        }",
+        "HashSet<int> insert should be fine",
+    );
+}
+
+// ── Named-wrapper transitive Rc rejection ───────────────────────────────────────
+//
+// Regression coverage for the named-wrapper hole: a struct/enum that
+// *contains* Rc<T> in its fields must be rejected from collections even when
+// the type argument list of the outer container shows no Rc directly.
+
+#[test]
+fn rc_in_named_struct_field_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder {
+            val: Rc<int>
+        }
+        fn main() {
+            var v = Vec::new();
+            let h = Holder { val: Rc::new(1) };
+            v.push(h);
+        }",
+        "Vec.push(Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+    );
+}
+
+#[test]
+fn rc_in_named_struct_field_hashmap_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        type Holder {
+            val: Rc<int>
+        }
+        fn main() {
+            var m = HashMap::new();
+            let h = Holder { val: Rc::new(1) };
+            m.insert("k", h);
+        }"#,
+        "HashMap.insert(_, Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+    );
+}
+
+#[test]
+fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Inner {
+            x: Rc<int>
+        }
+        type Outer {
+            inner: Inner
+        }
+        fn main() {
+            var v = Vec::new();
+            let o = Outer { inner: Inner { x: Rc::new(1) } };
+            v.push(o);
+        }",
+        "Vec.push(Outer wrapping Inner wrapping Rc<int>) — doubly-nested named struct should be rejected",
+    );
+}
+
+#[test]
+fn plain_named_struct_no_rc_vec_push_ok() {
+    assert_no_unsafe_collection_element(
+        r"
+        type Point {
+            x: int,
+            y: int
+        }
+        fn main() {
+            var v = Vec::new();
+            let p = Point { x: 1, y: 2 };
+            v.push(p);
+        }",
+        "Vec<Point> with no Rc should be fine",
+    );
+}
+
+// ── Known limitations of BorrowedParamReturn ────────────────────────────────────
+//
+// The following patterns are NOT caught by the current syntactic scanner and
+// are explicitly deferred to a future escape-analysis pass:
+//
+// 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` is safe when called
+//    with value types (int, String, structs) but unsound when `T = Rc<U>`.
+//    Definition-site checking was removed because it rejects all generic
+//    identity patterns.  Needs call-site / monomorphisation-time checking.
+//
+// 2. Inter-procedural storage: `let v = wrap(r); return v;` where `wrap`
+//    stores `r` into a container.  Requires cross-function analysis.
+//
+// 3. Deeply nested non-constructor call chains are not caught.
+//
+// These are tracked as future escape-analysis work.

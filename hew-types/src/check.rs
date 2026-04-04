@@ -8977,15 +8977,19 @@ impl Checker {
         }
     }
 
-    fn type_satisfies_trait_bound(&self, ty: &Ty, trait_name: &str) -> bool {
+    fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
             Ty::Named { name, .. } => {
-                self.type_implements_trait(name, trait_name)
-                    || self.type_structurally_satisfies(name, trait_name)
+                let name = name.clone();
+                self.type_implements_trait(&name, trait_name)
+                    || self.type_structurally_satisfies(&name, trait_name)
             }
-            Ty::TraitObject { traits } => traits.iter().any(|t| {
-                t.trait_name == trait_name || self.trait_extends(&t.trait_name, trait_name)
-            }),
+            Ty::TraitObject { traits } => {
+                let matched = traits.iter().any(|t| {
+                    t.trait_name == trait_name || self.trait_extends(&t.trait_name, trait_name)
+                });
+                matched
+            }
             // For primitives and other built-in types, delegate to the marker-trait table which
             // already knows which built-ins satisfy which markers (e.g. i32 satisfies Ord).
             _ => {
@@ -9066,32 +9070,36 @@ impl Checker {
         false
     }
 
-    /// Structural-bounds scaffold for compositional interfaces (Stage 1 / E1).
+    /// Structural-bounds check for compositional interfaces (Stage 1 / E2).
     ///
-    /// Returns `true` only when **all** of the following hold:
+    /// Returns `true` when **all** required (non-default) methods of the trait are
+    /// present on the concrete type with compatible signatures.  The following guards
+    /// from E1 are preserved:
     ///
-    /// 1. The trait is known in `trait_defs`.
-    /// 2. The trait has **no associated types** (E1 guard – associated-type resolution requires
-    ///    an explicit `impl` alias scope that does not exist in the structural path yet).
-    /// 3. The trait has **no generic methods** (E1 guard – per-method type-parameter
-    ///    substitution belongs in a later slice).
-    /// 4. The concrete type is known (its `type_defs` entry is reachable).
+    /// * **Associated-type guard** — traits that declare associated types are not
+    ///   handled structurally; an explicit `impl` alias scope is required.
+    /// * **Generic-method guard** — traits with per-method type parameters are not
+    ///   handled structurally; per-call substitution belongs in a later slice.
     ///
-    /// **E1 deliberately returns `false`** so that the call-site fallback in
-    /// `type_satisfies_trait_bound` is safe to introduce now without changing any existing
-    /// program behaviour.  A later slice (E2) will lift the blanket `false` return and
-    /// implement real method-presence matching against `type_defs`.
-    fn type_structurally_satisfies(&self, type_name: &str, trait_name: &str) -> bool {
-        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+    /// Signature compatibility (E2 definition):
+    /// * Same number of non-receiver parameters.
+    /// * Each non-receiver parameter type matches after substituting `Self` → concrete type.
+    /// * Return type matches after the same substitution.
+    ///
+    /// `dyn Trait` / vtable / codegen is explicitly out of scope.
+    fn type_structurally_satisfies(&mut self, type_name: &str, trait_name: &str) -> bool {
+        // Clone trait_info upfront to release the immutable borrow on self.trait_defs before
+        // any later &mut self calls (lookup_trait_method takes &mut self).
+        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
             return false;
         };
 
-        // E1 guard: traits with associated types require an explicit impl context.
+        // E1 guard: associated types require an explicit impl alias scope.
         if !trait_info.associated_types.is_empty() {
             return false;
         }
 
-        // E1 guard: traits with generic methods are not handled structurally yet.
+        // E1 guard: generic methods require per-call substitution (later slice).
         if trait_info
             .methods
             .iter()
@@ -9100,12 +9108,70 @@ impl Checker {
             return false;
         }
 
-        // E1 placeholder: real method-presence matching lives in E2.
-        // The `type_name` reference is intentional — kept so E2 can replace this line with
-        // a lookup into `self.type_defs` without needing to fish `type_name` back out of
-        // caller scope.
-        let _ = type_name;
-        false
+        // Collect required (non-default) method names.
+        // Default methods have a body in the trait declaration; required ones do not.
+        let required: Vec<String> = trait_info
+            .methods
+            .iter()
+            .filter(|m| m.body.is_none())
+            .map(|m| m.name.clone())
+            .collect();
+
+        // Conservative: a trait with no required methods (all default or zero methods)
+        // is not considered structurally satisfied — an explicit impl is still needed.
+        // This keeps marker-like and all-default traits on the nominal path.
+        if required.is_empty() {
+            return false;
+        }
+
+        // The concrete type, used for Self substitution in trait signatures.
+        let concrete_ty = Ty::Named {
+            name: type_name.to_string(),
+            args: vec![],
+        };
+        let type_name_owned = type_name.to_string();
+
+        for method_name in &required {
+            // Resolve the trait method's expected signature.
+            // lookup_trait_method strips the receiver and walks super-traits.
+            let Some(trait_sig) = self.lookup_trait_method(trait_name, method_name) else {
+                return false;
+            };
+
+            // Look up the concrete type's method (receiver already stripped in type_defs).
+            // Primary: type_defs[type_name].methods[method_name]
+            // Fallback: fn_sigs["TypeName::method_name"]
+            let type_sig = self
+                .lookup_type_def(&type_name_owned)
+                .and_then(|td| td.methods.get(method_name.as_str()).cloned())
+                .or_else(|| self.lookup_fn_sig(&format!("{type_name_owned}::{method_name}")));
+
+            let Some(type_sig) = type_sig else {
+                return false;
+            };
+
+            // Arity check: non-receiver param counts must match.
+            if trait_sig.params.len() != type_sig.params.len() {
+                return false;
+            }
+
+            // Return-type check (Self → concrete type in trait side).
+            let expected_ret =
+                self.substitute_named_param(&trait_sig.return_type, "Self", &concrete_ty);
+            if expected_ret != type_sig.return_type {
+                return false;
+            }
+
+            // Per-parameter type check (Self → concrete type in trait side).
+            for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter()) {
+                let expected = self.substitute_named_param(trait_param, "Self", &concrete_ty);
+                if expected != *type_param {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     /// Look up a method on a trait, walking super-traits if needed.
@@ -14276,7 +14342,7 @@ fn main() {
 
     #[test]
     fn structural_satisfies_returns_false_for_unknown_trait() {
-        let checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         assert!(
             !checker.type_structurally_satisfies("MyType", "NoSuchTrait"),
             "unknown trait must not satisfy structural check"
@@ -14285,7 +14351,7 @@ fn main() {
 
     #[test]
     fn structural_satisfies_e1_guard_associated_types() {
-        let checker = make_checker_with_trait("Indexed", &["get"], true, false);
+        let mut checker = make_checker_with_trait("Indexed", &["get"], true, false);
         assert!(
             !checker.type_structurally_satisfies("MyType", "Indexed"),
             "E1 guard: traits with associated types must return false"
@@ -14294,7 +14360,7 @@ fn main() {
 
     #[test]
     fn structural_satisfies_e1_guard_generic_methods() {
-        let checker = make_checker_with_trait("Mapper", &["map"], false, true);
+        let mut checker = make_checker_with_trait("Mapper", &["map"], false, true);
         assert!(
             !checker.type_structurally_satisfies("MyType", "Mapper"),
             "E1 guard: traits with generic methods must return false"
@@ -14302,13 +14368,13 @@ fn main() {
     }
 
     #[test]
-    fn structural_satisfies_e1_placeholder_returns_false_for_method_only_trait() {
-        // A method-only, non-generic trait passes the guards but still returns
-        // false in E1 (the real method-presence check lives in E2).
-        let checker = make_checker_with_trait("Greet", &["hello"], false, false);
+    fn structural_satisfies_e1_guard_method_only_trait_unknown_type_returns_false() {
+        // In E2, the placeholder is replaced with real method-presence matching.
+        // An unregistered type still returns false because no methods are found.
+        let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
         assert!(
             !checker.type_structurally_satisfies("MyType", "Greet"),
-            "E1 placeholder must return false even for qualifying traits"
+            "unregistered type must not satisfy structural check even after E2"
         );
     }
 
@@ -14380,6 +14446,364 @@ fn main() {
         assert!(
             !output.errors.is_empty(),
             "E1 must not accept a type with no impl and no structural match; expected errors"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // E2 structural method-presence tests
+    //
+    // These exercises the live structural-satisfaction logic that replaced the
+    // E1 placeholder.  Programs use `impl Type { fn method }` (no trait) so
+    // the method is registered in `type_defs.methods` without a nominal impl.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn structural_e2_single_method_match_satisfies_bound() {
+        // Positive: a type that has the required method via a bare impl block
+        // (no explicit `impl Trait for Type`) must satisfy the bound structurally.
+        let source = r"
+            trait Area {
+                fn area(val: Self) -> int;
+            }
+
+            type Square {}
+
+            impl Square {
+                fn area(s: Square) -> int { 1 }
+            }
+
+            fn measure<T: Area>(s: T) -> int {
+                s.area()
+            }
+
+            fn main() {
+                let sq = Square {};
+                let _ = measure(sq);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let bound_err = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+        assert!(
+            !bound_err,
+            "structural method match must satisfy Area bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_multi_method_trait_all_present_satisfies_bound() {
+        // Positive: all required methods present → bound satisfied.
+        let source = r#"
+            trait Named {
+                fn label(val: Self) -> string;
+                fn code(val: Self) -> int;
+            }
+
+            type Widget {}
+
+            impl Widget {
+                fn label(w: Widget) -> string { "w" }
+                fn code(w: Widget) -> int { 0 }
+            }
+
+            fn print_label<T: Named>(t: T) -> string {
+                t.label()
+            }
+
+            fn main() {
+                let w = Widget {};
+                let _ = print_label(w);
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let bound_err = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+        assert!(
+            !bound_err,
+            "all methods present → Named bound must be satisfied; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_method_with_non_self_param_satisfies_bound() {
+        // Positive: trait method has a non-receiver parameter; the type's method
+        // must have the same arity and parameter type.
+        let source = r"
+            trait Scalable {
+                fn scale(val: Self, factor: int) -> int;
+            }
+
+            type Brick {}
+
+            impl Brick {
+                fn scale(b: Brick, factor: int) -> int { factor }
+            }
+
+            fn resize<T: Scalable>(t: T) -> int {
+                t.scale(2)
+            }
+
+            fn main() {
+                let b = Brick {};
+                let _ = resize(b);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let bound_err = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+        assert!(
+            !bound_err,
+            "matching non-receiver param must satisfy Scalable bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_nominal_impl_still_preferred_over_structural() {
+        // Positive: an explicit `impl Trait for Type` still works; E2 must not
+        // break the nominal path.
+        let source = r"
+            trait Area {
+                fn area(val: Self) -> int;
+            }
+
+            type Circle {}
+
+            impl Area for Circle {
+                fn area(c: Circle) -> int { 3 }
+            }
+
+            fn measure<T: Area>(s: T) -> int {
+                s.area()
+            }
+
+            fn main() {
+                let c = Circle {};
+                let _ = measure(c);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let bound_err = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+        assert!(
+            !bound_err,
+            "explicit impl must still satisfy bound in E2; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_wrong_return_type_does_not_satisfy_bound() {
+        // Negative: the type has a method with the right name but wrong return type;
+        // the bound must not be satisfied.
+        let source = r#"
+            trait Area {
+                fn area(val: Self) -> int;
+            }
+
+            type Triangle {}
+
+            impl Triangle {
+                fn area(t: Triangle) -> string { "big" }
+            }
+
+            fn measure<T: Area>(s: T) -> int {
+                s.area()
+            }
+
+            fn main() {
+                let t = Triangle {};
+                let _ = measure(t);
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
+            "wrong return type must not satisfy Area bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_wrong_arity_does_not_satisfy_bound() {
+        // Negative: the type's method has one extra non-receiver parameter;
+        // the arity mismatch must cause the bound to fail.
+        let source = r"
+            trait Ping {
+                fn ping(val: Self) -> int;
+            }
+
+            type Server {}
+
+            impl Server {
+                fn ping(s: Server, timeout: int) -> int { 1 }
+            }
+
+            fn use_ping<T: Ping>(t: T) -> int {
+                t.ping()
+            }
+
+            fn main() {
+                let s = Server {};
+                let _ = use_ping(s);
+            }
+        ";
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
+            "arity mismatch must not satisfy Ping bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_missing_one_of_two_methods_does_not_satisfy_bound() {
+        // Negative: a multi-method trait where only one of two required methods is present.
+        let source = r#"
+            trait Named {
+                fn label(val: Self) -> string;
+                fn code(val: Self) -> int;
+            }
+
+            type Partial {}
+
+            impl Partial {
+                fn label(p: Partial) -> string { "p" }
+                // `code` is intentionally missing
+            }
+
+            fn use_named<T: Named>(t: T) -> string {
+                t.label()
+            }
+
+            fn main() {
+                let p = Partial {};
+                let _ = use_named(p);
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
+            "partial method set must not satisfy Named bound; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn structural_e2_all_default_methods_still_requires_explicit_impl() {
+        // Negative (conservative): a trait whose every method has a default body
+        // has no required methods.  E2 returns false in that case — an explicit
+        // `impl Trait for Type` is still needed, keeping explicit impls authoritative
+        // for default-only and marker-like traits.
+        let source = r#"
+            trait WithDefault {
+                fn greet(val: Self) -> string { "hello" }
+            }
+
+            type Thingy {}
+
+            impl Thingy {
+                fn greet(t: Thingy) -> string { "world" }
+            }
+
+            fn use_it<T: WithDefault>(t: T) {}
+
+            fn main() {
+                let t = Thingy {};
+                use_it(t);
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)),
+            "all-default-method trait must require explicit impl; got: {:?}",
+            output.errors
         );
     }
 }

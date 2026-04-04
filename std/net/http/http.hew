@@ -73,8 +73,8 @@ trait RequestMethods {
 
     /// Send a full HTTP response with status, content-type, and body.
     ///
-    /// `content_length` should be the byte length of `body`.
-    fn respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
+    /// The `Content-Length` header is derived from `body` automatically.
+    fn respond(req: Request, status: i32, content_type: String, body: String) -> i32;
 
     /// Send a plain-text HTTP response.
     ///
@@ -116,8 +116,8 @@ impl RequestMethods for Request {
     /// Return the request body decoded according to `encoding`.
     fn body(req: Request, encoding: String) -> String { unsafe { hew_http_request_body_string(req, encoding) } }
     /// Send a full HTTP response with status, content-type, and body.
-    fn respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32 {
-        unsafe { hew_http_respond_bridge(req, status, content_type, content_length, body) }
+    fn respond(req: Request, status: i32, content_type: String, body: String) -> i32 {
+        unsafe { hew_http_respond_bridge(req, status, content_type, body) }
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i32, body: String) -> i32 {
@@ -166,7 +166,7 @@ extern "C" {
     fn hew_http_request_path(req: Request) -> String;
     fn hew_http_request_body_string(req: Request, encoding: String) -> String;
     fn hew_http_request_header(req: Request, name: String) -> String;
-    fn hew_http_respond_bridge(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
+    fn hew_http_respond_bridge(req: Request, status: i32, content_type: String, body: String) -> i32;
     fn hew_http_respond_text(req: Request, status: i32, body: String) -> i32;
     fn hew_http_respond_json(req: Request, status: i32, json: String) -> i32;
     fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;

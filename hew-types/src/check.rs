@@ -7733,10 +7733,6 @@ impl Checker {
                     }
                     if let Some(arg) = args.get(2) {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    if let Some(arg) = args.get(3) {
-                        let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
                     Ty::I32

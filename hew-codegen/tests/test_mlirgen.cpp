@@ -1605,6 +1605,7 @@ fn main() -> int {
     let m = Big(9);
     match m {
         Big(x) if x > 0 => 1,
+        Big(_) => 0,
         Text(s) => 2,
         Int(_) => 3,
         Unit => 4

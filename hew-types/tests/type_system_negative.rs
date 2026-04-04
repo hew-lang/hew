@@ -680,7 +680,7 @@ fn unused_variable_warning_for_unread_binding() {
     );
 }
 
-// ── 13. NonExhaustiveMatch — Option missing None arm (warning) ──────
+// ── 13. NonExhaustiveMatch — Option missing None arm (error) ──────
 
 #[test]
 fn nonexhaustive_match_option_missing_none() {
@@ -696,17 +696,25 @@ fn nonexhaustive_match_option_missing_none() {
         }
     ",
     );
+    // Option is enum-like → non-exhaustive is a hard error.
     assert!(
         output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for Option, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
             .warnings
             .iter()
             .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
-        "Expected NonExhaustiveMatch warning for Option, got warnings: {:?}",
-        output.warnings
+        "NonExhaustiveMatch for Option must not appear as warning"
     );
 }
 
-// ── 14. NonExhaustiveMatch — Result missing Err arm (warning) ───────
+// ── 14. NonExhaustiveMatch — Result missing Err arm (error) ───────
 
 #[test]
 fn nonexhaustive_match_result_missing_err() {
@@ -722,17 +730,25 @@ fn nonexhaustive_match_result_missing_err() {
         }
     ",
     );
+    // Result is enum-like → non-exhaustive is a hard error.
     assert!(
         output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for Result, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
             .warnings
             .iter()
             .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
-        "Expected NonExhaustiveMatch warning for Result, got warnings: {:?}",
-        output.warnings
+        "NonExhaustiveMatch for Result must not appear as warning"
     );
 }
 
-// ── 15. NonExhaustiveMatch — enum missing variant (warning) ─────────
+// ── 15. NonExhaustiveMatch — enum missing variant (error) ─────────
 
 #[test]
 fn nonexhaustive_match_enum_missing_variant() {
@@ -750,13 +766,21 @@ fn nonexhaustive_match_enum_missing_variant() {
         }
     "#,
     );
+    // User enum is enum-like → non-exhaustive is a hard error.
     assert!(
         output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for missing Blue, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
             .warnings
             .iter()
             .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
-        "Expected NonExhaustiveMatch warning for missing Blue, got warnings: {:?}",
-        output.warnings
+        "NonExhaustiveMatch for enum must not appear as warning"
     );
 }
 

@@ -409,7 +409,7 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Print operation
+// Test: Print operation (println → newline=true)
 // ============================================================================
 static void test_print() {
   TEST(print);
@@ -421,26 +421,77 @@ fn main() -> int {
     println(42);
     0
 }
-  )",
-                             /*dumpIR=*/true);
+  )");
 
   if (!module) {
     FAIL("MLIR generation failed");
     return;
   }
 
-  // Check that hew.print was generated
+  // Walk collects observable facts; decisions and FAIL/PASS live outside the
+  // lambda so that a check failure is not silently swallowed by the lambda
+  // return and then masked by an unconditional PASS() at the end.
   bool hasPrint = false;
+  bool newlineOk = true;
   module.walk([&](hew::PrintOp op) {
     hasPrint = true;
-    // Check that newline is true
-    if (!op.getNewline()) {
-      FAIL("expected newline=true for println");
-    }
+    if (!op.getNewline())
+      newlineOk = false;
   });
 
   if (!hasPrint) {
     FAIL("expected hew.print operation");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!newlineOk) {
+    FAIL("expected newline=true for println");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: print (no newline) → newline=false
+// Regression: the walk-lambda false-green pattern was first caught here; a
+// separate test for print() vs println() makes the newline attribute
+// observable from both directions.
+// ============================================================================
+static void test_print_no_newline() {
+  TEST(print_no_newline);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    print(42);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  bool hasPrint = false;
+  bool newlineWrong = false;
+  module.walk([&](hew::PrintOp op) {
+    hasPrint = true;
+    if (op.getNewline())
+      newlineWrong = true;
+  });
+
+  if (!hasPrint) {
+    FAIL("expected hew.print operation");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (newlineWrong) {
+    FAIL("expected newline=false for print (not println)");
     module.getOperation()->destroy();
     return;
   }
@@ -2651,6 +2702,7 @@ int main() {
   test_fibonacci();
   test_mutable_variables();
   test_print();
+  test_print_no_newline();
   test_while_loop();
   test_if_else_expr();
   test_statement_position_if_and_match_lower_without_results();

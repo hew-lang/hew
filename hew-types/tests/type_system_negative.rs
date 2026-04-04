@@ -1474,3 +1474,39 @@ fn bounds_not_satisfied_missing_trait_impl() {
         output.errors
     );
 }
+
+// ── String::chars() typechecks and arity-guards ─────────────────────────────
+
+#[test]
+fn string_chars_returns_vec_char() {
+    // chars() must typecheck cleanly and produce Vec<char> with zero args.
+    let output = typecheck(
+        r#"
+        fn main() {
+            let s = "hello";
+            let cs: Vec<char> = s.chars();
+        }
+    "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "String::chars() should typecheck without errors; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn string_chars_rejects_extra_args() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let s = "hello";
+            let cs = s.chars(1);
+        }
+    "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "String::chars(arg) should produce a typecheck error"
+    );
+}

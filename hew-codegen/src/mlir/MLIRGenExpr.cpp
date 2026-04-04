@@ -3499,6 +3499,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                                     mlir::ValueRange{receiver})
         .getResult();
   }
+  if (method == "chars") {
+    auto vecType = hew::VecType::get(&context, i32Type);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_string_chars");
+    return builder
+        .create<hew::RuntimeCallOp>(location, mlir::TypeRange{vecType}, calleeAttr,
+                                    mlir::ValueRange{receiver})
+        .getResult();
+  }
   if (method == "is_digit" || method == "is_alpha" || method == "is_alphanumeric" ||
       method == "is_empty") {
     return builder

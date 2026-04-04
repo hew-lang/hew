@@ -4,13 +4,24 @@ import std::os;
 
 import std::fs;
 
+// hew_bytes_to_string is used inside the actor because conn.read_string()
+// does not lower correctly through the MLIR actor-field dispatch path on
+// the current compiler (actorFieldTypes lookup miss → coerceType failure).
+// Using conn.read() → bytes → hew_bytes_to_string avoids the two-step
+// MLIR lowering that triggers the bug.  The bytes type matches the stdlib
+// surface; no Vec<i32> or other internal types appear here.
+extern "C" {
+    fn hew_bytes_to_string(data: bytes) -> String;
+}
+
 actor ServerReader {
     let conn: Connection;
 
     receive fn start(unused: i32) {
         var running = true;
         while running {
-            let msg = conn.read_string();
+            let raw = conn.read();
+            let msg = unsafe { hew_bytes_to_string(raw) };
             if msg.contains("__HEW_TCP_DISCONNECT__") {
                 println("[client] server disconnected");
                 running = false;

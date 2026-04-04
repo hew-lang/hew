@@ -120,9 +120,15 @@ endif()
 
 find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
 find_program(HEW_LLDB NAMES lldb)
+if(APPLE)
+  find_program(HEW_ATOS NAMES atos)
+  find_program(HEW_NM NAMES nm llvm-nm)
+endif()
 find_program(HEW_ADDR2LINE NAMES addr2line llvm-addr2line)
 find_program(HEW_LLVM_SYMBOLIZER NAMES llvm-symbolizer)
-find_program(HEW_NM NAMES llvm-nm nm)
+if(UNIX AND NOT APPLE)
+  find_program(HEW_NM NAMES llvm-nm nm)
+endif()
 find_program(HEW_PYTHON3 NAMES python3)
 
 # Absolute path to the Hew LLDB Python extension used by both LLDB tests.
@@ -357,6 +363,27 @@ if(HEW_LLDB)
   )
 else()
   message(STATUS "Skipping LLDB smoke test — lldb not found")
+endif()
+
+if(APPLE)
+  if(HEW_ATOS AND HEW_NM)
+    # Native Darwin symbolizers still report raw Hew mangled names for
+    # non-main frames. This smoke test uses those raw symbols only to locate
+    # addresses, then asserts the file:line symbolization that already works.
+    add_test(
+      NAME dwarf_atos_smoke
+      COMMAND ${CMAKE_COMMAND}
+        -DHEW_CLI=${HEW_CLI}
+        -DATOS=${HEW_ATOS}
+        -DNM_TOOL=${HEW_NM}
+        -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+        -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_atos_smoke${HEW_EXE_SUFFIX}
+        -DEXPECTED_SYMBOL_LINES=__HM19dwarf_linked_binaryT4PairF3sum|11,__HM19dwarf_linked_binaryF3add|16,_main|20
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_atos_smoke_test.cmake
+    )
+  else()
+    message(STATUS "Skipping Darwin atos smoke test — atos or nm not found")
+  endif()
 endif()
 
 if(UNIX AND NOT APPLE)

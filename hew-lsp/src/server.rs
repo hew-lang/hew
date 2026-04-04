@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use dashmap::DashMap;
 use hew_parser::ast::{
-    Attribute, Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem, TypeDeclKind,
+    Attribute, Block, Expr, ImportDecl, ImportSpec, Item, Span, Stmt, StringPart, TraitItem,
+    TypeBodyItem, TypeDeclKind,
 };
 use hew_parser::ParseResult;
 use hew_types::error::{Severity, TypeErrorKind};
@@ -340,6 +341,46 @@ impl LanguageServer for HewLanguageServer {
                             range,
                         })));
                     }
+                }
+            }
+        }
+
+        // Collect the current file's imports as owned data before releasing the
+        // DashMap borrow so the cross-file search can acquire other entries.
+        let imports: Vec<hew_parser::ast::ImportDecl> = doc
+            .parse_result
+            .program
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Import(i) => Some(i.clone()),
+                _ => None,
+            })
+            .collect();
+        drop(doc);
+
+        // Cross-file: search files that the current file imports.
+        if let Some((target_uri, range)) =
+            find_cross_file_definition(uri, &imports, &word, &self.documents)
+        {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: target_uri,
+                range,
+            })));
+        }
+
+        // For qualified names (`Counter::new`), also try the type-name prefix
+        // cross-file as a best-effort fallback: navigate to `Counter` in its
+        // defining file even if the method itself cannot be resolved yet.
+        for separator in [".", "::"] {
+            if let Some((prefix, _)) = word.split_once(separator) {
+                if let Some((target_uri, range)) =
+                    find_cross_file_definition(uri, &imports, prefix, &self.documents)
+                {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: target_uri,
+                        range,
+                    })));
                 }
             }
         }
@@ -1203,16 +1244,30 @@ fn word_at_offset(source: &str, offset: usize) -> Option<String> {
     hew_analysis::util::word_at_offset(source, offset)
 }
 
-// ── Document links ──────────────────────────────────────────────────
+// ── Import path resolution ────────────────────────────────────────────
 
-fn build_document_links(
-    uri: &Url,
-    source: &str,
-    lo: &[usize],
-    parse_result: &ParseResult,
-) -> Vec<DocumentLink> {
-    let mut links = Vec::new();
+/// Compute the absolute file path that an `ImportDecl` would resolve to,
+/// searching the workspace root first then the importing file's directory.
+///
+/// Does **not** check whether the file exists on disk; callers decide whether
+/// to check existence before performing I/O.
+fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std::path::PathBuf> {
+    // String-literal import: `import "relative/path.hew";`
+    if let Some(fp) = &import.file_path {
+        let file_dir = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
+        return Some(file_dir.join(fp));
+    }
 
+    if import.path.is_empty() {
+        return None;
+    }
+
+    let relative = format!("{}.hew", import.path.join("/"));
+
+    // Workspace root: the directory that directly contains a `std/` folder.
     let workspace_root = uri.to_file_path().ok().and_then(|p| {
         let mut dir = p.parent().map(std::path::Path::to_path_buf);
         while let Some(d) = dir {
@@ -1224,38 +1279,127 @@ fn build_document_links(
         None
     });
 
+    // Prefer workspace root when the file already exists there.
+    if let Some(root) = workspace_root {
+        let candidate = root.join(&relative);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Fall back to the directory of the importing file.
     let file_dir = uri
         .to_file_path()
         .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
+    Some(file_dir.join(&relative))
+}
+
+// ── Cross-file go-to-definition ───────────────────────────────────────
+
+/// Search for the definition of `word` in the files imported by the current
+/// file's `parse_result`.
+///
+/// Resolution order for each matching import:
+/// 1. Open documents already held by the server (no disk I/O).
+/// 2. The file on disk (parsed on demand).
+///
+/// Returns `(target_uri, range)` for the first match found, or `None`.
+fn find_cross_file_definition(
+    current_uri: &Url,
+    imports: &[hew_parser::ast::ImportDecl],
+    word: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<(Url, Range)> {
+    for import in imports {
+        let Some(path) = compute_import_path(current_uri, import) else {
+            continue;
+        };
+        let Ok(target_uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+
+        // Determine which name to search for in the target file, based on
+        // what this import makes visible in the current scope.
+        let search_name: &str = match &import.spec {
+            Some(ImportSpec::Names(names)) => {
+                // Find the entry whose visible name (alias if present, otherwise
+                // the original name) matches `word`.
+                let Some(entry) = names
+                    .iter()
+                    .find(|n| n.alias.as_deref().unwrap_or(n.name.as_str()) == word)
+                else {
+                    continue; // this import does not bring `word` into scope
+                };
+                &entry.name // search target file by the *original* name
+            }
+            Some(ImportSpec::Glob) => word, // glob: any name may come from here
+            None => {
+                // Bare path import (`import foo::bar`).  The last path segment
+                // is itself a navigable target (e.g. cursor on `bar`).
+                if import.path.last().map(String::as_str) == Some(word)
+                    && (documents.contains_key(&target_uri) || path.exists())
+                {
+                    return Some((target_uri, Range::default()));
+                }
+                continue;
+            }
+        };
+
+        // Search in an already-open document first (no I/O).
+        if let Some(doc) = documents.get(&target_uri) {
+            if let Some(range) = find_definition_in_ast(
+                &doc.source,
+                &doc.line_offsets,
+                &doc.parse_result,
+                search_name,
+            ) {
+                return Some((target_uri, range));
+            }
+            // File is open but name not found there — don't fall through to disk.
+            continue;
+        }
+
+        // Fall back: read and parse the file from disk.
+        if path.exists() {
+            if let Ok(source) = std::fs::read_to_string(&path) {
+                let pr = hew_parser::parse(&source);
+                let lo = compute_line_offsets(&source);
+                if let Some(range) = find_definition_in_ast(&source, &lo, &pr, search_name) {
+                    return Some((target_uri, range));
+                }
+            }
+        }
+    }
+    None
+}
+
+// ── Document links ──────────────────────────────────────────────────
+
+fn build_document_links(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+) -> Vec<DocumentLink> {
+    let mut links = Vec::new();
 
     for (item, span) in &parse_result.program.items {
         if let Item::Import(import) = item {
-            if import.path.is_empty() {
+            let Some(path) = compute_import_path(uri, import) else {
+                continue;
+            };
+            if !path.exists() {
                 continue;
             }
-
-            let relative = format!("{}.hew", import.path.join("/"));
-            let resolved = workspace_root
-                .as_ref()
-                .map(|root| root.join(&relative))
-                .filter(|p| p.exists())
-                .or_else(|| {
-                    file_dir
-                        .as_ref()
-                        .map(|dir| dir.join(&relative))
-                        .filter(|p| p.exists())
+            if let Ok(target_uri) = Url::from_file_path(&path) {
+                let relative = format!("{}.hew", import.path.join("/"));
+                links.push(DocumentLink {
+                    range: span_to_range(source, lo, span),
+                    target: Some(target_uri),
+                    tooltip: Some(format!("Open {relative}")),
+                    data: None,
                 });
-
-            if let Some(path) = resolved {
-                if let Ok(target_uri) = Url::from_file_path(&path) {
-                    links.push(DocumentLink {
-                        range: span_to_range(source, lo, span),
-                        target: Some(target_uri),
-                        tooltip: Some(format!("Open {relative}")),
-                        data: None,
-                    });
-                }
             }
         }
     }
@@ -3870,6 +4014,136 @@ impl Worker {
         assert!(
             helper_count >= 1,
             "expected at least 1 reference to 'helper', got {helper_count}"
+        );
+    }
+
+    // ── cross-file goto-definition tests ────────────────────────────
+
+    fn make_doc(source: &str) -> DocumentState {
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        DocumentState {
+            source: source.to_string(),
+            line_offsets: lo,
+            parse_result,
+            type_output: None,
+        }
+    }
+
+    /// Returns the `ImportDecl`s extracted from the parsed program, mirroring
+    /// the extraction done in `goto_definition` before the cross-file search.
+    fn collect_imports(source: &str) -> Vec<hew_parser::ast::ImportDecl> {
+        let pr = hew_parser::parse(source);
+        pr.program
+            .items
+            .into_iter()
+            .filter_map(|(item, _)| match item {
+                Item::Import(i) => Some(i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cross_file_goto_named_import_resolves_to_open_document() {
+        // `main.hew` imports `Counter` from `counter.hew` (open in the editor).
+        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let counter_source = "type Counter { value: i32 }";
+
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(counter_uri.clone(), make_doc(counter_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
+
+        assert!(result.is_some(), "should resolve Counter to counter.hew");
+        let (uri, _range) = result.unwrap();
+        assert_eq!(uri, counter_uri, "should point to counter.hew");
+    }
+
+    #[test]
+    fn cross_file_goto_aliased_import_resolves_by_alias() {
+        // `import counter::{ Counter as Cnt }` — cursor on `Cnt` in usage.
+        let main_source = "import counter::{ Counter as Cnt };\nfn main() {}";
+        let counter_source = "type Counter { value: i32 }";
+
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(counter_uri.clone(), make_doc(counter_source));
+
+        let imports = collect_imports(main_source);
+        // The visible name in the current file is `Cnt` (the alias).
+        let result = find_cross_file_definition(&main_uri, &imports, "Cnt", &documents);
+
+        assert!(result.is_some(), "should resolve alias Cnt to counter.hew");
+        let (uri, _range) = result.unwrap();
+        assert_eq!(uri, counter_uri, "should point to counter.hew");
+    }
+
+    #[test]
+    fn cross_file_goto_glob_import_resolves_to_open_document() {
+        // `import counter::*` — any name can come from counter.hew.
+        let main_source = "import counter::*;\nfn main() {}";
+        let counter_source = "type Counter { value: i32 }";
+
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(counter_uri.clone(), make_doc(counter_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
+
+        assert!(result.is_some(), "glob import should resolve Counter");
+        let (uri, _range) = result.unwrap();
+        assert_eq!(uri, counter_uri);
+    }
+
+    #[test]
+    fn cross_file_goto_absent_name_returns_none() {
+        // `NotDefined` is not in counter.hew.
+        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let counter_source = "type Counter { value: i32 }";
+
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(counter_uri.clone(), make_doc(counter_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "NotDefined", &documents);
+        assert!(result.is_none(), "should return None for unknown name");
+    }
+
+    #[test]
+    fn cross_file_goto_name_not_in_explicit_imports_returns_none() {
+        // `Bar` is not in the explicit import list even though counter.hew defines it.
+        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let counter_source = "type Counter { value: i32 }\ntype Bar { x: i32 }";
+
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let counter_uri = Url::parse("file:///project/counter.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(counter_uri.clone(), make_doc(counter_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Bar", &documents);
+        assert!(
+            result.is_none(),
+            "Bar was not imported, should not be found"
         );
     }
 }

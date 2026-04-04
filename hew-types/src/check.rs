@@ -5250,24 +5250,41 @@ impl Checker {
     ) -> Ty {
         let _target_ty = self.synthesize(&target.0, &target.1);
         let msg_ty_raw = self.synthesize(&message.0, &message.1);
-        let msg_ty = self.subst.resolve(&msg_ty_raw);
-        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Send) {
-            self.report_error(
-                TypeErrorKind::InvalidSend,
-                span,
-                format!(
-                    "cannot send `{}` to actor: type is not Send",
-                    msg_ty.user_facing()
-                ),
-            );
-        }
-        // Mark sent value as moved (unless Copy)
-        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Copy) {
-            if let Expr::Identifier(name) = &message.0 {
-                self.env.mark_moved(name, message.1.clone());
+        self.enforce_actor_boundary_send(&message.0, &message.1, span, &msg_ty_raw);
+        Ty::Unit
+    }
+
+    fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
+        self.report_error(
+            TypeErrorKind::InvalidSend,
+            span,
+            format!(
+                "cannot send `{}` to actor: type is not Send",
+                ty.user_facing()
+            ),
+        );
+    }
+
+    fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
+            if let Expr::Identifier(name) = expr {
+                self.env.mark_moved(name, span.clone());
             }
         }
-        Ty::Unit
+    }
+
+    fn enforce_actor_boundary_send(
+        &mut self,
+        expr: &Expr,
+        move_span: &Span,
+        error_span: &Span,
+        ty: &Ty,
+    ) {
+        let ty = self.subst.resolve(ty);
+        if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
+            self.report_invalid_actor_send(&ty, error_span);
+        }
+        self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
     }
 
     fn synthesize_yield(&mut self, value: Option<&Spanned<Expr>>, span: &Span) -> Ty {
@@ -5527,7 +5544,31 @@ impl Checker {
             }
         }
         match expr {
-            Expr::SpawnLambdaActor { params, .. } => {
+            Expr::SpawnLambdaActor {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
+                let lambda_ty =
+                    self.check_lambda(None, params, return_type.as_ref(), body, None, span);
+                if let Ty::Closure { captures, .. } = lambda_ty {
+                    let mut non_send_captures = HashSet::new();
+                    for capture in captures {
+                        if !self.registry.implements_marker(&capture, MarkerTrait::Send)
+                            && non_send_captures.insert(capture.clone())
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                span,
+                                format!(
+                                    "cannot capture `{}` in spawned actor: type is not Send",
+                                    capture.user_facing()
+                                ),
+                            );
+                        }
+                    }
+                }
                 let param_ty = params
                     .first()
                     .and_then(|p| p.ty.as_ref())
@@ -7634,15 +7675,10 @@ impl Checker {
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();
                 if method == "send" {
-                    // Synthesize args and mark non-Copy values as moved
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         let ty = self.synthesize(expr, sp);
-                        if !self.registry.implements_marker(&ty, MarkerTrait::Copy) {
-                            if let Expr::Identifier(name) = expr {
-                                self.env.mark_moved(name, sp.clone());
-                            }
-                        }
+                        self.enforce_actor_boundary_send(expr, sp, sp, &ty);
                     }
                     Ty::Unit
                 } else {
@@ -7658,25 +7694,8 @@ impl Checker {
                                 if let Some(param_ty) = sig.params.get(i) {
                                     self.check_against(expr, sp, param_ty);
                                 }
-                                // Enforce Send at actor message boundaries.
                                 let ty_raw = self.synthesize(expr, sp);
-                                let ty = self.subst.resolve(&ty_raw);
-                                if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
-                                    self.report_error(
-                                        TypeErrorKind::InvalidSend,
-                                        sp,
-                                        format!(
-                                            "cannot send `{}` to actor: type is not Send",
-                                            ty.user_facing()
-                                        ),
-                                    );
-                                }
-                                // Mark non-Copy args as moved at actor boundaries
-                                if !self.registry.implements_marker(&ty, MarkerTrait::Copy) {
-                                    if let Expr::Identifier(name) = expr {
-                                        self.env.mark_moved(name, sp.clone());
-                                    }
-                                }
+                                self.enforce_actor_boundary_send(expr, sp, sp, &ty_raw);
                             }
                             return sig.return_type;
                         }
@@ -7699,11 +7718,12 @@ impl Checker {
             ) if name == "Actor" => {
                 for arg in args {
                     let (expr, sp) = arg.expr();
-                    if let Some(param_ty) = type_args.first() {
-                        self.check_against(expr, sp, param_ty);
+                    let ty = if let Some(param_ty) = type_args.first() {
+                        self.check_against(expr, sp, param_ty)
                     } else {
-                        self.synthesize(expr, sp);
-                    }
+                        self.synthesize(expr, sp)
+                    };
+                    self.enforce_actor_boundary_send(expr, sp, sp, &ty);
                 }
                 Ty::Unit
             }
@@ -8735,25 +8755,9 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            // Check args are Send and mark as moved (unless Copy)
             for (_field_name, (arg, as_)) in args {
                 let ty_raw = self.synthesize(arg, as_);
-                let ty = self.subst.resolve(&ty_raw);
-                if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
-                    self.report_error(
-                        TypeErrorKind::InvalidSend,
-                        as_,
-                        format!(
-                            "cannot send `{}` to actor: type is not Send",
-                            ty.user_facing()
-                        ),
-                    );
-                }
-                if !self.registry.implements_marker(&ty, MarkerTrait::Copy) {
-                    if let Expr::Identifier(arg_name) = arg {
-                        self.env.mark_moved(arg_name, as_.clone());
-                    }
-                }
+                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
             Ty::actor_ref(Ty::Named { name, args: vec![] })
         } else {

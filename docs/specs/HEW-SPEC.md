@@ -298,7 +298,7 @@ When a `receive fn` message handler returns `Err`, the error is:
 
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `String`, `Bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
-- **Shared immutable types**: `Arc<T>` where `T: Frozen`.
+- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but v0.2.x does **not** yet expose a user-facing Hew `Arc<T>` type.
 - **Actor references**: `ActorRef<A>` is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
@@ -387,10 +387,10 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `type S` with NO `var` fields | All fields are `Frozen`                   |
 | `type S` with ANY `var` field | NOT `Frozen`                              |
 | `enum E`                      | All variant payloads are `Frozen`         |
-| `Arc<T>`                      | `T` is `Frozen`                           |
+| `Arc<T>`                      | _Not currently surfaced in Hew source; runtime-only support today_ |
 | `Vec<T>`, `HashMap<K,V>`      | NOT `Frozen` (mutable containers)         |
 
-> **Soundness requirement:** The compiler MUST reject as non-`Send` any type whose `Send` status cannot be determined (e.g., opaque foreign types). Foreign types are non-`Send` by default; use `#[send]` attribute to override for types known to be safe.
+> **Soundness requirement:** The compiler MUST reject as non-`Send` any type whose `Send` status cannot be determined (e.g., opaque foreign types). Foreign types are non-`Send` by default. The runtime/ABI has internal escape hatches, but there is currently **no surfaced Hew `#[send]` attribute** for user code.
 
 ### 3.3.2 The `bytes` Type
 
@@ -855,7 +855,7 @@ impl Display for Point {
   - `ActorRef<A>`
 
 - `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`.
-  - `Arc<T>` where `T: Frozen`
+  - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
   - Structs where all fields are `Frozen`
 
 - `Copy` - Type is copied on assignment rather than moved.
@@ -980,10 +980,6 @@ fn broadcast<T: Send>(message: T, recipients: Vec<ActorRef<Receiver>>) {
     for recipient in recipients {
         recipient.handle(message.clone());
     }
-}
-
-fn share<T: Frozen>(data: Arc<T>) -> Arc<T> {
-    data  // Safe to share without copying
 }
 ```
 
@@ -1168,17 +1164,11 @@ let alias = data.clone();  // refcount++, no data copy
 // data and alias share the same LargeStruct
 ```
 
-**`Arc<T>` — atomic reference counting:**
+**Runtime note: internal `Arc` support exists, but Hew source does not expose `Arc<T>` yet.**
 
-- Uses atomic operations for refcount (thread-safe, has synchronization cost)
-- Requires `T: Frozen` (deeply immutable)
-- **Does implement `Send`** — can be shared across actors
-
-```hew
-let config: Arc<Config> = Arc::new(load_config());
-worker1.configure(config.clone());  // Arc cloned (atomic refcount++)
-worker2.configure(config.clone());  // Both workers share same Config
-```
+- The runtime contains ABI/runtime machinery for atomically reference-counted data
+- The intended surfaced rule remains “only deeply immutable data is shareable”
+- Until a language-level `Arc<T>` lands, user code should model cross-actor sharing via owned messages / actor state instead of `Arc` syntax
 
 **Arc cost transparency:**
 
@@ -1192,7 +1182,7 @@ worker2.configure(config.clone());  // Both workers share same Config
 |------|--------------|---------------|----------|
 | Owned `T` | Copied on send | None | Default, small data |
 | `Rc<T>` | No | Non-atomic | Shared within actor |
-| `Arc<T>` | Yes (if `T: Frozen`) | Atomic | Large immutable shared data |
+| Runtime-internal `Arc` | ABI-only today | Atomic | Internal/runtime implementation detail until surfaced |
 
 #### 3.7.6 Allocation Surface (not yet public)
 
@@ -1490,11 +1480,9 @@ impl<T: Send> Send for Vec<T> {}
 
 // Vec<T> is Frozen if T is Frozen
 impl<T: Frozen> Frozen for Vec<T> {}
-
-// Arc<T> requires T: Frozen, and is always Send + Frozen
-impl<T: Frozen> Send for Arc<T> {}
-impl<T: Frozen> Frozen for Arc<T> {}
 ```
+
+The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are not yet part of surfaced Hew source syntax.
 
 **Actor boundary enforcement:**
 
@@ -4214,7 +4202,7 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 - Per-actor heaps for isolation (no shared memory between actors)
 - RAII with deterministic destruction (no garbage collector)
-- `Rc<T>` for single-actor shared ownership, `Arc<T>` for cross-actor immutable sharing
+- `Rc<T>` for single-actor shared ownership; cross-actor sharing is currently expressed with owned messages / actor state rather than surfaced Hew `Arc<T>` syntax
 - Bulk deallocation on actor termination (entire heap freed)
 
 **I/O integration:**

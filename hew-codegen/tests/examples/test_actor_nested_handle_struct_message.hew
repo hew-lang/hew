@@ -1,0 +1,44 @@
+// Regression test: nested struct containing only a handle field passed as an
+// actor receive fn parameter. The inner regex.Pattern must transfer ownership
+// to the receiver, be nulled in the sender recursively through the outer
+// struct wrapper, and subsequent reads of the sender binding must observe the
+// cleared handle rather than the stale pre-transfer pointer.
+
+import std::text::regex;
+
+type Inner {
+    pat: Pattern;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+actor Matcher {
+    let matched: bool;
+    let missed: bool;
+
+    receive fn check(msg: Outer) {
+        matched = msg.inner.pat.is_match("hello123");
+        missed = msg.inner.pat.is_match("no digits");
+    }
+
+    receive fn get_matched() -> bool {
+        matched
+    }
+
+    receive fn get_missed() -> bool {
+        missed
+    }
+}
+
+fn main() {
+    let m = spawn Matcher(matched: false, missed: false);
+    {
+        let msg = Outer { inner: Inner { pat: re"[0-9]+" } };
+        m.check(msg);
+        println(msg.inner.pat.is_match("hello123"));
+    };
+    println(await m.get_matched());
+    println(await m.get_missed());
+}

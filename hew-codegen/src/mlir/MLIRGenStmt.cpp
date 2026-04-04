@@ -623,6 +623,17 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     }
   }
 
+  if (value && mlir::isa<hew::ClosureType>(value.getType()) && stmt.value &&
+      (std::holds_alternative<ast::ExprIdentifier>(stmt.value->value.kind) ||
+       std::holds_alternative<ast::ExprFieldAccess>(stmt.value->value.kind))) {
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, value);
+    auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
+    auto clonedEnv = hew::RcCloneOp::create(builder, location, ptrType, envPtr).getResult();
+    value = hew::ClosureCreateOp::create(
+        builder, location, mlir::cast<hew::ClosureType>(value.getType()), fnPtr, clonedEnv);
+  }
+
   // Extract the name from the pattern
   const auto &pattern = stmt.pattern.value;
   if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
@@ -1264,12 +1275,6 @@ void MLIRGen::registerDropsForVariable(
   // ── Closure env RAII cleanup ───────────────────────────────────────
   if (value && mlir::isa<hew::ClosureType>(value.getType())) {
     registerDroppable(varName, "hew_rc_drop");
-    if (stmtValue && *stmtValue &&
-        std::holds_alternative<ast::ExprIdentifier>((*stmtValue)->value.kind)) {
-      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
-      hew::RcCloneOp::create(builder, location, ptrType, envPtr);
-    }
   }
 
   // ── dyn Trait variable type tracking ───────────────────────────────

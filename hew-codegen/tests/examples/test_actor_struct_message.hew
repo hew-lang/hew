@@ -1,0 +1,39 @@
+// Regression test: struct with owned (String) fields passed as actor
+// receive fn parameter.  Exercises deep-copy of owned struct fields
+// across the actor boundary and correct drop on the receiver side.
+type WorkItem {
+    id: int;
+    label: String;
+    value: int;
+}
+
+actor Processor {
+    let total: int;
+
+    receive fn process(item: WorkItem) {
+        total = total + item.value;
+        print(item.label);
+        print(":");
+        println(item.value);
+    }
+
+    receive fn get_total() -> int {
+        total
+    }
+}
+
+fn main() {
+    let p = spawn Processor(total: 0);
+    {
+        let w1 = WorkItem { id: 1, label: "alpha", value: 10 };
+        p.process(w1);
+    };
+    sleep_ms(100);
+    {
+        let w2 = WorkItem { id: 2, label: "beta", value: 20 };
+        p.process(w2);
+    };
+    sleep_ms(100);
+    let t = await p.get_total();
+    println(t);
+}

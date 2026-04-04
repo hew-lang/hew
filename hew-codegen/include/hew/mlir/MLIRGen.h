@@ -188,9 +188,11 @@ private:
                                      const std::string &methodName,
                                      const std::vector<ast::CallArg> &args,
                                      mlir::Location location);
+  bool actorBoundarySenderRetainsOwnership(mlir::Type valueType) const;
   /// Generate args for an actor send/ask call, handling self-reference substitution.
   std::optional<llvm::SmallVector<mlir::Value, 4>>
-  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location);
+  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
+                        bool retainAllTemporaries = false);
   /// Emit the gen-next null-check, wrap, cleanup, and return sequence.
   void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr, mlir::LLVM::LLVMStructType stateType,
                          unsigned genFrameIdx, mlir::Type yieldType, mlir::Type wrapperType,
@@ -863,6 +865,10 @@ private:
   /// field of the struct (String, Vec, HashMap, etc.).  The user's Drop body
   /// runs first (can read field values), then we free the heap allocations.
   void emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc);
+  /// Rebuild a struct value with all transferred handle fields nulled.
+  mlir::Value nullTransferredHandlesInStructValue(mlir::Value structVal, mlir::Location loc);
+  /// Store a handle-zeroed version of a retained struct back into its drop slot.
+  void nullOutTransferredHandleFields(const std::string &varName, mlir::Location loc);
   /// Null out a variable's RAII close alloca (after ownership transfer).
   void nullOutRaiiAlloca(const std::string &varName);
   /// Emit a drop for a single variable if it has a registered drop function.

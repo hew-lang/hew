@@ -401,8 +401,15 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
             // Register drops for owned types (deep-copied into gen ctx args)
             auto paramType = paramVal.getType();
-            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/false); !dropFn.empty())
-              registerDroppable(param.name, dropFn);
+            if (auto dropFn = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);
+                !dropFn.empty()) {
+              bool isUserDrop = false;
+              if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(paramType);
+                  structTy && structTy.isIdentified()) {
+                isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
+              }
+              registerDroppable(param.name, dropFn, isUserDrop);
+            }
 
             ++pi;
           }
@@ -590,8 +597,15 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         // Register drops for owned types (deep-copied at actor boundary)
         auto argType = argVal.getType();
-        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/false); !dropFn.empty())
-          registerDroppable(param.name, dropFn);
+        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/true);
+            !dropFn.empty()) {
+          bool isUserDrop = false;
+          if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+              structTy && structTy.isIdentified()) {
+            isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
+          }
+          registerDroppable(param.name, dropFn, isUserDrop);
+        }
 
         ++pi;
       }
@@ -1383,8 +1397,21 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 // Shared helpers for actor send/ask
 // ============================================================================
 
+bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
+  if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(valueType))
+    return true;
+  if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(valueType)) {
+    if (structTy.isIdentified()) {
+      auto structName = structTy.getName().str();
+      return structHasOwnedFields(structName) && !userDropFuncs.count(structName);
+    }
+  }
+  return false;
+}
+
 std::optional<llvm::SmallVector<mlir::Value, 4>>
-MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location) {
+MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
+                               bool retainAllTemporaries) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
@@ -1392,9 +1419,11 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
     auto val = generateExpression(argSpanned.value);
     if (!val)
       return std::nullopt;
-    // Materialize temporaries: the runtime deep-copies args at the actor
-    // boundary, so the caller still owns the original and must drop it.
-    materializeTemporary(val, argSpanned.value);
+    // Materialize only when the sender keeps an owned copy after the actor
+    // boundary. User-Drop structs transfer ownership to the receiver even when
+    // passed inline as temporaries.
+    if (retainAllTemporaries || actorBoundarySenderRetainsOwnership(val.getType()))
+      materializeTemporary(val, argSpanned.value);
     argVals.push_back(val);
   }
   return argVals;
@@ -1474,10 +1503,6 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     return nullptr;
   }
 
-  auto argVals = generateActorCallArgs(args, location);
-  if (!argVals)
-    return nullptr;
-
   // Check if this is a wire-encoded message (single param that is a #[wire] struct)
   const auto &recvFn = actorInfo.receiveFns[msgIdx];
   const WireWrapperNames *wireNames = nullptr;
@@ -1492,6 +1517,10 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       }
     }
   }
+
+  auto argVals = generateActorCallArgs(args, location, /*retainAllTemporaries=*/wireNames != nullptr);
+  if (!argVals)
+    return nullptr;
 
   if (wireNames) {
     // Wire send path: encode struct → bytes, send bytes via runtime
@@ -1533,8 +1562,10 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
   // No pointer sharing — sender always retains ownership and drops normally.
   //
   // Non-wire sends (deepCopyOwnedArgs in codegen.cpp): String, Vec, HashMap,
-  // and Closure are deep-copied — sender drops normally.  Everything else
-  // passes the raw pointer through (shared) — sender must NOT drop.
+  // Closure, and struct fields thereof are deep-copied — sender drops normally.
+  // Handle fields are transferred with source null-out — sender drop is a
+  // no-op for those.  Everything else passes the raw pointer through
+  // (shared) — sender must NOT drop.
   if (!wireNames) {
     for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
       const auto &argSpanned = ast::callArgExpr(args[i]);
@@ -1545,6 +1576,15 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                     hew::ClosureType>(argType))
         continue;
+      // Auto-field-drop structs retain an independent sender copy after the
+      // deep-copy boundary. User-Drop structs still transfer ownership to the
+      // receiver, so the sender must not keep dropping them.
+      if (actorBoundarySenderRetainsOwnership(argType)) {
+        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+            structTy && structTy.isIdentified())
+          nullOutTransferredHandleFields(identExpr->name, location);
+        continue;
+      }
       unregisterDroppable(identExpr->name);
     }
   }
@@ -1590,10 +1630,12 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
                               builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
                               /*timeout_ms=*/mlir::IntegerAttr{});
 
-  // Ownership parity with the non-wire send path: String, Vec, HashMap, and
-  // Closure are deep-copied at the actor boundary so the sender retains
-  // ownership and drops normally.  Everything else passes the raw pointer
-  // through — the receiver owns it, so the sender must NOT drop.
+  // Ownership parity with the non-wire send path: String, Vec, HashMap,
+  // Closure, and struct fields thereof are deep-copied at the actor boundary
+  // so the sender retains ownership and drops normally.  Handle fields are
+  // transferred with source null-out — sender drop is a no-op for those.
+  // Everything else passes the raw pointer through — the receiver owns it,
+  // so the sender must NOT drop.
   // ask has no wire path, so this applies unconditionally.
   for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
     const auto &argSpanned = ast::callArgExpr(args[i]);
@@ -1604,6 +1646,15 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
                   hew::ClosureType>(argType))
       continue;
+    // Auto-field-drop structs retain an independent sender copy after the
+    // deep-copy boundary. User-Drop structs still transfer ownership to the
+    // receiver, so the sender must not keep dropping them.
+    if (actorBoundarySenderRetainsOwnership(argType)) {
+      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+          structTy && structTy.isIdentified())
+        nullOutTransferredHandleFields(identExpr->name, location);
+      continue;
+    }
     unregisterDroppable(identExpr->name);
   }
 
@@ -1624,10 +1675,6 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   if (!actorVal || !msgVal)
     return nullptr;
 
-  // Materialize temporary messages: the runtime deep-copies at the actor
-  // boundary, so the caller owns the original and must drop it.
-  materializeTemporary(msgVal, expr.message->value);
-
   // Check if the message type is a wire struct
   const WireWrapperNames *wireNames = nullptr;
   auto msgType = msgVal.getType();
@@ -1639,6 +1686,9 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
         wireNames = &it->second;
     }
   }
+
+  if (wireNames || actorBoundarySenderRetainsOwnership(msgType))
+    materializeTemporary(msgVal, expr.message->value);
 
   if (wireNames) {
     // Wire send path: encode struct → bytes, send bytes via runtime
@@ -1668,14 +1718,24 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   }
 
   // Wire sends serialize the value into independent bytes — no sharing.
-  // Non-wire sends only deep-copy String/Vec/HashMap/Closure — everything
-  // else shares the raw pointer and the sender must not drop.
+  // Non-wire sends deep-copy String/Vec/HashMap/Closure and struct fields
+  // thereof — sender retains ownership.  Handle fields are transferred with
+  // source null-out.  Everything else shares the raw pointer — sender must
+  // not drop.
   if (!wireNames) {
     if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
-      if (!mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
-                     hew::ClosureType>(msgVal.getType())) {
-        unregisterDroppable(identExpr->name);
+      auto msgType = msgVal.getType();
+      bool senderRetains =
+          mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
+                    hew::ClosureType>(msgType);
+      if (!senderRetains && actorBoundarySenderRetainsOwnership(msgType)) {
+        senderRetains = true;
+        if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType);
+            structTy && structTy.isIdentified())
+          nullOutTransferredHandleFields(identExpr->name, location);
       }
+      if (!senderRetains)
+        unregisterDroppable(identExpr->name);
     }
   }
 

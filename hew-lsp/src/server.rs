@@ -82,6 +82,128 @@ struct DocumentState {
     type_output: Option<TypeCheckOutput>,
 }
 
+// ── In-memory module resolution ──────────────────────────────────────
+
+/// Return the source text for a file, preferring open editor buffers over disk.
+///
+/// Checks the LSP document store first so that unsaved edits to an imported
+/// module are immediately visible to type-checking in the importing file.
+/// Falls back to `std::fs::read_to_string` for files that are not open.
+fn source_for_path(
+    path: &std::path::Path,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<String> {
+    // Prefer in-memory content if the file is currently open in the editor.
+    if let Ok(url) = Url::from_file_path(path) {
+        if let Some(doc) = documents.get(&url) {
+            return Some(doc.source.clone());
+        }
+    }
+    // Fall back to on-disk content.
+    std::fs::read_to_string(path).ok()
+}
+
+/// Recursively populate `ImportDecl::resolved_items` for user-module imports.
+///
+/// After parsing a document the `resolved_items` field on every `ImportDecl`
+/// is `None`.  The CLI fills these in by reading files from disk; the LSP
+/// historically skipped this step, so imported modules were only resolved via
+/// the stdlib `ModuleRegistry` and not from the project tree.
+///
+/// This function walks `items`, finds `Import` nodes whose path does not match
+/// a stdlib module (i.e. `resolved_items` stays `None` after `ModuleRegistry`
+/// lookup), locates the corresponding `.hew` file relative to `source_dir`,
+/// reads it — **preferring any open editor buffer over the on-disk version** —
+/// and populates `resolved_items` so the type checker sees the current
+/// in-memory content.
+///
+/// Depth is capped at [`MAX_IMPORT_DEPTH`] to prevent cycles.
+fn populate_user_module_imports(
+    source_uri: &Url,
+    items: &mut [hew_parser::ast::Spanned<hew_parser::ast::Item>],
+    documents: &DashMap<Url, DocumentState>,
+) {
+    let Ok(source_path) = source_uri.to_file_path() else {
+        return; // Non-file URI — nothing to resolve.
+    };
+    let Some(source_dir) = source_path.parent() else {
+        return;
+    };
+    populate_user_module_imports_impl(source_dir, items, documents, 0);
+}
+
+/// Maximum import nesting depth to prevent unbounded recursion on cycles.
+const MAX_IMPORT_DEPTH: usize = 16;
+
+fn populate_user_module_imports_impl(
+    source_dir: &std::path::Path,
+    items: &mut [hew_parser::ast::Spanned<hew_parser::ast::Item>],
+    documents: &DashMap<Url, DocumentState>,
+    depth: usize,
+) {
+    if depth >= MAX_IMPORT_DEPTH {
+        return;
+    }
+
+    for (item, _span) in items.iter_mut() {
+        let decl = match item {
+            // Only process imports that haven't been resolved yet and have a
+            // non-empty module path (stdlib modules are handled by ModuleRegistry).
+            Item::Import(d) if d.resolved_items.is_none() && !d.path.is_empty() => d,
+            _ => continue,
+        };
+
+        let last = match decl.path.last() {
+            Some(l) => l.clone(),
+            None => continue,
+        };
+
+        // Build the two canonical candidate paths the CLI also tries:
+        //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
+        //   2. flat form:               source_dir/<a>/<b>.hew
+        let rel_path: std::path::PathBuf = decl
+            .path
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .with_extension("hew");
+        let dir_path: std::path::PathBuf = decl
+            .path
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .join(format!("{last}.hew"));
+
+        let candidates = [source_dir.join(&dir_path), source_dir.join(&rel_path)];
+
+        for candidate in &candidates {
+            // `source_for_path` checks the in-memory document store first so
+            // unsaved edits are preferred over the on-disk version.
+            if let Some(source) = source_for_path(candidate, documents) {
+                let parsed = hew_parser::parse(&source);
+                let has_errors = parsed
+                    .errors
+                    .iter()
+                    .any(|e| e.severity == hew_parser::Severity::Error);
+                if !has_errors {
+                    let mut module_items = parsed.program.items;
+                    // Recursively resolve any imports inside the loaded module.
+                    let module_dir = candidate.parent().unwrap_or(source_dir);
+                    populate_user_module_imports_impl(
+                        module_dir,
+                        &mut module_items,
+                        documents,
+                        depth + 1,
+                    );
+                    decl.resolved_items = Some(module_items);
+                }
+                // Stop after the first candidate that yielded source text,
+                // regardless of whether it parsed cleanly — otherwise we'd
+                // silently fall through to a stale on-disk version.
+                break;
+            }
+        }
+    }
+}
+
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -116,7 +238,12 @@ impl HewLanguageServer {
             let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
                 build_module_search_paths(),
             ));
-            Some(checker.check_program(&parse_result.program))
+            // Clone the program so we can inject resolved_items for user-module
+            // imports without mutating the parse_result stored in DocumentState
+            // (other LSP features use the raw AST and do not need resolved_items).
+            let mut program = parse_result.program.clone();
+            populate_user_module_imports(uri, &mut program.items, &self.documents);
+            Some(checker.check_program(&program))
         };
 
         let line_offsets = compute_line_offsets(source);
@@ -4157,6 +4284,211 @@ impl Worker {
         assert!(
             result.is_none(),
             "Bar was not imported, should not be found"
+        );
+    }
+
+    // ── In-memory module parity tests ───────────────────────────────
+
+    /// `populate_user_module_imports` prefers the in-memory buffer for an open
+    /// sibling module over anything that might be on disk.
+    #[test]
+    fn populate_prefers_open_document_over_disk() {
+        // Simulate: main.hew imports shapes::circle.
+        // circle.hew is "open" in the editor with a pub function `area`.
+        let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors in main_source: {:?}",
+            parse_result.errors
+        );
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        // The import should now have resolved_items populated from the in-memory buffer.
+        let import_decl = parse_result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let hew_parser::ast::Item::Import(d) = item {
+                    Some(d)
+                } else {
+                    None
+                }
+            })
+            .expect("import should be present");
+
+        assert!(
+            import_decl.resolved_items.is_some(),
+            "resolved_items should be populated from the open document"
+        );
+        let resolved = import_decl.resolved_items.as_ref().unwrap();
+        let has_area_fn = resolved.iter().any(
+            |(item, _)| matches!(item, hew_parser::ast::Item::Function(f) if f.name == "area"),
+        );
+        assert!(
+            has_area_fn,
+            "resolved items should include the 'area' function from circle.hew"
+        );
+    }
+
+    /// Type-checking a file that imports an open sibling module should produce
+    /// no `UnresolvedImport` error when the sibling is in the document store.
+    #[test]
+    fn typecheck_sees_open_sibling_module_no_unresolved_import() {
+        let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+
+        // Populate resolved_items from the documents map.
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parse_result.program);
+
+        let unresolved: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UnresolvedImport))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "should have no UnresolvedImport when sibling is open in documents: {unresolved:?}"
+        );
+    }
+
+    /// Without the in-memory document, a missing sibling module produces an
+    /// `UnresolvedImport` diagnostic (fail-closed behaviour preserved).
+    #[test]
+    fn typecheck_emits_unresolved_import_for_missing_sibling() {
+        let main_source = "import shapes::missing_module;\nfn main() { missing_module.foo() }";
+        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+
+        // Empty documents map — nothing is open.
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parse_result.program);
+
+        let has_unresolved = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UnresolvedImport));
+        assert!(
+            has_unresolved,
+            "should emit UnresolvedImport for a sibling module not in documents or on disk"
+        );
+    }
+
+    /// `populate_user_module_imports` leaves `resolved_items` as None for a
+    /// module that is absent from both the document store and the disk, so
+    /// the type checker can emit a proper diagnostic.
+    #[test]
+    fn populate_leaves_resolved_items_none_for_missing_module() {
+        let main_source = "import shapes::nonexistent;\nfn main() { 0 }";
+        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let import_decl = parse_result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let hew_parser::ast::Item::Import(d) = item {
+                    Some(d)
+                } else {
+                    None
+                }
+            })
+            .expect("import should be present");
+
+        assert!(
+            import_decl.resolved_items.is_none(),
+            "resolved_items must stay None for a module not in documents or on disk"
+        );
+    }
+
+    /// Stale on-disk content is superseded by an open editor buffer.
+    /// The type-checker should see the in-memory version's exported type,
+    /// not whatever might be saved on disk.
+    #[test]
+    fn in_memory_version_supersedes_disk_for_type_checking() {
+        // circle.hew on disk (if it existed) would have `fn area(r: f64) -> f64`.
+        // In-memory version renames it to `fn circumference(r: f64) -> f64`.
+        // main.hew calls `circle.circumference` — this should resolve without error
+        // only if the in-memory version is used.
+        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.circumference(1.0) }";
+        let circle_inmem_source = "pub fn circumference(r: f64) -> f64 { r }";
+
+        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_inmem_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parse_result.program);
+
+        let errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                !matches!(
+                    e.kind,
+                    hew_types::error::TypeErrorKind::UnusedImport
+                        | hew_types::error::TypeErrorKind::UnusedVariable
+                )
+            })
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "type-checking with in-memory circle.hew should produce no errors: {errors:?}"
         );
     }
 }

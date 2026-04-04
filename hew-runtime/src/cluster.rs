@@ -42,7 +42,7 @@
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
 use crate::util::MutexExt;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Mutex;
 
@@ -188,6 +188,8 @@ pub struct HewCluster {
     config: ClusterConfig,
     /// Current membership list (protected by mutex for thread safety).
     members: Mutex<Vec<ClusterMember>>,
+    /// Current connection publication token per peer.
+    connection_tokens: Mutex<HashMap<u16, u64>>,
     /// Recent membership events for gossip dissemination.
     events: Mutex<VecDeque<MemberEvent>>,
     /// Recent registry events for gossip dissemination.
@@ -221,6 +223,7 @@ impl HewCluster {
         Self {
             config,
             members: Mutex::new(Vec::with_capacity(16)),
+            connection_tokens: Mutex::new(HashMap::with_capacity(16)),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: 1,
@@ -461,6 +464,18 @@ impl HewCluster {
         }
     }
 
+    fn notify_connection_lost_if_current(&self, node_id: u16, publication_token: u64) {
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        match tokens.get(&node_id) {
+            Some(current) if *current == publication_token => {
+                tokens.remove(&node_id);
+            }
+            _ => return,
+        }
+        drop(tokens);
+        self.notify_connection_lost(node_id);
+    }
+
     /// Notify SWIM state machine that a connection was established.
     fn notify_connection_established(&self, node_id: u16) {
         let member = {
@@ -484,6 +499,13 @@ impl HewCluster {
         let incarnation = member.map_or(1, |(_, inc)| inc.saturating_add(1));
         self.upsert_member(node_id, MEMBER_ALIVE, incarnation, &[]);
         self.update_last_seen(node_id);
+    }
+
+    fn notify_connection_established_for_token(&self, node_id: u16, publication_token: u64) {
+        self.connection_tokens
+            .lock_or_recover()
+            .insert(node_id, publication_token);
+        self.notify_connection_established(node_id);
     }
 
     /// Get the next ping target (round-robin through members).
@@ -883,6 +905,20 @@ pub unsafe extern "C" fn hew_cluster_notify_connection_lost(
     0
 }
 
+pub(crate) unsafe fn hew_cluster_notify_connection_lost_if_current(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    publication_token: u64,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_lost_if_current(node_id, publication_token);
+    0
+}
+
 /// Notify SWIM membership that a connection to `node_id` has been established.
 ///
 /// Returns 0 on success, -1 on invalid cluster pointer.
@@ -901,6 +937,20 @@ pub unsafe extern "C" fn hew_cluster_notify_connection_established(
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
     cluster.notify_connection_established(node_id);
+    0
+}
+
+pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    publication_token: u64,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_established_for_token(node_id, publication_token);
     0
 }
 

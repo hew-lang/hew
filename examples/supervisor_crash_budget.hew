@@ -37,7 +37,7 @@ supervisor FragilePool {
 fn main() {
     let pool = spawn FragilePool;
     sleep_ms(30);
-    let f1 = supervisor_child(pool, 0);
+    var f1 = supervisor_child(pool, 0);
     let f2 = supervisor_child(pool, 1);
     // Both workers operational
     f1.work();
@@ -50,7 +50,7 @@ fn main() {
     println("--- crash 1 ---");
     f1.break_it();
     sleep_ms(200);
-    let f1 = supervisor_child(pool, 0);
+    f1 = supervisor_child(pool, 0);
     f1.work();
     sleep_ms(20);
 
@@ -59,7 +59,7 @@ fn main() {
     println("--- crash 2 ---");
     f1.break_it();
     sleep_ms(200);
-    let f1 = supervisor_child(pool, 0);
+    f1 = supervisor_child(pool, 0);
     f1.work();
     sleep_ms(20);
 

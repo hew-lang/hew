@@ -53,13 +53,13 @@ actor ClientHandler {
         while running {
             let data = conn.read_string();
             if data.contains("__HEW_TCP_DISCONNECT__") {
-                room.unregister(name);
+                room.unregister(name.clone());
                 let _ = conn.close();
                 running = false;
             } else {
-                let line = f"{name}: {data}";
+                let line = f"{name.clone()}: {data}";
                 println(line);
-                room.broadcast(name, line);
+                room.broadcast(name.clone(), line);
             }
         }
     }

@@ -281,10 +281,10 @@ fn print_token_name(t: i32) -> i32 {
 // Uses global-ish state via var for position tracking.
 fn lex(source: String) -> i32 {
     var pos = 0;
-    var token_count = 0;
+    var token_count: i32 = 0;
     let len = source.len();
     while pos < len {
-        let ch = source.char_at(pos);
+        let ch = source.char_at(pos) as i32;
         // Skip whitespace
         if is_whitespace(ch) == 1 {
             pos = pos + 1;
@@ -312,7 +312,7 @@ fn lex(source: String) -> i32 {
         if is_alpha(ch) == 1 {
             var word = "";
             while pos < len {
-                let c = source.char_at(pos);
+                let c = source.char_at(pos) as i32;
                 if is_alnum(c) == 1 {
                     // Build the word character by character
                     // Convert char code to single-char string via concat trick
@@ -462,7 +462,7 @@ fn lex(source: String) -> i32 {
         if is_digit(ch) == 1 {
             var num_str = "";
             while pos < len {
-                let c = source.char_at(pos);
+                let c = source.char_at(pos) as i32;
                 if is_digit(c) == 1 {
                     var ds = "";
                     if c == 48 {
@@ -705,7 +705,7 @@ fn lex(source: String) -> i32 {
 
 // === Tests ===
 fn test_char_classification() -> i32 {
-    var passed = 0;
+    var passed: i32 = 0;
     if is_alpha(97) == 1 {
         passed = passed + 1;
     }
@@ -749,7 +749,7 @@ fn test_char_classification() -> i32 {
 }
 
 fn test_string_builtins() -> i32 {
-    var passed = 0;
+    var passed: i32 = 0;
     // s.len()
     if "hello".len() == 5 {
         passed = passed + 1;
@@ -793,7 +793,7 @@ fn test_string_builtins() -> i32 {
 }
 
 fn test_keyword_matching() -> i32 {
-    var passed = 0;
+    var passed: i32 = 0;
     if classify_keyword_str("fn") == 30 {
         passed = passed + 1;
     }
@@ -861,7 +861,7 @@ fn test_keyword_matching() -> i32 {
 }
 
 fn test_lex_simple() -> i32 {
-    var passed = 0;
+    var passed: i32 = 0;
     // Test: count tokens from a simple expression
     let count1 = lex("fn main");
     if count1 == 2 {

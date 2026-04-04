@@ -1582,11 +1582,19 @@ fn enrich_expr_with_diagnostics_inner(
             }
         }
         Expr::Lambda { params, body, .. } => {
-            if let Some(Ty::Function {
-                params: inferred_params,
-                ..
-            }) = tco.expr_types.get(&expr_span_key)
-            {
+            if let Some(inferred_params) = match tco.expr_types.get(&expr_span_key) {
+                Some(
+                    Ty::Function {
+                        params: inferred_params,
+                        ..
+                    }
+                    | Ty::Closure {
+                        params: inferred_params,
+                        ..
+                    },
+                ) => Some(inferred_params),
+                _ => None,
+            } {
                 for (param, inferred_ty) in params.iter_mut().zip(inferred_params.iter()) {
                     if param.ty.is_none() {
                         if let Ok(inferred_param_ty) = ty_to_type_expr(inferred_ty) {
@@ -2839,6 +2847,52 @@ mod tests {
             tco.errors.is_empty(),
             "unexpected type check errors: {:?}",
             tco.errors
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(
+            &mut expr,
+            &tco,
+            &mut diagnostics,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected enrichment diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(
+                    params[0].ty.as_ref().map(|(ty, _)| ty),
+                    Some(TypeExpr::Named { name, type_args: None }) if name == "i64"
+                ));
+            }
+            other => panic!("expected lambda expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enrich_lambda_params_from_inferred_closure_type() {
+        let source = concat!(
+            "fn main() {\n",
+            "    let offset = 1;\n",
+            "    let f = (x) => x + offset;\n",
+            "    let y = f(5);\n",
+            "}\n",
+        );
+        let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
+        assert!(
+            tco.errors.is_empty(),
+            "unexpected type check errors: {:?}",
+            tco.errors
+        );
+        let lambda_ty = tco.expr_types.get(&SpanKey::from(&expr.1));
+        assert!(
+            matches!(lambda_ty, Some(Ty::Closure { captures, .. }) if !captures.is_empty()),
+            "expected captured lambda to record a closure type, got {lambda_ty:?}"
         );
 
         let mut diagnostics = Vec::new();

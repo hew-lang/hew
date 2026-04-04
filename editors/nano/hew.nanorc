@@ -1,6 +1,6 @@
 ## Hew syntax highlighting for GNU nano
 ## Generated from syntax-data.json — do not edit by hand.
-## syntax-data.json version: 0.2.2
+## syntax-data.json version: 0.9.1
 
 syntax "hew" "\.hew$"
 

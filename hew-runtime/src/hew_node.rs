@@ -52,7 +52,7 @@ pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
 /// Normal reply envelopes carry `msg_type = 0`. The connection reader checks
 /// for this sentinel to call [`fail_remote_reply`] instead of
 /// [`complete_remote_reply`], ensuring both void and non-void asks fail
-/// closed with [`AskError::ConnectionDropped`] on the originating node.
+/// closed with [`AskError::WorkerAtCapacity`] on the originating node.
 ///
 /// The value `65535` is the maximum valid `msg_type` in the Hew wire
 /// protocol (`0..=MAX_MSG_TYPE`).  Reply envelopes always use `msg_type = 0`
@@ -106,6 +106,12 @@ pub enum AskError {
     ConnectionDropped = 6,
     /// The reply payload size did not match the expected reply type size.
     PayloadSizeMismatch = 7,
+    /// The remote node's inbound ask worker pool is at capacity.
+    ///
+    /// The actor was never dispatched. The ask may be retried after a
+    /// brief back-off. This is distinct from [`ConnectionDropped`]: the
+    /// connection is healthy, but the remote end shed load deliberately.
+    WorkerAtCapacity = 8,
 }
 
 thread_local! {
@@ -159,6 +165,10 @@ enum ReplyStatus {
 struct ReplyOutcome {
     status: ReplyStatus,
     data: Vec<u8>,
+    /// Meaningful only when `status == ReplyStatus::Failed`; carries the
+    /// specific ask-error discriminant so callers can distinguish rejection
+    /// (e.g. [`AskError::WorkerAtCapacity`]) from a genuine connection drop.
+    ask_error: AskError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +234,7 @@ impl ReplyRoutingTable {
             ReplyOutcome {
                 status: ReplyStatus::Success,
                 data: payload,
+                ask_error: AskError::None,
             },
         )
     }
@@ -249,7 +260,7 @@ impl ReplyRoutingTable {
         }
     }
 
-    fn fail_pending(pending: &PendingReply) {
+    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
         let mut guard = pending
             .outcome
             .lock()
@@ -257,8 +268,13 @@ impl ReplyRoutingTable {
         *guard = Some(ReplyOutcome {
             status: ReplyStatus::Failed,
             data: Vec::new(),
+            ask_error,
         });
         pending.cond.notify_one();
+    }
+
+    fn fail_pending(pending: &PendingReply) {
+        Self::fail_pending_with_reason(pending, AskError::ConnectionDropped);
     }
 
     /// Fail every pending reply tied to the given connection.
@@ -310,7 +326,7 @@ impl ReplyRoutingTable {
             map.remove(&request_id)
         };
         if let Some(pending) = entry {
-            Self::fail_pending(&pending);
+            Self::fail_pending_with_reason(&pending, AskError::WorkerAtCapacity);
             true
         } else {
             false
@@ -339,13 +355,14 @@ pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
     REPLY_TABLE.complete(request_id, payload.to_vec())
 }
 
-/// Fail a pending remote ask identified by `request_id`.
+/// Fail a pending remote ask identified by `request_id` with [`AskError::WorkerAtCapacity`].
 ///
 /// Called by the reader thread when a **rejection** reply envelope arrives
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
-/// Sets [`ReplyStatus::Failed`] so the originating `hew_node_api_ask` caller
-/// returns [`AskError::ConnectionDropped`] — correctly fail-closed for both
-/// void and non-void asks.
+/// Sets [`ReplyStatus::Failed`] with `ask_error = WorkerAtCapacity` so the
+/// originating `hew_node_api_ask` caller returns the precise discriminant —
+/// fail-closed for both void and non-void asks, and distinguishable from a
+/// genuine connection drop.
 pub(crate) fn fail_remote_reply(request_id: u64) -> bool {
     REPLY_TABLE.fail(request_id)
 }
@@ -478,9 +495,9 @@ unsafe extern "C" fn node_inbound_router(
         // limit we revert and send a rejection reply envelope back to the
         // requester (msg_type = HEW_REPLY_REJECT_MSG_TYPE). The connection
         // reader on the originating node dispatches this sentinel to
-        // `fail_remote_reply`, setting ReplyStatus::Failed so
-        // `hew_node_api_ask` returns ConnectionDropped for both void and
-        // non-void asks — correctly fail-closed in all cases.
+        // `fail_remote_reply`, which sets ReplyStatus::Failed with reason
+        // WorkerAtCapacity so `hew_node_api_ask` returns the precise
+        // discriminant — fail-closed for both void and non-void asks.
         let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
         if prev >= INBOUND_ASK_WORKER_LIMIT {
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
@@ -597,7 +614,7 @@ fn handle_inbound_ask(
 /// field and an empty payload. The connection reader on the receiving node
 /// recognises the sentinel and calls [`fail_remote_reply`] instead of
 /// [`complete_remote_reply`], so the originating `hew_node_api_ask` caller
-/// receives [`AskError::ConnectionDropped`] regardless of whether the ask
+/// receives [`AskError::WorkerAtCapacity`] regardless of whether the ask
 /// was void or non-void.
 fn send_rejection_reply(
     target_node_id: u16,
@@ -1746,10 +1763,11 @@ pub unsafe extern "C" fn hew_node_api_ask(
     let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
         status: ReplyStatus::Failed,
         data: Vec::new(),
+        ask_error: AskError::ConnectionDropped,
     });
     drop(outcome_guard);
     if reply.status == ReplyStatus::Failed {
-        return ask_null(AskError::ConnectionDropped);
+        return ask_null(reply.ask_error);
     }
     let result = remote_reply_data_to_ptr(&reply.data, reply_size);
     if result.is_null() {
@@ -2231,6 +2249,7 @@ mod tests {
             ReplyOutcome {
                 status: ReplyStatus::Failed,
                 data: Vec::new(),
+                ask_error: AskError::ConnectionDropped,
             },
         ));
 
@@ -3355,14 +3374,15 @@ mod tests {
     // When INBOUND_ASK_ACTIVE is artificially saturated to
     // INBOUND_ASK_WORKER_LIMIT the inbound router sends a rejection reply
     // (HEW_REPLY_REJECT_MSG_TYPE).  The receiving node's connection reader
-    // calls `fail_remote_reply`, which sets ReplyStatus::Failed so that
-    // `hew_node_api_ask` returns ConnectionDropped — not a false-success
-    // void sentinel — in all cases.
+    // calls `fail_remote_reply`, which sets ReplyStatus::Failed with reason
+    // WorkerAtCapacity so that `hew_node_api_ask` returns the precise
+    // discriminant — not a false-success void sentinel, and not the generic
+    // ConnectionDropped that indicates a wire-level failure.
 
     /// Over-limit rejection of a **void** remote ask returns null +
-    /// `ConnectionDropped`, not the void-success sentinel.
+    /// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
     #[test]
-    fn over_limit_void_ask_fails_closed_with_connection_dropped() {
+    fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
         crate::registry::hew_registry_clear();
 
@@ -3423,8 +3443,8 @@ mod tests {
         );
         assert_eq!(
             err,
-            AskError::ConnectionDropped as i32,
-            "over-limit void ask must report ConnectionDropped"
+            AskError::WorkerAtCapacity as i32,
+            "over-limit void ask must report WorkerAtCapacity, not ConnectionDropped"
         );
 
         // SAFETY: actor and nodes remain valid until teardown here.
@@ -3437,10 +3457,10 @@ mod tests {
     }
 
     /// Over-limit rejection of a **non-void** remote ask returns null +
-    /// `ConnectionDropped` (not `PayloadSizeMismatch` from the old empty-
-    /// payload path, and not a spurious success).
+    /// `WorkerAtCapacity` (not `PayloadSizeMismatch` from the old empty-
+    /// payload path, not `ConnectionDropped`, and not a spurious success).
     #[test]
-    fn over_limit_nonvoid_ask_fails_closed_with_connection_dropped() {
+    fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
         crate::registry::hew_registry_clear();
 
@@ -3504,8 +3524,8 @@ mod tests {
         );
         assert_eq!(
             err,
-            AskError::ConnectionDropped as i32,
-            "over-limit non-void ask must report ConnectionDropped (not PayloadSizeMismatch)"
+            AskError::WorkerAtCapacity as i32,
+            "over-limit non-void ask must report WorkerAtCapacity (not PayloadSizeMismatch)"
         );
 
         // SAFETY: actor and nodes remain valid until teardown here.

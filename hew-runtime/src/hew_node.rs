@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::set_last_error;
@@ -33,6 +33,49 @@ const _: () = assert!(
 /// Only one `HewNode` may be active per process. Starting a second node
 /// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
+
+// ---------------------------------------------------------------------------
+// Inbound ask worker bound
+// ---------------------------------------------------------------------------
+
+/// Maximum number of OS threads that may concurrently service inbound remote
+/// asks.  A remote peer cannot exceed this by flooding ask requests, bounding
+/// both OS thread count and virtual-memory usage.
+///
+/// The value is intentionally generous (64) so that legitimate high-fanout
+/// workloads are unaffected while still preventing unbounded growth.
+pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
+
+/// Sentinel `msg_type` value used in reply envelopes to signal that the
+/// inbound ask was **rejected** (worker-limit exceeded) rather than answered.
+///
+/// Normal reply envelopes carry `msg_type = 0`. The connection reader checks
+/// for this sentinel to call [`fail_remote_reply`] instead of
+/// [`complete_remote_reply`], ensuring both void and non-void asks fail
+/// closed with [`AskError::WorkerAtCapacity`] on the originating node.
+///
+/// The value `65535` is the maximum valid `msg_type` in the Hew wire
+/// protocol (`0..=MAX_MSG_TYPE`).  Reply envelopes always use `msg_type = 0`
+/// by convention, so `65535` is unambiguous as a rejection marker.
+pub(crate) const HEW_REPLY_REJECT_MSG_TYPE: i32 = 65_535;
+
+/// Count of currently active inbound ask-handler threads.
+///
+/// Incremented before spawning, decremented by [`InboundAskGuard`] when the
+/// handler thread exits (or panics — the `Drop` impl runs in both cases).
+static INBOUND_ASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] exactly once on drop.
+///
+/// Constructed in the spawned ask-handler thread so the counter stays
+/// accurate even under panics or early returns.
+struct InboundAskGuard;
+
+impl Drop for InboundAskGuard {
+    fn drop(&mut self) {
+        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Ask-error discriminant
@@ -63,6 +106,12 @@ pub enum AskError {
     ConnectionDropped = 6,
     /// The reply payload size did not match the expected reply type size.
     PayloadSizeMismatch = 7,
+    /// The remote node's inbound ask worker pool is at capacity.
+    ///
+    /// The actor was never dispatched. The ask may be retried after a
+    /// brief back-off. This is distinct from [`ConnectionDropped`]: the
+    /// connection is healthy, but the remote end shed load deliberately.
+    WorkerAtCapacity = 8,
 }
 
 thread_local! {
@@ -116,6 +165,10 @@ enum ReplyStatus {
 struct ReplyOutcome {
     status: ReplyStatus,
     data: Vec<u8>,
+    /// Meaningful only when `status == ReplyStatus::Failed`; carries the
+    /// specific ask-error discriminant so callers can distinguish rejection
+    /// (e.g. [`AskError::WorkerAtCapacity`]) from a genuine connection drop.
+    ask_error: AskError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +234,7 @@ impl ReplyRoutingTable {
             ReplyOutcome {
                 status: ReplyStatus::Success,
                 data: payload,
+                ask_error: AskError::None,
             },
         )
     }
@@ -206,7 +260,7 @@ impl ReplyRoutingTable {
         }
     }
 
-    fn fail_pending(pending: &PendingReply) {
+    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
         let mut guard = pending
             .outcome
             .lock()
@@ -214,8 +268,13 @@ impl ReplyRoutingTable {
         *guard = Some(ReplyOutcome {
             status: ReplyStatus::Failed,
             data: Vec::new(),
+            ask_error,
         });
         pending.cond.notify_one();
+    }
+
+    fn fail_pending(pending: &PendingReply) {
+        Self::fail_pending_with_reason(pending, AskError::ConnectionDropped);
     }
 
     /// Fail every pending reply tied to the given connection.
@@ -255,6 +314,25 @@ impl ReplyRoutingTable {
         }
     }
 
+    /// Fail a single pending reply by request ID. Returns `true` if the
+    /// request was found.  Used for inband rejection signals from the remote
+    /// node (worker-limit exceeded).
+    fn fail(&self, request_id: u64) -> bool {
+        let entry = {
+            let mut map = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.remove(&request_id)
+        };
+        if let Some(pending) = entry {
+            Self::fail_pending_with_reason(&pending, AskError::WorkerAtCapacity);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove a pending entry (used on timeout to prevent leaks).
     fn remove(&self, request_id: u64) {
         let mut map = self
@@ -275,6 +353,18 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 /// `true` if the request ID was matched.
 pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
     REPLY_TABLE.complete(request_id, payload.to_vec())
+}
+
+/// Fail a pending remote ask identified by `request_id` with [`AskError::WorkerAtCapacity`].
+///
+/// Called by the reader thread when a **rejection** reply envelope arrives
+/// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
+/// Sets [`ReplyStatus::Failed`] with `ask_error = WorkerAtCapacity` so the
+/// originating `hew_node_api_ask` caller returns the precise discriminant —
+/// fail-closed for both void and non-void asks, and distinguishable from a
+/// genuine connection drop.
+pub(crate) fn fail_remote_reply(request_id: u64) -> bool {
+    REPLY_TABLE.fail(request_id)
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
@@ -398,6 +488,40 @@ unsafe extern "C" fn node_inbound_router(
 ) {
     if request_id > 0 && source_node_id > 0 {
         // Inbound remote ask — dispatch locally and send the reply back.
+
+        // ── Backpressure: bounded concurrent inbound ask workers ─────────────
+        //
+        // Optimistically increment the counter. If we were already at the
+        // limit we revert and — if the source peer understands the rejection
+        // sentinel (HEW_FEATURE_SUPPORTS_ASK_REJECTION) — send a rejection
+        // reply envelope back (msg_type = HEW_REPLY_REJECT_MSG_TYPE). The
+        // connection reader on the originating node dispatches this sentinel
+        // to `fail_remote_reply`, which sets ReplyStatus::Failed with reason
+        // WorkerAtCapacity so `hew_node_api_ask` returns the precise
+        // discriminant — fail-closed for both void and non-void asks.
+        //
+        // If the source peer does NOT advertise the feature flag (old node),
+        // we send no reply at all.  The originating ask will time out through
+        // its normal deadline path — this is the safe fail-closed fallback: an
+        // old peer that never sends the sentinel cannot misinterpret 65535 as
+        // a void-success, and we avoid the silent-success regression.
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        if prev >= INBOUND_ASK_WORKER_LIMIT {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            // SAFETY: the inbound router is only called while `conn_mgr` is live.
+            let peer_flags =
+                unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr, source_node_id) };
+            if connection::supports_ask_rejection(peer_flags) {
+                // SAFETY: conn_mgr is live for the duration of the inbound router call.
+                let shutdown = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) };
+                if let Some(shutdown) = shutdown {
+                    send_rejection_reply(source_node_id, request_id, conn_mgr, shutdown.as_ref());
+                }
+            }
+            return;
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         // Deep-copy the payload so we can hand it to a background thread.
         let payload = if size > 0 && !data.is_null() {
             // SAFETY: data is valid for `size` bytes (reader_loop contract).
@@ -409,9 +533,13 @@ unsafe extern "C" fn node_inbound_router(
         // SAFETY: the inbound router is only called while `conn_mgr` is live.
         let Some(shutdown_started) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) })
         else {
+            // Undo the increment we already committed above.
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             return;
         };
         thread::spawn(move || {
+            // Guard decrements INBOUND_ASK_ACTIVE on drop (including on panic).
+            let _guard = InboundAskGuard;
             handle_inbound_ask(
                 target_actor_id,
                 msg_type,
@@ -491,6 +619,69 @@ fn handle_inbound_ask(
         conn_mgr.0,
         shutdown_started.as_ref(),
     );
+}
+
+/// Send a **rejection** reply envelope back to the source node.
+///
+/// Rejection replies carry [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type`
+/// field and an empty payload. The connection reader on the receiving node
+/// recognises the sentinel and calls [`fail_remote_reply`] instead of
+/// [`complete_remote_reply`], so the originating `hew_node_api_ask` caller
+/// receives [`AskError::WorkerAtCapacity`] regardless of whether the ask
+/// was void or non-void.
+fn send_rejection_reply(
+    target_node_id: u16,
+    request_id: u64,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+) {
+    if conn_mgr.is_null() {
+        return;
+    }
+
+    let guard = CURRENT_NODE.read_or_recover();
+    if *guard == 0 {
+        return;
+    }
+    if shutdown_started.load(Ordering::Acquire) {
+        return;
+    }
+
+    // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
+    // read lock held above (guard) ensures it remains valid for this call.
+    let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
+    if conn_id < 0 {
+        return;
+    }
+
+    // Encode the rejection envelope: request_id identifies the pending ask;
+    // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
+    // distinguishes it from a normal (possibly void) success reply.
+    let env = crate::wire::HewWireEnvelope {
+        target_actor_id: 0,
+        source_actor_id: 0,
+        msg_type: HEW_REPLY_REJECT_MSG_TYPE,
+        payload_size: 0,
+        payload: std::ptr::null_mut(),
+        request_id,
+        source_node_id: 0,
+    };
+    // SAFETY: zeroed is valid for HewWireBuf.
+    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+    // SAFETY: wire_buf is a valid stack allocation.
+    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+    // SAFETY: wire_buf and env are valid stack locals.
+    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // SAFETY: wire_buf was initialised above.
+        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+        return;
+    }
+    // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+    unsafe {
+        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+    };
+    // SAFETY: wire_buf was initialised above.
+    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
 }
 
 /// Encode and send a reply envelope back to the source node.
@@ -1585,10 +1776,11 @@ pub unsafe extern "C" fn hew_node_api_ask(
     let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
         status: ReplyStatus::Failed,
         data: Vec::new(),
+        ask_error: AskError::ConnectionDropped,
     });
     drop(outcome_guard);
     if reply.status == ReplyStatus::Failed {
-        return ask_null(AskError::ConnectionDropped);
+        return ask_null(reply.ask_error);
     }
     let result = remote_reply_data_to_ptr(&reply.data, reply_size);
     if result.is_null() {
@@ -2070,6 +2262,7 @@ mod tests {
             ReplyOutcome {
                 status: ReplyStatus::Failed,
                 data: Vec::new(),
+                ask_error: AskError::ConnectionDropped,
             },
         ));
 
@@ -2974,6 +3167,385 @@ mod tests {
         // SAFETY: node pointer remains valid until drop.
         unsafe {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Inbound ask worker bound tests ─────────────────────────────────────
+    //
+    // These tests verify the backpressure mechanism added to node_inbound_router.
+    // The mechanism prevents a remote peer from exhausting OS thread count or
+    // virtual memory by flooding inbound asks.
+    //
+    // All of these tests acquire NODE_TEST_LOCK so they serialize with any
+    // other test that runs a node or manipulates INBOUND_ASK_ACTIVE.
+
+    /// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` exactly once on drop,
+    /// including when the enclosing scope exits via panic.
+    #[test]
+    fn inbound_ask_guard_decrements_on_drop() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        // Reset to a known value; restore on exit.
+        let saved = INBOUND_ASK_ACTIVE.swap(1, Ordering::AcqRel);
+        {
+            let _guard = InboundAskGuard;
+            assert_eq!(
+                INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+                1,
+                "counter must be 1 while guard is live"
+            );
+        }
+        // Guard dropped — counter must be 0.
+        let after = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+        assert_eq!(
+            after, 0,
+            "InboundAskGuard must decrement INBOUND_ASK_ACTIVE on drop"
+        );
+    }
+
+    /// Two guards decrement independently (one per spawned thread).
+    #[test]
+    fn inbound_ask_guard_pair_decrements_twice() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(2, Ordering::AcqRel);
+        let g1 = InboundAskGuard;
+        let g2 = InboundAskGuard;
+        drop(g1);
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            1,
+            "first guard must decrement by 1"
+        );
+        drop(g2);
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            0,
+            "second guard must decrement back to zero"
+        );
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// When `INBOUND_ASK_ACTIVE` is saturated to `INBOUND_ASK_WORKER_LIMIT` the
+    /// optimistic-increment + revert logic correctly prevents over-commitment.
+    ///
+    /// This test directly exercises the counter-check branch used in
+    /// `node_inbound_router` without needing a live transport.
+    #[test]
+    fn inbound_ask_worker_limit_rejects_at_capacity() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+
+        // Simulate what node_inbound_router does for an inbound ask.
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
+        if at_limit {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        // Must have detected the limit and reverted.
+        assert!(
+            at_limit,
+            "should detect limit when counter == INBOUND_ASK_WORKER_LIMIT"
+        );
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            INBOUND_ASK_WORKER_LIMIT,
+            "counter must be reverted to the limit after rejection"
+        );
+
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// When `INBOUND_ASK_ACTIVE` is one below the limit, a new ask is accepted.
+    #[test]
+    fn inbound_ask_worker_limit_accepts_below_capacity() {
+        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT - 1, Ordering::AcqRel);
+
+        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
+        if at_limit {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        assert!(!at_limit, "ask just below limit must be accepted");
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            INBOUND_ASK_WORKER_LIMIT,
+            "accepted ask increments counter to limit"
+        );
+
+        // Release the slot we acquired (simulating the InboundAskGuard).
+        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+    }
+
+    /// End-to-end: inbound ask counter is bounded during a real two-node ask
+    /// round-trip. After the ask completes the worker slot is released and the
+    /// counter returns to its pre-ask value.
+    #[test]
+    fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(320, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(321, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Spawn a u32-echo actor on node2.
+        crate::pid::hew_pid_set_local_node(321);
+        // SAFETY: null state and size-0 are valid; ask_probe_dispatch echoes back u32*2.
+        let echo_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        crate::pid::hew_pid_set_local_node(320);
+        assert!(!echo_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+
+        let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Record the counter before the ask so we can verify it returns to baseline.
+        let baseline = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+
+        let payload: u32 = 0xDEAD_BEEF;
+        // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_pid,
+                1,
+                std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+                std::mem::size_of::<u32>(),
+            )
+        };
+        assert!(!reply_ptr.is_null(), "remote ask must succeed");
+        // SAFETY: reply was malloc'd by hew_reply; we own it after the ask.
+        unsafe { libc::free(reply_ptr) };
+
+        // After the ask completes the handler thread exits, dropping InboundAskGuard.
+        // Give it a brief moment to drain.
+        let settled = (0..50).any(|_| {
+            let v = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+            if v == baseline {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(
+            settled,
+            "INBOUND_ASK_ACTIVE did not return to baseline after ask completed (got {}; expected {})",
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            baseline,
+        );
+        assert!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire) <= INBOUND_ASK_WORKER_LIMIT,
+            "active worker count must never exceed INBOUND_ASK_WORKER_LIMIT"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and are still valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Over-limit rejection tests ────────────────────────────────────────
+    //
+    // These tests verify the fail-closed semantics of the worker-limit
+    // rejection path for both void and non-void remote asks.
+    //
+    // When INBOUND_ASK_ACTIVE is artificially saturated to
+    // INBOUND_ASK_WORKER_LIMIT the inbound router sends a rejection reply
+    // (HEW_REPLY_REJECT_MSG_TYPE).  The receiving node's connection reader
+    // calls `fail_remote_reply`, which sets ReplyStatus::Failed with reason
+    // WorkerAtCapacity so that `hew_node_api_ask` returns the precise
+    // discriminant — not a false-success void sentinel, and not the generic
+    // ConnectionDropped that indicates a wire-level failure.
+
+    /// Over-limit rejection of a **void** remote ask returns null +
+    /// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
+    #[test]
+    fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(322, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(323, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        // Spawn a void-reply actor on node2.
+        crate::pid::hew_pid_set_local_node(323);
+        // SAFETY: null state / size-0 are valid; void_ask_probe_dispatch is valid.
+        let actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(void_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(322);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 323);
+
+        let connect_addr = CString::new(format!("323@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Saturate the worker counter on node2 (the answering node) so the
+        // next inbound ask is rejected.
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+
+        // Void ask: reply_size == 0. Before the fix this would have returned
+        // the void-success sentinel because the rejection sent an empty payload
+        // which remote_reply_data_to_ptr mistook for a void success.
+        // SAFETY: null payload / size-0 are valid; this is a void ask.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+
+        // Restore before any assertions so the teardown path is clean.
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+
+        assert!(
+            reply_ptr.is_null(),
+            "over-limit void ask must return null (got non-null = false success)"
+        );
+        assert_eq!(
+            err,
+            AskError::WorkerAtCapacity as i32,
+            "over-limit void ask must report WorkerAtCapacity, not ConnectionDropped"
+        );
+
+        // SAFETY: actor and nodes remain valid until teardown here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Over-limit rejection of a **non-void** remote ask returns null +
+    /// `WorkerAtCapacity` (not `PayloadSizeMismatch` from the old empty-
+    /// payload path, not `ConnectionDropped`, and not a spurious success).
+    #[test]
+    fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        crate::registry::hew_registry_clear();
+
+        let (node2_port, port_guard) = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node1 = unsafe { TestNode::new(324, &node1_bind) };
+        drop(port_guard);
+        // SAFETY: bind addresses are valid C strings for the test scope.
+        let node2 = unsafe { TestNode::new(325, &node2_bind) };
+        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+
+        // SAFETY: node pointers are valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+        }
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        // Spawn a u32-echo actor on node2.
+        crate::pid::hew_pid_set_local_node(325);
+        // SAFETY: null state and size-0 are valid; ask_probe_dispatch is valid.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        crate::pid::hew_pid_set_local_node(324);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 325);
+
+        let connect_addr = CString::new(format!("325@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Saturate the worker counter on node2.
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+
+        let payload: u32 = 42;
+        // SAFETY: payload is a valid u32; its address is valid for this call.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_pid,
+                1,
+                std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+                std::mem::size_of::<u32>(),
+            )
+        };
+        let err = hew_node_ask_take_last_error();
+
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+
+        assert!(
+            reply_ptr.is_null(),
+            "over-limit non-void ask must return null"
+        );
+        assert_eq!(
+            err,
+            AskError::WorkerAtCapacity as i32,
+            "over-limit non-void ask must report WorkerAtCapacity (not PayloadSizeMismatch)"
+        );
+
+        // SAFETY: actor and nodes remain valid until teardown here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

@@ -73,6 +73,10 @@ const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
+/// Indicates that this node understands `HEW_REPLY_REJECT_MSG_TYPE = 65535` in
+/// reply envelopes.  A node MUST only send the rejection sentinel to peers that
+/// advertise this flag; old nodes would misinterpret it as a void-success reply.
+pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -486,12 +490,16 @@ fn reconnect_worker_loop(
 }
 
 fn local_feature_flags() -> u32 {
-    let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+    let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_ASK_REJECTION;
     #[cfg(feature = "encryption")]
     {
         flags |= HEW_FEATURE_SUPPORTS_ENCRYPTION;
     }
     flags
+}
+
+pub(crate) fn supports_ask_rejection(flags: u32) -> bool {
+    flags & HEW_FEATURE_SUPPORTS_ASK_REJECTION != 0
 }
 
 fn local_schema_hash() -> u32 {
@@ -828,6 +836,11 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
     clippy::needless_pass_by_value,
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reader_loop captures all per-connection state; splitting into a struct \
+              would require unsafe Send impls for the contained raw pointers"
+)]
 fn reader_loop(
     mgr: SendConnMgr,
     transport: SendTransport,
@@ -835,6 +848,7 @@ fn reader_loop(
     stop_flag: Arc<AtomicI32>,
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
+    peer_feature_flags: u32,
     #[cfg(feature = "encryption")] noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
 ) {
     let mgr = mgr.0;
@@ -902,16 +916,34 @@ fn reader_loop(
                     // deposited directly into the reply routing table, bypassing
                     // the normal inbound router.
                     if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                        let reply_payload =
-                            if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                std::slice::from_raw_parts(
-                                    envelope.payload,
-                                    envelope.payload_size as usize,
-                                )
-                            } else {
-                                &[]
-                            };
-                        crate::hew_node::complete_remote_reply(envelope.request_id, reply_payload);
+                        if envelope.msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
+                            && supports_ask_rejection(peer_feature_flags)
+                        {
+                            // Rejection reply: the remote node hit its inbound
+                            // ask worker limit.  Mark the pending ask as failed
+                            // so the originating caller gets WorkerAtCapacity
+                            // for both void and non-void asks.
+                            //
+                            // The `supports_ask_rejection` guard ensures that
+                            // old nodes (which never send this sentinel) cannot
+                            // accidentally trigger this path even if they happen
+                            // to send a message with msg_type = 65535.
+                            crate::hew_node::fail_remote_reply(envelope.request_id);
+                        } else {
+                            let reply_payload =
+                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
+                                    std::slice::from_raw_parts(
+                                        envelope.payload,
+                                        envelope.payload_size as usize,
+                                    )
+                                } else {
+                                    &[]
+                                };
+                            crate::hew_node::complete_remote_reply(
+                                envelope.request_id,
+                                reply_payload,
+                            );
+                        }
                     } else {
                         router_fn(
                             envelope.target_actor_id,
@@ -1280,6 +1312,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
     let mgr_send = SendConnMgr(mgr_ptr);
+    let peer_feature_flags = actor.peer_feature_flags;
     #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
@@ -1293,6 +1326,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 stop,
                 activity_send,
                 router,
+                peer_feature_flags,
                 #[cfg(feature = "encryption")]
                 noise_transport,
             );
@@ -1620,6 +1654,35 @@ pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_i
         }
     }
     -1
+}
+
+/// Return the negotiated feature flags for the active connection to `node_id`,
+/// or `0` if no active connection exists.
+///
+/// Used by `node_inbound_router` to determine whether a peer understands the
+/// ask-rejection sentinel before sending `HEW_REPLY_REJECT_MSG_TYPE`.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer for the duration of the call.
+pub(crate) unsafe fn hew_connmgr_feature_flags_for_node(
+    mgr: *const HewConnMgr,
+    node_id: u16,
+) -> u32 {
+    if mgr.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr_ref = unsafe { &*mgr };
+    let Ok(conns) = mgr_ref.connections.lock() else {
+        return 0;
+    };
+    for c in conns.iter() {
+        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+            return c.peer_feature_flags;
+        }
+    }
+    0
 }
 
 /// Return the number of active connections.

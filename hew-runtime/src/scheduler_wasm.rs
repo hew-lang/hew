@@ -532,14 +532,16 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
     let cur_state = a.actor_state.load(Ordering::Relaxed);
 
-    // Stopping -> Stopped.
+    // Stopping -> Stopped: finalise the lifecycle and invoke terminate callback.
     if cur_state == HewActorState::Stopping as i32 {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
-        // NOTE: WASM terminate is handled by the WASM hew_actor_close path
-        // or by cleanup_all_actors at process exit. The terminate_fn field
-        // is present for ABI compatibility but is not invoked by the WASM
-        // scheduler.
+        // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+        // call_terminate_fn has an internal `terminate_called` guard so later
+        // cleanup paths (hew_actor_close / cleanup_all_actors) are idempotent.
+        unsafe {
+            crate::actor::call_terminate_fn(actor.cast::<crate::actor::HewActor>());
+        }
         return;
     }
 
@@ -1708,6 +1710,135 @@ mod tests {
             crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
         }
 
+        hew_sched_shutdown();
+    }
+
+    // ── Terminate-parity tests ──────────────────────────────────────────────
+
+    static TERMINATE_COUNT: AtomicI32 = AtomicI32::new(0);
+
+    unsafe extern "C" fn counting_terminate_fn(_state: *mut c_void) {
+        TERMINATE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Dispatch that self-stops by storing `Stopping` into the actor state.
+    ///
+    /// `state` is the actor pointer itself — this avoids needing a platform-
+    /// specific `hew_actor_self_stop` call (which differs between native and
+    /// WASM targets) while still exercising the real scheduler post-activation
+    /// `Stopping → Stopped` branch.
+    unsafe extern "C" fn self_stopping_dispatch(
+        state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // SAFETY: `state` is a valid `HewActor` pointer set by the test.
+        // The actor is in `Running` state during dispatch.
+        let actor = state.cast::<HewActor>();
+        // SAFETY: actor points to the HewActor passed as state by this test;
+        // the actor is valid and in Running state during dispatch.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopping as i32, Ordering::Relaxed);
+        }
+    }
+
+    /// The WASM scheduler must invoke `terminate_fn` as part of the
+    /// `Stopping → Stopped` state transition — not only at
+    /// `cleanup_all_actors` / process exit (parity with native scheduler).
+    #[test]
+    fn terminate_fn_fires_on_stopping_to_stopped_scheduler_path() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        TERMINATE_COUNT.store(0, Ordering::Relaxed);
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        // Pass the actor itself as state so self_stopping_dispatch can store
+        // Stopping during dispatch. Actor starts Runnable (stub default).
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.dispatch = Some(self_stopping_dispatch);
+        actor.terminate_fn = Some(counting_terminate_fn);
+        // Give the actor a mailbox with one message so dispatch fires.
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox allocated above; the payload is a
+        // stack-local i32 that is copied into the message node by the callee.
+        // Queue one message so the dispatch function is actually called.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "actor must reach Stopped after scheduler transition"
+        );
+        assert_eq!(
+            TERMINATE_COUNT.load(Ordering::Relaxed),
+            1,
+            "terminate_fn must fire exactly once on the Stopping→Stopped scheduler path"
+        );
+        assert!(
+            actor.terminate_called.load(Ordering::Acquire),
+            "terminate_called guard must be set"
+        );
+        assert!(
+            actor.terminate_finished.load(Ordering::Acquire),
+            "terminate_finished guard must be set"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// `terminate_fn` must not fire a second time if `cleanup_all_actors`
+    /// (or any other cleanup path) runs after the scheduler already fired it.
+    #[test]
+    fn terminate_fn_not_double_invoked_by_cleanup_after_scheduler_stop() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        TERMINATE_COUNT.store(0, Ordering::Relaxed);
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.dispatch = Some(self_stopping_dispatch);
+        actor.terminate_fn = Some(counting_terminate_fn);
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox; payload is a stack-local i32.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        // Scheduler already ran terminate_fn; a second call from a cleanup
+        // path (cleanup_all_actors / hew_actor_close) must be a no-op thanks
+        // to the `terminate_called` guard inside `call_terminate_fn`.
+        // SAFETY: actor is in Stopped state and not being dispatched.
+        unsafe {
+            crate::actor::call_terminate_fn(actor_ptr.cast::<crate::actor::HewActor>());
+        }
+
+        assert_eq!(
+            TERMINATE_COUNT.load(Ordering::Relaxed),
+            1,
+            "terminate_fn must not be invoked twice even when cleanup path runs after scheduler"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
         hew_sched_shutdown();
     }
 }

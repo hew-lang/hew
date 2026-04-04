@@ -28,10 +28,22 @@ fn test_non_exhaustive_match() {
         }
     ",
     );
-    assert!(output
-        .warnings
-        .iter()
-        .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
+    // Enum-like non-exhaustive match → hard error, not a warning.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "expected NonExhaustiveMatch error for enum, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for enum must not appear as a warning"
+    );
 }
 
 #[test]
@@ -48,10 +60,22 @@ fn test_non_exhaustive_match_stmt() {
         }
     ",
     );
-    assert!(output
-        .warnings
-        .iter()
-        .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
+    // Enum-like non-exhaustive match → hard error, not a warning.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "expected NonExhaustiveMatch error for enum stmt, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for enum must not appear as a warning"
+    );
 }
 
 #[test]
@@ -88,10 +112,22 @@ fn test_non_exhaustive_option_match() {
         }
     ",
     );
-    assert!(output
-        .warnings
-        .iter()
-        .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
+    // Option is enum-like → hard error.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "expected NonExhaustiveMatch error for Option, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for Option must not appear as a warning"
+    );
 }
 
 #[test]
@@ -107,6 +143,13 @@ fn test_exhaustive_or_result_match() {
             check(Ok(1));
         }
     ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "exhaustive Result match must not produce an error"
     );
     assert!(!output
         .warnings
@@ -129,10 +172,52 @@ fn test_exhaustive_or_enum_match() {
         }
     ",
     );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "exhaustive enum match must not produce an error"
+    );
     assert!(!output
         .warnings
         .iter()
         .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
+}
+
+/// Scalar (non-enum) types have no closed variant set; missing a catch-all
+/// should be a *warning*, not a hard error.
+#[test]
+fn test_scalar_missing_catchall_is_warning() {
+    let output = typecheck(
+        r"
+        fn check(n: int) -> int {
+            match n {
+                1 => 10,
+                2 => 20,
+            }
+        }
+        fn main() {
+            check(1);
+        }
+    ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "scalar missing catch-all should be a warning, got warnings: {:?}",
+        output.warnings
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::NonExhaustiveMatch),
+        "scalar missing catch-all must not be an error, got errors: {:?}",
+        output.errors
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@ use hew_parser::ast::{
     Attribute, Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem, TypeDeclKind,
 };
 use hew_parser::ParseResult;
-use hew_types::error::TypeErrorKind;
+use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::build_module_search_paths;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::jsonrpc::Result;
@@ -890,7 +890,7 @@ fn build_diagnostics(
 
             diagnostics.push(Diagnostic {
                 range: span_to_range(source, lo, &diag.span),
-                severity: Some(error_kind_severity(&diag.kind)),
+                severity: Some(severity_to_lsp(diag.severity)),
                 source: Some("hew-types".to_string()),
                 message,
                 related_information,
@@ -903,11 +903,25 @@ fn build_diagnostics(
     diagnostics
 }
 
+/// Convert a type-checker `Severity` to the corresponding LSP `DiagnosticSeverity`.
+///
+/// This is the authoritative severity mapping: the `TypeError` struct carries the
+/// severity that was decided at emit time, so the LSP should honour it directly
+/// rather than re-deriving it from the `TypeErrorKind`.
+fn severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+    }
+}
+
 /// Map a `TypeErrorKind` to an LSP diagnostic severity.
 ///
-/// Currently all type errors are reported as errors. This provides the hook
-/// point for when the type checker adds warning-level kinds (e.g. unused
-/// variables, deprecation warnings).
+/// This is kept for tests and any code path that only has a kind available.
+/// Prefer `severity_to_lsp` when a full `TypeError` is in scope, because
+/// `NonExhaustiveMatch` can now be either Error (enum-like) or Warning (scalar
+/// catch-all) depending on the scrutinee type.
+#[cfg(test)]
 fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
     match kind {
         TypeErrorKind::ActorRefCycle
@@ -919,8 +933,7 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::DeadCode
         | TypeErrorKind::OrphanImpl
         | TypeErrorKind::PlatformLimitation
-        | TypeErrorKind::Shadowing
-        | TypeErrorKind::NonExhaustiveMatch => DiagnosticSeverity::WARNING,
+        | TypeErrorKind::Shadowing => DiagnosticSeverity::WARNING,
         _ => DiagnosticSeverity::ERROR,
     }
 }
@@ -3409,6 +3422,9 @@ impl Worker {
 
     #[test]
     fn error_kind_severity_warning_kinds() {
+        // NonExhaustiveMatch is intentionally absent here: its severity depends on
+        // the scrutinee type (enum-like → Error, scalar → Warning) and is determined
+        // by the TypeError.severity field, not by `error_kind_severity`.
         let warning_kinds = [
             TypeErrorKind::ActorRefCycle,
             TypeErrorKind::UnusedVariable,
@@ -3420,7 +3436,6 @@ impl Worker {
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
             TypeErrorKind::Shadowing,
-            TypeErrorKind::NonExhaustiveMatch,
         ];
         for kind in &warning_kinds {
             assert_eq!(
@@ -3429,6 +3444,28 @@ impl Worker {
                 "{kind:?} should be WARNING"
             );
         }
+    }
+
+    #[test]
+    fn nonexhaustive_match_kind_falls_through_to_error_in_kind_fn() {
+        // error_kind_severity no longer hard-codes NonExhaustiveMatch as WARNING.
+        // The kind alone is insufficient — severity_to_lsp / TypeError.severity
+        // is the authoritative source for this kind.
+        assert_eq!(
+            error_kind_severity(&TypeErrorKind::NonExhaustiveMatch),
+            DiagnosticSeverity::ERROR,
+            "NonExhaustiveMatch falls through to ERROR in error_kind_severity; \
+             use severity_to_lsp with the full TypeError for the correct value"
+        );
+    }
+
+    #[test]
+    fn severity_to_lsp_mapping() {
+        assert_eq!(severity_to_lsp(Severity::Error), DiagnosticSeverity::ERROR);
+        assert_eq!(
+            severity_to_lsp(Severity::Warning),
+            DiagnosticSeverity::WARNING
+        );
     }
 
     #[test]

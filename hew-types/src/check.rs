@@ -9751,12 +9751,12 @@ impl Checker {
         match scrutinee_ty {
             Ty::Named { name, .. } if name == "Option" => {
                 if !Self::has_both_constructor_variants(arms, "Some", "None") {
-                    self.warn_non_exhaustive(span, "Option requires Some and None arms");
+                    self.error_non_exhaustive(span, "Option requires Some and None arms");
                 }
             }
             Ty::Named { name, .. } if name == "Result" => {
                 if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
-                    self.warn_non_exhaustive(span, "Result requires Ok and Err arms");
+                    self.error_non_exhaustive(span, "Result requires Ok and Err arms");
                 }
             }
             Ty::Named { name, .. } => {
@@ -9796,7 +9796,7 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.warn_non_exhaustive(
+                            self.error_non_exhaustive(
                                 span,
                                 &format!("missing {}", names.join(", ")),
                             );
@@ -9840,7 +9840,7 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.warn_non_exhaustive(
+                            self.error_non_exhaustive(
                                 span,
                                 &format!("missing {}", names.join(", ")),
                             );
@@ -9870,7 +9870,7 @@ impl Checker {
                     });
                 }
                 if !has_binding_identifier && (!has_true || !has_false) {
-                    self.warn_non_exhaustive(span, "missing bool variant");
+                    self.error_non_exhaustive(span, "missing bool variant");
                 }
             }
             _ => {
@@ -9896,6 +9896,22 @@ impl Checker {
         }
     }
 
+    /// Emit a hard error for genuinely non-exhaustive enum-like matches (Option, Result,
+    /// user enums, machines, bool).  These are fail-closed: missing variants are a
+    /// correctness issue, not just a style suggestion.
+    fn error_non_exhaustive(&mut self, span: &Span, detail: &str) {
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::NonExhaustiveMatch,
+            span: span.clone(),
+            message: format!("non-exhaustive match: {detail}"),
+            notes: vec![],
+            suggestions: vec![],
+        });
+    }
+
+    /// Emit a soft warning for scalar / open-ended types where adding a wildcard `_`
+    /// arm is a style suggestion rather than a correctness requirement.
     fn warn_non_exhaustive(&mut self, span: &Span, detail: &str) {
         self.warnings.push(TypeError {
             severity: crate::error::Severity::Warning,
@@ -10894,25 +10910,30 @@ mod tests {
     }
 
     #[test]
-    fn typecheck_match_statement_missing_variant_warns() {
+    fn typecheck_match_statement_missing_variant_errors() {
         let (errors, warnings) = parse_and_check(concat!(
             "enum Light { Red; Green; }\n",
             "fn main() { let v: Light = Red; match v { Red => 1, } let _done = 0; }\n",
         ));
         assert!(
-            errors.is_empty(),
-            "expected only a warning but got errors: {errors:?}"
-        );
-        assert!(
             warnings
                 .iter()
-                .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
-            "expected non-exhaustive match warning, got: {warnings:?}"
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "non-exhaustive enum match must not be a warning: {warnings:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
         );
     }
 
     #[test]
     fn typecheck_guarded_wildcard_not_exhaustive() {
+        // A guarded wildcard (`_ if false`) does not count as an exhaustive arm;
+        // matching bool with only that arm leaves both `true` and `false` uncovered.
+        // Bool is enum-like, so this is a hard error.
         let (errors, warnings) = parse_and_check(concat!(
             "fn main() {\n",
             "    let x = true;\n",
@@ -10923,14 +10944,44 @@ mod tests {
             "}\n",
         ));
         assert!(
-            errors.is_empty(),
-            "expected only a warning but got errors: {errors:?}"
+            warnings
+                .iter()
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "non-exhaustive bool match must not be a warning: {warnings:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
+        );
+    }
+
+    /// Scalar types (int, float, string, …) have no closed variant set, so a
+    /// missing catch-all should remain a *warning*, not an error.
+    #[test]
+    fn typecheck_scalar_missing_catchall_is_warning_not_error() {
+        let (errors, warnings) = parse_and_check(concat!(
+            "fn main() {\n",
+            "    let x: int = 5;\n",
+            "    match x {\n",
+            "        1 => 10,\n",
+            "        2 => 20,\n",
+            "    }\n",
+            "    let _done = 0;\n",
+            "}\n",
+        ));
+        assert!(
+            errors
+                .iter()
+                .all(|e| !matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "scalar missing catch-all must not be an error: {errors:?}"
         );
         assert!(
             warnings
                 .iter()
                 .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
-            "expected non-exhaustive match warning, got: {warnings:?}"
+            "scalar missing catch-all must be a warning: {warnings:?}"
         );
     }
 

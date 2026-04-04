@@ -3686,14 +3686,16 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       }
 
       if (method == "strong_count") {
-        // Call hew_rc_count(ptr) -> u32, then sign-extend to i64.
+        // Call hew_rc_count(ptr) -> u32, then zero-extend to i64.
+        // hew_rc_count returns an unsigned refcount; use ExtUIOp to avoid
+        // sign-extending counts >= 2^31 into negative i64 values.
         auto i32Type = builder.getI32Type();
         auto countFuncType = builder.getFunctionType({ptrType}, {i32Type});
         auto countFunc = getOrCreateExternFunc("hew_rc_count", countFuncType);
         auto count =
             mlir::func::CallOp::create(builder, location, countFunc, mlir::ValueRange{receiver})
                 .getResult(0);
-        return mlir::arith::ExtSIOp::create(builder, location, i64Type, count).getResult();
+        return mlir::arith::ExtUIOp::create(builder, location, i64Type, count).getResult();
       }
 
       emitError(location) << "unknown method '" << method << "' on Rc<T>";

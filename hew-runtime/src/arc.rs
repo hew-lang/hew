@@ -31,17 +31,19 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewArcInner {
     unsafe { data_ptr.sub(size_of::<HewArcInner>()) }.cast()
 }
 
-/// Compute allocation layout for header + data.
-fn alloc_layout(data_size: usize) -> Layout {
-    let total = size_of::<HewArcInner>() + data_size;
+/// Compute allocation layout for header + data. Returns `None` on overflow.
+fn alloc_layout(data_size: usize) -> Option<Layout> {
+    let total = size_of::<HewArcInner>().checked_add(data_size)?;
     let align = align_of::<HewArcInner>();
-    Layout::from_size_align(total, align).expect("Arc layout overflow")
+    Layout::from_size_align(total, align).ok()
 }
 
 // ── Public C ABI ───────────────────────────────────────────────────────
 
 /// Create a new `Arc<T>`. Copies `size` bytes from `data` into a
 /// heap-allocated block with atomic reference count header.
+///
+/// Returns null if the layout computation overflows.
 ///
 /// # Safety
 ///
@@ -58,7 +60,9 @@ pub unsafe extern "C" fn hew_arc_new(
     size: usize,
     drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
 ) -> *mut u8 {
-    let layout = alloc_layout(size);
+    let Some(layout) = alloc_layout(size) else {
+        return ptr::null_mut();
+    };
     // SAFETY: layout is valid (non-zero size due to header).
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
@@ -111,6 +115,11 @@ pub unsafe extern "C" fn hew_arc_clone(ptr: *mut u8) -> *mut u8 {
 /// Uses Release ordering on the decrement and Acquire fence before drop
 /// (same pattern as `std::sync::Arc`).
 ///
+/// # Panics
+///
+/// Panics if the layout computation overflows while deallocating (should
+/// never happen since the layout was validated at construction time).
+///
 /// # Safety
 ///
 /// `ptr` must have been returned by [`hew_arc_new`] or [`hew_arc_clone`].
@@ -149,7 +158,7 @@ pub unsafe extern "C" fn hew_arc_drop(ptr: *mut u8) {
     if inner.weak.fetch_sub(1, Ordering::Release) == 1 {
         // We were the last weak ref (implicit). Deallocate.
         std::sync::atomic::fence(Ordering::Acquire);
-        let layout = alloc_layout(inner.data_size);
+        let layout = alloc_layout(inner.data_size).expect("layout was valid at construction");
         // SAFETY: header was allocated with this layout, no other refs remain.
         unsafe { dealloc(header.cast(), layout) };
     }
@@ -262,6 +271,11 @@ pub unsafe extern "C" fn hew_weak_upgrade_arc(weak_ptr: *mut u8) -> *mut u8 {
 /// Drop a `Weak<Arc>` reference. Atomically decrements the weak count.
 /// If both strong and weak counts reach zero, frees the allocation.
 ///
+/// # Panics
+///
+/// Panics if the layout computation overflows while deallocating (should
+/// never happen since the layout was validated at construction time).
+///
 /// # Safety
 ///
 /// `weak_ptr` must have been returned by [`hew_arc_downgrade`].
@@ -291,7 +305,7 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
     // the implicit +1 weak ref would still be held). Deallocate.
     std::sync::atomic::fence(Ordering::Acquire);
 
-    let layout = alloc_layout(inner.data_size);
+    let layout = alloc_layout(inner.data_size).expect("layout was valid at construction");
     // SAFETY: header was allocated with this layout, strong=0 and weak=0.
     unsafe { dealloc(header.cast(), layout) };
 }
@@ -388,5 +402,11 @@ mod tests {
 
             hew_weak_drop_arc(weak);
         }
+    }
+
+    #[test]
+    fn arc_layout_overflow_returns_none() {
+        assert!(alloc_layout(usize::MAX).is_none());
+        assert!(alloc_layout(usize::MAX - size_of::<HewArcInner>() + 1).is_none());
     }
 }

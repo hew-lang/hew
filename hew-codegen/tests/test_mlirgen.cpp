@@ -2843,15 +2843,13 @@ fn main() {}
   // not be reported as a handle by the metadata-driven lookup.
   hew::ast::Program programWithCsv;
   if (!loadProgramFromSource(R"(
-import std::data::csv;
+import std::encoding::csv;
 
-fn main() {
-    let _t: csv.Table = csv.Table { rows: Vec::new() };
-}
+fn take(tbl: csv.Table) {}
+fn main() {}
   )",
                              programWithCsv)) {
-    // csv.Table may not be importable in all builds; skip rather than fail.
-    PASS();
+    FAIL("could not load csv program");
     return;
   }
 

@@ -15,10 +15,72 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
+#include <unordered_map>
 
 namespace hew {
+
+namespace {
+
+class DebugTypeEmitter {
+public:
+  DebugTypeEmitter(llvm::DIBuilder &dib, llvm::Module &module)
+      : dib_(dib), module_(module) {}
+
+  llvm::DIType *emit(llvm::Type *type) {
+    std::string key;
+    llvm::raw_string_ostream keyStream(key);
+    if (type) {
+      type->print(keyStream);
+    } else {
+      keyStream << "void";
+    }
+    keyStream.flush();
+
+    auto existing = cache_.find(key);
+    if (existing != cache_.end())
+      return existing->second;
+
+    llvm::DIType *diType = create(type);
+    cache_.emplace(std::move(key), diType);
+    return diType;
+  }
+
+private:
+  llvm::DIType *create(llvm::Type *type) {
+    if (!type || type->isVoidTy())
+      return dib_.createUnspecifiedType("void");
+
+    if (auto *intType = llvm::dyn_cast<llvm::IntegerType>(type)) {
+      if (intType->getBitWidth() == 1)
+        return dib_.createBasicType("bool", 1, llvm::dwarf::DW_ATE_boolean);
+      return dib_.createBasicType("i" + std::to_string(intType->getBitWidth()),
+                                  intType->getBitWidth(), llvm::dwarf::DW_ATE_signed);
+    }
+
+    if (auto *pointerType = llvm::dyn_cast<llvm::PointerType>(type)) {
+      return dib_.createPointerType(dib_.createUnspecifiedType("ptr"),
+                                    module_.getDataLayout().getPointerSizeInBits(
+                                        pointerType->getAddressSpace()));
+    }
+
+    if (auto *structType = llvm::dyn_cast<llvm::StructType>(type)) {
+      std::string structName =
+          structType->hasName() ? structType->getName().str() : std::string("anon");
+      return dib_.createUnspecifiedType(structName);
+    }
+
+    return dib_.createUnspecifiedType("value");
+  }
+
+  llvm::DIBuilder &dib_;
+  llvm::Module &module_;
+  std::unordered_map<std::string, llvm::DIType *> cache_;
+};
+
+} // namespace
 
 /// Demangle a Hew mangled name into a human-readable form.
 ///
@@ -75,8 +137,11 @@ static std::string demangleHewName(llvm::StringRef mangled) {
 
 void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
                    const std::vector<size_t> &lineMap,
-                   const std::unordered_map<std::string, unsigned> &functionDeclLines) {
+                   const std::unordered_map<std::string, unsigned> &functionDeclLines,
+                   const std::unordered_map<std::string, std::vector<std::string>>
+                       &functionParamNames) {
   llvm::DIBuilder dib(module);
+  DebugTypeEmitter debugTypes(dib, module);
 
   // Split source path into directory and filename.
   std::filesystem::path p(sourcePath);
@@ -96,10 +161,6 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
       "",    // flags
       0      // runtime version
   );
-
-  // A generic subroutine type — void function with no parameter types.
-  // Good enough for line-level stepping; richer types come later.
-  llvm::DISubroutineType *funcTy = dib.createSubroutineType(dib.getOrCreateTypeArray({}));
 
   // Walk every function and attach DISubprogram + per-instruction locations.
   for (llvm::Function &fn : module) {
@@ -124,6 +185,12 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
     }
   found_line:
 
+    llvm::SmallVector<llvm::Metadata *, 8> signatureTypes;
+    signatureTypes.push_back(debugTypes.emit(fn.getReturnType()));
+    for (llvm::Argument &arg : fn.args())
+      signatureTypes.push_back(debugTypes.emit(arg.getType()));
+    llvm::DISubroutineType *funcTy = dib.createSubroutineType(dib.getOrCreateTypeArray(signatureTypes));
+
     // Create the subprogram.
     // DW_AT_name gets the human-readable demangled form so debuggers show
     // e.g. "Worker.ping" instead of "_HM4mainT6WorkerF4ping".
@@ -140,6 +207,26 @@ void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
                            llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
 
     fn.setSubprogram(sp);
+
+    if (auto paramIt = functionParamNames.find(std::string(fn.getName()));
+        paramIt != functionParamNames.end() && !fn.empty()) {
+      llvm::DebugLoc paramLoc(
+          llvm::DILocation::get(module.getContext(), startLine, 0, sp));
+      auto insertPoint = fn.getEntryBlock().getFirstInsertionPt();
+      if (insertPoint != fn.getEntryBlock().end()) {
+        for (size_t i = 0; i < paramIt->second.size() && i < fn.arg_size(); ++i) {
+          llvm::Argument *arg = fn.getArg(i);
+          const std::string &paramName = paramIt->second[i];
+          if (paramName.empty())
+            continue;
+          auto *variable = dib.createParameterVariable(
+              sp, paramName, static_cast<unsigned>(i) + 1, diFile, startLine,
+              debugTypes.emit(arg->getType()), true);
+          dib.insertDbgValueIntrinsic(arg, variable, dib.createExpression(), paramLoc,
+                                      insertPoint);
+        }
+      }
+    }
 
     // Re-scope every instruction's debug location under this subprogram.
     for (llvm::BasicBlock &bb : fn) {

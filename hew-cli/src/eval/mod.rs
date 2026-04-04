@@ -15,14 +15,17 @@ pub mod classify;
 pub mod repl;
 pub mod session;
 
-pub use repl::{eval_file, eval_one, run_interactive};
-
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
+    let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
+
     // Check for `-f <file>` flag first.
     if let Some(ref file) = args.file {
         let path = file.display().to_string();
-        if let Err(e) = eval_file(&path) {
+        if let Err(e) = repl::eval_file(&path, timeout) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -31,7 +34,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     if args.expr.is_empty() {
         // Interactive REPL.
-        if let Err(e) = run_interactive() {
+        if let Err(e) = repl::run_interactive(timeout) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -40,7 +43,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     // Evaluate inline expression.
     let expr = args.expr.join(" ");
-    match eval_one(&expr) {
+    match repl::eval_one(&expr, timeout) {
         Ok(output) => {
             if !output.is_empty() {
                 print!("{output}");

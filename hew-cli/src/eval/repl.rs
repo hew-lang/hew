@@ -2,7 +2,9 @@
 
 use super::classify::{self, InputKind, ReplCommand};
 use super::session::Session;
-use std::process::Command;
+use std::time::Duration;
+
+const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Result of evaluating a single input in the REPL.
 #[derive(Debug)]
@@ -19,6 +21,7 @@ pub struct EvalResult {
 #[derive(Debug)]
 pub struct ReplSession {
     session: Session,
+    execution_timeout: Duration,
 }
 
 impl Default for ReplSession {
@@ -31,8 +34,15 @@ impl ReplSession {
     /// Create a new REPL session.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_timeout(DEFAULT_EVAL_TIMEOUT)
+    }
+
+    /// Create a REPL session with a custom execution timeout.
+    #[must_use]
+    pub fn with_timeout(execution_timeout: Duration) -> Self {
         Self {
             session: Session::new(),
+            execution_timeout,
         }
     }
 
@@ -91,7 +101,11 @@ impl ReplSession {
         // re-run inside compile_from_source_checked with correct stage ordering
         // (resolve imports BEFORE typecheck) so that stdlib type metadata is
         // available to the enrichment and codegen passes.
-        match run_inprocess_compiled(parse_result.program, &program.source) {
+        match run_inprocess_compiled(
+            parse_result.program,
+            &program.source,
+            self.execution_timeout,
+        ) {
             Ok(output) => {
                 // On success, persist the input into session state.
                 match &program.kind {
@@ -306,6 +320,7 @@ impl ReplSession {
 fn run_inprocess_compiled(
     program: hew_parser::ast::Program,
     source: &str,
+    timeout: Duration,
 ) -> Result<String, String> {
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
@@ -323,33 +338,32 @@ fn run_inprocess_compiled(
         &crate::compile::CompileOptions::default(),
     )?;
 
-    // Execute the compiled binary and capture its stdout.
-    let run = Command::new(&bin_path)
-        .output()
-        .map_err(|e| format!("cannot execute compiled program: {e}"))?;
-
-    if !run.status.success() {
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        return Err(if stderr.is_empty() {
+    match crate::process::run_binary_with_timeout(&bin_path, timeout) {
+        Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
+            // Normalize Windows \r\n line endings to \n for consistent output.
+            Ok(stdout.replace("\r\n", "\n"))
+        }
+        Ok(crate::process::BinaryRunOutcome::Failed { stderr, .. }) => Err(if stderr.is_empty() {
             "program exited with non-zero status".to_string()
         } else {
-            stderr.to_string()
-        });
+            stderr
+        }),
+        Ok(crate::process::BinaryRunOutcome::Timeout) => Err(format!(
+            "evaluation timed out after {}",
+            crate::process::format_timeout(timeout)
+        )),
+        Err(e) => Err(format!("cannot execute compiled program: {e}")),
     }
-
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    // Normalize Windows \r\n line endings to \n for consistent output.
-    Ok(stdout.replace("\r\n", "\n"))
 }
 
-/// Run the interactive REPL.
+/// Run the interactive REPL with a custom execution timeout.
 ///
 /// # Errors
 ///
 /// Returns an error if readline fails fatally.
-pub fn run_interactive() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
-    let mut session = ReplSession::new();
+    let mut session = ReplSession::with_timeout(timeout);
 
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
     println!("Type :help for help, :quit to exit.\n");
@@ -410,8 +424,8 @@ pub fn run_interactive() -> Result<(), Box<dyn std::error::Error>> {
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_one(expr: &str) -> Result<String, String> {
-    let mut session = ReplSession::new();
+pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, String> {
+    let mut session = ReplSession::with_timeout(timeout);
     let result = session.eval(expr);
     if result.had_errors {
         Err(result.errors.join("\n"))
@@ -425,10 +439,10 @@ pub fn eval_one(expr: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn eval_file(path: &str, timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
 
-    let mut session = ReplSession::new();
+    let mut session = ReplSession::with_timeout(timeout);
     let mut buffer = String::new();
 
     for line in source.lines() {
@@ -455,10 +469,7 @@ pub fn eval_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         let result = session.eval(input);
         if result.had_errors {
-            for err in &result.errors {
-                eprintln!("error: {err}");
-            }
-            return Err(format!("error in file {path}").into());
+            return Err(result.errors.join("\n").into());
         }
         if !result.output.is_empty() {
             print!("{}", result.output);
@@ -471,10 +482,7 @@ pub fn eval_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !input.is_empty() {
         let result = session.eval(input);
         if result.had_errors {
-            for err in &result.errors {
-                eprintln!("error: {err}");
-            }
-            return Err(format!("error in file {path}").into());
+            return Err(result.errors.join("\n").into());
         }
         if !result.output.is_empty() {
             print!("{}", result.output);
@@ -645,8 +653,23 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one("2 * 3");
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT);
         assert_eq!(result.unwrap(), "6\n");
+    }
+
+    #[test]
+    fn eval_timeout_is_reported() {
+        if !require_toolchain() {
+            return;
+        }
+        let mut session = ReplSession::with_timeout(Duration::from_millis(100));
+        let define =
+            session.eval("fn spin_forever() {\n    loop {\n        println(\"spin\");\n    }\n}");
+        assert!(!define.had_errors, "errors: {:?}", define.errors);
+
+        let result = session.eval("spin_forever()");
+        assert!(result.had_errors);
+        assert!(result.errors[0].contains("evaluation timed out after 100ms"));
     }
 
     #[test]
@@ -661,7 +684,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap());
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 }

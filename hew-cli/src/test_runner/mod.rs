@@ -16,12 +16,10 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         crate::args::TestFormat::Text => output::OutputFormat::Text,
         crate::args::TestFormat::Junit => output::OutputFormat::Junit,
     };
-    let timeout = if args.timeout == 0 {
-        eprintln!("Error: --timeout must be at least 1 second");
+    let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
         std::process::exit(1);
-    } else {
-        std::time::Duration::from_secs(args.timeout)
-    };
+    });
     let paths: Vec<String> = if args.paths.is_empty() {
         vec![".".to_string()]
     } else {

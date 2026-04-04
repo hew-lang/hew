@@ -219,11 +219,11 @@ fn run_single_test(
     };
 
     // Execute the compiled binary with a timeout.
-    let run_result = run_binary_with_timeout(&tmp_binary, timeout);
+    let run_result = crate::process::run_binary_with_timeout(&tmp_binary, timeout);
 
     let duration = start.elapsed();
     match run_result {
-        RunOutcome::Success { stdout, .. } => {
+        Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
             if test.should_panic {
                 TestResult {
                     test: test.clone(),
@@ -242,7 +242,7 @@ fn run_single_test(
                 }
             }
         }
-        RunOutcome::Failed { stdout, stderr, .. } => {
+        Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr }) => {
             if test.should_panic {
                 TestResult {
                     test: test.clone(),
@@ -264,89 +264,21 @@ fn run_single_test(
                 }
             }
         }
-        RunOutcome::Timeout => TestResult {
+        Ok(crate::process::BinaryRunOutcome::Timeout) => TestResult {
             test: test.clone(),
             outcome: TestOutcome::Failed(format!(
                 "test timed out after {}",
-                format_timeout(timeout)
+                crate::process::format_timeout(timeout)
             )),
             output: String::new(),
             duration,
         },
-        RunOutcome::Error(e) => TestResult {
+        Err(e) => TestResult {
             test: test.clone(),
             outcome: TestOutcome::Failed(format!("cannot execute test binary: {e}")),
             output: String::new(),
             duration,
         },
-    }
-}
-
-enum RunOutcome {
-    Success { stdout: String },
-    Failed { stdout: String, stderr: String },
-    Timeout,
-    Error(String),
-}
-
-fn format_timeout(timeout: Duration) -> String {
-    if timeout.as_millis() > 0 && timeout.as_millis() < 1_000 {
-        format!("{}ms", timeout.as_millis())
-    } else {
-        format!("{}s", timeout.as_secs())
-    }
-}
-
-fn run_binary_with_timeout(binary: &std::path::Path, timeout: Duration) -> RunOutcome {
-    let mut child = match Command::new(binary)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return RunOutcome::Error(e.to_string()),
-    };
-
-    // Wait with timeout.
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(|mut s| {
-                        let mut buf = String::new();
-                        std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                        buf
-                    })
-                    .unwrap_or_default();
-
-                let stderr = child
-                    .stderr
-                    .take()
-                    .map(|mut s| {
-                        let mut buf = String::new();
-                        std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                        buf
-                    })
-                    .unwrap_or_default();
-
-                if status.success() {
-                    return RunOutcome::Success { stdout };
-                }
-                return RunOutcome::Failed { stdout, stderr };
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return RunOutcome::Timeout;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => return RunOutcome::Error(e.to_string()),
-        }
     }
 }
 

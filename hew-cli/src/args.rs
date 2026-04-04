@@ -277,6 +277,9 @@ pub struct EvalArgs {
     /// Execute file in REPL context.
     #[arg(short = 'f')]
     pub file: Option<PathBuf>,
+    /// Per-evaluation timeout in seconds.
+    #[arg(long, default_value = "30")]
+    pub timeout: u64,
     /// Expression to evaluate (if no -f given).
     pub expr: Vec<String>,
 }

@@ -23,6 +23,9 @@ hew version                       # Print version info
 
 `hew file.hew` is shorthand for `hew build file.hew`.
 
+`hew eval` bounds each native execution to 30 seconds by default; override it
+with `--timeout <seconds>`.
+
 For common import-resolution, type-checking, and build failures, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
 
@@ -114,4 +117,3 @@ To write a profile file on exit, set `HEW_PROF_OUTPUT` to `pprof`, `flat`, or
 HEW_PPROF=auto HEW_PROF_OUTPUT=pprof ./myapp
 # writes hew-profile.pb.gz
 ```
-

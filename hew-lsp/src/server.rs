@@ -4298,8 +4298,8 @@ impl Worker {
         let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
-        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
-        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url, make_doc(circle_source));
@@ -4347,8 +4347,8 @@ impl Worker {
         let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
-        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
-        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url, make_doc(circle_source));
@@ -4382,7 +4382,7 @@ impl Worker {
     #[test]
     fn typecheck_emits_unresolved_import_for_missing_sibling() {
         let main_source = "import shapes::missing_module;\nfn main() { missing_module.foo() }";
-        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+        let main_url = make_test_uri("/fake/project/main.hew");
 
         // Empty documents map — nothing is open.
         let documents: DashMap<Url, DocumentState> = DashMap::new();
@@ -4415,7 +4415,7 @@ impl Worker {
     #[test]
     fn populate_leaves_resolved_items_none_for_missing_module() {
         let main_source = "import shapes::nonexistent;\nfn main() { 0 }";
-        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
+        let main_url = make_test_uri("/fake/project/main.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
@@ -4458,8 +4458,8 @@ impl Worker {
         let main_source = "import shapes::circle;\nfn main() -> f64 { circle.circumference(1.0) }";
         let circle_inmem_source = "pub fn circumference(r: f64) -> f64 { r }";
 
-        let main_url = Url::parse("file:///fake/project/main.hew").unwrap();
-        let circle_url = Url::parse("file:///fake/project/shapes/circle.hew").unwrap();
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url, make_doc(circle_inmem_source));

@@ -5,17 +5,12 @@ fn main() {
         Ok(doc) => {
             let title = doc.get_field("title");
             println(title.get_string());
-            title.free();
-            doc.free();
         },
         Err(err) => println(f"unexpected error: {err}"),
     }
 
     match toml.try_parse("not = [valid toml") {
-        Ok(doc) => {
-            println("unexpected ok");
-            doc.free();
-        },
-        Err(err) => println(err != ""),
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println(true),
     }
 }

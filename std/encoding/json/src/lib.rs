@@ -33,23 +33,6 @@ fn boxed_value(v: serde_json::Value) -> *mut HewJsonValue {
     Box::into_raw(Box::new(HewJsonValue { inner: v }))
 }
 
-std::thread_local! {
-    static LAST_PARSE_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn set_parse_last_error(msg: impl Into<String>) {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
-}
-
-fn clear_parse_last_error() {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = None);
-}
-
-fn get_parse_last_error() -> String {
-    LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
-}
-
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -57,7 +40,6 @@ fn get_parse_last_error() -> String {
 /// Parse a JSON string into a [`HewJsonValue`].
 ///
 /// Returns null on parse error or invalid input.
-/// Call [`hew_json_last_error`] to retrieve the current thread's parse failure.
 ///
 /// # Safety
 ///
@@ -65,32 +47,16 @@ fn get_parse_last_error() -> String {
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJsonValue {
     if json_str.is_null() {
-        set_parse_last_error("invalid JSON input: null pointer");
         return std::ptr::null_mut();
     }
     // SAFETY: json_str is a valid NUL-terminated C string per caller contract.
     let Ok(s) = unsafe { CStr::from_ptr(json_str) }.to_str() else {
-        set_parse_last_error("invalid JSON input: input was not valid UTF-8");
         return std::ptr::null_mut();
     };
     match serde_json::from_str::<serde_json::Value>(s) {
-        Ok(val) => {
-            clear_parse_last_error();
-            boxed_value(val)
-        }
-        Err(err) => {
-            set_parse_last_error(err.to_string());
-            std::ptr::null_mut()
-        }
+        Ok(val) => boxed_value(val),
+        Err(_) => std::ptr::null_mut(),
     }
-}
-
-/// Return the last JSON parse error recorded on the current thread.
-///
-/// Returns an empty string when no parse error has been recorded.
-#[no_mangle]
-pub extern "C" fn hew_json_last_error() -> *mut c_char {
-    str_to_malloc(&get_parse_last_error())
 }
 
 /// Serialize a [`HewJsonValue`] back to a JSON string.
@@ -1266,8 +1232,6 @@ mod tests {
         // SAFETY: testing null-pointer behaviour on all getter functions.
         unsafe {
             assert!(hew_json_parse(std::ptr::null()).is_null());
-            let err = read_and_free_cstr(hew_json_last_error());
-            assert!(!err.is_empty());
             assert_eq!(hew_json_type(std::ptr::null()), -1);
             assert_eq!(hew_json_get_bool(std::ptr::null()), 0);
             assert_eq!(hew_json_get_int(std::ptr::null()), 0);
@@ -1279,31 +1243,6 @@ mod tests {
             assert!(hew_json_object_keys(std::ptr::null()).is_null());
             assert!(hew_json_stringify(std::ptr::null()).is_null());
         }
-    }
-
-    #[test]
-    fn parse_failure_sets_last_error() {
-        let bad = parse("{invalid json}");
-        assert!(bad.is_null());
-
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
-        assert!(!err.is_empty());
-    }
-
-    #[test]
-    fn parse_success_clears_last_error() {
-        assert!(parse("{invalid json}").is_null());
-
-        let ok = parse("{}");
-        assert!(!ok.is_null());
-
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
-        assert!(err.is_empty());
-
-        // SAFETY: ok is a valid pointer returned by parse.
-        unsafe { hew_json_free(ok) };
     }
 
     #[test]

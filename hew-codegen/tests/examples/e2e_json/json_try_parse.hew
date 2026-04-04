@@ -5,17 +5,12 @@ fn main() {
         Ok(val) => {
             let name = val.get_field("name");
             println(name.get_string());
-            name.free();
-            val.free();
         },
         Err(err) => println(f"unexpected error: {err}"),
     }
 
     match json.try_parse("{invalid json}") {
-        Ok(val) => {
-            println("unexpected ok");
-            val.free();
-        },
-        Err(err) => println(err != ""),
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println(true),
     }
 }

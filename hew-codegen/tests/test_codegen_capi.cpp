@@ -598,13 +598,12 @@ static void test_rc_call_boundary_borrow_no_clone() {
   PASS();
 }
 
-// Known gap: Rc<T> param drops are not registered in the callee.
-// This means the callee cannot take ownership via return or storage without
-// a manual .clone() — returning a borrowed Rc param would alias the caller's
-// pointer, causing a double-free when both caller and callee-result are
-// dropped.  This test documents the gap: the callee's Rc param has NO
-// hew_rc_drop registered, matching the "param drops not yet registered"
-// note in MLIRGen.cpp.
+// Invariant: Rc<T> param drops are NOT registered in the callee.
+// The callee's Rc param must have NO hew_rc_drop — function params are
+// borrowed under call-boundary ownership.  If this test starts failing,
+// it means param drop tracking was implemented and the call-boundary
+// contract has changed; update this test and the BorrowedRcReturn
+// diagnostic accordingly.
 static void test_rc_callee_param_no_drop_registered() {
   TEST(rc_callee_param_no_drop_registered);
   auto ast = hewToMsgpack(
@@ -618,12 +617,9 @@ static void test_rc_callee_param_no_drop_registered() {
   std::string mlir(buf.data, buf.len);
   hew_codegen_buffer_free(buf);
 
-  // Find the use_rc function in the MLIR.  It should NOT contain hew_rc_drop
-  // because param drops are not yet registered.
-  // Strategy: find the @use_rc function block and check it has no hew_rc_drop.
+  // Extract the use_rc function body from the MLIR.
   std::string funcMarker = "@\"use_rc\"";
   if (mlir.find(funcMarker) == std::string::npos) {
-    // Try mangled name
     funcMarker = "use_rc";
   }
   auto funcPos = mlir.find(funcMarker);
@@ -631,17 +627,17 @@ static void test_rc_callee_param_no_drop_registered() {
     FAIL("Rc param drop test: could not find use_rc function in MLIR");
     return;
   }
-  // Look for the next function boundary (func.func @) after use_rc
   auto nextFunc = mlir.find("func.func", funcPos + funcMarker.size());
   std::string funcBody = (nextFunc != std::string::npos)
       ? mlir.substr(funcPos, nextFunc - funcPos)
       : mlir.substr(funcPos);
+
+  // Fail-closed: callee body must NOT contain hew_rc_drop for params.
   if (funcBody.find("hew_rc_drop") != std::string::npos) {
-    // If this starts passing, it means param drops were implemented —
-    // update this test to reflect the new contract.
-    printf("  NOTE: callee param drop detected — param drop tracking may have been implemented\n");
+    FAIL("callee body contains hew_rc_drop — param drop tracking may have "
+         "been implemented; update call-boundary contract tests");
+    return;
   }
-  // Regardless, the test documents the current state
   PASS();
 }
 

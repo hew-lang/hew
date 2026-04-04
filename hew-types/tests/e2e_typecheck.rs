@@ -693,10 +693,10 @@ fn range_literal_assigned_to_range_i32() {
     );
 }
 
-/// Returning an Rc parameter as a bare identifier must warn about the
-/// double-free risk under borrow-on-call semantics.
+/// Returning an Rc parameter as a bare identifier must be a fail-closed error
+/// under borrow-on-call semantics (double-free at runtime).
 #[test]
-fn rc_param_return_warns_borrowed_rc() {
+fn rc_param_return_errors_borrowed_rc() {
     // Trailing expression (implicit return) — bare identifier
     let output = typecheck_inline(
         r"
@@ -708,17 +708,17 @@ fn rc_param_return_warns_borrowed_rc() {
     );
     assert!(
         output
-            .warnings
+            .errors
             .iter()
-            .any(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "returning Rc param as trailing expr should emit BorrowedRcReturn warning, got: {:#?}",
-        output.warnings
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "returning Rc param as trailing expr should emit BorrowedRcReturn error, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
     );
 }
 
-/// Explicit `return rc_param` must also trigger the warning.
+/// Explicit `return rc_param` must also trigger the error.
 #[test]
-fn rc_param_explicit_return_warns_borrowed_rc() {
+fn rc_param_explicit_return_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
         fn early(r: Rc<int>, flag: bool) -> Rc<int> {
@@ -732,18 +732,66 @@ fn rc_param_explicit_return_warns_borrowed_rc() {
     );
     assert!(
         output
-            .warnings
+            .errors
             .iter()
-            .any(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
-        "explicit return of Rc param should emit BorrowedRcReturn warning, got: {:#?}",
-        output.warnings
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "explicit return of Rc param should emit BorrowedRcReturn error, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
     );
 }
 
-/// Returning `rc_param.clone()` should NOT trigger the warning — it creates
+/// `break <rc_param>` inside a loop must trigger the error — the broken value
+/// escapes to the enclosing scope with the same aliasing hazard as `return`.
+#[test]
+fn rc_param_break_value_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn escape(r: Rc<int>) -> Rc<int> {
+            loop {
+                break r;
+            }
+        }
+        fn main() {}
+        ",
+    );
+    // Note: the type checker currently types `loop { break v; }` as Unit,
+    // so this also gets a ReturnTypeMismatch.  The BorrowedRcReturn error
+    // must still fire independently of that.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "break-with-value of Rc param should emit BorrowedRcReturn error, got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Block-wrapped return `{ r }` must be caught — `Expr::Block` descent.
+#[test]
+fn rc_param_block_wrapped_return_errors_borrowed_rc() {
+    let output = typecheck_inline(
+        r"
+        fn wrapped(r: Rc<int>) -> Rc<int> {
+            { r }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn),
+        "block-wrapped Rc param return should emit BorrowedRcReturn error, got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Returning `rc_param.clone()` should NOT trigger the error — it creates
 /// an owned copy with an incremented refcount.
 #[test]
-fn rc_param_clone_return_no_warning() {
+fn rc_param_clone_return_no_error() {
     let output = typecheck_inline(
         r"
         fn safe_identity(r: Rc<int>) -> Rc<int> {
@@ -752,19 +800,19 @@ fn rc_param_clone_return_no_warning() {
         fn main() {}
         ",
     );
-    let rc_warnings: Vec<_> = output
-        .warnings
+    let rc_errors: Vec<_> = output
+        .errors
         .iter()
-        .filter(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
         .collect();
     assert!(
-        rc_warnings.is_empty(),
-        "returning rc.clone() should not warn, got: {rc_warnings:#?}",
+        rc_errors.is_empty(),
+        "returning rc.clone() should not error, got: {rc_errors:#?}",
     );
 }
 
 /// Passing an Rc to a function that reads it (borrow) should be clean — no
-/// errors or Rc-related warnings.
+/// `BorrowedRcReturn` errors.
 #[test]
 fn rc_pass_to_fn_borrow_clean() {
     let output = typecheck_inline(
@@ -778,18 +826,30 @@ fn rc_pass_to_fn_borrow_clean() {
         }
         ",
     );
-    assert!(
-        output.errors.is_empty(),
-        "Rc borrow through function call should type-check cleanly, got: {:#?}",
-        output.errors
-    );
-    let rc_warnings: Vec<_> = output
-        .warnings
+    let rc_errors: Vec<_> = output
+        .errors
         .iter()
-        .filter(|w| w.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
         .collect();
     assert!(
-        rc_warnings.is_empty(),
-        "Rc borrow (read-only callee) should not emit BorrowedRcReturn, got: {rc_warnings:#?}",
+        rc_errors.is_empty(),
+        "Rc borrow (read-only callee) should not emit BorrowedRcReturn, got: {rc_errors:#?}",
     );
 }
+
+// ── Known limitations of BorrowedRcReturn (phase 1) ──────────────────────────
+//
+// The following patterns are NOT caught by the current syntactic scanner and
+// are explicitly deferred to a future escape-analysis pass:
+//
+// 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` instantiated with Rc.
+//    Param type resolves to Ty::Var at definition time; would need
+//    monomorphization-time checking.
+//
+// 2. Aggregate escapes: returning `Some(r)`, `(r, 0)`, or struct construction
+//    with an Rc param field.  Requires data-flow tracking through constructors.
+//
+// 3. Rc param stored into a collection without clone: `v.push(r)`.  Requires
+//    tracking ownership transfer through method calls.
+//
+// These are tracked as future escape-analysis work, not phase-1 scope.

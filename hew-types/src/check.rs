@@ -6485,11 +6485,13 @@ impl Checker {
         });
     }
 
-    /// Warn when a function returns an `Rc<T>` parameter as a bare identifier
-    /// without `.clone()`.  Under borrow-on-call semantics the callee does not
-    /// own its Rc params — returning one aliases the caller's pointer, causing
-    /// a double-free when both the caller's local and the callee's return value
-    /// are dropped at their respective scope exits.
+    /// Reject returning an `Rc<T>` parameter as a bare identifier without
+    /// `.clone()`.  Under borrow-on-call semantics the callee does not own its
+    /// Rc params — returning one aliases the caller's pointer, causing a
+    /// double-free when both the caller's local and the callee's return value
+    /// are dropped at their respective scope exits.  This is fail-closed: the
+    /// error fires even though the double-free is a codegen/runtime bug, because
+    /// no correct compilation is possible for this pattern today.
     fn warn_rc_param_return(&mut self, fd: &FnDecl) {
         // Collect names of parameters whose resolved type is Rc<_>.
         let rc_param_names: Vec<&str> = fd
@@ -6514,13 +6516,13 @@ impl Checker {
         self.scan_stmts_for_rc_param_return(&fd.body.stmts, &rc_param_names);
     }
 
-    /// If `expr` is a bare identifier matching one of `rc_params`, emit a
-    /// borrowed-Rc-return warning at `span`.
+    /// If `expr` is a bare identifier matching one of `rc_params` (or a block
+    /// expression whose trailing expression is), emit a fail-closed error.
     fn check_expr_is_rc_param_return(&mut self, expr: &Expr, span: &Span, rc_params: &[&str]) {
-        if let Expr::Identifier(name) = expr {
-            if rc_params.contains(&name.as_str()) {
-                self.warnings.push(TypeError {
-                    severity: crate::error::Severity::Warning,
+        match expr {
+            Expr::Identifier(name) if rc_params.contains(&name.as_str()) => {
+                self.errors.push(TypeError {
+                    severity: crate::error::Severity::Error,
                     kind: TypeErrorKind::BorrowedRcReturn,
                     span: span.clone(),
                     message: format!(
@@ -6539,14 +6541,27 @@ impl Checker {
                     )],
                 });
             }
+            // Descend into block expressions: `{ r }` wraps the identifier
+            // in an Expr::Block whose trailing_expr carries the real value.
+            Expr::Block(blk) => {
+                if let Some(trailing) = &blk.trailing_expr {
+                    self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, rc_params);
+                }
+            }
+            _ => {}
         }
     }
 
-    /// Recursively scan statements for `return <rc_param_ident>`.
+    /// Recursively scan statements for `return <rc_param_ident>`,
+    /// `break <rc_param_ident>`, and nested control-flow bodies.
     fn scan_stmts_for_rc_param_return(&mut self, stmts: &[Spanned<Stmt>], rc_params: &[&str]) {
         for (stmt, _span) in stmts {
             match stmt {
-                Stmt::Return(Some((expr, es))) => {
+                Stmt::Return(Some((expr, es)))
+                | Stmt::Break {
+                    value: Some((expr, es)),
+                    ..
+                } => {
                     self.check_expr_is_rc_param_return(expr, es, rc_params);
                 }
                 Stmt::If {

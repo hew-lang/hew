@@ -337,7 +337,7 @@ pub enum TypeErrorKind {
     BlockingCallInReceiveFn,
     /// Returning an `Rc<T>` parameter without `.clone()` borrows the caller's
     /// reference — the raw pointer is aliased, causing a double-free when both
-    /// caller and callee-result drops fire.
+    /// caller and callee-result drops fire.  Fail-closed: always an error.
     BorrowedRcReturn,
 }
 

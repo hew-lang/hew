@@ -80,6 +80,22 @@
     "strings": {
       "patterns": [
         {
+          "comment": "Byte string literal: b\"bytes\"",
+          "name": "string.quoted.byte.hew",
+          "begin": "b\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#string-escape"
+            }
+          ]
+        },
+        {
+          "comment": "Char literal: 'a', '\\n'",
+          "name": "string.quoted.single.char.hew",
+          "match": "'([^'\\\\]|\\\\(n|r|t|\\\\|'|0|x[0-9a-fA-F]{2}))'"
+        },
+        {
           "comment": "Interpolated string: f\"hello {name}\"",
           "name": "string.interpolated.hew",
           "begin": "f\"",
@@ -229,7 +245,7 @@
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|init|move|receive|spawn|this)\\b"
+          "match": "\\b(actor|init|move|receive|spawn|terminate|this)\\b"
         },
         {
           "comment": "Supervisor",
@@ -244,7 +260,7 @@
         {
           "comment": "Wire protocol keywords",
           "name": "keyword.wire.hew",
-          "match": "\\b(default|deprecated|list|optional|reserved|wire)\\b"
+          "match": "\\b(default|deprecated|optional|reserved|wire)\\b"
         },
         {
           "comment": "State machine keywords",
@@ -540,6 +556,11 @@
           "comment": "Regex match operators",
           "name": "keyword.operator.regex.hew",
           "match": "=~|!~"
+        },
+        {
+          "comment": "Logical operators",
+          "name": "keyword.operator.logical.hew",
+          "match": "&&|\\|\\|"
         },
         {
           "comment": "Comparison operators",

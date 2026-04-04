@@ -587,6 +587,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_memory/rc_rebind"
   "e2e_memory/rc_outlive"
   "e2e_memory/rc_string"
+  "e2e_memory/rc_pass_to_fn"
 )
 
 file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
@@ -635,6 +636,7 @@ add_e2e_file_test(e2e_memory_rc_scope_drop  e2e_memory rc_scope_drop)
 add_e2e_file_test(e2e_memory_rc_rebind      e2e_memory rc_rebind)
 add_e2e_file_test(e2e_memory_rc_outlive     e2e_memory rc_outlive)
 add_e2e_file_test(e2e_memory_rc_string      e2e_memory rc_string)
+add_e2e_file_test(e2e_memory_rc_pass_to_fn  e2e_memory rc_pass_to_fn)
 
 
 # ── Reject tests in non-negative categories ───────────────────────────────────

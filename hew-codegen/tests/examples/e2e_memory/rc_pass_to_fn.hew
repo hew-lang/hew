@@ -1,0 +1,33 @@
+// Test: Rc<T> passed to a function as a borrowed argument.
+// The callee reads the Rc via .get() without cloning — the caller retains
+// ownership and drops the Rc at scope exit.  This exercises the borrow-at-
+// call-boundary contract: no RcCloneOp at the call site, no param drop in
+// the callee, and no double-free.
+fn read_rc(r: Rc<int>) -> int {
+    r.get()
+}
+
+fn read_and_count(r: Rc<int>) -> int {
+    let count = r.strong_count();
+    let val = r.get();
+    val + count
+}
+
+fn main() {
+    let rc = Rc::new(10);
+    // Borrow: callee reads, caller retains ownership
+    println(read_rc(rc));
+    // Rc still alive after callee returns
+    println(rc.strong_count());
+    println(rc.get());
+
+    // Multiple borrows in sequence
+    println(read_and_count(rc));
+    println(read_and_count(rc));
+
+    // Clone + borrow: cloned Rc passed to fn, original unaffected
+    let rc2 = rc.clone();
+    println(read_rc(rc2));
+    println(rc.strong_count());
+    println(rc2.strong_count());
+}

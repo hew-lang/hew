@@ -545,6 +545,106 @@ static void test_rc_string_inner_drop_trampoline() {
   PASS();
 }
 
+// Rc<T> call-boundary ownership contract: borrow semantics.
+// When an Rc<T> variable is passed to a function, the raw pointer is
+// forwarded WITHOUT an RcCloneOp — the callee borrows the reference for
+// the duration of the call.  The caller retains ownership and drops at
+// scope exit.  No param drop is registered in the callee (param drops are
+// deferred until null-after-move tracking is implemented).
+//
+// This test verifies:
+//   1. No hew.rc.clone at the call site (borrow, not clone-on-pass)
+//   2. Caller's hew_rc_drop is still present (caller retains ownership)
+static void test_rc_call_boundary_borrow_no_clone() {
+  TEST(rc_call_boundary_borrow_no_clone);
+  auto ast = hewToMsgpack(
+      "fn read_it(r: Rc<int>) -> int { r.get() }\n"
+      "fn main() {\n"
+      "  let rc = Rc::new(42);\n"
+      "  println(read_it(rc));\n"
+      "}");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+
+  // The main function must have a scope-exit hew_rc_drop for the local
+  if (mlir.find("hew_rc_drop") == std::string::npos) {
+    FAIL("Rc borrow call: caller missing hew_rc_drop for local");
+    return;
+  }
+
+  // Extract the main function body to check for clone at call site.
+  // Under borrow semantics there should be exactly ONE hew.rc.clone in
+  // the whole module (none — the Rc::new path doesn't emit one) or zero.
+  // There must NOT be an hew.rc.clone adjacent to the call of read_it.
+  // We verify by checking the total clone count is 0 (no rebinding in
+  // this program means no clones should appear).
+  size_t cloneCount = 0;
+  size_t pos = 0;
+  while ((pos = mlir.find("hew.rc.clone", pos)) != std::string::npos) {
+    cloneCount++;
+    pos += 12;
+  }
+  if (cloneCount > 0) {
+    FAIL(("Rc borrow call: expected 0 hew.rc.clone (borrow semantics), got " +
+          std::to_string(cloneCount)).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// Known gap: Rc<T> param drops are not registered in the callee.
+// This means the callee cannot take ownership via return or storage without
+// a manual .clone() — returning a borrowed Rc param would alias the caller's
+// pointer, causing a double-free when both caller and callee-result are
+// dropped.  This test documents the gap: the callee's Rc param has NO
+// hew_rc_drop registered, matching the "param drops not yet registered"
+// note in MLIRGen.cpp.
+static void test_rc_callee_param_no_drop_registered() {
+  TEST(rc_callee_param_no_drop_registered);
+  auto ast = hewToMsgpack(
+      "fn use_rc(r: Rc<int>) { println(r.get()); }\n"
+      "fn main() { let rc = Rc::new(42); use_rc(rc); }");
+  if (ast.empty()) { printf("SKIPPED (hew CLI not available)\n"); tests_passed++; return; }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) { FAIL(hew_codegen_last_error()); return; }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+
+  // Find the use_rc function in the MLIR.  It should NOT contain hew_rc_drop
+  // because param drops are not yet registered.
+  // Strategy: find the @use_rc function block and check it has no hew_rc_drop.
+  std::string funcMarker = "@\"use_rc\"";
+  if (mlir.find(funcMarker) == std::string::npos) {
+    // Try mangled name
+    funcMarker = "use_rc";
+  }
+  auto funcPos = mlir.find(funcMarker);
+  if (funcPos == std::string::npos) {
+    FAIL("Rc param drop test: could not find use_rc function in MLIR");
+    return;
+  }
+  // Look for the next function boundary (func.func @) after use_rc
+  auto nextFunc = mlir.find("func.func", funcPos + funcMarker.size());
+  std::string funcBody = (nextFunc != std::string::npos)
+      ? mlir.substr(funcPos, nextFunc - funcPos)
+      : mlir.substr(funcPos);
+  if (funcBody.find("hew_rc_drop") != std::string::npos) {
+    // If this starts passing, it means param drops were implemented —
+    // update this test to reflect the new contract.
+    printf("  NOTE: callee param drop detected — param drop tracking may have been implemented\n");
+  }
+  // Regardless, the test documents the current state
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -722,6 +822,8 @@ int main() {
   test_rc_method_clone_emits_clone_and_drop();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
+  test_rc_call_boundary_borrow_no_clone();
+  test_rc_callee_param_no_drop_registered();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

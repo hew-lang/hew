@@ -10,6 +10,8 @@
 //! `#[no_mangle]` attribute is only applied on `wasm32` to avoid symbol
 //! conflicts with the native mailbox when running tests on the host.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
@@ -35,6 +37,51 @@ macro_rules! wasm_no_mangle {
         $(#[$meta])*
         pub unsafe extern "C" fn $name( $($args)* ) $( -> $ret )? $body
     };
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_MAILBOX_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+#[cfg(test)]
+struct MailboxAllocFailureGuard;
+
+#[cfg(test)]
+impl Drop for MailboxAllocFailureGuard {
+    fn drop(&mut self) {
+        FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
+    }
+}
+
+#[cfg(test)]
+fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(n));
+    MailboxAllocFailureGuard
+}
+
+fn mailbox_malloc(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    {
+        let should_fail = FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| {
+            let remaining = slot.get();
+            if remaining == usize::MAX {
+                return false;
+            }
+            if remaining == 0 {
+                slot.set(usize::MAX);
+                return true;
+            }
+            slot.set(remaining - 1);
+            false
+        });
+        if should_fail {
+            return ptr::null_mut();
+        }
+    }
+
+    // SAFETY: `size` is forwarded to libc unchanged.
+    unsafe { libc::malloc(size) }
 }
 
 // ── Message node ────────────────────────────────────────────────────────
@@ -114,10 +161,14 @@ const _: () = {
 ///
 /// `data` must point to at least `data_size` readable bytes, or be null
 /// when `data_size` is 0.
+///
+/// Returns null on OOM.
 unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) -- POD-like struct, no drop glue.
-    let node = unsafe { libc::malloc(size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
-    assert!(!node.is_null(), "OOM allocating message node");
+    let node = mailbox_malloc(size_of::<HewMsgNode>()).cast::<HewMsgNode>();
+    if node.is_null() {
+        return ptr::null_mut();
+    }
 
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
@@ -128,11 +179,11 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
 
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
-            let buf = libc::malloc(data_size);
-            assert!(
-                !buf.is_null(),
-                "OOM allocating message data ({data_size} bytes)"
-            );
+            let buf = mailbox_malloc(data_size);
+            if buf.is_null() {
+                libc::free(node.cast());
+                return ptr::null_mut();
+            }
             libc::memcpy(buf, data, data_size);
             (*node).data = buf;
         } else {
@@ -261,7 +312,7 @@ unsafe fn replace_node_payload(
     unsafe {
         let mut new_buf: *mut c_void = ptr::null_mut();
         if data_size > 0 && !data.is_null() {
-            new_buf = libc::malloc(data_size);
+            new_buf = mailbox_malloc(data_size);
             if new_buf.is_null() {
                 return false;
             }
@@ -371,6 +422,9 @@ unsafe fn send_user_message(
 
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
     // SAFETY: node was just allocated and is exclusively owned.
     unsafe { (*node).reply_channel = reply_channel };
     mb.user_queue.push_back(node);
@@ -496,16 +550,13 @@ wasm_no_mangle! {
     ///
     /// Returns `0` ([`HewError::Ok`]) on success, `-1`
     /// ([`HewError::ErrMailboxFull`]) if bounded and at capacity (for
-    /// `DropNew`/`Fail`/`Block` policies), or `-4` ([`HewError::ErrClosed`])
-    /// if the mailbox is closed.
+    /// `DropNew`/`Fail`/`Block` policies), `-4` ([`HewError::ErrClosed`])
+    /// if the mailbox is closed, or `-5` ([`HewError::ErrOom`]) if
+    /// allocation fails.
     ///
     /// On WASM, `Block` degrades to `DropNew` because there is no way to
     /// block a single-threaded runtime. `Coalesce` still replaces matching
     /// queued messages and otherwise uses its configured fallback policy.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation for the message node fails (OOM).
     ///
     /// # Safety
     ///
@@ -530,7 +581,8 @@ wasm_no_mangle! {
     /// Send a message with an associated reply channel.
     ///
     /// Identical to [`hew_mailbox_send`] but sets the `reply_channel`
-    /// field on the message node for the ask pattern.
+    /// field on the message node for the ask pattern and returns the same
+    /// status codes, including [`HewError::ErrOom`] on allocation failure.
     ///
     /// # Safety
     ///
@@ -590,6 +642,9 @@ wasm_no_mangle! {
 
         // SAFETY: `data` validity guaranteed by caller.
         let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
+        if node.is_null() {
+            return;
+        }
         mb.sys_queue.push_back(node);
     }
 }
@@ -610,6 +665,9 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool
 
     // SAFETY: stop signals carry no payload.
     let node = unsafe { msg_node_alloc(-1, ptr::null(), 0) };
+    if node.is_null() {
+        return false;
+    }
     if mb.stop_signal_sent {
         // SAFETY: `node` was allocated above and was not published to the queue.
         unsafe { msg_node_free(node) };
@@ -837,6 +895,68 @@ mod tests {
             assert_eq!(*((*node).data.cast::<i32>()), 42);
             msg_node_free(node);
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_returns_err_oom_when_node_alloc_fails() {
+        // SAFETY: test owns the mailbox exclusively; failure injection only
+        // affects allocations performed by this thread.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 7;
+            let _oom = fail_mailbox_alloc_on_nth(0);
+
+            assert_eq!(
+                hew_mailbox_send(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>()),
+                HewError::ErrOom as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert!(hew_mailbox_try_recv(mb).is_null());
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_returns_err_oom_when_payload_alloc_fails() {
+        // SAFETY: test owns the mailbox exclusively; failure injection only
+        // affects allocations performed by this thread.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 9;
+            let _oom = fail_mailbox_alloc_on_nth(1);
+
+            assert_eq!(
+                hew_mailbox_send(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>()),
+                HewError::ErrOom as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert!(hew_mailbox_try_recv(mb).is_null());
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_with_reply_returns_err_oom_without_consuming_reply_channel() {
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            let _oom = fail_mailbox_alloc_on_nth(0);
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(mb, 7, ptr::null_mut(), 0, reply.cast()),
+                HewError::ErrOom as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+            assert!(!crate::reply_channel_wasm::test_replied(reply));
+            assert!(crate::reply_channel_wasm::reply_take(reply).is_null());
+
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
         }
     }

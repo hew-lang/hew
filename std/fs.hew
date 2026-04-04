@@ -5,7 +5,8 @@
 //! # Error Handling
 //!
 //! `IoError` is the stable user-facing error enum for file-system failures.
-//! Use the `try_*` wrappers in this module with `Result<T, IoError>`
+//! Use the `try_*` wrappers in this module—such as `try_read`,
+//! `try_write`, `try_rename`, and `try_copy`—with `Result<T, IoError>`
 //! and the `?` operator for clean error propagation:
 //!
 //! ```
@@ -94,6 +95,16 @@ fn missing_path_error(target: String) -> IoError {
 fn mkdir_error(target: String) -> IoError {
     if exists(target) {
         IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+    } else if missing_parent(target) {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
+    } else {
+        IoError::Other(IO_ERROR_OTHER)
+    }
+}
+
+fn move_copy_error(source: String, target: String) -> IoError {
+    if !exists(source) {
+        IoError::NotFound(IO_ERROR_NOT_FOUND)
     } else if missing_parent(target) {
         IoError::NotFound(IO_ERROR_NOT_FOUND)
     } else {
@@ -336,11 +347,31 @@ pub fn rename(from: String, to: String) -> i32 {
     unsafe { hew_fs_rename(from, to) }
 }
 
+/// Rename or move a file or directory.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_rename(from: String, to: String) -> Result<i32, IoError> {
+    match unsafe { hew_fs_rename(from, to) } {
+        0 => Ok(0 as i32),
+        _ => Err(move_copy_error(from, to)),
+    }
+}
+
 /// Copy a file.
 ///
 /// Returns 0 on success, -1 on error.
 pub fn copy(from: String, to: String) -> i32 {
     unsafe { hew_fs_copy(from, to) }
+}
+
+/// Copy a file.
+///
+/// Lifts the native status code into `Result<i32, IoError>`.
+pub fn try_copy(from: String, to: String) -> Result<i32, IoError> {
+    match unsafe { hew_fs_copy(from, to) } {
+        0 => Ok(0 as i32),
+        _ => Err(move_copy_error(from, to)),
+    }
 }
 
 /// Check whether a path is a directory.

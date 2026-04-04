@@ -1,0 +1,20 @@
+// circle.hew — peer file inside the `shapes` directory module.
+//
+// Defines the Circle type, its Drawable implementation, and a small
+// factory function.  Because this file is a peer of shapes.hew it
+// contributes directly to the `shapes` module: callers never write
+// `shapes.circle.Circle`, they just use `Circle` after `import shapes;`.
+
+pub type Circle {
+    radius: int;
+}
+
+pub fn make_circle(radius: int) -> Circle {
+    Circle { radius: radius }
+}
+
+impl Drawable for Circle {
+    fn draw(c: Circle) -> String {
+        f"Circle(r={c.radius})"
+    }
+}

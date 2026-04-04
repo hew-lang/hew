@@ -1,0 +1,23 @@
+// text_stats.hew — entry file for the `text_stats` directory module.
+//
+// Provides top-level text analysis helpers.  The sub-directory
+// `words/` forms a child module (`text_stats::words`) with
+// word-level utilities.  Importing `text_stats` does NOT
+// automatically import `text_stats::words`; callers must request
+// both explicitly when they want both.
+
+pub fn char_count(text: String) -> int {
+    text.len()
+}
+
+pub fn is_empty(text: String) -> bool {
+    text.len() == 0
+}
+
+pub fn truncate(text: String, max_len: int) -> String {
+    if text.len() <= max_len {
+        text
+    } else {
+        text.slice(0, max_len) + "..."
+    }
+}

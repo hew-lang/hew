@@ -1,0 +1,18 @@
+// distance.hew — peer file inside the `geo` directory module.
+//
+// Uses Point from geo.hew — no import needed because peer files share the
+// same module namespace.  Both abs_int and manhattan become part of `geo`.
+
+pub fn abs_int(n: int) -> int {
+    if n < 0 { -n } else { n }
+}
+
+pub fn manhattan(a: Point, b: Point) -> int {
+    abs_int(a.x - b.x) + abs_int(a.y - b.y)
+}
+
+pub fn chebyshev(a: Point, b: Point) -> int {
+    let dx = abs_int(a.x - b.x);
+    let dy = abs_int(a.y - b.y);
+    if dx > dy { dx } else { dy }
+}

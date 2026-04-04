@@ -1,0 +1,26 @@
+// 01_shapes — directory module with peer-file types and trait impls.
+//
+// `import shapes;` merges shapes.hew + circle.hew + rectangle.hew into one
+// namespace.  The Drawable trait is defined in shapes.hew; Circle and
+// Rectangle are defined in their own peer files.  All names are accessible
+// unqualified (Circle, Rectangle, Drawable) *and* via the module prefix
+// (shapes.make_circle, shapes.render).
+//
+// Run:   hew run   examples/multifile/01_shapes/main.hew
+// Check: hew check examples/multifile/01_shapes/main.hew
+
+import shapes;
+
+fn main() {
+    let c = shapes.make_circle(5);
+    let r = shapes.make_rectangle(4, 3);
+
+    // Qualified access to the render helper defined in shapes.hew.
+    println(shapes.render(c));
+    println(shapes.render(r));
+
+    // The draw() method also works unqualified because Circle and Rectangle
+    // are in scope after the bare `import shapes;`.
+    let big = shapes.make_circle(100);
+    println(big.draw());
+}

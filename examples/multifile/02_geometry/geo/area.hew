@@ -1,0 +1,11 @@
+// area.hew — peer file inside the `geo` directory module.
+//
+// Defines bounding-box area given two corners.  Uses Point, which is
+// defined in geo.hew.  No import needed — peer files see each other's
+// pub declarations.
+
+pub fn bounding_area(top_left: Point, bottom_right: Point) -> int {
+    let w = abs_int(bottom_right.x - top_left.x);
+    let h = abs_int(bottom_right.y - top_left.y);
+    w * h
+}

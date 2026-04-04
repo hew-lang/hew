@@ -52,8 +52,15 @@ impl Session {
     /// - Bindings go inside `main()` before the new input.
     /// - Expressions are wrapped in `println()` for auto-printing.
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_program(&self, input: &str) -> SyntheticProgram {
         let kind = classify::classify(input);
+        self.build_program_with_kind(input, kind)
+    }
+
+    /// Build a complete Hew program from session state plus a known input kind.
+    #[must_use]
+    pub fn build_program_with_kind(&self, input: &str, kind: InputKind) -> SyntheticProgram {
         let mut source = String::new();
 
         // Emit prior items.
@@ -182,11 +189,27 @@ mod tests {
     }
 
     #[test]
+    fn doc_commented_item_input() {
+        let session = Session::new();
+        let prog = session.build_program("/// Docs\nfn foo() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("/// Docs\nfn foo() -> i32 { 42 }"));
+    }
+
+    #[test]
     fn statement_input() {
         let session = Session::new();
         let prog = session.build_program("let x = 42;");
         assert_eq!(prog.kind, InputKind::Statement);
         assert!(prog.source.contains("let x = 42;"));
+    }
+
+    #[test]
+    fn assignment_input_is_statement() {
+        let session = Session::new();
+        let prog = session.build_program("value = value + 1;");
+        assert_eq!(prog.kind, InputKind::Statement);
+        assert!(prog.source.contains("value = value + 1;"));
     }
 
     #[test]

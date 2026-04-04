@@ -15,23 +15,12 @@ import std::fs;
 
 import std::os;
 
+// hew_bytes_to_string converts a stdlib `bytes` value to a String.
+// Declared here because it is the only non-stdlib FFI needed: conn.read()
+// returns the raw byte vector before NUL stripping, which is required for
+// accurate byte counting and correct EOF detection.
 extern "C" {
-    fn hew_bytes_to_string(data: Vec<i32>) -> String;
-    fn hew_vec_len(v: Vec<i32>) -> i32;
-    fn hew_string_char_at(s: String, index: i32) -> i32;
-    fn hew_tcp_read(conn: Connection) -> Vec<i32>;
-    fn hew_tcp_write(conn: Connection, data: Vec<i32>);
-}
-
-fn write_text(conn: Connection, text: String) {
-    let data: Vec<i32> = Vec::new();
-    var i: i32 = 0;
-    let n = text.len();
-    while i < n {
-        data.push(unsafe { hew_string_char_at(text, i) });
-        i = i + 1;
-    }
-    unsafe { hew_tcp_write(conn, data) };
+    fn hew_bytes_to_string(data: bytes) -> String;
 }
 
 // Parse host and path from an http:// URL.
@@ -125,11 +114,7 @@ fn main() {
         panic(err);
     }
     // Build and send HTTP request
-    write_text(conn, "GET ");
-    write_text(conn, path);
-    write_text(conn, " HTTP/1.0\r\nHost: ");
-    write_text(conn, host);
-    write_text(conn, "\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    conn.write_string(f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     println("  Request sent");
     println("");
 
@@ -137,18 +122,18 @@ fn main() {
     let reporter = spawn (bytes_so_far: i32) => {
         print(f"  Progress: {bytes_so_far} bytes received");
     };
-    // Read response in chunks
+    // Read response in chunks; count raw bytes before any NUL stripping.
     var total_bytes: i32 = 0;
     var full_response: String = "";
     var reading = true;
     while reading {
-        let chunk_bytes = unsafe { hew_tcp_read(conn) };
-        let chunk_len = unsafe { hew_vec_len(chunk_bytes) };
+        let raw = conn.read();
+        let chunk_len = raw.len() as i32;
         if chunk_len == 0 {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
-            let chunk = unsafe { hew_bytes_to_string(chunk_bytes) };
+            let chunk = unsafe { hew_bytes_to_string(raw) };
             full_response = full_response + chunk;
             reporter.send(total_bytes);
         }

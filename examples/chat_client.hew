@@ -4,22 +4,14 @@ import std::os;
 
 import std::fs;
 
+// hew_bytes_to_string is used inside the actor because conn.read_string()
+// does not lower correctly through the MLIR actor-field dispatch path on
+// the current compiler (actorFieldTypes lookup miss → coerceType failure).
+// Using conn.read() → bytes → hew_bytes_to_string avoids the two-step
+// MLIR lowering that triggers the bug.  The bytes type matches the stdlib
+// surface; no Vec<i32> or other internal types appear here.
 extern "C" {
-    fn hew_bytes_to_string(data: Vec<i32>) -> String;
-    fn hew_string_char_at(s: String, index: i32) -> i32;
-    fn hew_tcp_read(conn: Connection) -> Vec<i32>;
-    fn hew_tcp_write(conn: Connection, data: Vec<i32>);
-}
-
-fn write_text(conn: Connection, text: String) {
-    let data: Vec<i32> = Vec::new();
-    var i: i32 = 0;
-    let n = text.len();
-    while i < n {
-        data.push(unsafe { hew_string_char_at(text, i) });
-        i = i + 1;
-    }
-    unsafe { hew_tcp_write(conn, data) };
+    fn hew_bytes_to_string(data: bytes) -> String;
 }
 
 actor ServerReader {
@@ -28,8 +20,8 @@ actor ServerReader {
     receive fn start(unused: i32) {
         var running = true;
         while running {
-            let msg_bytes = unsafe { hew_tcp_read(conn) };
-            let msg = unsafe { hew_bytes_to_string(msg_bytes) };
+            let raw = conn.read();
+            let msg = unsafe { hew_bytes_to_string(raw) };
             if msg.contains("__HEW_TCP_DISCONNECT__") {
                 println("[client] server disconnected");
                 running = false;
@@ -73,7 +65,7 @@ fn main() {
             println("[client] disconnected");
         } else {
             let outbound = f"{name}: {line}";
-            write_text(conn, outbound);
+            conn.write_string(outbound);
         }
     }
     sleep_ms(50);

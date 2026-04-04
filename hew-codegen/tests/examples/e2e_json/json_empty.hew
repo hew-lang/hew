@@ -7,29 +7,23 @@ fn main() {
     println(obj.stringify());
     let k = obj.keys();
     println(k.array_len());
-    k.free();
-    obj.free();
 
     // ── Empty array ────────────────────────────────────────────
     let arr = json.parse("[]");
     println(arr.stringify());
     println(arr.array_len());
-    arr.free();
 
     // ── Empty string value ─────────────────────────────────────
     let s = json.from_string("");
     println(s.type_of());
     println(s.get_string());
     println(s.stringify());
-    s.free();
 
     // ── Object with empty string field ─────────────────────────
     let obj2 = json.parse("{\"empty\":\"\"}");
     println(obj2.stringify());
     let ef = obj2.get_field("empty");
     println(ef.get_string());
-    ef.free();
-    obj2.free();
 
     // ── Object keys ────────────────────────────────────────────
     let obj3 = json.parse("{\"alpha\":1,\"beta\":2}");
@@ -39,22 +33,15 @@ fn main() {
     let k1 = keys.array_get(1);
     println(k0.get_string());
     println(k1.get_string());
-    k0.free();
-    k1.free();
-    keys.free();
-    obj3.free();
 
     // ── Nested empty containers ────────────────────────────────
     let nested = json.parse("{\"a\":[],\"b\":{}}");
     let ea = nested.get_field("a");
     println(ea.type_of());
     println(ea.array_len());
-    ea.free();
     let eb = nested.get_field("b");
     println(eb.type_of());
     println(eb.stringify());
-    eb.free();
-    nested.free();
 
     println("=== Done ===");
 }

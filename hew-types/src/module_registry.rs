@@ -353,6 +353,11 @@ mod tests {
     #[test]
     fn drop_types_accumulated() {
         let mut reg = registry();
+        reg.load("std::encoding::json").unwrap();
+        assert!(
+            reg.is_drop_type("json.Value"),
+            "json.Value should be a drop type"
+        );
         reg.load("std::net::http").unwrap();
         assert!(
             reg.is_drop_type("http.Request"),
@@ -367,6 +372,12 @@ mod tests {
     #[test]
     fn drop_funcs_accumulated() {
         let mut reg = registry();
+        reg.load("std::encoding::json").unwrap();
+        assert_eq!(
+            reg.drop_func_for("json.Value"),
+            Some("hew_json_free"),
+            "json.Value drop func should be hew_json_free"
+        );
         reg.load("std::net::http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
@@ -379,7 +390,7 @@ mod tests {
             "http.Server drop func should be hew_http_server_close"
         );
         let all = reg.all_drop_funcs();
-        assert!(all.len() >= 2, "should have at least 2 drop funcs");
+        assert!(all.len() >= 3, "should have at least 3 drop funcs");
     }
 
     #[test]

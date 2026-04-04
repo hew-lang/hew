@@ -7,22 +7,18 @@ fn main() {
     // Access string field
     let name = val.get_field("name");
     println(name.get_string());
-    name.free();
 
     // Access integer field
     let ver = val.get_field("version");
     println(ver.get_int());
-    ver.free();
 
     // Access boolean field
     let active = val.get_field("active");
     println(active.get_bool());
-    active.free();
 
     // Stringify the whole object
     let s = val.stringify();
     println(s);
 
-    val.free();
     println("=== Done ===");
 }

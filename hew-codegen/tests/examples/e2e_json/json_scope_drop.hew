@@ -1,0 +1,19 @@
+// Test: imported json.Value locals are dropped automatically at scope exit.
+import std::encoding::json;
+
+fn print_name(raw: String) {
+    let root = json.parse(raw);
+    let name = root.get_field("name");
+    println(name.get_string());
+}
+
+fn main() {
+    {
+        let meta = json.parse("{\"count\":2}");
+        let count = meta.get_field("count");
+        println(count.get_int());
+    }
+
+    print_name("{\"name\":\"Hew\"}");
+    println("=== Done ===");
+}

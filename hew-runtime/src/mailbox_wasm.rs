@@ -209,6 +209,12 @@ pub struct HewMailboxWasm {
     high_water_mark: i64,
     /// Whether the mailbox has been closed.
     closed: bool,
+    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "field is only used by wasm-only stop semantics")
+    )]
+    stop_signal_sent: bool,
 }
 
 /// Update the high-water mark after incrementing `count`.
@@ -393,6 +399,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -414,6 +421,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -446,6 +454,7 @@ wasm_no_mangle! {
             coalesce_fallback: HewOverflowPolicy::DropOld,
             high_water_mark: 0,
             closed: false,
+            stop_signal_sent: false,
         }))
     }
 }
@@ -585,6 +594,33 @@ wasm_no_mangle! {
     }
 }
 
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "helper is only referenced by wasm-only actor stop code"
+    )
+)]
+pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool {
+    if mb.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &mut *mb };
+
+    // SAFETY: stop signals carry no payload.
+    let node = unsafe { msg_node_alloc(-1, ptr::null(), 0) };
+    if mb.stop_signal_sent {
+        // SAFETY: `node` was allocated above and was not published to the queue.
+        unsafe { msg_node_free(node) };
+        return false;
+    }
+
+    mb.stop_signal_sent = true;
+    mb.sys_queue.push_back(node);
+    true
+}
+
 // ── Receive (consumer side) ─────────────────────────────────────────────
 
 wasm_no_mangle! {
@@ -686,20 +722,6 @@ wasm_no_mangle! {
 
 // ── Close ───────────────────────────────────────────────────────────────
 
-pub(crate) unsafe fn mailbox_close_once(mb: *mut HewMailboxWasm) -> bool {
-    if mb.is_null() {
-        return false;
-    }
-    // WASM divergence (intentional): native uses AtomicBool to coordinate
-    // cross-thread visibility. WASM is single-threaded, so plain bool reads and
-    // writes are sufficient.
-    // SAFETY: Caller guarantees `mb` is valid.
-    let was_closed = unsafe { (*mb).closed };
-    // SAFETY: Caller guarantees `mb` is valid.
-    unsafe { (*mb).closed = true };
-    !was_closed
-}
-
 wasm_no_mangle! {
     /// Close the mailbox, rejecting future sends.
     ///
@@ -707,8 +729,14 @@ wasm_no_mangle! {
     ///
     /// `mb` must be a valid mailbox pointer.
     pub unsafe extern "C" fn hew_mailbox_close(mb: *mut HewMailboxWasm) {
-        // SAFETY: Caller guarantees `mb` is a valid mailbox pointer.
-        let _ = unsafe { mailbox_close_once(mb) };
+        if !mb.is_null() {
+            // WASM divergence (intentional): native writes `closed` as
+            // `AtomicBool::store(true, Ordering::Release)` to make the flag
+            // visible across threads.  WASM is single-threaded — there is no
+            // concurrent reader — so a plain store is equivalent.
+            // SAFETY: Caller guarantees `mb` is valid.
+            unsafe { (*mb).closed = true };
+        }
     }
 }
 

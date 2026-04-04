@@ -1111,12 +1111,10 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid and remains valid throughout this function.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
-    let just_closed = if mb.is_null() {
-        false
-    } else {
+    if !mb.is_null() {
         // SAFETY: Mailbox is valid for the actor's lifetime.
-        unsafe { mailbox::mailbox_close(mb) }
-    };
+        unsafe { mailbox::mailbox_close(mb) };
+    }
 
     if a.actor_state
         .compare_exchange(
@@ -1133,15 +1131,23 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         return;
     }
 
-    if !just_closed {
+    let state = a.actor_state.load(Ordering::Acquire);
+    if state == HewActorState::Stopped as i32
+        || state == HewActorState::Crashed as i32
+        || state == HewActorState::Stopping as i32
+    {
         return;
     }
 
-    // If actor is still RUNNABLE or RUNNING, let it drain naturally.
-    // Enqueue a sys message (-1) so the dispatch function sees the stop signal.
-    // SAFETY: Mailbox is valid for the actor's lifetime.
-    unsafe {
-        mailbox::hew_mailbox_send_sys(mb, -1, ptr::null_mut(), 0);
+    if !mb.is_null() {
+        // If actor is still RUNNABLE or RUNNING, let it drain naturally.
+        // Enqueue a sys message (-1) so the dispatch function sees the stop
+        // signal. Track this separately from `closed` so close→stop still
+        // delivers exactly one shutdown message.
+        // SAFETY: Mailbox is valid for the actor's lifetime.
+        unsafe {
+            let _ = mailbox::mailbox_send_stop_sys_once(mb);
+        }
     }
 }
 
@@ -2436,12 +2442,10 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
-    let just_closed = if a.mailbox.is_null() {
-        false
-    } else {
+    if !a.mailbox.is_null() {
         // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe { crate::mailbox_wasm::mailbox_close_once(a.mailbox.cast()) }
-    };
+        unsafe { hew_mailbox_close(a.mailbox) };
+    }
 
     if a.actor_state
         .compare_exchange(
@@ -2457,14 +2461,20 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         return;
     }
 
-    if !just_closed {
+    let state = a.actor_state.load(Ordering::Acquire);
+    if state == HewActorState::Stopped as i32
+        || state == HewActorState::Crashed as i32
+        || state == HewActorState::Stopping as i32
+    {
         return;
     }
 
     // Send a system shutdown message (-1).
     if !a.mailbox.is_null() {
         // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe { hew_mailbox_send_sys(a.mailbox, -1, ptr::null_mut(), 0) };
+        unsafe {
+            let _ = crate::mailbox_wasm::mailbox_send_stop_sys_once(a.mailbox.cast());
+        }
     }
 }
 
@@ -2500,6 +2510,43 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
     ) {
+    }
+
+    fn make_runnable_stop_test_actor() -> (*mut HewActor, *mut HewMailbox) {
+        // SAFETY: test helper fully owns the returned actor/mailbox and never publishes them.
+        unsafe {
+            let mailbox = mailbox::hew_mailbox_new();
+            assert!(!mailbox.is_null());
+            let actor = Box::into_raw(Box::new(HewActor {
+                sched_link_next: AtomicPtr::new(ptr::null_mut()),
+                id: 1,
+                pid: 0,
+                state: ptr::null_mut(),
+                state_size: 0,
+                dispatch: Some(noop_dispatch),
+                mailbox: mailbox.cast(),
+                actor_state: AtomicI32::new(HewActorState::Runnable as i32),
+                budget: AtomicI32::new(HEW_MSG_BUDGET),
+                init_state: ptr::null_mut(),
+                init_state_size: 0,
+                coalesce_key_fn: None,
+                terminate_fn: None,
+                terminate_called: AtomicBool::new(false),
+                terminate_finished: AtomicBool::new(false),
+                error_code: AtomicI32::new(0),
+                supervisor: ptr::null_mut(),
+                supervisor_child_index: -1,
+                priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+                reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+                idle_count: AtomicI32::new(0),
+                hibernation_threshold: AtomicI32::new(0),
+                hibernating: AtomicI32::new(0),
+                prof_messages_processed: AtomicU64::new(0),
+                prof_processing_time_ns: AtomicU64::new(0),
+                arena: ptr::null_mut(),
+            }));
+            (actor, mailbox)
+        }
     }
 
     #[test]
@@ -2561,37 +2608,7 @@ mod tests {
 
     #[test]
     fn stop_runnable_actor_enqueues_at_most_one_shutdown_signal() {
-        // SAFETY: construct a minimal actor with a live mailbox for stop-path testing.
-        let mailbox = unsafe { mailbox::hew_mailbox_new() };
-        assert!(!mailbox.is_null());
-        let actor = Box::into_raw(Box::new(HewActor {
-            sched_link_next: AtomicPtr::new(ptr::null_mut()),
-            id: 1,
-            pid: 0,
-            state: ptr::null_mut(),
-            state_size: 0,
-            dispatch: Some(noop_dispatch),
-            mailbox: mailbox.cast(),
-            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
-            budget: AtomicI32::new(HEW_MSG_BUDGET),
-            init_state: ptr::null_mut(),
-            init_state_size: 0,
-            coalesce_key_fn: None,
-            terminate_fn: None,
-            terminate_called: AtomicBool::new(false),
-            terminate_finished: AtomicBool::new(false),
-            error_code: AtomicI32::new(0),
-            supervisor: ptr::null_mut(),
-            supervisor_child_index: -1,
-            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-            idle_count: AtomicI32::new(0),
-            hibernation_threshold: AtomicI32::new(0),
-            hibernating: AtomicI32::new(0),
-            prof_messages_processed: AtomicU64::new(0),
-            prof_processing_time_ns: AtomicU64::new(0),
-            arena: ptr::null_mut(),
-        }));
+        let (actor, mailbox) = make_runnable_stop_test_actor();
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
         unsafe {
@@ -2602,6 +2619,42 @@ mod tests {
                 1,
                 "only the first stop call should enqueue a shutdown system message"
             );
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn close_then_stop_runnable_actor_enqueues_shutdown_signal_once() {
+        let (actor, mailbox) = make_runnable_stop_test_actor();
+
+        // SAFETY: actor/mailbox pointers are valid for the duration of the test.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(
+                (*actor).actor_state.load(Ordering::Acquire),
+                HewActorState::Runnable as i32,
+                "close should leave runnable actors runnable while only closing the mailbox"
+            );
+            assert!(
+                mailbox::mailbox_is_closed(mailbox),
+                "close must mark the mailbox closed before stop is requested"
+            );
+
+            hew_actor_stop(actor);
+            assert_eq!(
+                mailbox::hew_mailbox_sys_len(mailbox),
+                1,
+                "stop after close must still enqueue one shutdown system message"
+            );
+
+            hew_actor_stop(actor);
+            assert_eq!(
+                mailbox::hew_mailbox_sys_len(mailbox),
+                1,
+                "repeated stop after close must not accumulate shutdown system messages"
+            );
+
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
         }

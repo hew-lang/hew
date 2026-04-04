@@ -356,6 +356,8 @@ pub struct HewMailbox {
     coalesce_fallback: HewOverflowPolicy,
     /// Whether the mailbox has been closed.
     closed: std::sync::atomic::AtomicBool,
+    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
+    stop_signal_sent: std::sync::atomic::AtomicBool,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -412,6 +414,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         closed: std::sync::atomic::AtomicBool::new(false),
+        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -448,6 +451,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         closed: std::sync::atomic::AtomicBool::new(false),
+        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -493,6 +497,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         closed: std::sync::atomic::AtomicBool::new(false),
+        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -530,6 +535,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         closed: std::sync::atomic::AtomicBool::new(false),
+        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
@@ -995,6 +1001,11 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
         return;
     }
 
+    // SAFETY: `node` is freshly allocated and owned by this mailbox send.
+    unsafe { enqueue_sys_node(mb, node) };
+}
+
+unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     // SAFETY: `node` was just allocated with next == null.
     unsafe { mb.sys_queue.enqueue(node) };
     let sys_queue_len = mb.sys_count.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1002,6 +1013,36 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
         eprintln!("[mailbox] warning: system queue has {sys_queue_len} messages (mailbox {mb:p})");
     }
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
+    if mb.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &*mb };
+
+    // SAFETY: stop signals carry no payload.
+    let node = unsafe { msg_node_alloc(-1, ptr::null(), 0, ptr::null_mut()) };
+    if node.is_null() {
+        set_last_error("hew_actor_stop: failed to enqueue shutdown system message");
+        eprintln!("hew_actor_stop: failed to enqueue shutdown system message");
+        return false;
+    }
+
+    if mb
+        .stop_signal_sent
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // SAFETY: `node` was allocated above and was not published to the queue.
+        unsafe { hew_msg_node_free(node) };
+        return false;
+    }
+
+    // SAFETY: `node` is freshly allocated and now owned by the system queue.
+    unsafe { enqueue_sys_node(mb, node) };
+    true
 }
 
 /// Policy-aware push into the user queue.
@@ -1051,15 +1092,13 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
 /// # Safety
 ///
 /// `mb` must be a valid mailbox pointer.
-pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) -> bool {
+pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-    let was_closed = mb.closed.swap(true, Ordering::AcqRel);
-    if !was_closed {
+    if !mb.closed.swap(true, Ordering::AcqRel) {
         // Wake any senders blocked on a full mailbox.
         mb.not_full.notify_all();
     }
-    !was_closed
 }
 
 /// Returns `true` if the mailbox has been closed.

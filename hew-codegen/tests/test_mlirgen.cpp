@@ -1882,6 +1882,263 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Struct with all-primitive fields does NOT get encode wrappers unless
+//       they are actually called (demand-gating).
+// ============================================================================
+static void test_prim_struct_no_serial_call_emits_no_wrappers() {
+  TEST(prim_struct_no_serial_call_emits_no_wrappers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  // Point has all-primitive fields, but main() never calls Point.to_json /
+  // Point.from_json / etc.  The demand-gate must suppress all 6 wrappers.
+  auto module = generateMLIR(ctx, R"(
+type Point {
+    x: i64;
+    y: i64;
+}
+fn main() -> i64 {
+    let p = Point { x: 1, y: 2 };
+    p.x
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  // The generated names are mangled (e.g. "_HT5PointF7to_json") so we match
+  // by substring rather than exact name.
+  bool foundAnyWrapper = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Point"))
+      return;
+    if (n.contains("to_json") || n.contains("from_json") ||
+        n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundAnyWrapper = true;
+  });
+  if (foundAnyWrapper) {
+    FAIL("a Point encode/decode wrapper was emitted despite no call-site (demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Struct encode wrapper IS generated on demand when called.
+//
+// We bypass the hew CLI (type-checker) here because the struct serial wrappers
+// are codegen-only — the type-checker does not know about them.  We construct
+// the AST directly and verify that the MLIR demand-gate fires the first time
+// an ExprMethodCall with receiver = Identifier("Metric") and method = "to_json"
+// is encountered, and does NOT fire for the yaml/toml variants that are never
+// referenced.
+// ============================================================================
+static void test_prim_struct_serial_call_emits_demanded_wrapper() {
+  TEST(prim_struct_serial_call_emits_demanded_wrapper);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // Build AST directly:
+  //
+  //   type Metric { value: i64; count: i32; }
+  //   fn main() -> i64 {
+  //       let m = Metric { value: 42, count: 1 };
+  //       let _json = Metric.to_json(m);      // demands to_json wrapper
+  //       let _from = Metric.from_json(_json); // demands from_json wrapper
+  //       0
+  //   }
+
+  using namespace hew::ast;
+
+  auto mkSpan = []() -> Span { return {0, 0}; };
+  auto mkNamedType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr te;
+    te.kind = TypeNamed{name, std::nullopt};
+    return {std::move(te), mkSpan()};
+  };
+  auto mkLit = [&](int64_t v) -> std::unique_ptr<Spanned<Expr>> {
+    Expr e;
+    ExprLiteral lit;
+    lit.lit = LitInteger{v};
+    e.kind = std::move(lit);
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
+  };
+  auto mkIdent = [&](const std::string &name) -> std::unique_ptr<Spanned<Expr>> {
+    Expr e;
+    e.kind = ExprIdentifier{name};
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), mkSpan()});
+  };
+  auto mkPatIdent = [&](const std::string &name) -> Spanned<Pattern> {
+    Pattern p;
+    p.kind = PatIdentifier{name};
+    return {std::move(p), mkSpan()};
+  };
+
+  // type Metric { value: i64; count: i32; }
+  TypeDecl metricDecl;
+  metricDecl.visibility = Visibility::Pub;
+  metricDecl.kind = TypeDeclKind::Struct;
+  metricDecl.name = "Metric";
+  {
+    TypeBodyItemField fValue;
+    fValue.name = "value";
+    fValue.ty = mkNamedType("i64");
+    TypeBodyItem bi;
+    bi.kind = std::move(fValue);
+    metricDecl.body.push_back(std::move(bi));
+  }
+  {
+    TypeBodyItemField fCount;
+    fCount.name = "count";
+    fCount.ty = mkNamedType("i32");
+    TypeBodyItem bi;
+    bi.kind = std::move(fCount);
+    metricDecl.body.push_back(std::move(bi));
+  }
+
+  // fn main() -> i64 { ... }
+  FnDecl mainDecl;
+  mainDecl.is_async = false;
+  mainDecl.is_generator = false;
+  mainDecl.visibility = Visibility::Pub;
+  mainDecl.is_pure = false;
+  mainDecl.name = "main";
+  mainDecl.return_type = mkNamedType("i64");
+
+  // let m = Metric { value: 42, count: 1 }
+  {
+    Expr structInitExpr;
+    ExprStructInit si;
+    si.name = "Metric";
+    si.fields.emplace_back("value", mkLit(42));
+    si.fields.emplace_back("count", mkLit(1));
+    structInitExpr.kind = std::move(si);
+
+    Stmt letStmt;
+    StmtLet sl;
+    sl.pattern = mkPatIdent("m");
+    sl.ty = std::nullopt;
+    sl.value = Spanned<Expr>{std::move(structInitExpr), mkSpan()};
+    letStmt.kind = std::move(sl);
+    mainDecl.body.stmts.push_back(
+        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
+  }
+
+  // let _json = Metric.to_json(m)
+  {
+    Expr mcExpr;
+    ExprMethodCall mc;
+    mc.receiver = mkIdent("Metric");
+    mc.method = "to_json";
+    CallArgPositional arg;
+    arg.expr = mkIdent("m");
+    mc.args.push_back(std::move(arg));
+    mcExpr.kind = std::move(mc);
+
+    Stmt letStmt;
+    StmtLet sl;
+    sl.pattern = mkPatIdent("_json");
+    sl.ty = std::nullopt;
+    sl.value = Spanned<Expr>{std::move(mcExpr), mkSpan()};
+    letStmt.kind = std::move(sl);
+    mainDecl.body.stmts.push_back(
+        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
+  }
+
+  // let _from = Metric.from_json(_json)
+  {
+    Expr mcExpr;
+    ExprMethodCall mc;
+    mc.receiver = mkIdent("Metric");
+    mc.method = "from_json";
+    CallArgPositional arg;
+    arg.expr = mkIdent("_json");
+    mc.args.push_back(std::move(arg));
+    mcExpr.kind = std::move(mc);
+
+    Stmt letStmt;
+    StmtLet sl;
+    sl.pattern = mkPatIdent("_from");
+    sl.ty = std::nullopt;
+    sl.value = Spanned<Expr>{std::move(mcExpr), mkSpan()};
+    letStmt.kind = std::move(sl);
+    mainDecl.body.stmts.push_back(
+        std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(letStmt), mkSpan()}));
+  }
+
+  // trailing expr: 0
+  mainDecl.body.trailing_expr =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{[&] {
+        Expr e;
+        ExprLiteral lit;
+        lit.lit = LitInteger{0};
+        e.kind = std::move(lit);
+        return e;
+      }(), mkSpan()});
+
+  Program program;
+  program.items.push_back({Item{std::move(metricDecl)}, mkSpan()});
+  program.items.push_back({Item{std::move(mainDecl)}, mkSpan()});
+
+  auto module = generateMLIR(ctx, program);
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+  // The generated names are mangled (e.g. "_HT6MetricF7to_json"), so we
+  // match by substring rather than exact name.
+  bool foundToJson = false, foundFromJson = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Metric"))
+      return;
+    if (n.contains("to_json"))
+      foundToJson = true;
+    if (n.contains("from_json"))
+      foundFromJson = true;
+  });
+
+  if (!foundToJson) {
+    FAIL("Metric to_json wrapper was not generated despite explicit call-site");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!foundFromJson) {
+    FAIL("Metric from_json wrapper was not generated despite explicit call-site");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // Un-called wrappers must be absent.
+  bool foundUncalled = false;
+  module.walk([&](mlir::func::FuncOp fn) {
+    auto n = fn.getName();
+    if (!n.contains("Metric"))
+      return;
+    if (n.contains("to_yaml") || n.contains("from_yaml") ||
+        n.contains("to_toml") || n.contains("from_toml"))
+      foundUncalled = true;
+  });
+  if (foundUncalled) {
+    FAIL("un-called Metric yaml/toml wrapper was emitted unexpectedly (demand-gate broken)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Select emits explicit send-failure cleanup and panic paths
 // ============================================================================
 static void test_select_emits_send_failure_cleanup() {
@@ -2688,6 +2945,8 @@ int main() {
   test_remote_actor_ask_panics_on_null_reply();
   test_generic_struct_constructor_in_nongeneric_context();
   test_generic_struct_constructor_monomorphic_helper();
+  test_prim_struct_no_serial_call_emits_no_wrappers();
+  test_prim_struct_serial_call_emits_demanded_wrapper();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

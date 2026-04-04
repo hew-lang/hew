@@ -621,6 +621,11 @@ private:
   /// handles via its default i32 fallback.
   std::unordered_set<std::string> allWireStructNames_;
 
+  /// Non-wire struct types eligible for encode/decode wrappers (all-primitive fields,
+  /// non-generic). Populated in registerTypeDecl; wrappers are generated lazily on the
+  /// first call-site that demands one, rather than unconditionally for every eligible type.
+  std::unordered_set<std::string> encodeEligibleStructs_;
+
   // ── Actor type registry ───────────────────────────────────────────
   std::unordered_map<std::string, ActorInfo> actorRegistry;
   std::unordered_set<std::string> generatedActorBodies;

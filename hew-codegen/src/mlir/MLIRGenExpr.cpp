@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 using namespace hew;
 using namespace mlir;
@@ -3921,6 +3922,32 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
     if (!callee)
       callee = lookupImportedFunc(ident.name, methodName);
+
+    // Demand-gated struct encode/decode: generate the specific wrapper now if
+    // the struct is eligible and the callee has not been emitted yet.
+    if (!callee && encodeEligibleStructs_.count(ident.name)) {
+      // clang-format off
+      static const std::unordered_map<std::string, std::pair<bool, std::string>>
+          kStructSerialMethods = {
+            {"to_json",   {true,  "json"}},
+            {"from_json", {false, "json"}},
+            {"to_yaml",   {true,  "yaml"}},
+            {"from_yaml", {false, "yaml"}},
+            {"to_toml",   {true,  "toml"}},
+            {"from_toml", {false, "toml"}},
+          };
+      // clang-format on
+      auto it = kStructSerialMethods.find(methodName);
+      if (it != kStructSerialMethods.end()) {
+        const auto &[isTo, format] = it->second;
+        if (isTo)
+          generateStructToSerial(ident.name, format);
+        else
+          generateStructFromSerial(ident.name, format);
+        callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+      }
+    }
+
     if (callee) {
       llvm::SmallVector<mlir::Value, 4> args;
       auto calleeFuncType = callee.getFunctionType();

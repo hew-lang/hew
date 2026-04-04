@@ -1,0 +1,17 @@
+import std::net;
+
+actor ServerReader {
+    let conn: Connection;
+
+    receive fn start(unused: i32) {
+        let msg = conn.read_string();
+        println(msg);
+    }
+}
+
+fn main() {
+    let listener = net.listen(":9001");
+    let conn = listener.accept();
+    let reader = spawn ServerReader(conn: conn);
+    reader.start(0);
+}

@@ -8,22 +8,44 @@
 //! import std::process;
 //!
 //! fn main() {
-//!     // Run a command and capture output
-//!     let output = process.run("ls -la");
-//!     println(output);
+//!     let shell_output = process.run("echo hello");
+//!     println(shell_output);
 //!
-//!     // Spawn a long-running process
+//!     let args: Vec<String> = Vec::new();
+//!     args.push("<%s>|<%s>");
+//!     args.push("hello world");
+//!     args.push("hew");
+//!     let output = process.run_argv("printf", args);
+//!     println(output.stdout);
+//!
 //!     let child = process.start("sleep 10");
-//!     let status = child.wait();
-//!     println(status);
+//!     println(child.wait());
 //! }
 //! ```
+
+import std::string;
+
+/// A handle to a completed command invocation inside the runtime.
+type ProcessResultHandle {}
 
 /// A handle to a running child process.
 ///
 /// Created by `process.start(cmd)`. Use `wait()` to block until
 /// the process exits, or `kill()` to terminate it.
 type Child {}
+
+/// Captured output from a completed command.
+pub type CommandOutput {
+    exit_code: i32;
+    stdout: String;
+    stderr: String;
+}
+
+/// Structured execution errors for process launch and argument validation.
+pub enum ProcessError {
+    InvalidArguments(String);
+    LaunchFailed(String);
+}
 
 /// Methods available on a `Child` process.
 trait ChildMethods {
@@ -45,29 +67,163 @@ impl ChildMethods for Child {
     fn kill(child: Child) -> i32 { unsafe { hew_process_kill(child) } }
 }
 
+fn empty_output() -> CommandOutput {
+    CommandOutput {
+        exit_code: -1,
+        stdout: "",
+        stderr: "",
+    }
+}
+
+fn process_error_message(err: ProcessError) -> String {
+    match err {
+        ProcessError::InvalidArguments(message) => message,
+        ProcessError::LaunchFailed(message) => message,
+    }
+}
+
+fn process_error_from_message(message: String) -> ProcessError {
+    if message.contains("arg_count")
+        || message.contains("argc")
+        || message.contains("args[")
+        || message.contains("args must be Vec<String>")
+        || message.contains("args is null")
+    {
+        ProcessError::InvalidArguments(message)
+    } else {
+        ProcessError::LaunchFailed(message)
+    }
+}
+
+fn last_process_error(default_message: String) -> ProcessError {
+    unsafe {
+        let message = hew_process_last_error();
+        hew_clear_error();
+        if message == "" {
+            ProcessError::LaunchFailed(default_message)
+        } else {
+            process_error_from_message(message)
+        }
+    }
+}
+
+fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
+    unsafe {
+        let output = CommandOutput {
+            exit_code: hew_process_result_exit_code(result),
+            stdout: hew_process_result_stdout(result),
+            stderr: hew_process_result_stderr(result),
+        };
+        hew_process_result_free(result);
+        output
+    }
+}
+
+fn split_packed_args(args: String) -> Vec<String> {
+    let raw_parts = string.split(args, " ");
+    let filtered: Vec<String> = Vec::new();
+    for i in 0..raw_parts.len() {
+        let part = raw_parts.get(i);
+        if part != "" {
+            filtered.push(part);
+        }
+    }
+    filtered
+}
+
 // ── Module-level functions ────────────────────────────────────────────
+
+/// Run a shell command synchronously and capture its exit code and output.
+pub fn try_run(command: String) -> Result<CommandOutput, ProcessError> {
+    unsafe {
+        hew_clear_error();
+        let result = hew_process_run(command);
+        if hew_process_result_is_valid(result) {
+            Ok(take_command_output(result))
+        } else {
+            Err(last_process_error("process.try_run: command execution failed"))
+        }
+    }
+}
 
 /// Run a shell command synchronously and return its stdout as a string.
 ///
 /// Blocks until the command completes. The command is executed via
 /// the system shell.
-///
-/// # Examples
-///
-/// ```
-/// let output = process.run("echo hello");
-/// assert_eq(string_trim(output), "hello");
-/// ```
 pub fn run(command: String) -> String {
-    unsafe { hew_process_run(command) }
+    match try_run(command) {
+        Ok(output) => output.stdout,
+        Err(err) => {
+            panic(f"process.run failed: {process_error_message(err)}");
+            ""
+        },
+    }
 }
 
-/// Run a command with explicit arguments.
+/// Run a command without the shell using a `Vec<String>` argv surface.
+pub fn try_run_argv(command: String, args: Vec<String>) -> Result<CommandOutput, ProcessError> {
+    unsafe {
+        hew_clear_error();
+        let result = hew_process_run_argv(command, args);
+        if hew_process_result_is_valid(result) {
+            Ok(take_command_output(result))
+        } else {
+            Err(last_process_error("process.try_run_argv: command execution failed"))
+        }
+    }
+}
+
+/// Run a command without the shell using a `Vec<String>` argv surface.
 ///
-/// `args` is a space-separated argument string. `arg_count` is the
-/// number of arguments.
+/// Panics on launch or argument errors. Use `try_run_argv` for `Result`-based
+/// error handling.
+pub fn run_argv(command: String, args: Vec<String>) -> CommandOutput {
+    match try_run_argv(command, args) {
+        Ok(output) => output,
+        Err(err) => {
+            panic(f"process.run_argv failed: {process_error_message(err)}");
+            empty_output()
+        },
+    }
+}
+
+/// Run a command with a legacy space-delimited argument string.
+///
+/// This wrapper preserves the legacy API, but it cannot represent empty
+/// arguments or arguments containing spaces. Prefer `try_run_argv`.
+pub fn try_run_args(
+    command: String,
+    args: String,
+    arg_count: i32,
+) -> Result<CommandOutput, ProcessError> {
+    if arg_count < 0 {
+        return Err(ProcessError::InvalidArguments(
+            "process.try_run_args: arg_count must be non-negative",
+        ));
+    }
+
+    let argv = split_packed_args(args);
+    if argv.len() != arg_count {
+        return Err(ProcessError::InvalidArguments(
+            f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()}",
+        ));
+    }
+
+    try_run_argv(command, argv)
+}
+
+/// Run a command with explicit packed arguments and return stdout.
+///
+/// This preserves the legacy `run_args(command, args, arg_count)` signature.
+/// Prefer `try_run_argv(command, Vec<String>)` for safe argument passing.
 pub fn run_args(command: String, args: String, arg_count: i32) -> String {
-    unsafe { hew_process_run_args(command, args, arg_count) }
+    match try_run_args(command, args, arg_count) {
+        Ok(output) => output.stdout,
+        Err(err) => {
+            panic(f"process.run_args failed: {process_error_message(err)}");
+            ""
+        },
+    }
 }
 
 /// Start a child process without blocking.
@@ -76,14 +232,6 @@ pub fn run_args(command: String, args: String, arg_count: i32) -> String {
 ///
 /// Note: This function is called `start` rather than `spawn` because
 /// `spawn` is a reserved keyword in Hew (used for spawning actors).
-///
-/// # Examples
-///
-/// ```
-/// let child = process.start("sleep 5");
-/// // ... do other work ...
-/// let status = child.wait();
-/// ```
 pub fn start(command: String) -> Child {
     unsafe { hew_process_spawn(command) }
 }
@@ -91,9 +239,16 @@ pub fn start(command: String) -> Child {
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
-    fn hew_process_run(command: String) -> String;
-    fn hew_process_run_args(command: String, args: String, arg_count: i32) -> String;
+    fn hew_process_run(command: String) -> ProcessResultHandle;
+    fn hew_process_run_argv(command: String, args: Vec<String>) -> ProcessResultHandle;
+    fn hew_process_result_is_valid(result: ProcessResultHandle) -> bool;
+    fn hew_process_result_exit_code(result: ProcessResultHandle) -> i32;
+    fn hew_process_result_stdout(result: ProcessResultHandle) -> String;
+    fn hew_process_result_stderr(result: ProcessResultHandle) -> String;
+    fn hew_process_result_free(result: ProcessResultHandle);
     fn hew_process_spawn(command: String) -> Child;
     fn hew_process_wait(handle: Child) -> i32;
     fn hew_process_kill(handle: Child) -> i32;
+    fn hew_process_last_error() -> String;
+    fn hew_clear_error();
 }

@@ -871,6 +871,14 @@ impl Checker {
         self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
         self.register_builtin_fn("duration::from_nanos", vec![Ty::I64], Ty::Duration);
 
+        // Rc<T> constructor — Rc::new(value: T) -> Rc<T>
+        // Each call site gets a fresh type variable; the actual Rc<T> type is
+        // inferred from the argument type.
+        {
+            let t = TypeVar::fresh();
+            self.register_builtin_fn("Rc::new", vec![Ty::Var(t)], Ty::rc(Ty::Var(t)));
+        }
+
         // More print variants
         self.register_builtin_fn("println_f64", vec![Ty::F64], Ty::Unit);
         self.register_builtin_fn("print_f64", vec![Ty::F64], Ty::Unit);
@@ -7102,6 +7110,44 @@ impl Checker {
         }
     }
 
+    fn check_rc_method(
+        &mut self,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let inner_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        match method {
+            // rc.clone() increments the reference count and returns a new Rc<T>
+            "clone" => {
+                self.check_arity(args, 0, "`Rc::clone`", span);
+                Ty::rc(inner_ty)
+            }
+            // rc.get() returns the inner value (copy semantics at the type level)
+            "get" => {
+                self.check_arity(args, 0, "`Rc::get`", span);
+                inner_ty
+            }
+            // rc.strong_count() returns the current reference count as i64
+            "strong_count" => {
+                self.check_arity(args, 0, "`Rc::strong_count`", span);
+                Ty::I64
+            }
+            _ => {
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `Rc<{}>`", inner_ty.user_facing()),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines, reason = "Vec has many methods to type-check")]
     fn check_vec_method(
         &mut self,
@@ -7398,6 +7444,14 @@ impl Checker {
                 },
                 _,
             ) if name == "HashSet" => self.check_hashset_method(type_args, method, args, span),
+            // Rc<T> methods
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Rc" => self.check_rc_method(type_args, method, args, span),
             // bytes methods (ref-counted byte buffer)
             (Ty::Bytes, _) => match method {
                 "push" => {
@@ -7534,8 +7588,20 @@ impl Checker {
                                 if let Some(param_ty) = sig.params.get(i) {
                                     self.check_against(expr, sp, param_ty);
                                 }
+                                // Enforce Send at actor message boundaries.
+                                let ty_raw = self.synthesize(expr, sp);
+                                let ty = self.subst.resolve(&ty_raw);
+                                if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
+                                    self.report_error(
+                                        TypeErrorKind::InvalidSend,
+                                        sp,
+                                        format!(
+                                            "cannot send `{}` to actor: type is not Send",
+                                            ty.user_facing()
+                                        ),
+                                    );
+                                }
                                 // Mark non-Copy args as moved at actor boundaries
-                                let ty = self.synthesize(expr, sp);
                                 if !self.registry.implements_marker(&ty, MarkerTrait::Copy) {
                                     if let Expr::Identifier(name) = expr {
                                         self.env.mark_moved(name, sp.clone());

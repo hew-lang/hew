@@ -569,7 +569,6 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_duration/duration"
   # Broken .expected files — test exists but output doesn't match
   "e2e_hashset/hashset_no_double_eval"
-  "e2e_memory/rc_basic"
   "e2e_multi_dyn/multi_dyn"
   "e2e_trait_bounds/trait_bounds"
 )

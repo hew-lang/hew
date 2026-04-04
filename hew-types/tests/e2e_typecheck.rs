@@ -352,3 +352,52 @@ fn for_no_await_over_receiver_no_for_await_error() {
         output.errors
     );
 }
+
+// ── Rc<T> surface tests ───────────────────────────────────────────────────────
+
+/// Basic `Rc<T>` construction, clone, get, and `strong_count` must type-check clean.
+#[test]
+fn rc_construction_and_methods_typecheck() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let rc: Rc<int> = Rc::new(42);
+            println(rc.get());
+            let rc2 = rc.clone();
+            println(rc2.get());
+            println(rc.strong_count());
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Rc<int> basic usage should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `Rc<T>` must be rejected when sent across an actor boundary (non-Send).
+#[test]
+fn rc_rejected_at_actor_send_boundary() {
+    let output = typecheck_inline(
+        r"
+        actor Sink {
+            let _unused: int;
+            receive fn consume(val: Rc<int>) {}
+        }
+        fn main() {
+            let rc: Rc<int> = Rc::new(1);
+            let a = spawn Sink(_unused: 0);
+            a.consume(rc);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "Rc<int> must be rejected at actor send boundary with InvalidSend, got: {:#?}",
+        output.errors
+    );
+}

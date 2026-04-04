@@ -370,6 +370,7 @@ impl Ty {
             "Generator" => "Generator",
             "AsyncGenerator" => "AsyncGenerator",
             "Range" => "Range",
+            "Rc" => "Rc",
             _ => return None,
         })
     }
@@ -439,6 +440,12 @@ impl Ty {
     #[must_use]
     pub fn range(inner: Ty) -> Ty {
         Self::normalize_named("Range".to_string(), vec![inner])
+    }
+
+    /// Construct `Rc<inner>`.
+    #[must_use]
+    pub fn rc(inner: Ty) -> Ty {
+        Self::normalize_named("Rc".to_string(), vec![inner])
     }
 
     // -- Accessor helpers: match on Named patterns --

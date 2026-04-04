@@ -491,6 +491,11 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type,
       return hew::ActorRefType::get(&context);
     if (name == "Task" || name == "scope.Task")
       return hew::HandleType::get(&context, builder.getStringAttr("Task"));
+    // Rc<T>: opaque pointer to the data region inside a hew_rc allocation.
+    // The inner type T is available in type_args but the pointer is opaque at MLIR level;
+    // method dispatch uses resolvedTypeOf to detect Rc receivers.
+    if (name == "Rc")
+      return mlir::LLVM::LLVMPointerType::get(&context);
     // Stream<T> and Sink<T>: opaque heap pointers to HewStream / HewSink
     if (name == "Stream" || name == "Sink" || name == "stream.Stream" || name == "stream.Sink" ||
         name == "StreamPair" || name == "stream.StreamPair")
@@ -1686,6 +1691,51 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                                       mlir::SymbolRefAttr::get(&context, "hew_hashset_new"),
                                       mlir::ValueRange{})
         .getResult();
+  }
+
+  // Rc::new(val) -> *opaque  (hew_rc data pointer)
+  // Codegen:
+  //   1. Evaluate the inner value.
+  //   2. LLVM alloca a slot so we have a stable pointer to pass to hew_rc_new.
+  //   3. Store the value into the alloca.
+  //   4. Call hew_rc_new(data_ptr, sizeof(T), null_drop_fn); the runtime copies
+  //      the bytes and returns a pointer to the data region of the Rc header.
+  //   Note: hew_rc_new copies `size` bytes from data into its own allocation;
+  //   after the call the local alloca is no longer referenced.
+  if (name == "Rc::new") {
+    if (args.size() != 1) {
+      emitError(location) << "Rc::new requires exactly one argument";
+      return nullptr;
+    }
+    auto val = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!val)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto szType = sizeType(); // platform-correct: i64 native, i32 WASM32
+    auto valType = val.getType();
+
+    // Stack-allocate a slot for `val` and store into it so hew_rc_new can
+    // copy the bytes.  Use an LLVM alloca (element count = 1).
+    auto llvmAlloca = mlir::LLVM::AllocaOp::create(
+        builder, location, ptrType, valType,
+        mlir::arith::ConstantIntOp::create(builder, location, szType, 1));
+    mlir::LLVM::StoreOp::create(builder, location, val, llvmAlloca);
+
+    // Compute sizeof(T) at MLIR level using hew.sizeof.
+    auto size = hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(valType));
+
+    // Null pointer for drop_fn (primitives need no destructor).
+    auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+
+    // Call hew_rc_new(data_ptr, size, drop_fn) -> *u8 (data region of the Rc).
+    auto rcNewFuncType =
+        builder.getFunctionType({ptrType, szType, ptrType}, {ptrType});
+    auto rcNewFunc = getOrCreateExternFunc("hew_rc_new", rcNewFuncType);
+    return mlir::func::CallOp::create(
+               builder, location, rcNewFunc,
+               mlir::ValueRange{llvmAlloca, size, nullDropFn})
+        .getResult(0);
   }
 
   // duration::from_nanos(x) -> i64: identity passthrough (duration is i64 nanos)
@@ -5595,6 +5645,8 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
     return "hew_hashmap_free_impl";
   if (typeName == "HashSet")
     return "hew_hashset_free";
+  if (typeName == "Rc")
+    return "hew_rc_drop";
   if (typeName == "String" || typeName == "string" || typeName == "str")
     return "hew_string_drop";
   auto dropIt = userDropFuncs.find(typeName);

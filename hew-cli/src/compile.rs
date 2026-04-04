@@ -724,30 +724,35 @@ pub fn compile(
     compile_and_link(&ast_data, input, output, &target, options)
 }
 
-/// Run the codegen and link stages on a program already parsed and
-/// type-checked in-process, skipping the file-read and typecheck steps.
+/// Run the full post-parse compile pipeline for source that has already been
+/// parsed in-process, skipping only the file-read step.
 ///
-/// This is the fast path for `hew eval`: the REPL has already done
-/// parse + typecheck; we carry those results forward and only run the
-/// remaining pipeline stages (enrich → serialize → link).
+/// This is the fast path for `hew eval`: the REPL has already parsed the
+/// source and shown type errors to the user; we run the remaining stages
+/// **in the same order as `compile()`** — resolve imports, typecheck (with
+/// fully-resolved stdlib), enrich, serialize, link — so that implicit-stdlib
+/// type information (e.g. `regex.Pattern` struct layout) is available to the
+/// enrichment and codegen passes.
 ///
-/// `source` is the Hew source string (used for diagnostic metadata and
-/// implicit-import detection; no file is written).  `source_label` is a
-/// synthetic path label used wherever a file name is needed (use something
-/// like `"<repl>"` for interactive sessions).  `output_path` is where the
-/// linked executable should be written.
+/// `source` is the Hew source string used for diagnostic metadata and
+/// implicit-import detection.  `source_label` is a synthetic path label used
+/// wherever a file name is needed (e.g. `"<repl>"`).  `output_path` is where
+/// the linked executable should be written.
 ///
-/// Implicit stdlib imports (regex literals, wire type annotations) are
-/// injected before the enrichment stage so that all codegen contracts are
-/// satisfied identically to the normal `compile()` path.
+/// # Why not reuse the caller's `TypeCheckOutput`?
+///
+/// The REPL's in-process typecheck runs on the raw parsed AST — before
+/// `inject_implicit_imports` and `resolve_file_imports` have run.  Passing
+/// that stale `tco` to `enrich_program_ast` causes type-annotation mismatches
+/// (e.g. `hew_regex_new` call site vs. declaration type) that produce invalid
+/// MLIR.  Running a fresh typecheck here, after import resolution, is the
+/// minimal correct fix.
 ///
 /// # Errors
 ///
 /// Returns a human-readable message when any pipeline stage fails.
 pub(crate) fn compile_from_source_checked(
-    mut program: hew_parser::ast::Program,
-    tco: &hew_types::check::TypeCheckOutput,
-    module_registry: &hew_types::module_registry::ModuleRegistry,
+    program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     output_path: &str,
@@ -755,39 +760,40 @@ pub(crate) fn compile_from_source_checked(
 ) -> Result<(), String> {
     let target = TargetSpec::from_requested(options.target.as_deref())?;
 
-    // Inject implicit stdlib imports (regex, wire types) identical to the
-    // normal pipeline.  For most REPL programs this is a no-op.
-    inject_implicit_imports(&mut program.items, source);
-
-    // Build the module graph.  REPL synthetic programs have no file imports,
-    // so resolve_file_imports is effectively a no-op here.  Module-path
-    // imports added by inject_implicit_imports (e.g. std::text::regex) are
-    // resolved normally via the standard search paths.
-    let project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let source_path = Path::new(source_label);
-    let mut import_ctx = ImportResolutionContext {
-        imported: HashSet::new(),
+    // Synthesise a minimal ProjectContext: no manifest, CWD as project root.
+    // This is sufficient for the REPL's self-contained synthetic programs.
+    let project = ProjectContext {
+        source: source.to_string(),
+        project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         manifest_deps: None,
-        extra_pkg_path: options.pkg_path.as_deref(),
-        locked_versions: None,
         package_name: None,
-        project_dir: &project_dir,
+        locked_versions: None,
     };
-    let module_graph = build_module_graph(source_path, &mut program.items, None, &mut import_ctx)
-        .map_err(|errs| errs.join("\n"))?;
-    program.module_graph = Some(module_graph);
 
-    // Stage 5: enrich AST with inferred types, flatten imports, mark tail calls.
+    // Stage 3 — resolve imports: inject implicit stdlib imports (regex, wire
+    // types) and build the module graph, resolving any stdlib file imports.
+    // This MUST run before typecheck so the checker sees the stdlib items
+    // (e.g. the concrete struct layout of regex.Pattern).
+    let mut program = program;
+    resolve_imports(&mut program, source, source_label, &project, options)?;
+
+    // Stage 4 — typecheck with fully resolved imports.
+    let TypeCheckResult {
+        tco,
+        module_registry,
+    } = typecheck_program(&program, source, source_label, &target, options)?;
+
+    // Stage 5 — enrich AST with inferred types, flatten imports, mark tail calls.
     let expr_type_map = enrich_program_ast(
         &mut program,
-        Some(tco),
-        module_registry,
+        tco.as_ref(),
+        &module_registry,
         source,
         source_label,
     )?;
 
-    // Stage 6: build codegen metadata.
-    let meta = build_codegen_metadata(module_registry, source_label, source, options);
+    // Stage 6 — build codegen metadata.
+    let meta = build_codegen_metadata(&module_registry, source_label, source, options);
 
     // Serialize to msgpack.
     let ast_data = hew_serialize::serialize_to_msgpack(
@@ -799,7 +805,7 @@ pub(crate) fn compile_from_source_checked(
         meta.line_map.as_deref(),
     );
 
-    // Stage 7: codegen to object file and link executable.
+    // Stage 7 — codegen to object file and link executable.
     compile_and_link(&ast_data, source_label, Some(output_path), &target, options)?;
 
     Ok(())

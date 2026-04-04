@@ -87,17 +87,11 @@ impl ReplSession {
             };
         }
 
-        // Preserve the module registry for the in-process codegen path.
-        let module_registry = checker.into_module_registry();
-
-        // Compile and execute in-process, reusing the parse + typecheck work
-        // already done above instead of spawning a `hew build` subprocess.
-        match run_inprocess_compiled(
-            parse_result.program,
-            &tco,
-            &module_registry,
-            &program.source,
-        ) {
+        // Compile and execute in-process.  Import resolution and typecheck are
+        // re-run inside compile_from_source_checked with correct stage ordering
+        // (resolve imports BEFORE typecheck) so that stdlib type metadata is
+        // available to the enrichment and codegen passes.
+        match run_inprocess_compiled(parse_result.program, &program.source) {
             Ok(output) => {
                 // On success, persist the input into session state.
                 match &program.kind {
@@ -301,16 +295,16 @@ impl ReplSession {
     }
 }
 
-/// Compile the given already-parsed, already-type-checked program to a native
-/// binary in a temporary directory and execute it, returning its stdout.
+/// Compile the given already-parsed program to a native binary in a temporary
+/// directory and execute it, returning its stdout.
 ///
-/// This eliminates the subprocess `hew build` hop: parse and typecheck have
-/// already been done by the REPL, so we carry those results straight into the
-/// codegen/link/run stages.
+/// Import resolution and typecheck are performed here (not by the caller)
+/// so that the codegen pipeline sees stdlib type information in the same order
+/// as the normal `compile()` path.  The REPL's fast in-process typecheck is
+/// kept for user-facing error reporting only; this function runs the full
+/// correctly-ordered pipeline for codegen.
 fn run_inprocess_compiled(
     program: hew_parser::ast::Program,
-    tco: &hew_types::check::TypeCheckOutput,
-    module_registry: &hew_types::module_registry::ModuleRegistry,
     source: &str,
 ) -> Result<String, String> {
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
@@ -323,8 +317,6 @@ fn run_inprocess_compiled(
 
     crate::compile::compile_from_source_checked(
         program,
-        tco,
-        module_registry,
         source,
         "<repl>",
         bin_path_str,
@@ -527,20 +519,8 @@ mod tests {
                 eprintln!("REPL integration tests skipped: probe parse failed");
                 return false;
             }
-            let mut checker =
-                hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-                    hew_types::module_registry::build_module_search_paths(),
-                ));
-            let tco = checker.check_program(&parse_result.program);
-            if !tco.errors.is_empty() {
-                eprintln!("REPL integration tests skipped: probe typecheck failed");
-                return false;
-            }
-            let module_registry = checker.into_module_registry();
             let ok = crate::compile::compile_from_source_checked(
                 parse_result.program,
-                &tco,
-                &module_registry,
                 source,
                 "<repl-probe>",
                 bin_path.to_str().unwrap_or("probe"),
@@ -605,6 +585,22 @@ mod tests {
         let r2 = session.eval("double(21)");
         assert!(!r2.had_errors, "errors: {:?}", r2.errors);
         assert_eq!(r2.output, "42\n");
+    }
+
+    /// Regression test: regex literals must produce valid MLIR via the
+    /// in-process codegen path.  The old implementation passed a stale `tco`
+    /// (computed before import resolution) to `enrich_program_ast`, causing a
+    /// call-site / declaration type mismatch for `hew_regex_new` in the
+    /// generated MLIR.
+    #[test]
+    fn eval_regex_literal() {
+        if !require_toolchain() {
+            return;
+        }
+        let mut session = ReplSession::new();
+        let result = session.eval(r#""hello" =~ re"h.*o""#);
+        assert!(!result.had_errors, "errors: {:?}", result.errors);
+        assert_eq!(result.output, "true\n");
     }
 
     #[test]

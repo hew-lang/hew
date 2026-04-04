@@ -752,7 +752,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 
     // Track handle variables from type annotation (filled by enrich_program)
     if (stmt.ty) {
-      auto handleStr = typeExprToHandleString(stmt.ty->value);
+      auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
       if (!handleStr.empty())
         handleVarTypes[varName] = handleStr;
     }
@@ -896,7 +896,7 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   // Track handle variables from type annotation (filled by enrich_program)
   if (stmt.ty) {
-    auto handleStr = typeExprToHandleString(stmt.ty->value);
+    auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
     if (!handleStr.empty())
       handleVarTypes[varNameStr] = handleStr;
   }

@@ -2792,6 +2792,91 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: typeExprToHandleString uses program.handle_types (drift fix)
+//
+// Regression guard: knownHandleTypes is populated from program.handle_types
+// (the Rust type-checker's authoritative list), NOT from a hardcoded array.
+// A type present in program.handle_types but absent from the old static list
+// must be treated as a handle.  A type absent from program.handle_types (e.g.
+// csv.Table, which is a struct in the real type checker) must NOT be treated
+// as a handle even though it appeared in the old hardcoded array.
+// ============================================================================
+
+static void test_handle_registry_uses_metadata_not_hardcoded_list() {
+  TEST(handle_registry_uses_metadata_not_hardcoded_list);
+
+  // ── sub-test 1: type in handle_types → treated as handle ──────────────
+  // Load a program that uses http.Request so the real handle_types is
+  // populated by the Rust type checker.
+  hew::ast::Program programWithHandle;
+  if (!loadProgramFromSource(R"(
+import std::net::http;
+
+actor Sink {
+    receive fn ingest(req: http.Request) {}
+}
+
+fn main() {}
+  )",
+                             programWithHandle)) {
+    FAIL("failed to load typed program (sub-test 1)");
+    return;
+  }
+
+  // http.Request must appear in the metadata-driven knownHandleTypes.
+  bool httpRequestInHandleTypes =
+      std::find(programWithHandle.handle_types.begin(),
+                programWithHandle.handle_types.end(),
+                "http.Request") != programWithHandle.handle_types.end();
+  if (!httpRequestInHandleTypes) {
+    FAIL("http.Request missing from program.handle_types — Rust metadata not populated");
+    return;
+  }
+
+  // MLIR gen must emit a drop call for the handle.
+  mlir::MLIRContext ctx1;
+  initContext(ctx1);
+  auto m1 = generateMLIR(ctx1, programWithHandle);
+  if (!m1) {
+    FAIL("MLIR generation failed (sub-test 1)");
+    return;
+  }
+  if (countCallsByCallee(m1, "hew_http_request_free") < 1) {
+    FAIL("expected hew_http_request_free — handle not recognised via metadata");
+    m1.getOperation()->destroy();
+    return;
+  }
+  m1.getOperation()->destroy();
+
+  // ── sub-test 2: csv.Table must NOT be in handle_types ─────────────────
+  // csv.Table was incorrectly hardcoded as a handle in the old static array
+  // but is in fact a struct in the Rust type checker.  After the fix, it must
+  // not be reported as a handle by the metadata-driven lookup.
+  hew::ast::Program programWithCsv;
+  if (!loadProgramFromSource(R"(
+import std::encoding::csv;
+
+fn take(tbl: csv.Table) {}
+fn main() {}
+  )",
+                             programWithCsv)) {
+    FAIL("could not load csv program");
+    return;
+  }
+
+  bool csvTableInHandleTypes =
+      std::find(programWithCsv.handle_types.begin(),
+                programWithCsv.handle_types.end(),
+                "csv.Table") != programWithCsv.handle_types.end();
+  if (csvTableInHandleTypes) {
+    FAIL("csv.Table incorrectly listed in program.handle_types — it is a struct");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: local non-void actor asks null-check reply pointers before loading
 // ============================================================================
 
@@ -3278,6 +3363,7 @@ int main() {
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
+  test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();

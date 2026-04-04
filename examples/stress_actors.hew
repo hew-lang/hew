@@ -161,9 +161,9 @@ fn initialize_system() -> i32 {
 
 fn stress_test_actors() -> i32 {
     // Simulate heavy actor interaction
-    var total_operations = 0;
+    var total_operations: i32 = 0;
     // Simulate 1000 operations across all actors
-    for i in 0..1000 {
+    for i in 0 as i32..1000 {
         let operation_type = i % 6;
         if operation_type == 0 {
             total_operations = total_operations + process_worker_task(i);

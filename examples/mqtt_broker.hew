@@ -43,8 +43,8 @@ fn push_varint(buf: bytes, val: i32) {
 }
 
 fn read_varint_value(data: bytes, offset: i32) -> i32 {
-    var value = 0;
-    var multiplier = 1;
+    var value: i32 = 0;
+    var multiplier: i32 = 1;
     var i = offset;
     loop {
         let b = data.get(i);
@@ -72,9 +72,9 @@ fn read_varint_len(data: bytes, offset: i32) -> i32 {
 
 // Push length-prefixed MQTT string.
 fn push_mqtt_str(buf: bytes, s: String) {
-    push_u16(buf, string_length(s));
+    push_u16(buf, string_length(s) as i32);
     for i in 0..string_length(s) {
-        buf.push(s.char_at(i));
+        buf.push(s.char_at(i) as i32);
     }
 }
 
@@ -105,7 +105,7 @@ fn build_suback(packet_id: i32, return_codes: bytes) -> _ {
     push_u16(body, packet_id);
     body.append(return_codes);
     let buf = bytes::from([0x90]);
-    push_varint(buf, body.len());
+    push_varint(buf, body.len() as i32);
     buf.append(body);
     buf
 }
@@ -130,7 +130,7 @@ fn build_publish(topic: String, payload: bytes, qos: i32, packet_id: i32) -> byt
     body.append(payload);
     let flags = 0x30 + qos * 2;
     let buf = bytes::from([flags]);
-    push_varint(buf, body.len());
+    push_varint(buf, body.len() as i32);
     buf.append(body);
     buf
 }
@@ -183,7 +183,7 @@ actor ClientHandler {
                         let topic_wire_len = 2 + read_u16(buf, var_off);
                         let topic = read_mqtt_str(buf, var_off);
                         var pid_off = var_off + topic_wire_len;
-                        var packet_id = 0;
+                        var packet_id: i32 = 0;
                         if qos > 0 {
                             packet_id = read_u16(buf, pid_off);
                             pid_off = pid_off + 2;
@@ -204,7 +204,7 @@ actor ClientHandler {
                             let stopic = read_mqtt_str(buf, topic_off);
                             let req_qos = buf.get(topic_off + tw);
                             let granted = if req_qos > 1 {
-                                1
+                                1 as i32
                             } else {
                                 req_qos
                             };
@@ -241,7 +241,7 @@ actor ClientHandler {
                     _ => {},
                 }
                 if connected {
-                    buf = bytes_slice(buf, total, buf_len);
+                    buf = bytes_slice(buf, total, buf_len as i32);
                 } else {
                     break;
                 }

@@ -15,7 +15,7 @@ fn search_file(filename: String, pattern: String, nl: String) -> i32 {
     }
     let content = fs.read(filename);
     let total_len = content.len();
-    var matches = 0;
+    var matches: i32 = 0;
     var pos = 0;
     var linenum = 1;
     while pos <= total_len {

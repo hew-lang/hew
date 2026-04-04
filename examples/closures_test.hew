@@ -22,9 +22,9 @@ fn make_adder(n: i32) -> i32 {
     add(100)
 }
 
-// Non-capturing lambda — type inferred from body literal
+// Non-capturing lambda — parameter type drives body and return type
 fn test_no_capture() -> i32 {
-    let twice = (x) => x * 2;
+    let twice = (x: i32) => x * 2;
     twice(21)
 }
 

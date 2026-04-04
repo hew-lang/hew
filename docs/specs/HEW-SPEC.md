@@ -740,6 +740,77 @@ Predicate functions (`fs.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`
 - `pub(super)` - public to parent module only
 - (no modifier) - private to this module
 
+#### 3.5.1 Directory-form modules (peer-file composition)
+
+A module may span multiple files inside a dedicated directory. When the
+compiler resolves `import greeting;` it looks for either:
+
+1. A single file `greeting.hew` beside the importing file (**single-file form**), or
+2. A directory named `greeting/` that contains a file `greeting/greeting.hew`
+   (**directory form** — the entry file's stem must match the directory name).
+
+In directory form, **every other `.hew` file in that directory is a peer
+file**. The compiler parses all peer files and merges their items into the same
+module namespace, in deterministic (sorted) order.
+
+```
+myapp/
+├── main.hew           ← import greeting;
+└── greeting/
+    ├── greeting.hew         ← entry (dir name == file stem)
+    └── greeting_helpers.hew ← peer (merged automatically)
+```
+
+`main.hew`:
+
+```hew
+import greeting;
+
+fn main() {
+    println(greeting.hello() + " " + greeting.target());
+}
+```
+
+`greeting/greeting.hew` (entry):
+
+```hew
+pub fn hello() -> String {
+    "Hello"
+}
+```
+
+`greeting/greeting_helpers.hew` (peer):
+
+```hew
+pub fn target() -> String {
+    "from a merged directory module!"
+}
+```
+
+Because both files are merged into the `greeting` namespace, `greeting.hello()`
+and `greeting.target()` are both reachable without any extra re-export
+statements.
+
+**Rules:**
+
+- The entry file is identified by `dir_name == file_stem` (e.g.
+  `greeting/greeting.hew`). If no such file exists, import resolution fails.
+- All other `.hew` files at the **top level** of the directory are peer files.
+  Sub-directories are not automatically included; they must be imported
+  explicitly.
+- Peer files are merged in sorted filename order (deterministic across
+  platforms).
+- A peer file may itself contain `import` statements; those imports are
+  resolved recursively.
+- Duplicate `pub` names across the entry and its peers are a **compile error**.
+  Each public symbol must have a unique name within the merged module.
+- There is no private sharing between peer files: each file's private items
+  remain private to that file. Use the entry file to re-export if cross-peer
+  access is needed.
+
+A working example is at
+[`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).
+
 ---
 
 ### 3.6 Trait System

@@ -23,6 +23,38 @@ hew version                       # Print version info
 
 `hew file.hew` is shorthand for `hew build file.hew`.
 
+## Multi-file projects
+
+All CLI commands accept a **single entry-point file**. The compiler resolves
+imports recursively from that file, so you never need to list every source file
+on the command line.
+
+Given a project with this layout:
+
+```
+myapp/
+├── main.hew
+└── greeting/
+    ├── greeting.hew
+    └── greeting_helpers.hew
+```
+
+All three commands below operate on the whole project through `main.hew`:
+
+```sh
+hew check myapp/main.hew
+hew run   myapp/main.hew
+hew build myapp/main.hew -o myapp
+```
+
+The `greeting/` directory is a **directory-form module**: `greeting/greeting.hew`
+is the entry file (its stem matches the directory name) and
+`greeting/greeting_helpers.hew` is merged in automatically as a peer file.
+See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
+
+`hew init [name]` scaffolds a new project with a `main.hew` entry point ready
+to use as the single argument to all commands above.
+
 ## Debugging
 
 `hew debug` compiles the program with full debug information (no optimisation,

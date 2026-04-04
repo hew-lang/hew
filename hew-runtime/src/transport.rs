@@ -720,8 +720,12 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
     } else {
         addr_str
     };
-    let Ok(listener) = TcpListener::bind(bind_addr) else {
-        return -1;
+    let listener = match TcpListener::bind(bind_addr) {
+        Ok(l) => l,
+        Err(e) => {
+            hew_cabi::sink::set_last_error(format!("hew_tcp_listen: {e}"));
+            return -1;
+        }
     };
     let Ok(mut state) = TCP_API_STATE.lock() else {
         return -1;
@@ -773,8 +777,12 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     } else {
         addr_str
     };
-    let Ok(stream) = TcpStream::connect(connect_addr) else {
-        return -1;
+    let stream = match TcpStream::connect(connect_addr) {
+        Ok(s) => s,
+        Err(e) => {
+            hew_cabi::sink::set_last_error(format!("hew_tcp_connect: {e}"));
+            return -1;
+        }
     };
     let _ = stream.set_nodelay(true);
     let Ok(mut state) = TCP_API_STATE.lock() else {
@@ -1053,6 +1061,24 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
         return 0;
     }
     -1
+}
+
+/// Check whether a listener handle is valid (positive).
+///
+/// Returns `true` for positive handles, `false` for error values (≤ 0).
+/// Used by `try_listen` to distinguish success from failure without panicking.
+#[no_mangle]
+pub extern "C" fn hew_listener_is_valid(handle: c_int) -> bool {
+    handle > 0
+}
+
+/// Check whether a connection handle is valid (positive).
+///
+/// Returns `true` for positive handles, `false` for error values (≤ 0).
+/// Used by `try_connect` to distinguish success from failure without panicking.
+#[no_mangle]
+pub extern "C" fn hew_connection_is_valid(handle: c_int) -> bool {
+    handle > 0
 }
 
 // ===========================================================================

@@ -1,0 +1,83 @@
+//! Tests for the `NetError` + `try_connect` / `try_listen` surface (Stage 1A).
+
+import std::net;
+import std::testing;
+
+// ── try_connect ───────────────────────────────────────────────────────
+
+#[test]
+fn test_try_connect_refused_returns_connection_refused() {
+    // Port 1 is never open in test environments (privileged, nothing binds it).
+    match net.try_connect("127.0.0.1:1") {
+        Ok(_) => panic("expected connection to fail"),
+        Err(err) => match err {
+            NetError::ConnectionRefused(_) => {},
+            _ => panic("expected NetError::ConnectionRefused"),
+        },
+    }
+}
+
+#[test]
+fn test_try_connect_bad_address_returns_err() {
+    match net.try_connect("256.256.256.256:9999") {
+        Ok(_) => panic("expected invalid address to fail"),
+        Err(_) => {},
+    }
+}
+
+// ── try_listen ────────────────────────────────────────────────────────
+
+#[test]
+fn test_try_listen_returns_ok_on_available_port() {
+    // Use an ephemeral port unlikely to be in use.
+    match net.try_listen(":0") {
+        Ok(_) => {},
+        Err(_) => panic("expected try_listen on :0 to succeed"),
+    }
+}
+
+#[test]
+fn test_try_listen_address_in_use_returns_address_in_use() {
+    // Bind the same ephemeral address twice; the second bind must fail.
+    match net.try_listen(":19731") {
+        Ok(_) => {
+            match net.try_listen(":19731") {
+                Ok(_) => panic("expected second bind to fail"),
+                Err(err) => match err {
+                    NetError::AddressInUse(_) => {},
+                    _ => panic("expected NetError::AddressInUse"),
+                },
+            }
+        },
+        Err(_) => {
+            // Port was already taken by something else; skip gracefully.
+        },
+    }
+}
+
+// ── NetError variant coverage ─────────────────────────────────────────
+
+#[test]
+fn test_net_error_variants_are_distinct() {
+    let refused: NetError = NetError::ConnectionRefused(111);
+    let in_use: NetError = NetError::AddressInUse(98);
+    let timed_out: NetError = NetError::TimedOut(110);
+    let other: NetError = NetError::Other(1);
+
+    match refused {
+        NetError::ConnectionRefused(_) => {},
+        _ => panic("unexpected variant"),
+    }
+    match in_use {
+        NetError::AddressInUse(_) => {},
+        _ => panic("unexpected variant"),
+    }
+    match timed_out {
+        NetError::TimedOut(_) => {},
+        _ => panic("unexpected variant"),
+    }
+    match other {
+        NetError::Other(_) => {},
+        _ => panic("unexpected variant"),
+    }
+}

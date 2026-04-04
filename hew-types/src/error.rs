@@ -333,6 +333,8 @@ pub enum TypeErrorKind {
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
     UnresolvedImport,
+    /// Blocking call inside an actor receive function can starve the scheduler
+    BlockingCallInReceiveFn,
 }
 
 #[cfg(test)]

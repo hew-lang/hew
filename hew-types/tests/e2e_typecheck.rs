@@ -1005,16 +1005,145 @@ fn rc_param_passed_to_regular_fn_no_error() {
     );
 }
 
+// ── Generic passthrough: non-Copy type param returns ─────────────────────────
+
+/// Returning an unbounded generic param is unsafe when instantiated with
+/// a ref-counted type — the checker catches this at definition time.
+#[test]
+fn rc_generic_passthrough_unbounded_errors() {
+    let output = typecheck_inline(
+        r"
+        fn id<T>(x: T) -> T {
+            x
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "returning non-Copy generic param should emit BorrowedRcReturn, got errors: {:#?}",
+        output.errors
+    );
+    // Verify the error message mentions the type parameter, not "Rc".
+    assert!(
+        rc_errors[0].message.contains("non-Copy parameter"),
+        "message should describe non-Copy param, got: {}",
+        rc_errors[0].message
+    );
+}
+
+/// Generic param with explicit Copy bound is safe — no error expected.
+#[test]
+fn rc_generic_copy_bounded_no_error() {
+    let output = typecheck_inline(
+        r"
+        fn id<T: Copy>(x: T) -> T {
+            x
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "Copy-bounded generic param should not error, got: {rc_errors:#?}",
+    );
+}
+
+/// Returning a non-Copy generic param via explicit `return` triggers the error.
+#[test]
+fn rc_generic_passthrough_explicit_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn maybe<T>(x: T, flag: bool) -> T {
+            if flag {
+                return x;
+            }
+            x
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        2,
+        "both the explicit return and trailing expr should fire, got: {rc_errors:#?}",
+    );
+}
+
+/// Wrapping a non-Copy generic param in `Some()` should also be caught.
+#[test]
+fn rc_generic_passthrough_some_wrap_errors() {
+    let output = typecheck_inline(
+        r"
+        fn wrap<T>(x: T) -> Option<T> {
+            Some(x)
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert!(
+        !rc_errors.is_empty(),
+        "wrapping non-Copy generic param in Some should error, got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Multiple type params — only non-Copy ones should be flagged.
+#[test]
+fn rc_generic_mixed_bounds_selective_error() {
+    let output = typecheck_inline(
+        r"
+        fn pick<A: Copy, B>(a: A, b: B) -> B {
+            b
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedRcReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "only non-Copy param `b` should fire, got: {rc_errors:#?}",
+    );
+    assert!(
+        rc_errors[0].message.contains("`b`"),
+        "error should mention param `b`, got: {}",
+        rc_errors[0].message
+    );
+}
+
 // ── Known limitations of BorrowedRcReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and
 // are explicitly deferred to a future escape-analysis pass:
 //
-// 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` instantiated with Rc.
-//    Param type resolves to Ty::Var at definition time; would need either
-//    monomorphization-time checking or a non-Copy-bounded type param rule.
-//
-// 2. Rc param stored into a collection without clone: `v.push(r)`.  Requires
+// 1. Rc param stored into a collection without clone: `v.push(r)`.  Requires
 //    tracking ownership transfer through method calls.
+//
+// 2. Deeply nested non-constructor call chains are not caught.
 //
 // These are tracked as future escape-analysis work.

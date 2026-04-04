@@ -6493,59 +6493,134 @@ impl Checker {
     /// error fires even though the double-free is a codegen/runtime bug, because
     /// no correct compilation is possible for this pattern today.
     fn warn_rc_param_return(&mut self, fd: &FnDecl) {
-        // Collect names of parameters whose resolved type is Rc<_>.
-        let rc_param_names: Vec<&str> = fd
+        // Build the set of non-Copy type-param names (from inline bounds and
+        // where-clause predicates).
+        let non_copy_type_params: HashSet<&str> =
+            fd.type_params.as_ref().map_or_else(HashSet::new, |tps| {
+                let mut s: HashSet<&str> = tps
+                    .iter()
+                    .filter(|tp| !tp.bounds.iter().any(|b| b.name == "Copy"))
+                    .map(|tp| tp.name.as_str())
+                    .collect();
+                // Where-clause bounds can add Copy retroactively.
+                if let Some(wc) = &fd.where_clause {
+                    for pred in &wc.predicates {
+                        if let TypeExpr::Named { name, .. } = &pred.ty.0 {
+                            if pred.bounds.iter().any(|b| b.name == "Copy") {
+                                s.remove(name.as_str());
+                            }
+                        }
+                    }
+                }
+                s
+            });
+
+        // Collect dangerous params: explicit Rc<_> params, plus params whose
+        // declared type annotation is a bare non-Copy type parameter.
+        // The tag distinguishes them for diagnostic messaging.
+        let dangerous_params: Vec<(&str, &str)> = fd
             .params
             .iter()
-            .filter(|p| {
+            .filter_map(|p| {
                 let ty = self.resolve_type_expr(&p.ty.0);
-                matches!(ty, Ty::Named { ref name, .. } if name == "Rc")
+                if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
+                    return Some((p.name.as_str(), "Rc"));
+                }
+                // Check if the declared type annotation is a bare non-Copy
+                // type parameter, e.g. `x: T` where T has no Copy bound.
+                if let TypeExpr::Named {
+                    name: ty_name,
+                    type_args: None,
+                } = &p.ty.0
+                {
+                    if non_copy_type_params.contains(ty_name.as_str()) {
+                        return Some((p.name.as_str(), ty_name.as_str()));
+                    }
+                }
+                None
             })
-            .map(|p| p.name.as_str())
             .collect();
-        if rc_param_names.is_empty() {
+        if dangerous_params.is_empty() {
             return;
         }
 
+        let param_names: Vec<&str> = dangerous_params.iter().map(|(n, _)| *n).collect();
+        let param_tags: HashMap<&str, &str> = dangerous_params.iter().copied().collect();
+
         // Check trailing expression (implicit return).
         if let Some(trailing) = &fd.body.trailing_expr {
-            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, &rc_param_names);
+            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, &param_names, &param_tags);
         }
 
-        // Scan statements for explicit `return <ident>`.
-        self.scan_stmts_for_rc_param_return(&fd.body.stmts, &rc_param_names);
+        // Scan statements for explicit `return <ident>` / `break <ident>`.
+        self.scan_stmts_for_rc_param_return(&fd.body.stmts, &param_names, &param_tags);
     }
 
     /// If `expr` is a bare identifier matching one of `rc_params` (or a block
     /// expression whose trailing expression is), emit a fail-closed error.
-    fn check_expr_is_rc_param_return(&mut self, expr: &Expr, span: &Span, rc_params: &[&str]) {
+    ///
+    /// `param_tags` maps param name → tag string (`"Rc"` for explicit Rc params,
+    /// or the type-param name like `"T"` for non-Copy generic params).  The tag
+    /// controls the diagnostic wording.
+    fn check_expr_is_rc_param_return(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        rc_params: &[&str],
+        param_tags: &HashMap<&str, &str>,
+    ) {
         match expr {
             Expr::Identifier(name) if rc_params.contains(&name.as_str()) => {
+                let tag = param_tags.get(name.as_str()).copied().unwrap_or("Rc");
+                let (message, note, suggestion) = if tag == "Rc" {
+                    (
+                        format!(
+                            "returning Rc parameter `{name}` transfers a borrowed reference \
+                             without incrementing the refcount — this will cause a double-free \
+                             when both the caller's local and the return value are dropped"
+                        ),
+                        "function parameters are borrowed under call-boundary ownership; \
+                         the caller retains ownership and drops at scope exit"
+                            .to_string(),
+                        format!(
+                            "use `{name}.clone()` to create an owned copy with an incremented refcount"
+                        ),
+                    )
+                } else {
+                    (
+                        format!(
+                            "returning non-Copy parameter `{name}` (type `{tag}`) transfers a \
+                             borrowed value — when `{tag}` is instantiated with a ref-counted \
+                             or owned type, this causes a double-free"
+                        ),
+                        format!(
+                            "type parameter `{tag}` has no `Copy` bound; the caller retains \
+                             ownership under call-boundary semantics"
+                        ),
+                        format!(
+                            "add a `Copy` bound (`{tag}: Copy`) or clone the parameter before returning"
+                        ),
+                    )
+                };
                 self.errors.push(TypeError {
                     severity: crate::error::Severity::Error,
                     kind: TypeErrorKind::BorrowedRcReturn,
                     span: span.clone(),
-                    message: format!(
-                        "returning Rc parameter `{name}` transfers a borrowed reference \
-                         without incrementing the refcount — this will cause a double-free \
-                         when both the caller's local and the return value are dropped"
-                    ),
-                    notes: vec![(
-                        span.clone(),
-                        "function parameters are borrowed under call-boundary ownership; \
-                         the caller retains ownership and drops at scope exit"
-                            .to_string(),
-                    )],
-                    suggestions: vec![format!(
-                        "use `{name}.clone()` to create an owned copy with an incremented refcount"
-                    )],
+                    message,
+                    notes: vec![(span.clone(), note)],
+                    suggestions: vec![suggestion],
                 });
             }
             // Descend into block expressions: `{ r }` wraps the identifier
             // in an Expr::Block whose trailing_expr carries the real value.
             Expr::Block(blk) => {
                 if let Some(trailing) = &blk.trailing_expr {
-                    self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, rc_params);
+                    self.check_expr_is_rc_param_return(
+                        &trailing.0,
+                        &trailing.1,
+                        rc_params,
+                        param_tags,
+                    );
                 }
             }
             // Aggregate escapes: enum-variant constructors like Some(r), Ok(r),
@@ -6557,19 +6632,19 @@ impl Checker {
             Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
                 for arg in args {
                     let (e, s) = arg.expr();
-                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
                 }
             }
             // Tuple literals: (r, 0), (r,) embed the borrowed Rc param.
             Expr::Tuple(elems) => {
                 for (e, s) in elems {
-                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
                 }
             }
             // Struct initializers: MyStruct { field: r } embeds the borrowed Rc param.
             Expr::StructInit { fields, .. } => {
                 for (_field_name, (e, s)) in fields {
-                    self.check_expr_is_rc_param_return(e, s, rc_params);
+                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
                 }
             }
             _ => {}
@@ -6595,7 +6670,12 @@ impl Checker {
 
     /// Recursively scan statements for `return <rc_param_ident>`,
     /// `break <rc_param_ident>`, and nested control-flow bodies.
-    fn scan_stmts_for_rc_param_return(&mut self, stmts: &[Spanned<Stmt>], rc_params: &[&str]) {
+    fn scan_stmts_for_rc_param_return(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        rc_params: &[&str],
+        param_tags: &HashMap<&str, &str>,
+    ) {
         for (stmt, _span) in stmts {
             match stmt {
                 Stmt::Return(Some((expr, es)))
@@ -6603,19 +6683,20 @@ impl Checker {
                     value: Some((expr, es)),
                     ..
                 } => {
-                    self.check_expr_is_rc_param_return(expr, es, rc_params);
+                    self.check_expr_is_rc_param_return(expr, es, rc_params, param_tags);
                 }
                 Stmt::If {
                     then_block,
                     else_block,
                     ..
                 } => {
-                    self.scan_stmts_for_rc_param_return(&then_block.stmts, rc_params);
+                    self.scan_stmts_for_rc_param_return(&then_block.stmts, rc_params, param_tags);
                     if let Some(then_trailing) = &then_block.trailing_expr {
                         self.check_expr_is_rc_param_return(
                             &then_trailing.0,
                             &then_trailing.1,
                             rc_params,
+                            param_tags,
                         );
                     }
                     if let Some(else_blk) = else_block {
@@ -6624,15 +6705,17 @@ impl Checker {
                             self.scan_stmts_for_rc_param_return(
                                 std::slice::from_ref(if_stmt.as_ref()),
                                 rc_params,
+                                param_tags,
                             );
                         }
                         if let Some(blk) = &else_blk.block {
-                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params);
+                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params, param_tags);
                             if let Some(trailing) = &blk.trailing_expr {
                                 self.check_expr_is_rc_param_return(
                                     &trailing.0,
                                     &trailing.1,
                                     rc_params,
+                                    param_tags,
                                 );
                             }
                         }
@@ -6642,28 +6725,34 @@ impl Checker {
                 | Stmt::While { body, .. }
                 | Stmt::WhileLet { body, .. }
                 | Stmt::Loop { body, .. } => {
-                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params);
+                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params, param_tags);
                 }
                 Stmt::IfLet {
                     body, else_body, ..
                 } => {
-                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params);
+                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params, param_tags);
                     if let Some(else_blk) = else_body {
-                        self.scan_stmts_for_rc_param_return(&else_blk.stmts, rc_params);
+                        self.scan_stmts_for_rc_param_return(&else_blk.stmts, rc_params, param_tags);
                     }
                 }
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
                         // Match arm body is an Expr — check if it's a bare Rc param
-                        self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, rc_params);
+                        self.check_expr_is_rc_param_return(
+                            &arm.body.0,
+                            &arm.body.1,
+                            rc_params,
+                            param_tags,
+                        );
                         // If the body is a Block, recurse into its statements
                         if let Expr::Block(blk) = &arm.body.0 {
-                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params);
+                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params, param_tags);
                             if let Some(trailing) = &blk.trailing_expr {
                                 self.check_expr_is_rc_param_return(
                                     &trailing.0,
                                     &trailing.1,
                                     rc_params,
+                                    param_tags,
                                 );
                             }
                         }

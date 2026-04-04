@@ -123,9 +123,21 @@ find_program(HEW_LLDB NAMES lldb)
 find_program(HEW_ADDR2LINE NAMES addr2line llvm-addr2line)
 find_program(HEW_LLVM_SYMBOLIZER NAMES llvm-symbolizer)
 find_program(HEW_NM NAMES llvm-nm nm)
+find_program(HEW_PYTHON3 NAMES python3)
 
 # Absolute path to the Hew LLDB Python extension used by both LLDB tests.
 set(HEW_LLDB_SCRIPT "${CMAKE_SOURCE_DIR}/../scripts/debug/hew_lldb.py")
+
+# Pattern-unit test: runs outside LLDB; catches regex false-positive regressions.
+if(HEW_PYTHON3)
+  add_test(
+    NAME hew_lldb_pattern_unit
+    COMMAND ${HEW_PYTHON3}
+      ${CMAKE_SOURCE_DIR}/../scripts/debug/test_hew_lldb_patterns.py
+  )
+else()
+  message(STATUS "Skipping hew_lldb_pattern_unit — python3 not found")
+endif()
 
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)

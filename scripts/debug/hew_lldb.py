@@ -159,6 +159,29 @@ def hew_break_receive_command(debugger, command, result, _internal_dict):
     result.AppendMessage("Try: (lldb) image lookup -r -n .*dispatch.*")
 
 
+def _dotted_name_pattern(type_name: str, method_name: str) -> str:
+    """Return the POSIX ERE regex that matches the Hew mangled symbol for
+    TypeName.method.
+
+    Hew mangles impl methods as ``_HM<len><module>T<len><Type>F<len><method>``.
+    Embedding the *exact* byte lengths for both type and method prevents
+    prefix false-positives: ``T4Pair`` will never match ``T8PairList``, and
+    ``F3sum`` will never match ``F7summary``.
+
+    The regex is anchored at ``$`` so no suffix can sneak in after the
+    method segment.  LLDB passes this to LLVM's POSIX ERE engine, which
+    does not support ``\\d``; we use literal digits instead.
+    """
+    import re as _re
+
+    t_len = len(type_name)
+    m_len = len(method_name)
+    # re.escape covers POSIX ERE specials for the name fragments; for plain
+    # identifiers it is a no-op, but guards against dots or underscores in
+    # type/method names that could otherwise widen the match.
+    return f"T{t_len}{_re.escape(type_name)}F{m_len}{_re.escape(method_name)}$"
+
+
 def hew_break_command(debugger, command, result, _internal_dict):
     """Set a breakpoint on a Hew function or method by Hew-source name.
 
@@ -172,11 +195,11 @@ def hew_break_command(debugger, command, result, _internal_dict):
     Dotted names like ``Pair.sum`` cannot be matched by plain -n because
     LLDB has no Hew demangler.  The Hew mangler encodes them as:
         _HM<len><module>T<len><TypeName>F<len><method>
-    so ``hew-break Pair.sum`` uses a regex breakpoint matching
-    ``T\\d+Pair.*F\\d+sum`` against the raw symbol table.
+    so ``hew-break Pair.sum`` uses a regex breakpoint via
+    ``_dotted_name_pattern`` with exact length prefixes, which prevents
+    types whose names merely contain the requested name (e.g. PairList)
+    from being matched.
     """
-    import re
-
     name = command.strip()
     if not name:
         result.AppendMessage(
@@ -191,11 +214,7 @@ def hew_break_command(debugger, command, result, _internal_dict):
 
     if "." in name:
         parts = name.split(".", 1)
-        type_name = re.escape(parts[0])
-        method_name = re.escape(parts[1])
-        # Match _HM<len><module>T<len><TypeName>F<len><method> in the raw symbol table.
-        # LLDB passes this to LLVM's POSIX ERE engine — use [0-9]+ not \d+.
-        pattern = f"T[0-9]+{type_name}.*F[0-9]+{method_name}$"
+        pattern = _dotted_name_pattern(parts[0], parts[1])
         bp = target.BreakpointCreateByRegex(pattern)
     else:
         bp = target.BreakpointCreateByName(name)

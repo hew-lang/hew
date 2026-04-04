@@ -841,7 +841,6 @@ static void test_rc_nested_inner_drop_trampolines() {
   }
   PASS();
 }
-
 // Rc<T> call-boundary ownership contract: borrow semantics.
 // When an Rc<T> variable is passed to a function, the raw pointer is
 // forwarded WITHOUT an RcCloneOp — the callee borrows the reference for

@@ -27,6 +27,7 @@ mod link;
 mod machine;
 mod manifest;
 mod platform;
+mod process;
 #[cfg(unix)]
 mod signal;
 mod target;

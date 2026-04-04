@@ -46,6 +46,18 @@
 using namespace hew;
 using namespace mlir;
 
+namespace {
+
+constexpr llvm::StringLiteral kHewDebugParamNameAttr = "hew.debug.param_name";
+
+void setDebugParamNameAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
+                            mlir::Builder &builder) {
+  for (size_t i = 0; i < params.size(); ++i)
+    funcOp.setArgAttr(i, kHewDebugParamNameAttr, builder.getStringAttr(params[i].name));
+}
+
+} // namespace
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -3062,7 +3074,8 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
   // Create a declaration (no body) at module scope
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  mlir::func::FuncOp::create(builder, location, funcName, funcType);
+  auto funcOp = mlir::func::FuncOp::create(builder, location, funcName, funcType);
+  setDebugParamNameAttrs(funcOp, fn.params, builder);
   builder.restoreInsertionPoint(savedIP);
 }
 
@@ -4439,6 +4452,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
   auto funcOp = mlir::func::FuncOp::create(builder, location, funcName, funcType);
+  setDebugParamNameAttrs(funcOp, fn.params, builder);
 
   // Pub-aware linkage: main is always public, pub functions are public,
   // everything else is private.

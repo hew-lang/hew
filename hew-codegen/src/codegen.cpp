@@ -5350,10 +5350,23 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
                                                        const CodegenOptions &opts,
                                                        llvm::LLVMContext &llvmContext) {
   std::unordered_map<std::string, unsigned> functionDeclLines;
+  std::unordered_map<std::string, std::vector<std::string>> functionParamNames;
   if (opts.debug_info) {
     module.walk([&](mlir::func::FuncOp funcOp) {
       if (auto fileLoc = funcOp.getLoc()->findInstanceOf<mlir::FileLineColLoc>())
         functionDeclLines.try_emplace(funcOp.getName().str(), fileLoc.getLine());
+      std::vector<std::string> paramNames;
+      paramNames.reserve(funcOp.getNumArguments());
+      for (unsigned i = 0; i < funcOp.getNumArguments(); ++i) {
+        if (auto attr = llvm::dyn_cast_or_null<mlir::StringAttr>(
+                funcOp.getArgAttr(i, "hew.debug.param_name"))) {
+          paramNames.push_back(attr.getValue().str());
+        } else {
+          paramNames.emplace_back();
+        }
+      }
+      if (!paramNames.empty())
+        functionParamNames.try_emplace(funcOp.getName().str(), std::move(paramNames));
     });
   }
 
@@ -5405,7 +5418,8 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
   // This wraps the raw debug locations (from MLIR FileLineColLoc) in proper
   // DI metadata (DICompileUnit, DISubprogram) so LLVM emits .debug_info.
   if (opts.debug_info && !opts.source_path.empty()) {
-    hew::emitDebugInfo(*llvmModule, opts.source_path, opts.line_map, functionDeclLines);
+    hew::emitDebugInfo(*llvmModule, opts.source_path, opts.line_map, functionDeclLines,
+                       functionParamNames);
   }
 
   // WASM targets: create `__original_main` wrapper that calls the user's

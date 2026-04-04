@@ -25,13 +25,18 @@ namespace hew {
 /// MLIR FileLineColLoc) are re-scoped under the correct DISubprogram; those
 /// without locations get a default location at the function's start line.
 /// `functionDeclLines` provides a per-function fallback start line when MLIR-to-
-/// LLVM translation drops the original instruction locations.
+/// LLVM translation drops the original instruction locations. `functionParamNames`
+/// carries source parameter names captured on MLIR func arguments so we can emit
+/// DW_TAG_formal_parameter entries and dbg.value records for debugger-visible
+/// Hew arguments.
 ///
 /// After this call the module carries complete DWARF metadata and LLVM will
 /// emit .debug_info / .debug_line sections when writing an object file.
 void emitDebugInfo(llvm::Module &module, const std::string &sourcePath,
                    const std::vector<size_t> &lineMap,
-                   const std::unordered_map<std::string, unsigned> &functionDeclLines = {});
+                   const std::unordered_map<std::string, unsigned> &functionDeclLines = {},
+                   const std::unordered_map<std::string, std::vector<std::string>>
+                       &functionParamNames = {});
 
 } // namespace hew
 

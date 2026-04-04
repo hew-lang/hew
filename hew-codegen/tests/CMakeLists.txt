@@ -315,6 +315,15 @@ if(HEW_DWARFDUMP)
       -DEXPECTED_SYMBOL_LINES=Pair.sum|11,add|16,main|20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
   )
+  add_test(
+    NAME dwarf_variable_metadata
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DDWARFDUMP=${HEW_DWARFDUMP}
+      -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/e2e_debug/dwarf_linked_binary.hew
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_variable_metadata_smoke${HEW_EXE_SUFFIX}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_variable_metadata_test.cmake
+  )
   # W-1 COFF DWARF smoke: emits an x86_64-pc-windows-msvc object from the same
   # fixture and asserts that DWARF (DW_AT_name, DW_AT_decl_line, source file)
   # survives the COFF path.  No Windows host, linker, or CodeView/PDB toolchain

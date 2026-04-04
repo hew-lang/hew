@@ -3994,11 +3994,11 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
       if (method == "method")
         return rtCall("hew_http_request_method", hew::StringRefType::get(&context), {receiver});
       if (method == "body")
-        return rtCall("hew_http_request_body", hew::StringRefType::get(&context), argVals);
+        return rtCall("hew_http_request_body_string", hew::StringRefType::get(&context), argVals);
       if (method == "header")
         return rtCall("hew_http_request_header", hew::StringRefType::get(&context), argVals);
       if (method == "respond")
-        return rtCall("hew_http_respond", i32Type, argVals);
+        return rtCall("hew_http_respond_bridge", i32Type, argVals);
       if (method == "respond_text")
         return rtCall("hew_http_respond_text", i32Type, argVals);
       if (method == "respond_json")

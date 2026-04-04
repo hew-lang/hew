@@ -355,7 +355,7 @@ impl TraitRegistry {
                 }
                 // Built-in generic collections: Send/Clone/Debug if elements are,
                 // but NOT Copy or Frozen (heap-allocated, mutable)
-                if name == "Vec" || name == "HashMap" {
+                if name == "Vec" || name == "HashMap" || name == "HashSet" {
                     return match marker {
                         MarkerTrait::Copy | MarkerTrait::Frozen => false,
                         _ => args.iter().all(|a| self.implements_marker(a, marker)),
@@ -586,6 +586,52 @@ mod tests {
         };
         assert!(registry.is_send(&map));
         assert!(!registry.implements_marker(&map, MarkerTrait::Copy));
+    }
+
+    #[test]
+    fn test_hashset_is_send_when_element_is_send() {
+        let registry = TraitRegistry::new();
+        let set = Ty::Named {
+            name: "HashSet".to_string(),
+            args: vec![Ty::String],
+        };
+        assert!(registry.is_send(&set));
+        assert!(registry.is_sync(&set));
+        assert!(registry.implements_marker(&set, MarkerTrait::Clone));
+        assert!(!registry.implements_marker(&set, MarkerTrait::Copy));
+        assert!(!registry.implements_marker(&set, MarkerTrait::Frozen));
+    }
+
+    #[test]
+    fn test_hashset_not_send_when_element_not_send() {
+        let registry = TraitRegistry::new();
+        let ptr = Ty::Pointer {
+            pointee: Box::new(Ty::I32),
+            is_mutable: false,
+        };
+        let set_ptr = Ty::Named {
+            name: "HashSet".to_string(),
+            args: vec![ptr],
+        };
+        assert!(!registry.is_send(&set_ptr));
+    }
+
+    #[test]
+    fn test_hashset_rc_element_is_not_send() {
+        // Rc<T> is explicitly non-Send (single-threaded ref-count). HashSet<Rc<T>>
+        // must remain non-Send even after the HashSet Send-marker fix, exercising
+        // the element-propagation path with Rc rather than a raw pointer.
+        let registry = TraitRegistry::new();
+        let rc_i32 = Ty::Named {
+            name: "Rc".to_string(),
+            args: vec![Ty::I32],
+        };
+        let set_rc = Ty::Named {
+            name: "HashSet".to_string(),
+            args: vec![rc_i32],
+        };
+        assert!(!registry.is_send(&set_rc));
+        assert!(!registry.is_sync(&set_rc));
     }
 
     #[test]

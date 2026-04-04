@@ -4,6 +4,7 @@
 //   re"pattern"     — regex literal syntax
 //   string =~ re""  — regex match (returns bool)
 //   string !~ re""  — regex non-match
+//   match x { s if s =~ re"" => ... } — regex-powered match guards
 //
 // Usage: hew build regex_demo.hew -o regex_demo && ./regex_demo
 fn main() {
@@ -42,5 +43,13 @@ fn main() {
     if input =~ re"^(GET|POST|PUT|DELETE) " {
         println(f"'{input}' is an HTTP request line");
     }
+
+    let route = "POST /api/users";
+    match route {
+        line if line =~ re"^(GET|HEAD) " => println(f"'{line}' is read-only"),
+        line if line =~ re"^(POST|PUT|PATCH|DELETE) " => println(f"'{line}' mutates state"),
+        _ => println(f"'{route}' is another command"),
+    }
+
     println("All regex demos passed!");
 }

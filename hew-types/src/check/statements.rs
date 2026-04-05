@@ -1,0 +1,597 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "submodules mirror the legacy check namespace during the split"
+)]
+use super::*;
+
+impl Checker {
+    pub(super) fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {
+        self.env.push_scope();
+        // Snapshot const_values so let-bound literal entries added in this
+        // scope are cleaned up when the scope exits.
+        let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
+        let num_stmts = block.stmts.len();
+        let mut terminated = false;
+        for (i, (stmt, span)) in block.stmts.iter().enumerate() {
+            // If a previous statement was terminal, warn about this unreachable code
+            if terminated {
+                self.warnings.push(TypeError {
+                    severity: crate::error::Severity::Warning,
+                    kind: TypeErrorKind::UnreachableCode,
+                    span: span.clone(),
+                    message: "unreachable code".to_string(),
+                    notes: vec![],
+                    suggestions: vec![
+                        "remove this code or restructure the control flow".to_string()
+                    ],
+                });
+                // Still type-check the remaining statements for error coverage,
+                // but only emit the unreachable warning once per block.
+                for (s, sp) in &block.stmts[i..] {
+                    self.check_stmt(s, sp);
+                }
+                self.const_values = const_values_snapshot;
+                self.emit_scope_warnings();
+                return Ty::Never;
+            }
+
+            let is_last = i + 1 == num_stmts && block.trailing_expr.is_none();
+            if is_last {
+                let ty = match stmt {
+                    Stmt::If { .. }
+                    | Stmt::IfLet { .. }
+                    | Stmt::Match { .. }
+                    | Stmt::Return(_)
+                    | Stmt::Break { .. }
+                    | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
+                    Stmt::Expression((expr, es)) => {
+                        let expr_ty = self.synthesize(expr, es);
+                        if matches!(expr_ty, Ty::Never) {
+                            Ty::Never
+                        } else {
+                            Ty::Unit
+                        }
+                    }
+                    _ => {
+                        self.check_stmt(stmt, span);
+                        Ty::Unit
+                    }
+                };
+                self.const_values = const_values_snapshot;
+                self.emit_scope_warnings();
+                return ty;
+            }
+            // For If/Match, use check_stmt_as_expr to get the result type
+            // so we can detect when all branches terminate.
+            if matches!(
+                stmt,
+                Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
+            ) {
+                let ty = self.check_stmt_as_expr(stmt, span, None);
+                if matches!(ty, Ty::Never) {
+                    terminated = true;
+                }
+            } else {
+                self.check_stmt(stmt, span);
+            }
+
+            // Check if this statement terminates control flow
+            if matches!(
+                stmt,
+                Stmt::Return(_) | Stmt::Break { .. } | Stmt::Continue { .. }
+            ) {
+                terminated = true;
+            }
+        }
+        // If a trailing expression follows a terminal statement, it's unreachable
+        let ty = if let Some(expr) = &block.trailing_expr {
+            if terminated {
+                self.warnings.push(TypeError {
+                    severity: crate::error::Severity::Warning,
+                    kind: TypeErrorKind::UnreachableCode,
+                    span: expr.1.clone(),
+                    message: "unreachable code".to_string(),
+                    notes: vec![],
+                    suggestions: vec![
+                        "remove this code or restructure the control flow".to_string()
+                    ],
+                });
+            }
+            // When the block has a known expected type, use check_against so that
+            // integer/float literals coerce to the target width instead of defaulting
+            // to i64/f64 and causing a spurious type mismatch.  For all other
+            // expressions check_against falls through to synthesize + expect_type,
+            // producing the same result as before.
+            if let Some(exp) = expected {
+                self.check_against(&expr.0, &expr.1, exp)
+            } else {
+                self.synthesize(&expr.0, &expr.1)
+            }
+        } else {
+            Ty::Unit
+        };
+        self.const_values = const_values_snapshot;
+        self.emit_scope_warnings();
+        ty
+    }
+
+    /// Check a statement that may serve as a block's trailing expression.
+    /// Returns the "expression type" of the statement.
+    pub(super) fn check_stmt_as_expr(
+        &mut self,
+        stmt: &Stmt,
+        span: &Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        match stmt {
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let then_ty = self.check_block(then_block, expected);
+                if let Some(eb) = else_block {
+                    if let Some(ref if_stmt) = eb.if_stmt {
+                        let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
+                        self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
+                    } else if let Some(block) = &eb.block {
+                        let else_ty = self.check_block(block, expected);
+                        self.unify_branches(&then_ty, &else_ty, span)
+                    } else {
+                        Ty::Unit
+                    }
+                } else {
+                    Ty::Unit
+                }
+            }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                let then_ty = self.check_block(body, expected);
+                self.env.pop_scope();
+                if let Some(block) = else_body {
+                    let else_ty = self.check_block(block, expected);
+                    self.unify_branches(&then_ty, &else_ty, span)
+                } else {
+                    Ty::Unit
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
+                self.check_match_expr(&scr_ty, arms, span, expected)
+            }
+            Stmt::Expression((expr, es)) => self.synthesize(expr, es),
+            Stmt::Return(value) => {
+                if let Some(expected) = self.current_return_type.clone() {
+                    match value {
+                        Some((val, vs)) => {
+                            self.check_against(val, vs, &expected);
+                        }
+                        None if expected != Ty::Unit => {
+                            self.errors.push(TypeError::return_type_mismatch(
+                                span.clone(),
+                                &expected,
+                                &Ty::Unit,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                Ty::Never
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {
+                self.check_stmt(stmt, span);
+                Ty::Never
+            }
+            _ => {
+                self.check_stmt(stmt, span);
+                Ty::Unit
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "statement checking covers many Stmt variants"
+    )]
+    pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
+        match stmt {
+            Stmt::Let { pattern, ty, value } => {
+                let binding_context = match &pattern.0 {
+                    Pattern::Identifier(name) => format!("local binding `{name}`"),
+                    _ => "local binding".to_string(),
+                };
+                let val_ty = if let Some((val, vs)) = value {
+                    if let Some(annotation) = ty {
+                        let expected =
+                            self.resolve_annotation_with_holes(annotation, binding_context.clone());
+                        self.check_against(val, vs, &expected)
+                    } else {
+                        self.synthesize(val, vs)
+                    }
+                } else if let Some(annotation) = ty {
+                    self.resolve_annotation_with_holes(annotation, binding_context)
+                } else {
+                    let v = TypeVar::fresh();
+                    Ty::Var(v)
+                };
+                // Consume the scratch field unconditionally so stale state
+                // never accumulates across statements.  Only register the
+                // pairs in lambda_poly_type_var_map when the binding value is
+                // *directly* a generic lambda expression — indirect nesting
+                // (a generic lambda buried inside a call argument, etc.) must
+                // not be treated as a let-bound generic lambda.
+                let generic_vars = self.last_lambda_generic_vars.take();
+                let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
+                    matches!(
+                        val,
+                        Expr::Lambda {
+                            type_params: Some(tps),
+                            ..
+                        } if !tps.is_empty()
+                    )
+                });
+                // For simple identifier patterns, track the definition span
+                if let Pattern::Identifier(name) = &pattern.0 {
+                    if val_ty == Ty::Unit && value.is_some() {
+                        self.warnings.push(TypeError {
+                            severity: crate::error::Severity::Warning,
+                            kind: TypeErrorKind::StyleSuggestion,
+                            span: span.clone(),
+                            message: format!("binding `{name}` has unit type and carries no value"),
+                            notes: vec![],
+                            suggestions: vec!["prefix with underscore: `_name`".to_string()],
+                        });
+                    }
+                    self.check_shadowing(name, &pattern.1);
+                    self.env
+                        .define_with_span(name.clone(), val_ty, false, pattern.1.clone());
+                    // Register generic lambda binding for call-site inference.
+                    // Both guards must hold: the scratch field was populated
+                    // AND the let value is itself (not just contains) a generic
+                    // lambda expression.
+                    if value_is_direct_generic_lambda {
+                        if let Some(gvars) = generic_vars {
+                            self.lambda_poly_type_var_map.insert(name.clone(), gvars);
+                        }
+                    }
+                    // Track let-bound literals for numeric coercion at use sites.
+                    // Only when there's no explicit type annotation (the value
+                    // defaulted to i64/f64 from synthesis), so the literal can
+                    // be coerced to other numeric types like const values.
+                    if ty.is_none() {
+                        if let Some((val, _)) = value {
+                            if let Some(v) = extract_integer_literal_value(val) {
+                                self.const_values
+                                    .insert(name.clone(), ConstValue::Integer(v));
+                            } else if let Some(v) = extract_float_literal_value(val) {
+                                self.const_values.insert(name.clone(), ConstValue::Float(v));
+                            }
+                        }
+                    }
+                } else {
+                    self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                }
+            }
+            Stmt::Var { name, ty, value } => {
+                let binding_context = format!("local binding `{name}`");
+                let val_ty = if let Some((val, vs)) = value {
+                    if let Some(annotation) = ty {
+                        let expected =
+                            self.resolve_annotation_with_holes(annotation, binding_context.clone());
+                        self.check_against(val, vs, &expected)
+                    } else {
+                        self.synthesize(val, vs)
+                    }
+                } else if let Some(annotation) = ty {
+                    self.resolve_annotation_with_holes(annotation, binding_context)
+                } else {
+                    let v = TypeVar::fresh();
+                    Ty::Var(v)
+                };
+                self.check_shadowing(name, span);
+                self.env
+                    .define_with_span(name.clone(), val_ty, true, span.clone());
+            }
+            Stmt::Assign { target, op, value } => {
+                // Purity check: pure functions cannot assign to actor fields
+                if self.in_pure_function {
+                    // Check bare field name assignment (actor fields in scope)
+                    if let Expr::Identifier(name) = &target.0 {
+                        if self.current_actor_fields.contains(name) {
+                            self.report_error(
+                                TypeErrorKind::PurityViolation,
+                                span,
+                                format!("cannot assign to actor field `{name}` in a pure function"),
+                            );
+                        }
+                    }
+                }
+                let target_ty = self.synthesize(&target.0, &target.1);
+                if let Expr::Identifier(name) = &target.0 {
+                    if let Some(binding) = self.env.lookup_ref(name) {
+                        if !binding.is_mutable {
+                            self.errors
+                                .push(TypeError::mutability_error(span.clone(), name));
+                        }
+                    }
+                    // Plain assignment (=) is a write-only, not a read.
+                    // Compound assignment (+=, etc.) is both read and write.
+                    // Must unmark BEFORE mark_written so the guard check works.
+                    if op.is_none() {
+                        self.env.unmark_used(name);
+                    }
+                    self.env.mark_written(name);
+                }
+                self.check_against(&value.0, &value.1, &target_ty);
+            }
+            Stmt::Expression((expr, es)) => {
+                self.synthesize(expr, es);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                self.check_block(then_block, None);
+                if let Some(eb) = else_block {
+                    if let Some(ref if_stmt) = eb.if_stmt {
+                        self.check_stmt(&if_stmt.0, &if_stmt.1);
+                    } else if let Some(block) = &eb.block {
+                        self.check_block(block, None);
+                    }
+                }
+            }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                self.check_block(body, None);
+                self.env.pop_scope();
+                if let Some(block) = else_body {
+                    self.check_block(block, None);
+                }
+            }
+            Stmt::Return(value) => {
+                if let Some(expected) = self.current_return_type.clone() {
+                    match value {
+                        Some((val, vs)) => {
+                            self.check_against(val, vs, &expected);
+                        }
+                        None if expected != Ty::Unit => {
+                            self.errors.push(TypeError::return_type_mismatch(
+                                span.clone(),
+                                &expected,
+                                &Ty::Unit,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Stmt::Loop { label, body } => {
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
+                self.loop_depth += 1;
+                self.check_block(body, None);
+                self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
+            }
+            Stmt::For {
+                label,
+                pattern,
+                iterable,
+                body,
+                is_await,
+            } => {
+                let iter_ty = self.synthesize(&iterable.0, &iterable.1);
+                // Infer element type from iterable, and enforce `for await` restrictions.
+                let elem_ty = match &iter_ty {
+                    Ty::Array(inner, _) | Ty::Slice(inner) => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over an Array or Slice; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        (**inner).clone()
+                    }
+                    Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a Range; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        args[0].clone()
+                    }
+                    Ty::Named { name, args }
+                        if (name == "Stream" || name == "stream.Stream") && args.len() == 1 =>
+                    {
+                        args[0].clone()
+                    }
+                    Ty::Named { name, args } if name == "Vec" => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a Vec; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()))
+                    }
+                    Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a HashMap; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        Ty::Tuple(vec![args[0].clone(), args[1].clone()])
+                    }
+                    Ty::Named { name, args }
+                        if (name == "Generator" && !args.is_empty())
+                            || (name == "AsyncGenerator" && args.len() == 1) =>
+                    {
+                        args[0].clone()
+                    }
+                    Ty::Named { name, args }
+                        if (name == "Receiver" || name == "channel.Receiver")
+                            && !args.is_empty() =>
+                    {
+                        let inner = args[0].clone();
+                        if *is_await {
+                            self.check_receiver_element_type_for_await(&inner, &iterable.1);
+                        }
+                        inner
+                    }
+                    _ => Ty::Var(TypeVar::fresh()),
+                };
+                self.env.push_scope();
+                self.in_for_binding = true;
+                self.bind_pattern(&pattern.0, &elem_ty, true, &pattern.1);
+                self.in_for_binding = false;
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
+                self.loop_depth += 1;
+                self.check_block(body, None);
+                self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
+                self.env.pop_scope();
+            }
+            Stmt::While {
+                label,
+                condition,
+                body,
+            } => {
+                // Detect `while true` — suggest `loop` instead
+                if matches!(&condition.0, Expr::Literal(Literal::Bool(true))) {
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::StyleSuggestion,
+                        span: span.clone(),
+                        message: "`while true` can be simplified".to_string(),
+                        notes: vec![],
+                        suggestions: vec![
+                            "use `loop { ... }` instead of `while true { ... }`".to_string()
+                        ],
+                    });
+                }
+                self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
+                self.loop_depth += 1;
+                self.check_block(body, None);
+                self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
+            }
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                ..
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                self.loop_depth += 1;
+                self.check_block(body, None);
+                self.loop_depth -= 1;
+                self.env.pop_scope();
+            }
+            Stmt::Break { label, value } => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        "break used outside of a loop",
+                    ));
+                } else if let Some(lbl) = label {
+                    if !self.loop_labels.contains(lbl) {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            format!("unknown loop label `@{lbl}`"),
+                        ));
+                    }
+                }
+                if let Some((val_expr, val_span)) = value {
+                    self.synthesize(val_expr, val_span);
+                }
+            }
+            Stmt::Continue { label } => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        "continue used outside of a loop",
+                    ));
+                } else if let Some(lbl) = label {
+                    if !self.loop_labels.contains(lbl) {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            format!("unknown loop label `@{lbl}`"),
+                        ));
+                    }
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
+                self.check_match_stmt(&scr_ty, arms, span);
+            }
+            Stmt::Defer(expr) => {
+                self.synthesize(&expr.0, &expr.1);
+            }
+        }
+    }
+
+    pub(super) fn check_match_stmt(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
+        for arm in arms {
+            self.env.push_scope();
+            self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+
+            if let Some((guard, gs)) = &arm.guard {
+                self.check_against(guard, gs, &Ty::Bool);
+            }
+
+            self.synthesize(&arm.body.0, &arm.body.1);
+            self.env.pop_scope();
+        }
+
+        self.check_exhaustiveness(scrutinee_ty, arms, span);
+    }
+}

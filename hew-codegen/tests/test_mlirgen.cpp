@@ -2751,6 +2751,68 @@ static void test_resultful_match_nested_arm_error_is_not_double_reported() {
 }
 
 // ============================================================================
+// Test: Resultful match arms that panic still lower without missing-value
+//       diagnostics
+// ============================================================================
+static void test_resultful_match_panic_arm_lowers() {
+  TEST(resultful_match_panic_arm_lowers);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn lower_panic_arm(flag: bool) -> i64 {
+    let value = match flag {
+        true => 1,
+        false => { panic("boom"); },
+    };
+    value
+}
+
+fn main() -> i64 {
+    lower_panic_arm(true)
+}
+  )",
+                             program)) {
+    FAIL("failed to parse resultful match panic-arm source");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("MLIR generation failed for resultful match panic arm");
+    return;
+  }
+  if (stderrText.find("match expression arm lowering did not produce a value") !=
+          std::string::npos ||
+      stderrText.find("match expression else-chain lowering did not produce a value") !=
+          std::string::npos) {
+    FAIL("panic-only resultful match arms should not trip missing-value diagnostics");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto panicFn = lookupFuncBySuffix(module, "lower_panic_arm");
+  if (!panicFn) {
+    FAIL("lower_panic_arm function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countAllPanics(panicFn) < 1) {
+    FAIL("expected resultful match panic arm to retain a panic path");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Trailing void if/match use statement lowering
 // ============================================================================
 static void test_void_trailing_if_match_stmt_lowering() {
@@ -4740,6 +4802,7 @@ int main() {
   test_resultful_match_missing_arm_body_fails_closed();
   test_resultful_match_missing_else_chain_value_fails_closed();
   test_resultful_match_nested_arm_error_is_not_double_reported();
+  test_resultful_match_panic_arm_lowers();
   test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

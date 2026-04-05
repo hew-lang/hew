@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
+#include <functional>
 #include <string>
 
 using namespace hew;
@@ -511,6 +512,36 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     return {value, sawDiagnostic || errorCount_ != prevErrorCount};
   };
 
+  std::function<bool(const ast::Expr &)> exprDefinitelyPanics;
+  auto blockDefinitelyPanics = [&](const ast::Block &block) -> bool {
+    if (block.trailing_expr)
+      return exprDefinitelyPanics(block.trailing_expr->value);
+    if (block.stmts.empty())
+      return false;
+    auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind);
+    return exprStmt && exprDefinitelyPanics(exprStmt->expr.value);
+  };
+  exprDefinitelyPanics = [&](const ast::Expr &expr) -> bool {
+    if (auto *call = std::get_if<ast::ExprCall>(&expr.kind)) {
+      auto *callee = std::get_if<ast::ExprIdentifier>(&call->function->value.kind);
+      return callee && callee->name == "panic";
+    }
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+      return blockDefinitelyPanics(blockExpr->block);
+    if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+      return blockDefinitelyPanics(scopeExpr->block);
+    if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+      return blockDefinitelyPanics(unsafeExpr->block);
+    return false;
+  };
+
+  auto endsInNoReturnRuntimeCall = [&](mlir::Block *block) {
+    if (!block || block->empty())
+      return false;
+    auto call = mlir::dyn_cast<hew::RuntimeCallOp>(block->back());
+    return call && call.getCallee() == "hew_panic";
+  };
+
   auto emitMissingResultfulMatchValue = [&](mlir::Location diagLoc, llvm::StringRef which) {
     ++errorCount_;
     emitError(diagLoc) << "match expression " << which << " did not produce a value";
@@ -528,10 +559,16 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       auto *thenBlock = builder.getInsertionBlock();
       if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
         if (!thenVal) {
-          if (!thenHadDiagnostic)
+          if ((arm.body && exprDefinitelyPanics(arm.body->value)) ||
+              endsInNoReturnRuntimeCall(thenBlock)) {
+            thenVal = createDefaultValue(builder, location, resultType);
+          } else if (!thenHadDiagnostic) {
             emitMissingResultfulMatchValue(arm.body ? loc(arm.body->span) : location,
                                            "arm lowering");
-          return nullptr;
+            return nullptr;
+          } else {
+            return nullptr;
+          }
         }
         thenVal = coerceType(thenVal, resultType, location);
         if (!thenVal)
@@ -546,13 +583,16 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       auto *elseBlock = builder.getInsertionBlock();
       if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
         if (!elseVal) {
-          if (!elseHadDiagnostic) {
+          if (endsInNoReturnRuntimeCall(elseBlock)) {
+            elseVal = createDefaultValue(builder, location, resultType);
+          } else if (!elseHadDiagnostic) {
             mlir::Location elseLoc = idx + 1 < arms.size() && arms[idx + 1].body
                                          ? loc(arms[idx + 1].body->span)
                                          : location;
             emitMissingResultfulMatchValue(elseLoc, "else-chain lowering");
-          }
-          return nullptr;
+            return nullptr;
+          } else
+            return nullptr;
         }
         elseVal = coerceType(elseVal, resultType, location);
         if (!elseVal)

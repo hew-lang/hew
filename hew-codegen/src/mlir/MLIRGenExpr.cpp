@@ -4128,6 +4128,18 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
     return emitRuntimeCall(callee, resultType, args, location);
   };
 
+  // Shared timeout-method dispatch for net.Connection handles; used by both
+  // the typed-handle path and the i32-typed-handle path below.
+  auto dispatchConnectionTimeoutMethod =
+      [&](const std::string &method, mlir::Type i32Type,
+          mlir::ValueRange argVals) -> std::optional<mlir::Value> {
+    if (method == "set_read_timeout")
+      return rtCall("hew_tcp_set_read_timeout", i32Type, argVals);
+    if (method == "set_write_timeout")
+      return rtCall("hew_tcp_set_write_timeout", i32Type, argVals);
+    return std::nullopt;
+  };
+
   // Check if receiver is a typed handle (http.Server, net.Connection, etc.)
   if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiver.getType())) {
     const auto handleType = handleTy.getHandleKind().str();
@@ -4196,10 +4208,8 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         return rtCall("hew_tcp_write", i32Type, argVals);
       if (method == "close")
         return rtCall("hew_tcp_close", i32Type, argVals);
-      if (method == "set_read_timeout")
-        return rtCall("hew_tcp_set_read_timeout", i32Type, argVals);
-      if (method == "set_write_timeout")
-        return rtCall("hew_tcp_set_write_timeout", i32Type, argVals);
+      if (auto r = dispatchConnectionTimeoutMethod(method, i32Type, argVals))
+        return r;
     }
 
     // regex.Pattern methods
@@ -4308,10 +4318,8 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         }
         if (method == "close")
           return rtCall("hew_tcp_close", i32Type, argVals);
-        if (method == "set_read_timeout")
-          return rtCall("hew_tcp_set_read_timeout", i32Type, argVals);
-        if (method == "set_write_timeout")
-          return rtCall("hew_tcp_set_write_timeout", i32Type, argVals);
+        if (auto r = dispatchConnectionTimeoutMethod(method, i32Type, argVals))
+          return r;
       }
     }
   }

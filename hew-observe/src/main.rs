@@ -428,4 +428,27 @@ mod tests {
             "Multiple profilers discovered — specify --pid:\n  --pid 101  alpha  (up 100s)\n  --pid 202  beta  (up 20s)",
         );
     }
+
+    #[test]
+    fn explicit_addr_deduplicates_multi_node_targets() {
+        let app = connect(&Cli {
+            addr: Some("alpha:6060".to_owned()),
+            pid: None,
+            list: false,
+            node: vec![
+                "beta:6061".to_owned(),
+                "alpha:6060".to_owned(),
+                "gamma:6062".to_owned(),
+                "beta:6061".to_owned(),
+            ],
+            refresh_ms: 1_000,
+            demo: false,
+        })
+        .expect("explicit --addr should connect");
+
+        assert!(app.is_multi_node());
+        assert_eq!(app.configured_node_count(), 3);
+        assert_eq!(app.configured_target_label(), "alpha:6060 +2 more");
+        assert_eq!(app.active_node_label(), "alpha:6060");
+    }
 }

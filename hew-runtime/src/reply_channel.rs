@@ -90,6 +90,62 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut HewReplyChannel) {
     }
 }
 
+unsafe fn release_sender_ref_if_cancelled(ch: *mut HewReplyChannel) -> bool {
+    // SAFETY: caller guarantees `ch` is a live sender-side reply channel reference.
+    unsafe {
+        if (*ch).cancelled.load(Ordering::Acquire) {
+            hew_reply_channel_free(ch);
+            return true;
+        }
+    }
+    false
+}
+
+unsafe fn publish_reply(ch: *mut HewReplyChannel, value: *mut c_void, value_size: usize) {
+    // SAFETY: caller guarantees `ch` is valid, not cancelled, and single-writer.
+    unsafe {
+        debug_assert!(
+            !(*ch).ready.load(Ordering::Acquire),
+            "reply channel published more than once"
+        );
+        (*ch).value = value;
+        (*ch).value_size = value_size;
+        // Release barrier ensures value writes are visible to the waiter.
+        (*ch).ready.store(true, Ordering::Release);
+
+        // Wake the condvar waiter.
+        let guard = (*ch).lock.lock_or_recover();
+        (*ch).cond.notify_one();
+        drop(guard);
+        hew_reply_channel_free(ch);
+    }
+}
+
+/// Retire a queued ask whose mailbox ownership ends before dispatch.
+///
+/// This is the explicit mailbox-teardown path for orphaned ask waiters
+/// (mailbox free, queue eviction, coalesce replacement). It consumes the
+/// sender-side reference held by the queued node, publishing the same empty
+/// reply that older fallback paths emitted to avoid hanging waiters.
+pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller guarantees `ch` is the queued node's sender-side reference.
+    unsafe {
+        if release_sender_ref_if_cancelled(ch) {
+            return;
+        }
+
+        debug_assert!(
+            (*ch).value.is_null() && (*ch).value_size == 0,
+            "orphaned ask teardown must not overwrite an existing reply"
+        );
+        publish_reply(ch, ptr::null_mut(), 0);
+    }
+}
+
 // ── Reply (sender side) ─────────────────────────────────────────────────
 
 /// Deposit a reply value and wake the waiter.
@@ -110,34 +166,22 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
-        // If the waiter already timed out and cancelled, clean up and bail.
-        if (*ch).cancelled.load(Ordering::Acquire) {
-            if size > 0 && !value.is_null() {
-                // Value was never deposited; nothing to free.
-            }
-            // The channel is orphaned — release the sender's reference.
-            hew_reply_channel_free(ch);
+        if release_sender_ref_if_cancelled(ch) {
             return;
         }
 
+        let mut copied_value = ptr::null_mut();
+        let mut copied_size = 0;
         if size > 0 && !value.is_null() {
             // SAFETY: malloc for deep copy of reply payload.
             let buf = libc::malloc(size);
             if !buf.is_null() {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
-                (*ch).value = buf;
-                (*ch).value_size = size;
+                copied_value = buf;
+                copied_size = size;
             }
         }
-
-        // Release barrier ensures value writes are visible to the waiter.
-        (*ch).ready.store(true, Ordering::Release);
-
-        // Wake the condvar waiter.
-        let guard = (*ch).lock.lock_or_recover();
-        (*ch).cond.notify_one();
-        drop(guard);
-        hew_reply_channel_free(ch);
+        publish_reply(ch, copied_value, copied_size);
     }
 }
 

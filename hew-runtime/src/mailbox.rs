@@ -102,6 +102,39 @@ unsafe fn msg_node_alloc(
     node
 }
 
+unsafe fn take_msg_node_reply_channel(node: *mut HewMsgNode) -> *mut c_void {
+    // SAFETY: caller guarantees exclusive access to `node`.
+    unsafe {
+        let reply_channel = (*node).reply_channel;
+        (*node).reply_channel = ptr::null_mut();
+        reply_channel
+    }
+}
+
+unsafe fn retire_orphaned_ask_reply_channel(reply_channel: *mut c_void) {
+    if reply_channel.is_null() {
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: native mailboxes own one sender-side reply reference per queued ask node.
+    unsafe {
+        crate::reply_channel::hew_reply_channel_retire_orphaned_ask(reply_channel.cast());
+    }
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: WASM keeps the existing empty-reply teardown behaviour for parity.
+    unsafe {
+        crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+    }
+}
+
+unsafe fn retire_orphaned_msg_node_reply(node: *mut HewMsgNode) {
+    // SAFETY: caller guarantees exclusive ownership of `node`.
+    let reply_channel = unsafe { take_msg_node_reply_channel(node) };
+    // SAFETY: the detached reply channel (if any) belonged to this queued ask node.
+    unsafe { retire_orphaned_ask_reply_channel(reply_channel) };
+}
+
 /// Free a [`HewMsgNode`] and its payload.
 ///
 /// # Safety
@@ -114,16 +147,9 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
-        // If a reply channel was set (ask pattern) but the message was never
-        // dispatched (e.g. actor stopped with messages in the queue), send an
-        // empty reply so the waiting caller of hew_actor_ask is unblocked.
-        if !(*node).reply_channel.is_null() {
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::reply_channel::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
-            #[cfg(target_arch = "wasm32")]
-            crate::reply_channel_wasm::hew_reply((*node).reply_channel.cast(), ptr::null_mut(), 0);
-            (*node).reply_channel = ptr::null_mut();
-        }
+        // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
+        // reply reference that must be retired before the node memory is freed.
+        retire_orphaned_msg_node_reply(node);
         libc::free((*node).data);
         libc::free(node.cast());
     }
@@ -594,9 +620,7 @@ unsafe fn replace_node_payload(
         if (*node).reply_channel != reply_channel {
             // Keep the queued node's reply channel stable, but retire the
             // superseded incoming waiter so ask callers never hang.
-            if !reply_channel.is_null() {
-                crate::reply_channel::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
-            }
+            retire_orphaned_ask_reply_channel(reply_channel);
         }
     }
     true
@@ -1461,6 +1485,111 @@ mod tests {
                 "coalesced message must have the updated payload"
             );
             hew_msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_retires_superseded_ask_without_stealing_existing_waiter() {
+        use crate::reply_channel::{
+            hew_reply_channel_free, hew_reply_channel_is_ready_for_test, hew_reply_channel_new,
+            hew_reply_channel_retain, hew_reply_wait_timeout,
+        };
+
+        // SAFETY: test owns the mailbox and reply channels exclusively.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let first = PriceUpdate {
+                symbol: 42,
+                price: 10,
+            };
+            let updated = PriceUpdate {
+                symbol: 42,
+                price: 99,
+            };
+
+            let existing = hew_reply_channel_new();
+            let incoming = hew_reply_channel_new();
+            assert!(!existing.is_null());
+            assert!(!incoming.is_null());
+
+            hew_reply_channel_retain(existing);
+            hew_reply_channel_retain(incoming);
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                    existing.cast(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    2,
+                    (&raw const updated).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                    incoming.cast(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_len(mb),
+                1,
+                "coalesce must keep queue length stable"
+            );
+
+            let incoming_reply = hew_reply_wait_timeout(incoming, 1_000);
+            assert!(
+                incoming_reply.is_null(),
+                "superseded ask should observe an empty reply"
+            );
+            assert!(
+                hew_reply_channel_is_ready_for_test(incoming),
+                "superseded ask waiter must be retired promptly"
+            );
+            hew_reply_channel_free(incoming);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!(
+                (*node).msg_type,
+                2,
+                "coalesced node should carry the updated message type"
+            );
+            let got = *((*node).data.cast::<PriceUpdate>());
+            assert_eq!(
+                got.price, 99,
+                "coalesced node should carry the updated payload"
+            );
+            assert_eq!(
+                (*node).reply_channel as usize,
+                existing as usize,
+                "coalesced node must keep the original queued ask waiter"
+            );
+            assert!(
+                !hew_reply_channel_is_ready_for_test(existing),
+                "original waiter must remain pending until the queued node retires"
+            );
+
+            hew_msg_node_free(node);
+
+            let existing_reply = hew_reply_wait_timeout(existing, 1_000);
+            assert!(
+                existing_reply.is_null(),
+                "retiring the queued node should unblock the original waiter with an empty reply"
+            );
+            assert!(
+                hew_reply_channel_is_ready_for_test(existing),
+                "original waiter must observe queued-node retirement"
+            );
+            hew_reply_channel_free(existing);
 
             hew_mailbox_free(mb);
         }

@@ -54,6 +54,9 @@ pub fn build_signature_help(
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(receiver_end) = context.receiver_end {
+        if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
+            return Some(sig);
+        }
         let method = context.callee.rsplit('.').next()?;
         return find_receiver_type(tc, receiver_end)
             .and_then(|receiver_ty| lookup_receiver_method_sig(tc, receiver_ty, method));
@@ -146,6 +149,10 @@ fn find_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     }
 
     None
+}
+
+fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    tc.fn_sigs.get(name).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
@@ -270,6 +277,21 @@ mod tests {
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
         assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+    }
+
+    #[test]
+    fn module_qualified_function_sig_help_uses_exact_dotted_name() {
+        let source = "channel.new(";
+        let tc = make_tc_with_fn("channel.new", vec!["capacity"], vec![Ty::I64], Ty::Unit);
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_some(),
+            "module-qualified function call should still provide signature help"
+        );
+        let sh = result.unwrap();
+        assert_eq!(sh.active_parameter, Some(0));
+        assert_eq!(sh.signatures[0].label, "fn new(capacity: int)");
     }
 
     #[test]

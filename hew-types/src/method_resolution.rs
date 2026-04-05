@@ -424,6 +424,9 @@ pub fn collect_method_sigs_for_named_type(
 ) -> Vec<(String, FnSig)> {
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
+    let receiver_type_params = lookup_user_type_def(type_defs, type_name)
+        .map(|type_def| type_def.type_params.clone())
+        .unwrap_or_default();
 
     if let Some(type_def) = lookup_type_def(type_defs, type_name) {
         for (method_name, sig) in type_def.methods {
@@ -451,7 +454,7 @@ pub fn collect_method_sigs_for_named_type(
             if seen.insert(method_name.clone()) {
                 methods.push((
                     method_name,
-                    instantiate_named_method_sig(sig.clone(), &[], type_args),
+                    instantiate_named_method_sig(sig.clone(), &receiver_type_params, type_args),
                 ));
             }
         }
@@ -505,5 +508,49 @@ mod tests {
             .expect("builtin stream type def should resolve");
         assert!(type_def.methods.contains_key("next"));
         assert!(type_def.methods.contains_key("collect"));
+    }
+
+    #[test]
+    fn collect_method_sigs_fallback_instantiates_receiver_type_args() {
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Wrapper".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Wrapper".to_string(),
+                type_params: vec!["T".to_string()],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(
+            "Wrapper::value".to_string(),
+            FnSig {
+                param_names: vec!["next".to_string()],
+                params: vec![Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }],
+                return_type: Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+                ..FnSig::default()
+            },
+        );
+
+        let methods =
+            collect_method_sigs_for_named_type(&type_defs, &fn_sigs, "Wrapper", &[Ty::String]);
+        let (_, value_sig) = methods
+            .into_iter()
+            .find(|(method_name, _)| method_name == "value")
+            .expect("fallback method should be collected");
+        assert_eq!(value_sig.params, vec![Ty::String]);
+        assert_eq!(value_sig.return_type, Ty::String);
     }
 }

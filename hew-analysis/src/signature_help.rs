@@ -56,9 +56,7 @@ fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(receiver_end) = context.receiver_end {
         let method = context.callee.rsplit('.').next()?;
         if let Some(receiver_ty) = find_receiver_type(tc, receiver_end) {
-            if let Some(sig) = lookup_receiver_method_sig(tc, receiver_ty, method) {
-                return Some(sig);
-            }
+            return lookup_receiver_method_sig(tc, receiver_ty, method);
         }
     }
 
@@ -169,6 +167,7 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_types::check::{SpanKey, TypeDef, TypeDefKind};
     use hew_types::Ty;
     use std::collections::{HashMap, HashSet};
 
@@ -272,5 +271,61 @@ mod tests {
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
         assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+    }
+
+    #[test]
+    fn method_call_sig_help_does_not_fall_back_to_unrelated_top_level_function() {
+        let source = "value.foo(";
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(
+            "foo".to_string(),
+            FnSig {
+                param_names: vec!["count".to_string()],
+                params: vec![Ty::I32],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+        );
+
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Widget".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Widget".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey { start: 0, end: 5 },
+            Ty::Named {
+                name: "Widget".to_string(),
+                args: vec![],
+            },
+        );
+
+        let tc = TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs,
+            fn_sigs,
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_none(),
+            "method-call syntax must not fall back to unrelated top-level `foo`"
+        );
     }
 }

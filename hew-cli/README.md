@@ -16,13 +16,35 @@ hew eval -f file.hew              # Evaluate a file in REPL context
 hew test file.hew                 # Run tests
 hew wire check file.hew --against baseline.hew
                                   # Validate wire compatibility
-hew fmt file.hew                  # Format source code
+hew fmt file.hew                  # Format source file in-place
+hew fmt --stdin < file.hew       # Format source from stdin to stdout
+hew fmt --check file.hew         # Check formatting (CI mode)
 hew init [name]                   # Initialize a new project
 hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
 
 `hew file.hew` is shorthand for `hew build file.hew`.
+
+## Formatting
+
+`hew fmt` supports three common workflows:
+
+```sh
+hew fmt myapp/main.hew           # Rewrite a file in-place
+hew fmt --stdin < myapp/main.hew # Read stdin, write formatted source to stdout
+hew fmt --check myapp/main.hew   # Exit non-zero if a file needs formatting
+```
+
+Use `--stdin` for editor integrations or shell pipelines. It reads from stdin,
+writes the formatted result to stdout, and cannot be combined with file
+arguments.
+
+Use `--check` when you want formatting verification without rewriting files.
+For files, `hew fmt --check` prints `<file>: needs formatting` and exits non-zero
+when any input needs changes, which makes it suitable for CI. Combined with
+`--stdin`, it performs the same verification on piped input and stays silent on
+success.
 
 `hew eval` phase-1 runs each inline expression or buffered `-f` chunk through
 the in-process native pipeline with a fresh bounded execution. Session

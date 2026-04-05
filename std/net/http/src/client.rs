@@ -4,7 +4,13 @@
 //! All returned strings and response structs are allocated with `libc::malloc`
 //! / `Box` so callers can free them with the corresponding free function.
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+// WASM-TODO: std::net::http outbound client requests remain native-only until
+// Hew has a browser/WASM networking bridge.
+
+use hew_cabi::{
+    cabi::{cstr_to_str, str_to_malloc},
+    vec::{hew_vec_get_str, ElemKind, HewVec},
+};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -15,7 +21,7 @@ static HTTP_TIMEOUT_MS: AtomicI32 = AtomicI32::new(30_000);
 
 /// Response from an HTTP request.
 ///
-/// Returned by [`hew_http_get`] and [`hew_http_post`].
+/// Returned by [`hew_http_get`], [`hew_http_post`], and the request helpers.
 /// Must be freed with [`hew_http_response_free`].
 #[repr(C)]
 #[derive(Debug)]
@@ -67,102 +73,84 @@ fn error_response(msg: &str) -> *mut HewHttpResponse {
     build_response(-1, msg, std::ptr::null_mut())
 }
 
-/// Make an HTTP GET request.
-///
-/// Returns a heap-allocated [`HewHttpResponse`]. The caller must free it with
-/// [`hew_http_response_free`].
-///
-/// # Safety
-///
-/// `url` must be a valid NUL-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_http_get(url: *const c_char) -> *mut HewHttpResponse {
-    if url.is_null() {
-        return error_response("invalid argument");
-    }
-    // SAFETY: url is a valid NUL-terminated C string per caller contract.
-    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
-        Ok(s) => s,
-        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
-    };
-
-    match ureq::get(url_str).call() {
-        Ok(mut resp) => {
-            let status = resp.status().as_u16();
-            let headers = capture_headers(resp.headers());
-            match resp.body_mut().read_to_string() {
-                Ok(body) => build_response(i32::from(status), &body, headers),
-                Err(e) => {
-                    // Free headers before returning error.
-                    if !headers.is_null() {
-                        // SAFETY: headers was just allocated with Box::into_raw.
-                        drop(unsafe { Box::from_raw(headers) });
-                    }
-                    error_response(&format!("failed to read response body: {e}"))
-                }
-            }
-        }
-        Err(ureq::Error::StatusCode(code)) => {
-            build_response(i32::from(code), "", std::ptr::null_mut())
-        }
-        Err(e) => error_response(&e.to_string()),
+/// Free a C string allocated by `strdup`/`malloc` if present.
+unsafe fn free_c_string(ptr: *const c_char) {
+    if !ptr.is_null() {
+        // SAFETY: ptr was allocated by strdup/malloc and is owned by the caller.
+        unsafe { libc::free(ptr.cast_mut().cast()) };
     }
 }
 
-/// Make an HTTP POST request with a body.
-///
-/// Returns a heap-allocated [`HewHttpResponse`]. The caller must free it with
-/// [`hew_http_response_free`].
-///
-/// # Safety
-///
-/// `url`, `content_type`, and `body` must all be valid NUL-terminated C strings
-/// (or null, which is treated as an invalid argument).
-#[no_mangle]
-pub unsafe extern "C" fn hew_http_post(
-    url: *const c_char,
-    content_type: *const c_char,
-    body: *const c_char,
-) -> *mut HewHttpResponse {
-    if url.is_null() || content_type.is_null() || body.is_null() {
-        return error_response("invalid argument");
-    }
-    // SAFETY: All pointers are valid NUL-terminated C strings per caller contract.
-    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
-        Ok(s) => s,
-        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
-    };
-    // SAFETY: content_type is a valid NUL-terminated C string per caller contract.
-    let ct_str = match unsafe { CStr::from_ptr(content_type) }.to_str() {
-        Ok(s) => s,
-        Err(e) => return error_response(&format!("invalid UTF-8 in content-type: {e}")),
-    };
-    // SAFETY: body is a valid NUL-terminated C string per caller contract.
-    let body_bytes = unsafe { CStr::from_ptr(body) }.to_bytes();
+/// Parse a `"Header-Name: value"` line into an owned `(name, value)` pair.
+fn parse_header_line(header: &str) -> Option<(String, String)> {
+    let (name, value) = header.split_once(':')?;
+    Some((name.trim().to_string(), value.trim().to_string()))
+}
 
-    match ureq::post(url_str)
-        .header("Content-Type", ct_str)
-        .send(body_bytes)
-    {
-        Ok(mut resp) => {
-            let status = resp.status().as_u16();
-            let headers = capture_headers(resp.headers());
-            match resp.body_mut().read_to_string() {
-                Ok(resp_body) => build_response(i32::from(status), &resp_body, headers),
-                Err(e) => {
-                    if !headers.is_null() {
-                        // SAFETY: headers was just allocated with Box::into_raw.
-                        drop(unsafe { Box::from_raw(headers) });
-                    }
-                    error_response(&format!("failed to read response body: {e}"))
-                }
-            }
-        }
-        Err(ureq::Error::StatusCode(code)) => {
-            build_response(i32::from(code), "", std::ptr::null_mut())
-        }
-        Err(e) => error_response(&e.to_string()),
+/// Parse a null-terminated C string array of header lines into owned header pairs.
+unsafe fn parse_headers_from_c_array(
+    headers: *const *const c_char,
+    header_count: i32,
+) -> Vec<(String, String)> {
+    let mut parsed_headers: Vec<(String, String)> = Vec::new();
+    if headers.is_null() || header_count <= 0 {
+        return parsed_headers;
     }
+
+    for i in 0..usize::try_from(header_count).unwrap_or(0) {
+        // SAFETY: headers is a valid array of header_count C string pointers per
+        // caller contract; i < header_count so the pointer arithmetic is in bounds.
+        let header_ptr = unsafe { *headers.add(i) };
+        if header_ptr.is_null() {
+            continue;
+        }
+        // SAFETY: each non-null entry is a valid NUL-terminated C string per caller.
+        let Ok(header_text) = unsafe { CStr::from_ptr(header_ptr) }.to_str() else {
+            continue;
+        };
+        if let Some((name, value)) = parse_header_line(header_text) {
+            parsed_headers.push((name, value));
+        }
+    }
+
+    parsed_headers
+}
+
+/// Parse a Hew `Vec<String>` of header lines into owned header pairs.
+unsafe fn parse_headers_from_hew_vec(
+    headers: *mut HewVec,
+) -> Result<Vec<(String, String)>, String> {
+    if headers.is_null() {
+        return Ok(Vec::new());
+    }
+
+    // SAFETY: caller guarantees headers is a valid HewVec pointer.
+    let headers_ref = unsafe { &*headers };
+    if headers_ref.elem_kind != ElemKind::String {
+        return Err("headers must be Vec<String>".to_string());
+    }
+
+    let mut parsed_headers = Vec::with_capacity(headers_ref.len);
+    for index in 0..headers_ref.len {
+        let Ok(index_i64) = i64::try_from(index) else {
+            return Err("headers length exceeds Hew index range".to_string());
+        };
+        // SAFETY: index_i64 was derived from an in-bounds usize index.
+        let raw_header = unsafe { hew_vec_get_str(headers, index_i64) };
+        // SAFETY: raw_header came from hew_vec_get_str and is either null or a
+        // valid duplicated C string for this element.
+        let header_text = unsafe { cstr_to_str(raw_header) }.map(str::to_owned);
+        // SAFETY: raw_header came from hew_vec_get_str and must be released here.
+        unsafe { free_c_string(raw_header) };
+        let Some(header_text) = header_text else {
+            continue;
+        };
+        if let Some((name, value)) = parse_header_line(&header_text) {
+            parsed_headers.push((name, value));
+        }
+    }
+
+    Ok(parsed_headers)
 }
 
 /// Set the global timeout applied to all subsequent HTTP requests.
@@ -209,6 +197,142 @@ fn finish_response(mut resp: ureq::http::Response<ureq::Body>) -> *mut HewHttpRe
     }
 }
 
+/// Execute an outbound HTTP request with the shared timeout/configuration path.
+fn send_request(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    headers: &[(String, String)],
+) -> *mut HewHttpResponse {
+    let agent = make_agent();
+    let method_upper = method.to_uppercase();
+
+    match method_upper.as_str() {
+        "GET" | "HEAD" | "DELETE" => {
+            let req = match method_upper.as_str() {
+                "HEAD" => agent.head(url),
+                "DELETE" => agent.delete(url),
+                _ => agent.get(url),
+            };
+            let req = headers
+                .iter()
+                .fold(req, |request, (name, value)| request.header(name, value));
+            match req.call() {
+                Ok(resp) => finish_response(resp),
+                Err(ureq::Error::StatusCode(code)) => {
+                    build_response(i32::from(code), "", std::ptr::null_mut())
+                }
+                Err(e) => error_response(&e.to_string()),
+            }
+        }
+        "POST" | "PUT" | "PATCH" => {
+            let req = match method_upper.as_str() {
+                "PUT" => agent.put(url),
+                "PATCH" => agent.patch(url),
+                _ => agent.post(url),
+            };
+            let req = headers
+                .iter()
+                .fold(req, |request, (name, value)| request.header(name, value));
+            match req.send(body.unwrap_or(b"")) {
+                Ok(resp) => finish_response(resp),
+                Err(ureq::Error::StatusCode(code)) => {
+                    build_response(i32::from(code), "", std::ptr::null_mut())
+                }
+                Err(e) => error_response(&e.to_string()),
+            }
+        }
+        _ => error_response(&format!("unsupported HTTP method: {method}")),
+    }
+}
+
+/// Parse C ABI request inputs and execute them through [`send_request`].
+unsafe fn request_from_c_parts(
+    method: *const c_char,
+    url: *const c_char,
+    body: *const c_char,
+    headers: &[(String, String)],
+) -> *mut HewHttpResponse {
+    if method.is_null() || url.is_null() {
+        return error_response("invalid argument");
+    }
+    // SAFETY: method and url are valid NUL-terminated C strings per caller contract.
+    let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("invalid UTF-8 in method: {e}")),
+    };
+    // SAFETY: url is a valid NUL-terminated C string per caller contract.
+    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
+    };
+    let body_bytes = if body.is_null() {
+        None
+    } else {
+        // SAFETY: body is a valid NUL-terminated C string per caller contract.
+        Some(unsafe { CStr::from_ptr(body) }.to_bytes())
+    };
+
+    send_request(method_str, url_str, body_bytes, headers)
+}
+
+/// Make an HTTP GET request.
+///
+/// Returns a heap-allocated [`HewHttpResponse`]. The caller must free it with
+/// [`hew_http_response_free`].
+///
+/// # Safety
+///
+/// `url` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_get(url: *const c_char) -> *mut HewHttpResponse {
+    if url.is_null() {
+        return error_response("invalid argument");
+    }
+    // SAFETY: url is a valid NUL-terminated C string per caller contract.
+    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
+    };
+
+    send_request("GET", url_str, None, &[])
+}
+
+/// Make an HTTP POST request with a body.
+///
+/// Returns a heap-allocated [`HewHttpResponse`]. The caller must free it with
+/// [`hew_http_response_free`].
+///
+/// # Safety
+///
+/// `url`, `content_type`, and `body` must all be valid NUL-terminated C strings
+/// (or null, which is treated as an invalid argument).
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_post(
+    url: *const c_char,
+    content_type: *const c_char,
+    body: *const c_char,
+) -> *mut HewHttpResponse {
+    if url.is_null() || content_type.is_null() || body.is_null() {
+        return error_response("invalid argument");
+    }
+    // SAFETY: url is a valid NUL-terminated C string per caller contract.
+    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
+    };
+    // SAFETY: content_type is a valid NUL-terminated C string per caller contract.
+    let content_type_str = match unsafe { CStr::from_ptr(content_type) }.to_str() {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("invalid UTF-8 in content-type: {e}")),
+    };
+    // SAFETY: body is a valid NUL-terminated C string per caller contract.
+    let body_bytes = unsafe { CStr::from_ptr(body) }.to_bytes();
+    let headers = vec![("Content-Type".to_string(), content_type_str.to_string())];
+
+    send_request("POST", url_str, Some(body_bytes), &headers)
+}
+
 /// Perform an HTTP request with a configurable method, URL, optional body,
 /// and optional headers.
 ///
@@ -236,86 +360,32 @@ pub unsafe extern "C" fn hew_http_request(
     headers: *const *const c_char,
     header_count: i32,
 ) -> *mut HewHttpResponse {
-    if method.is_null() || url.is_null() {
-        return error_response("invalid argument");
-    }
-    // SAFETY: method and url are valid NUL-terminated C strings per caller contract.
-    let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
-        Ok(s) => s,
-        Err(e) => return error_response(&format!("invalid UTF-8 in method: {e}")),
+    // SAFETY: headers/header_count follow this function's documented raw-array ABI.
+    let parsed_headers = unsafe { parse_headers_from_c_array(headers, header_count) };
+    // SAFETY: method/url/body follow the existing C ABI contract for this function.
+    unsafe { request_from_c_parts(method, url, body, &parsed_headers) }
+}
+
+/// Hew-facing wrapper for [`hew_http_request`] that accepts `Vec<String>` headers.
+///
+/// # Safety
+///
+/// `method`, `url`, and `body` follow the same string rules as
+/// [`hew_http_request`]. `headers` must be null or a valid `Vec<String>` handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_hew(
+    method: *const c_char,
+    url: *const c_char,
+    body: *const c_char,
+    headers: *mut HewVec,
+) -> *mut HewHttpResponse {
+    // SAFETY: headers follows this function's documented Vec<String> ABI contract.
+    let parsed_headers = match unsafe { parse_headers_from_hew_vec(headers) } {
+        Ok(parsed_headers) => parsed_headers,
+        Err(message) => return error_response(&message),
     };
-    // SAFETY: url is a valid NUL-terminated C string per caller contract.
-    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
-        Ok(s) => s,
-        Err(e) => return error_response(&format!("invalid UTF-8 in URL: {e}")),
-    };
-
-    // Collect headers from the "Key: Value" C string array.
-    let mut parsed_headers: Vec<(&str, &str)> = Vec::new();
-    if !headers.is_null() && header_count > 0 {
-        for i in 0..usize::try_from(header_count).unwrap_or(0) {
-            // SAFETY: headers is a valid array of header_count C string pointers per
-            // caller contract; i < header_count so the pointer arithmetic is in bounds.
-            let hdr_ptr = unsafe { *headers.add(i) };
-            if hdr_ptr.is_null() {
-                continue;
-            }
-            // SAFETY: each non-null entry is a valid NUL-terminated C string per caller.
-            let Ok(hdr) = unsafe { CStr::from_ptr(hdr_ptr) }.to_str() else {
-                continue;
-            };
-            if let Some((key, value)) = hdr.split_once(':') {
-                parsed_headers.push((key.trim(), value.trim()));
-            }
-        }
-    }
-
-    let agent = make_agent();
-    let method_upper = method_str.to_uppercase();
-
-    match method_upper.as_str() {
-        "GET" | "HEAD" | "DELETE" => {
-            let req = match method_upper.as_str() {
-                "HEAD" => agent.head(url_str),
-                "DELETE" => agent.delete(url_str),
-                _ => agent.get(url_str),
-            };
-            let req = parsed_headers
-                .iter()
-                .fold(req, |r, (k, v)| r.header(*k, *v));
-            match req.call() {
-                Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => {
-                    build_response(i32::from(code), "", std::ptr::null_mut())
-                }
-                Err(e) => error_response(&e.to_string()),
-            }
-        }
-        "POST" | "PUT" | "PATCH" => {
-            let body_bytes: &[u8] = if body.is_null() {
-                b""
-            } else {
-                // SAFETY: body is non-null, and per caller contract is a valid NUL-terminated C string.
-                unsafe { CStr::from_ptr(body) }.to_bytes()
-            };
-            let req = match method_upper.as_str() {
-                "PUT" => agent.put(url_str),
-                "PATCH" => agent.patch(url_str),
-                _ => agent.post(url_str),
-            };
-            let req = parsed_headers
-                .iter()
-                .fold(req, |r, (k, v)| r.header(*k, *v));
-            match req.send(body_bytes) {
-                Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => {
-                    build_response(i32::from(code), "", std::ptr::null_mut())
-                }
-                Err(e) => error_response(&e.to_string()),
-            }
-        }
-        _ => error_response(&format!("unsupported HTTP method: {method_str}")),
-    }
+    // SAFETY: method/url/body follow the same string ABI contract here.
+    unsafe { request_from_c_parts(method, url, body, &parsed_headers) }
 }
 
 /// Free a [`HewHttpResponse`] previously returned by [`hew_http_get`],
@@ -438,6 +508,32 @@ pub unsafe extern "C" fn hew_http_response_content_type(
     unsafe { hew_http_response_header(resp, c"content-type".as_ptr()) }
 }
 
+/// Extract a response body string and release the response handle.
+///
+/// Returns null when the response pointer is null or represents a transport /
+/// validation error (`status_code < 0`).
+unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
+    if resp.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: resp was just allocated by one of the hew_http_* request functions.
+    let resp_ref = unsafe { &mut *resp };
+
+    if resp_ref.status_code < 0 {
+        // SAFETY: resp is a valid HewHttpResponse from one of the constructors.
+        unsafe { hew_http_response_free(resp) };
+        return std::ptr::null_mut();
+    }
+
+    let body = resp_ref.body;
+    resp_ref.body = std::ptr::null_mut();
+
+    // SAFETY: resp is valid and body ownership was transferred to the caller.
+    unsafe { hew_http_response_free(resp) };
+
+    body
+}
+
 /// Convenience wrapper: make an HTTP GET request and return just the body
 /// string.
 ///
@@ -451,28 +547,8 @@ pub unsafe extern "C" fn hew_http_response_content_type(
 pub unsafe extern "C" fn hew_http_get_string(url: *const c_char) -> *mut c_char {
     // SAFETY: url is forwarded with the same contract to hew_http_get.
     let resp = unsafe { hew_http_get(url) };
-    if resp.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: resp was just allocated by hew_http_get and is valid.
-    let resp_ref = unsafe { &mut *resp };
-
-    if resp_ref.status_code < 0 {
-        // Error case: free everything and return null.
-        // SAFETY: resp is a valid HewHttpResponse from hew_http_get.
-        unsafe { hew_http_response_free(resp) };
-        return std::ptr::null_mut();
-    }
-
-    // Extract body pointer, then null it out so hew_http_response_free
-    // won't free it (we're returning it to the caller).
-    let body = resp_ref.body;
-    resp_ref.body = std::ptr::null_mut();
-
-    // SAFETY: resp is a valid HewHttpResponse; body was nulled so it won't be freed.
-    unsafe { hew_http_response_free(resp) };
-
-    body
+    // SAFETY: resp originates from hew_http_get.
+    unsafe { take_body_string(resp) }
 }
 
 /// Convenience wrapper: make an HTTP POST request and return just the response
@@ -492,26 +568,49 @@ pub unsafe extern "C" fn hew_http_post_string(
 ) -> *mut c_char {
     // SAFETY: all pointers forwarded with the same contract to hew_http_post.
     let resp = unsafe { hew_http_post(url, content_type, body) };
-    if resp.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: resp was just allocated by hew_http_post and is valid.
-    let resp_ref = unsafe { &mut *resp };
+    // SAFETY: resp originates from hew_http_post.
+    unsafe { take_body_string(resp) }
+}
 
-    if resp_ref.status_code < 0 {
-        // SAFETY: resp is a valid HewHttpResponse from hew_http_post.
-        unsafe { hew_http_response_free(resp) };
-        return std::ptr::null_mut();
-    }
+/// Convenience wrapper: make an HTTP request and return just the body string.
+///
+/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// it with `libc::free`. Returns null on error.
+///
+/// # Safety
+///
+/// This shares the same pointer contracts as [`hew_http_request`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_string(
+    method: *const c_char,
+    url: *const c_char,
+    body: *const c_char,
+    headers: *const *const c_char,
+    header_count: i32,
+) -> *mut c_char {
+    // SAFETY: all pointers are forwarded with the same contract to hew_http_request.
+    let resp = unsafe { hew_http_request(method, url, body, headers, header_count) };
+    // SAFETY: resp originates from hew_http_request.
+    unsafe { take_body_string(resp) }
+}
 
-    // Extract body, null it so hew_http_response_free won't double-free.
-    let body_ptr = resp_ref.body;
-    resp_ref.body = std::ptr::null_mut();
-
-    // SAFETY: resp is valid; body was nulled.
-    unsafe { hew_http_response_free(resp) };
-
-    body_ptr
+/// Hew-facing wrapper for [`hew_http_request_string`] that accepts `Vec<String>`
+/// headers.
+///
+/// # Safety
+///
+/// This shares the same pointer contracts as [`hew_http_request_hew`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_string_hew(
+    method: *const c_char,
+    url: *const c_char,
+    body: *const c_char,
+    headers: *mut HewVec,
+) -> *mut c_char {
+    // SAFETY: all pointers are forwarded with the same contract to hew_http_request_hew.
+    let resp = unsafe { hew_http_request_hew(method, url, body, headers) };
+    // SAFETY: resp originates from hew_http_request_hew.
+    unsafe { take_body_string(resp) }
 }
 
 #[cfg(test)]
@@ -537,6 +636,18 @@ mod tests {
         // SAFETY: resp was returned by one of the hew_http_* constructors.
         unsafe { hew_http_response_free(resp) };
         (status, body)
+    }
+
+    /// Build a Hew `Vec<String>` populated with the provided header lines.
+    unsafe fn make_string_vec(values: &[&str]) -> *mut HewVec {
+        // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
+        let vec = unsafe { hew_cabi::vec::hew_vec_new_str() };
+        for value in values {
+            let value = CString::new(*value).unwrap();
+            // SAFETY: vec is a valid string vec and value is a valid C string.
+            unsafe { hew_cabi::vec::hew_vec_push_str(vec, value.as_ptr()) };
+        }
+        vec
     }
 
     // -- Existing tests (request null/unsupported) --------------------
@@ -990,6 +1101,23 @@ mod tests {
         assert_eq!(status, -1);
     }
 
+    #[test]
+    fn request_hew_rejects_non_string_header_vec() {
+        let method = CString::new("GET").unwrap();
+        let url = CString::new("http://example.com").unwrap();
+        // SAFETY: hew_vec_new allocates a valid non-string HewVec for the tested failure path.
+        let headers = unsafe { hew_cabi::vec::hew_vec_new() };
+        // SAFETY: method/url are valid C strings and headers is a live HewVec handle.
+        let resp =
+            unsafe { hew_http_request_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers) };
+        // SAFETY: resp is a valid error response and headers is still owned by the test.
+        let (status, body) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+        assert!(body.contains("Vec<String>"));
+        // SAFETY: headers was allocated by hew_vec_new and has not been freed yet.
+        unsafe { hew_cabi::vec::hew_vec_free(headers) };
+    }
+
     // -- Loopback integration tests -----------------------------------
 
     use std::thread;
@@ -1214,6 +1342,47 @@ mod tests {
     }
 
     #[test]
+    fn loopback_request_hew_with_custom_headers() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let req = server.recv().expect("receive request");
+            let mut found = false;
+            for h in req.headers() {
+                if h.field
+                    .as_str()
+                    .as_str()
+                    .eq_ignore_ascii_case("x-hew-surface")
+                {
+                    assert_eq!(h.value.as_str(), "client");
+                    found = true;
+                }
+            }
+            assert!(found, "hew surface header not found on server side");
+            let response =
+                tiny_http::Response::from_string("ok").with_status_code(tiny_http::StatusCode(200));
+            let _ = req.respond(response);
+        });
+
+        let method = CString::new("GET").unwrap();
+        let url = CString::new(format!("{addr}/hew-surface")).unwrap();
+        // SAFETY: make_string_vec returns a live Vec<String> handle for this request.
+        let headers = unsafe { make_string_vec(&["X-Hew-Surface: client"]) };
+        // SAFETY: method/url are valid C strings and headers is a valid string vec.
+        let resp =
+            unsafe { hew_http_request_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response handle.
+        let (status, body) = unsafe { take_response(resp) };
+        assert_eq!(status, 200);
+        assert_eq!(body, "ok");
+        // SAFETY: headers was allocated by make_string_vec and remains owned here.
+        unsafe { hew_cabi::vec::hew_vec_free(headers) };
+        handle.join().unwrap();
+    }
+
+    #[test]
     fn loopback_response_captures_headers() {
         let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
         let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
@@ -1244,6 +1413,31 @@ mod tests {
 
         // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_request_string_hew_returns_body_only() {
+        let (addr, handle) = start_echo_server(200, "hew request string");
+        let method = CString::new("GET").unwrap();
+        let url = CString::new(format!("{addr}/hew-string")).unwrap();
+        // SAFETY: make_string_vec returns a live, empty Vec<String> handle.
+        let headers = unsafe { make_string_vec(&[]) };
+        // SAFETY: method/url are valid C strings and headers is a valid string vec.
+        let result = unsafe {
+            hew_http_request_string_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers)
+        };
+        assert!(!result.is_null());
+        // SAFETY: headers was allocated by make_string_vec and remains owned here.
+        unsafe { hew_cabi::vec::hew_vec_free(headers) };
+        // SAFETY: result is a valid malloc'd C string.
+        let body = unsafe { CStr::from_ptr(result) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: result was malloc'd by hew_http_request_string_hew.
+        unsafe { libc::free(result.cast()) };
+        assert_eq!(body, "hew request string");
         handle.join().unwrap();
     }
 }

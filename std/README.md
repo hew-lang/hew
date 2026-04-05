@@ -109,7 +109,7 @@ Every shipped module under `std/` should appear here.
 | [`net`](net/net.hew) | `std::net` | TCP listeners and connections |
 | [`dns`](net/dns/dns.hew) | `std::net::dns` | DNS hostname resolution |
 | [`http`](net/http/http.hew) | `std::net::http` | HTTP server and request/response handling |
-| [`http_client`](net/http/http_client.hew) | `import std::net::http` + `http_client.*` | Outbound HTTP GET/POST helpers |
+| [`http_client`](net/http/http_client.hew) | `std::net::http::http_client` | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
 | [`ipnet`](net/ipnet/ipnet.hew) | `std::net::ipnet` | IP address and CIDR utilities |
 | [`mime`](net/mime/mime.hew) | `std::net::mime` | MIME type detection |
 | [`quic`](net/quic/quic.hew) | `std::net::quic` | QUIC transport for internode messaging |

@@ -15,6 +15,9 @@ pub mod classify;
 pub mod repl;
 pub mod session;
 
+#[cfg(test)]
+mod type_tests;
+
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
     let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {

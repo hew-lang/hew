@@ -762,39 +762,69 @@ impl Checker {
             .cloned()
     }
 
+    /// Apply a concrete named type's arguments to a resolved method signature.
+    fn instantiate_named_method_sig(
+        &self,
+        mut sig: FnSig,
+        type_params: &[String],
+        type_args: &[Ty],
+    ) -> FnSig {
+        for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
+            for param_ty in &mut sig.params {
+                *param_ty = self.substitute_named_param(param_ty, type_param, type_arg);
+            }
+            sig.return_type = self.substitute_named_param(&sig.return_type, type_param, type_arg);
+        }
+        sig
+    }
+
+    /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
+    fn lookup_named_method_sig(
+        &self,
+        type_name: &str,
+        type_args: &[Ty],
+        method: &str,
+    ) -> Option<FnSig> {
+        if let Some(td) = self.lookup_type_def(type_name) {
+            if let Some(sig) = td.methods.get(method).cloned() {
+                return Some(self.instantiate_named_method_sig(sig, &td.type_params, type_args));
+            }
+        }
+
+        let type_params = self
+            .lookup_type_def(type_name)
+            .map(|td| td.type_params.clone())
+            .unwrap_or_default();
+        self.lookup_fn_sig(&format!("{type_name}::{method}"))
+            .map(|sig| self.instantiate_named_method_sig(sig, &type_params, type_args))
+    }
+
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
     ///
     /// Used as a fallback from hardcoded handle-type dispatch tables so that
     /// methods added via `.hew` impl blocks work without updating the tables.
     fn try_resolve_named_method(
         &mut self,
-        name: &str,
+        receiver_ty: &Ty,
         method: &str,
         args: &[CallArg],
         _span: &Span,
     ) -> Option<Ty> {
-        if let Some(td) = self.lookup_type_def(name) {
-            if let Some(sig) = td.methods.get(method) {
-                for (i, arg) in args.iter().enumerate() {
-                    if let Some(param_ty) = sig.params.get(i) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param_ty);
-                    }
-                }
-                return Some(sig.return_type.clone());
+        let Ty::Named {
+            name,
+            args: type_args,
+        } = receiver_ty
+        else {
+            return None;
+        };
+        let sig = self.lookup_named_method_sig(name, type_args, method)?;
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(param_ty) = sig.params.get(i) {
+                let (expr, sp) = arg.expr();
+                self.check_against(expr, sp, param_ty);
             }
         }
-        let method_key = format!("{name}::{method}");
-        if let Some(sig) = self.lookup_fn_sig(&method_key) {
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(param_ty) = sig.params.get(i) {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, param_ty);
-                }
-            }
-            return Some(sig.return_type.clone());
-        }
-        None
+        Some(sig.return_type)
     }
 
     fn check_named_method_fallback(
@@ -805,10 +835,8 @@ impl Checker {
         span: &Span,
         type_display_name: &str,
     ) -> Ty {
-        if let Ty::Named { name, .. } = receiver_ty {
-            if let Some(ty) = self.try_resolve_named_method(name, method_name, args, span) {
-                return ty;
-            }
+        if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
+            return ty;
         }
 
         self.report_error(
@@ -8737,35 +8765,7 @@ impl Checker {
                 },
                 _,
             ) => {
-                if let Some(td) = self.lookup_type_def(name) {
-                    if let Some(sig) = td.methods.get(method) {
-                        self.check_arity(
-                            args,
-                            sig.params.len(),
-                            &format!("method '{method}'"),
-                            span,
-                        );
-                        for (i, arg) in args.iter().enumerate() {
-                            if let Some(param_ty) = sig.params.get(i) {
-                                // Substitute generic type params with concrete args
-                                let mut subst_ty = param_ty.clone();
-                                for (tp, ta) in td.type_params.iter().zip(type_args.iter()) {
-                                    subst_ty = self.substitute_named_param(&subst_ty, tp, ta);
-                                }
-                                let (expr, sp) = arg.expr();
-                                self.check_against(expr, sp, &subst_ty);
-                            }
-                        }
-                        let mut ret = sig.return_type.clone();
-                        for (tp, ta) in td.type_params.iter().zip(type_args.iter()) {
-                            ret = self.substitute_named_param(&ret, tp, ta);
-                        }
-                        return ret;
-                    }
-                }
-                // Try fn_sigs with Name::method pattern
-                let method_key = format!("{name}::{method}");
-                if let Some(sig) = self.lookup_fn_sig(&method_key) {
+                if let Some(sig) = self.lookup_named_method_sig(name, type_args, method) {
                     self.check_arity(args, sig.params.len(), &format!("method '{method}'"), span);
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
@@ -10046,12 +10046,8 @@ impl Checker {
             // Look up the concrete type's method (receiver already stripped in type_defs).
             // Primary: type_defs[type_name].methods[method_name]
             // Fallback: fn_sigs["TypeName::method_name"]
-            let type_sig = self
-                .lookup_type_def(&type_name_owned)
-                .and_then(|td| td.methods.get(method_name.as_str()).cloned())
-                .or_else(|| self.lookup_fn_sig(&format!("{type_name_owned}::{method_name}")));
-
-            let Some(type_sig) = type_sig else {
+            let Some(type_sig) = self.lookup_named_method_sig(&type_name_owned, &[], method_name)
+            else {
                 return false;
             };
 
@@ -15358,6 +15354,23 @@ fn main() {
         checker
     }
 
+    fn make_test_type_def(
+        name: &str,
+        type_params: Vec<String>,
+        methods: HashMap<String, FnSig>,
+    ) -> TypeDef {
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: name.to_string(),
+            type_params,
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods,
+            doc_comment: None,
+            is_indirect: false,
+        }
+    }
+
     #[test]
     fn structural_satisfies_returns_false_for_unknown_trait() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -15825,9 +15838,86 @@ fn main() {
         );
     }
 
+    #[test]
+    fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let mut methods = HashMap::new();
+        methods.insert(
+            "hello".to_string(),
+            FnSig {
+                return_type: Ty::String,
+                ..FnSig::default()
+            },
+        );
+        checker.type_defs.insert(
+            "Speaker".to_string(),
+            make_test_type_def("Speaker", vec![], methods),
+        );
+        checker.fn_sigs.insert(
+            "Speaker::hello".to_string(),
+            FnSig {
+                return_type: Ty::I64,
+                ..FnSig::default()
+            },
+        );
+
+        let sig = checker
+            .lookup_named_method_sig("Speaker", &[], "hello")
+            .expect("type_defs method should resolve");
+        assert_eq!(sig.return_type, Ty::String);
+    }
+
+    #[test]
+    fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.type_defs.insert(
+            "Wrapper".to_string(),
+            make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+        );
+        checker.fn_sigs.insert(
+            "Wrapper::value".to_string(),
+            FnSig {
+                param_names: vec!["next".to_string()],
+                params: vec![Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }],
+                return_type: Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+                ..FnSig::default()
+            },
+        );
+
+        let sig = checker
+            .lookup_named_method_sig("Wrapper", &[Ty::String], "value")
+            .expect("fn_sigs fallback should resolve");
+        assert_eq!(sig.params, vec![Ty::String]);
+        assert_eq!(sig.return_type, Ty::String);
+    }
+
     // -------------------------------------------------------------------------
     // Structural-hardening tests (qualified names + super-trait walk)
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn structural_hardening_uses_fn_sigs_named_method_fallback() {
+        let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
+        checker.type_defs.insert(
+            "Speaker".to_string(),
+            make_test_type_def("Speaker", vec![], HashMap::new()),
+        );
+        checker
+            .fn_sigs
+            .insert("Speaker::hello".to_string(), FnSig::default());
+
+        assert!(
+            checker.type_structurally_satisfies("Speaker", "Greet"),
+            "structural check should reuse named-method fn_sigs fallback"
+        );
+    }
 
     #[test]
     fn structural_hardening_qualified_trait_name_matches() {

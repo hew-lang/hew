@@ -40,6 +40,19 @@ const HEW_PRIORITY_NORMAL: i32 = 1;
 /// Priority: low (0.5x budget).
 const HEW_PRIORITY_LOW: i32 = 2;
 
+#[inline]
+fn notify_actor_group_waiters(actor_id: u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::actor_group::notify_actor_death(actor_id);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = actor_id;
+    }
+}
+
 // ── HewActor layout (matches native actor.rs exactly) ───────────────────
 
 /// Actor struct layout for WASM. Field order and types MUST match the
@@ -615,6 +628,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     if cur_state == HewActorState::Stopping as i32 {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+        notify_actor_group_waiters(a.id);
         // SAFETY: actor just transitioned to Stopped; dispatch is finished.
         // call_terminate_fn has an internal `terminate_called` guard so later
         // cleanup paths (hew_actor_close / cleanup_all_actors) are idempotent.
@@ -686,6 +700,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // Stopping->Stopped path in this file which likewise omits tracing.
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+            notify_actor_group_waiters(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             // call_terminate_fn has an internal `terminate_called` guard so
             // cleanup paths are idempotent.
@@ -795,7 +810,7 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 mod tests {
     use super::*;
     use std::ptr;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use crate::internal::types::HewError;
 
@@ -1847,6 +1862,102 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn self_stopping_dispatch_via_api(
+        state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // SAFETY: tests pass the live actor pointer itself as `state`.
+        unsafe { crate::actor::actor_self_stop_wasm_impl(state.cast::<crate::actor::HewActor>()) };
+    }
+
+    fn spawn_actor_group_waiter(
+        group: *mut crate::actor_group::HewActorGroup,
+        timeout_ms: i32,
+        ready: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<i32> {
+        let group_addr = group as usize;
+        std::thread::spawn(move || {
+            ready.store(true, Ordering::Release);
+            // SAFETY: the caller keeps the group alive until the waiter joins.
+            unsafe {
+                crate::actor_group::hew_actor_group_wait_timeout(
+                    group_addr as *mut crate::actor_group::HewActorGroup,
+                    timeout_ms,
+                )
+            }
+        })
+    }
+
+    #[test]
+    fn self_stop_closes_mailbox_and_wakes_actor_group_waiters() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.dispatch = Some(self_stopping_dispatch_via_api);
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // SAFETY: the actor group is created and destroyed within this test.
+        let group = unsafe { crate::actor_group::hew_actor_group_new() };
+        assert!(!group.is_null());
+        assert_eq!(
+            // SAFETY: group and actor are valid for the duration of this test.
+            unsafe { crate::actor_group::hew_actor_group_add(group, actor_ptr.cast()) },
+            0
+        );
+
+        let waiter_ready = Arc::new(AtomicBool::new(false));
+        let waiter = spawn_actor_group_waiter(group, 8, Arc::clone(&waiter_ready));
+        while !waiter_ready.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox allocated above.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        hew_sched_run();
+
+        assert_eq!(
+            waiter.join().unwrap(),
+            0,
+            "self-stop finalization must wake actor-group waiters before their timeout expires"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "actor must reach Stopped after self-stop dispatch"
+        );
+        assert!(
+            // SAFETY: mailbox remains live until the explicit free below.
+            unsafe { crate::mailbox_wasm::mailbox_is_closed(actor.mailbox.cast()) },
+            "self-stop must close the mailbox before scheduler finalization"
+        );
+        assert_eq!(
+            // SAFETY: mailbox remains live and closed at this point.
+            unsafe {
+                crate::mailbox_wasm::hew_mailbox_send(actor.mailbox.cast(), 7, ptr::null_mut(), 0)
+            },
+            HewError::ErrClosed as i32,
+            "post-stop sends must be rejected once self-stop closes the mailbox"
+        );
+
+        // SAFETY: resources were allocated for this test and remain live here.
+        unsafe {
+            crate::actor_group::hew_actor_group_destroy(group);
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+        }
+        hew_sched_shutdown();
+    }
+
     /// The WASM scheduler must invoke `terminate_fn` as part of the
     /// `Stopping → Stopped` state transition — not only at
     /// `cleanup_all_actors` / process exit (parity with native scheduler).
@@ -2002,6 +2113,63 @@ mod tests {
 
         // SAFETY: mailbox was allocated for this test (closed but not freed).
         unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn actor_group_wait_timeout_wakes_on_closed_mailbox_idle_to_stopped() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        actor.dispatch = Some(inner_dispatch_noop);
+        // SAFETY: test exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+
+        // SAFETY: the actor group is created and destroyed within this test.
+        let group = unsafe { crate::actor_group::hew_actor_group_new() };
+        assert!(!group.is_null());
+        assert_eq!(
+            // SAFETY: group and actor are valid for the duration of this test.
+            unsafe { crate::actor_group::hew_actor_group_add(group, actor_ptr.cast()) },
+            0
+        );
+
+        let waiter_ready = Arc::new(AtomicBool::new(false));
+        let waiter = spawn_actor_group_waiter(group, 8, Arc::clone(&waiter_ready));
+        while !waiter_ready.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor has a valid mailbox allocated above.
+        unsafe { queue_wasm_message(actor_ptr, 0) };
+        // SAFETY: mailbox is valid and exclusively owned by this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(actor.mailbox.cast()) };
+
+        hew_sched_run();
+
+        assert_eq!(
+            waiter.join().unwrap(),
+            0,
+            "closed-mailbox finalization must wake actor-group waiters before their timeout expires"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "actor must reach Stopped after closed-mailbox drain"
+        );
+
+        // SAFETY: resources were allocated for this test and remain live here.
+        unsafe {
+            crate::actor_group::hew_actor_group_destroy(group);
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+        }
         hew_sched_shutdown();
     }
 

@@ -11,7 +11,6 @@ use std::sync::{Arc, LazyLock};
 
 use crate::actor::{self, HewActor};
 use crate::internal::types::{HewActorState, HewError};
-use crate::io_time;
 use crate::util::{CondvarExt, MutexExt};
 
 /// Initial capacity of the actor array.
@@ -202,7 +201,6 @@ pub unsafe extern "C" fn hew_actor_group_wait_all(g: *mut HewActorGroup) {
 /// # Safety
 ///
 /// `g` must be a valid pointer returned by [`hew_actor_group_new`].
-#[expect(clippy::cast_sign_loss, reason = "C ABI: timeout_ms is non-negative")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_group_wait_timeout(
     g: *mut HewActorGroup,
@@ -214,22 +212,27 @@ pub unsafe extern "C" fn hew_actor_group_wait_timeout(
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &*g };
 
-    // SAFETY: hew_now_ms has no preconditions.
-    let deadline = unsafe { io_time::hew_now_ms() } + timeout_ms as u64;
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(u64::try_from(timeout_ms.max(0)).unwrap_or(0));
+    let mut guard = group.lock.lock_or_recover();
 
     loop {
-        // SAFETY: hew_now_ms has no preconditions.
-        if unsafe { io_time::hew_now_ms() } >= deadline {
-            return HewError::ErrTimeout as i32;
-        }
-
-        let guard = group.lock.lock_or_recover();
         if all_stopped(group) {
             return 0;
         }
-        let (_guard, _timeout) = group
-            .done_cond
-            .wait_timeout_or_recover(guard, std::time::Duration::from_millis(10));
+
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return HewError::ErrTimeout as i32;
+        }
+
+        let wait_for = remaining.min(std::time::Duration::from_millis(10));
+        let (new_guard, wait_result) = group.done_cond.wait_timeout_or_recover(guard, wait_for);
+        guard = new_guard;
+
+        if wait_result.timed_out() && all_stopped(group) {
+            return 0;
+        }
     }
 }
 

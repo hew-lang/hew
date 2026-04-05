@@ -40,6 +40,19 @@ const HEW_PRIORITY_NORMAL: i32 = 1;
 /// Priority: low (0.5x budget).
 const HEW_PRIORITY_LOW: i32 = 2;
 
+#[inline]
+fn notify_actor_group_waiters(actor_id: u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::actor_group::notify_actor_death(actor_id);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = actor_id;
+    }
+}
+
 // ── HewActor layout (matches native actor.rs exactly) ───────────────────
 
 /// Actor struct layout for WASM. Field order and types MUST match the
@@ -615,7 +628,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     if cur_state == HewActorState::Stopping as i32 {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
-        crate::actor_group::notify_actor_death(a.id);
+        notify_actor_group_waiters(a.id);
         // SAFETY: actor just transitioned to Stopped; dispatch is finished.
         // call_terminate_fn has an internal `terminate_called` guard so later
         // cleanup paths (hew_actor_close / cleanup_all_actors) are idempotent.
@@ -687,7 +700,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // Stopping->Stopped path in this file which likewise omits tracing.
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Relaxed);
-            crate::actor_group::notify_actor_death(a.id);
+            notify_actor_group_waiters(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             // call_terminate_fn has an internal `terminate_called` guard so
             // cleanup paths are idempotent.

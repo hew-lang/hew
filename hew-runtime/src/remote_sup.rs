@@ -7,6 +7,7 @@
 use crate::util::{CondvarExt, MutexExt};
 use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
+use std::fmt;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -493,6 +494,218 @@ impl Drop for MembershipCallbackGuardPauseGuard {
     }
 }
 
+struct HeartbeatThreadState {
+    handle: Option<JoinHandle<()>>,
+    thread_id: Option<thread::ThreadId>,
+    exited: bool,
+    reclaim_on_exit: bool,
+}
+
+impl Default for HeartbeatThreadState {
+    fn default() -> Self {
+        Self {
+            handle: None,
+            thread_id: None,
+            exited: true,
+            reclaim_on_exit: false,
+        }
+    }
+}
+
+impl fmt::Debug for HeartbeatThreadState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeartbeatThreadState")
+            .field("has_handle", &self.handle.is_some())
+            .field("thread_id", &self.thread_id)
+            .field("exited", &self.exited)
+            .field("reclaim_on_exit", &self.reclaim_on_exit)
+            .finish()
+    }
+}
+
+struct HeartbeatThreadLifecycle {
+    state: Mutex<HeartbeatThreadState>,
+    wait_cv: Condvar,
+}
+
+impl Default for HeartbeatThreadLifecycle {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(HeartbeatThreadState::default()),
+            wait_cv: Condvar::new(),
+        }
+    }
+}
+
+impl fmt::Debug for HeartbeatThreadLifecycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.state.lock_or_recover();
+        f.debug_struct("HeartbeatThreadLifecycle")
+            .field("state", &*state)
+            .finish_non_exhaustive()
+    }
+}
+
+enum HeartbeatThreadStopPlan {
+    Join(JoinHandle<()>),
+    WaitForExit,
+    DeferToCurrentThread,
+    None,
+}
+
+impl HeartbeatThreadLifecycle {
+    fn prepare_start(&self) -> bool {
+        let current_thread_id = thread::current().id();
+        let mut state = self.state.lock_or_recover();
+        while !state.exited {
+            if state.thread_id.as_ref() == Some(&current_thread_id) {
+                return false;
+            }
+            state = self.wait_cv.wait_or_recover(state);
+        }
+        true
+    }
+
+    fn install_handle(&self, handle: JoinHandle<()>) {
+        let mut state = self.state.lock_or_recover();
+        state.thread_id = Some(handle.thread().id());
+        state.handle = Some(handle);
+        state.exited = false;
+        state.reclaim_on_exit = false;
+        self.wait_cv.notify_all();
+    }
+
+    fn wait_until_registered(&self, current_thread_id: thread::ThreadId) {
+        let mut state = self.state.lock_or_recover();
+        while state.exited || state.thread_id.as_ref() != Some(&current_thread_id) {
+            state = self.wait_cv.wait_or_recover(state);
+        }
+    }
+
+    fn prepare_stop(&self) -> HeartbeatThreadStopPlan {
+        let current_thread_id = thread::current().id();
+        let mut state = self.state.lock_or_recover();
+        if let Some(handle) = state.handle.take() {
+            if state.thread_id.as_ref() == Some(&current_thread_id) {
+                drop(handle);
+                HeartbeatThreadStopPlan::DeferToCurrentThread
+            } else {
+                HeartbeatThreadStopPlan::Join(handle)
+            }
+        } else if !state.exited {
+            if state.thread_id.as_ref() == Some(&current_thread_id) {
+                HeartbeatThreadStopPlan::DeferToCurrentThread
+            } else {
+                HeartbeatThreadStopPlan::WaitForExit
+            }
+        } else {
+            HeartbeatThreadStopPlan::None
+        }
+    }
+
+    fn wait_for_exit(&self) {
+        let mut state = self.state.lock_or_recover();
+        while !state.exited {
+            state = self.wait_cv.wait_or_recover(state);
+        }
+    }
+
+    fn request_reclaim_on_exit(&self) {
+        let mut state = self.state.lock_or_recover();
+        if !state.exited {
+            state.reclaim_on_exit = true;
+        }
+    }
+
+    fn finish_exit(&self) -> bool {
+        let mut state = self.state.lock_or_recover();
+        state.exited = true;
+        state.thread_id = None;
+        state.handle = None;
+        let reclaim_on_exit = state.reclaim_on_exit;
+        state.reclaim_on_exit = false;
+        self.wait_cv.notify_all();
+        reclaim_on_exit
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct HeartbeatMembershipCallbackState {
+    armed: bool,
+    target_remote_node_id: u16,
+    event: u8,
+    fired: bool,
+}
+
+#[cfg(test)]
+fn heartbeat_membership_callback_state(
+) -> &'static (Mutex<HeartbeatMembershipCallbackState>, Condvar) {
+    static STATE: OnceLock<(Mutex<HeartbeatMembershipCallbackState>, Condvar)> = OnceLock::new();
+    STATE.get_or_init(|| {
+        (
+            Mutex::new(HeartbeatMembershipCallbackState::default()),
+            Condvar::new(),
+        )
+    })
+}
+
+#[cfg(test)]
+fn maybe_fire_heartbeat_membership_callback(
+    cluster: *mut cluster::HewCluster,
+    remote_node_id: u16,
+) {
+    let event = {
+        let (state_lock, condvar) = heartbeat_membership_callback_state();
+        let mut state = state_lock.lock_or_recover();
+        if !state.armed || state.fired || state.target_remote_node_id != remote_node_id {
+            return;
+        }
+        state.armed = false;
+        state.fired = true;
+        condvar.notify_all();
+        state.event
+    };
+
+    // SAFETY: test code keeps the cluster alive until the injected callback returns.
+    unsafe { cluster::hew_cluster_test_fire_membership_callback(cluster, remote_node_id, event) };
+}
+
+#[cfg(test)]
+struct HeartbeatMembershipCallbackGuard;
+
+#[cfg(test)]
+impl HeartbeatMembershipCallbackGuard {
+    fn arm(target_remote_node_id: u16, event: u8) -> Self {
+        let (state_lock, _) = heartbeat_membership_callback_state();
+        let mut state = state_lock.lock_or_recover();
+        *state = HeartbeatMembershipCallbackState {
+            armed: true,
+            target_remote_node_id,
+            event,
+            fired: false,
+        };
+        Self
+    }
+
+    fn wait_until_fired() {
+        let (state_lock, condvar) = heartbeat_membership_callback_state();
+        let mut state = state_lock.lock_or_recover();
+        while !state.fired {
+            state = condvar.wait_or_recover(state);
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for HeartbeatMembershipCallbackGuard {
+    fn drop(&mut self) {
+        let (state_lock, condvar) = heartbeat_membership_callback_state();
+        *state_lock.lock_or_recover() = HeartbeatMembershipCallbackState::default();
+        condvar.notify_all();
+    }
+}
+
 /// A remote supervisor monitors actors on a remote node.
 #[repr(C)]
 #[derive(Debug)]
@@ -511,7 +724,11 @@ pub struct HewRemoteSupervisor {
     callback: Mutex<Option<RemoteDeathCallback>>,
     quarantine_state: Mutex<QuarantineState>,
     running: AtomicBool,
-    heartbeat_thread: Option<JoinHandle<()>>,
+    heartbeat_thread: HeartbeatThreadLifecycle,
+    #[cfg(test)]
+    drop_notifier: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    suppress_heartbeat_thread: bool,
     membership_lease: Arc<SupervisorMembershipLease>,
 }
 
@@ -607,6 +824,58 @@ impl HewRemoteSupervisor {
     }
 }
 
+impl Drop for HewRemoteSupervisor {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(drop_notifier) = &self.drop_notifier {
+            drop_notifier.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StopOutcome {
+    Complete,
+    DeferredToHeartbeatThreadExit,
+}
+
+unsafe fn stop_remote_sup(sup: *mut HewRemoteSupervisor) -> Result<StopOutcome, c_int> {
+    if sup.is_null() {
+        return Err(-1);
+    }
+
+    // SAFETY: caller guarantees `sup` is valid for the duration of this stop path.
+    let sup = unsafe { &mut *sup };
+    sup.running.store(false, Ordering::Release);
+
+    // SAFETY: the supervisor keeps its owning node alive until stop/free completes.
+    // SAFETY: the supervisor keeps its owning node alive for this start path.
+    let node = unsafe { &mut *sup.node };
+    let cluster_key = node.cluster as usize;
+
+    let stop_plan = sup.heartbeat_thread.prepare_stop();
+    let deferred_to_heartbeat_exit =
+        matches!(stop_plan, HeartbeatThreadStopPlan::DeferToCurrentThread);
+    match stop_plan {
+        HeartbeatThreadStopPlan::Join(handle) => {
+            let _ = handle.join();
+        }
+        HeartbeatThreadStopPlan::WaitForExit => {
+            sup.heartbeat_thread.wait_for_exit();
+        }
+        HeartbeatThreadStopPlan::DeferToCurrentThread | HeartbeatThreadStopPlan::None => {}
+    }
+
+    unregister_remote_sup_subscription(node.cluster, cluster_key, &sup.membership_lease);
+    sup.membership_lease.wait_for_drain();
+
+    Ok(if deferred_to_heartbeat_exit {
+        StopOutcome::DeferredToHeartbeatThreadExit
+    } else {
+        StopOutcome::Complete
+    })
+}
+
 extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
     if user_data.is_null() {
         return;
@@ -688,7 +957,11 @@ pub unsafe extern "C" fn hew_remote_sup_new(
         callback: Mutex::new(None),
         quarantine_state: Mutex::new(QuarantineState::default()),
         running: AtomicBool::new(false),
-        heartbeat_thread: None,
+        heartbeat_thread: HeartbeatThreadLifecycle::default(),
+        #[cfg(test)]
+        drop_notifier: None,
+        #[cfg(test)]
+        suppress_heartbeat_thread: false,
         membership_lease: Arc::new(SupervisorMembershipLease::default()),
     });
     let sup_ptr = ptr::from_mut::<HewRemoteSupervisor>(&mut *sup);
@@ -760,19 +1033,26 @@ pub unsafe extern "C" fn hew_remote_sup_unmonitor(
 ///
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the heartbeat lifecycle handoff is clearest in one FFI entrypoint"
+)]
 pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> c_int {
     if sup.is_null() {
         return -1;
     }
 
-    // SAFETY: caller guarantees `sup` is valid.
+    // SAFETY: caller guarantees `sup` is valid for this start path.
     let sup = unsafe { &mut *sup };
+    if !sup.heartbeat_thread.prepare_start() {
+        return -1;
+    }
     if sup.running.swap(true, Ordering::AcqRel) {
         return 0;
     }
     sup.reset_quarantine_state();
 
-    // SAFETY: `node` is validated by constructor contract.
+    // SAFETY: the supervisor keeps its owning node alive for this start path.
     let node = unsafe { &mut *sup.node };
     if node.cluster.is_null() {
         sup.running.store(false, Ordering::Release);
@@ -791,17 +1071,17 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
         } else {
             let callback_context = Arc::new(ClusterCallbackContext {
                 cluster_key,
-                // SAFETY: cluster pointer is valid while node is alive.
+                // SAFETY: the cluster pointer stays valid while the owning node lives.
                 previous_callback: unsafe {
                     cluster::hew_cluster_membership_callback_binding(node.cluster)
                 },
-                // SAFETY: cluster pointer is valid while node is alive.
+                // SAFETY: the cluster pointer stays valid while the owning node lives.
                 callback_epoch: unsafe {
                     cluster::hew_cluster_membership_callback_epoch(node.cluster)
                 },
             });
             let callback_user_data = owned_callback_context_user_data(&callback_context);
-            // SAFETY: cluster pointer is valid while node is alive.
+            // SAFETY: the cluster pointer stays valid while the owning node lives.
             unsafe {
                 cluster::hew_cluster_replace_membership_callback(
                     node.cluster,
@@ -823,32 +1103,70 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
     }
     reap_retired_callback_contexts();
 
+    #[cfg(test)]
+    if sup.suppress_heartbeat_thread {
+        return 0;
+    }
+
     let interval_ms = sup.heartbeat_interval_ms.max(10);
     let cluster_addr = node.cluster as usize;
+    #[cfg(test)]
+    let remote_node_id = sup.remote_node_id;
 
     let handle = thread::Builder::new()
         .name(format!("hew-remote-sup-{}", sup.remote_node_id))
         .spawn(move || {
             let sup_ptr = sup_addr as *mut HewRemoteSupervisor;
+            // SAFETY: `sup_ptr` remains valid until the launcher records the
+            // handle and this heartbeat loop either stops normally or reclaims
+            // itself during a deferred free.
+            unsafe {
+                (*sup_ptr)
+                    .heartbeat_thread
+                    .wait_until_registered(thread::current().id());
+            };
             loop {
-                // SAFETY: sup_ptr remains valid until stop joins this thread.
+                // SAFETY: `sup_ptr` stays valid for the full heartbeat loop.
                 let keep_running = unsafe { (*sup_ptr).running.load(Ordering::Acquire) };
                 if !keep_running {
                     break;
                 }
-                // SAFETY: cluster pointer belongs to local node and is valid while supervisor is running.
+                // SAFETY: cluster pointer belongs to the supervisor's node and
+                // remains valid while the supervisor is running.
                 let _ =
                     unsafe { cluster::hew_cluster_tick(cluster_addr as *mut cluster::HewCluster) };
-                // SAFETY: sup_ptr remains valid until stop joins this thread.
+                #[cfg(test)]
+                maybe_fire_heartbeat_membership_callback(
+                    cluster_addr as *mut cluster::HewCluster,
+                    remote_node_id,
+                );
+                // SAFETY: `sup_ptr` stays valid for the full heartbeat loop.
+                let keep_running = unsafe { (*sup_ptr).running.load(Ordering::Acquire) };
+                if !keep_running {
+                    break;
+                }
+                // SAFETY: `sup_ptr` stays valid for the full heartbeat loop.
                 if let Some(dispatch) = unsafe { (*sup_ptr).poll_quarantine() } {
                     dispatch.execute();
                 }
+                // SAFETY: `sup_ptr` stays valid for the full heartbeat loop.
+                let keep_running = unsafe { (*sup_ptr).running.load(Ordering::Acquire) };
+                if !keep_running {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(interval_ms));
+            }
+            // SAFETY: the heartbeat thread is the last executor touching this
+            // state before it exits or performs deferred reclamation.
+            let reclaim_on_exit = unsafe { (*sup_ptr).heartbeat_thread.finish_exit() };
+            if reclaim_on_exit {
+                // SAFETY: deferred free transfers ownership back to this thread.
+                let _ = unsafe { Box::from_raw(sup_ptr) };
             }
         });
 
     if let Ok(h) = handle {
-        sup.heartbeat_thread = Some(h);
+        sup.heartbeat_thread.install_handle(h);
         0
     } else {
         sup.running.store(false, Ordering::Release);
@@ -865,25 +1183,11 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_sup_stop(sup: *mut HewRemoteSupervisor) -> c_int {
-    if sup.is_null() {
-        return -1;
+    // SAFETY: `stop_remote_sup` revalidates the pointer contract and handles nulls.
+    match unsafe { stop_remote_sup(sup) } {
+        Ok(_) => 0,
+        Err(code) => code,
     }
-
-    // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &mut *sup };
-    sup.running.store(false, Ordering::Release);
-
-    // SAFETY: `node` is valid while supervisor lives.
-    let node = unsafe { &mut *sup.node };
-    let cluster_key = node.cluster as usize;
-    if let Some(handle) = sup.heartbeat_thread.take() {
-        let _ = handle.join();
-    }
-
-    unregister_remote_sup_subscription(node.cluster, cluster_key, &sup.membership_lease);
-    sup.membership_lease.wait_for_drain();
-
-    0
 }
 
 /// Register callback fired when monitored remote actors are considered dead.
@@ -917,11 +1221,18 @@ pub unsafe extern "C" fn hew_remote_sup_free(sup: *mut HewRemoteSupervisor) {
         return;
     }
 
-    // SAFETY: pointer validity guaranteed by caller.
-    let _ = unsafe { hew_remote_sup_stop(sup) };
-    // SAFETY: pointer validity guaranteed by caller until ownership is reclaimed below.
+    // SAFETY: `stop_remote_sup` revalidates the pointer contract and handles nulls.
+    let Ok(stop_outcome) = (unsafe { stop_remote_sup(sup) }) else {
+        return;
+    };
+    // SAFETY: the caller keeps `sup` valid until ownership is reclaimed below.
     unsafe { (&*sup).membership_lease.bind_supervisor(ptr::null_mut()) };
-    // SAFETY: caller transfers ownership back to this function.
+    if matches!(stop_outcome, StopOutcome::DeferredToHeartbeatThreadExit) {
+        // SAFETY: deferred free leaves final reclamation to the heartbeat thread.
+        unsafe { (&*sup).heartbeat_thread.request_reclaim_on_exit() };
+        return;
+    }
+    // SAFETY: ownership returns to this function for the final reclaim path.
     let _ = unsafe { Box::from_raw(sup) };
 }
 
@@ -947,6 +1258,10 @@ mod tests {
         let (retain_lock, retain_condvar) = membership_callback_retain_pause_state();
         *retain_lock.lock_or_recover() = MembershipCallbackRetainPauseState::default();
         retain_condvar.notify_all();
+
+        let (heartbeat_lock, heartbeat_condvar) = heartbeat_membership_callback_state();
+        *heartbeat_lock.lock_or_recover() = HeartbeatMembershipCallbackState::default();
+        heartbeat_condvar.notify_all();
     }
 
     /// Serialize tests that spin up real nodes because the runtime exposes a
@@ -1621,9 +1936,11 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_callback_can_reentrantly_stop_and_free_supervisor() {
+    fn forwarded_callback_can_reentrantly_stop_and_free_supervisor_on_heartbeat_thread() {
         struct ReentrantFreeContext {
             sup_bits: AtomicUsize,
+            ran_on_heartbeat_thread: AtomicBool,
+            free_completed: AtomicBool,
             frees: std::sync::atomic::AtomicI32,
         }
 
@@ -1638,11 +1955,17 @@ mod tests {
             // SAFETY: test installs a valid pointer to `ReentrantFreeContext`
             // for the duration of the callback.
             let context = unsafe { &*user_data.cast::<ReentrantFreeContext>() };
+            let expected_name = "hew-remote-sup-4026";
+            let on_heartbeat_thread = thread::current().name() == Some(expected_name);
+            context
+                .ran_on_heartbeat_thread
+                .store(on_heartbeat_thread, Ordering::Release);
             context.frees.fetch_add(1, Ordering::Relaxed);
             let sup_addr = context.sup_bits.swap(0, Ordering::AcqRel);
             if sup_addr != 0 {
                 // SAFETY: callback consumes the live supervisor exactly once.
                 unsafe { hew_remote_sup_free(sup_addr as *mut HewRemoteSupervisor) };
+                context.free_completed.store(true, Ordering::Release);
             }
         }
 
@@ -1656,10 +1979,14 @@ mod tests {
             let original_binding = cluster::hew_cluster_membership_callback_binding(cluster_ptr);
             let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
             assert!(!sup.is_null());
-            (*sup).heartbeat_interval_ms = 500;
+            (*sup).heartbeat_interval_ms = 10;
+            let drop_notifier = Arc::new(AtomicBool::new(false));
+            (*sup).drop_notifier = Some(Arc::clone(&drop_notifier));
 
             let context = ReentrantFreeContext {
                 sup_bits: AtomicUsize::new(sup as usize),
+                ran_on_heartbeat_thread: AtomicBool::new(false),
+                free_completed: AtomicBool::new(false),
                 frees: std::sync::atomic::AtomicI32::new(0),
             };
             cluster::hew_cluster_replace_membership_callback(
@@ -1670,29 +1997,33 @@ mod tests {
                 ),
             );
 
+            let heartbeat_callback = HeartbeatMembershipCallbackGuard::arm(
+                remote_node_id,
+                HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+            );
             assert_eq!(hew_remote_sup_start(sup), 0);
-            // Let the heartbeat thread finish its initial tick and enter sleep
-            // so the forwarded callback owns the reentrant free path.
-            thread::sleep(Duration::from_millis(100));
+            HeartbeatMembershipCallbackGuard::wait_until_fired();
 
-            let callback_cluster = cluster_ptr as usize;
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let callback_thread = thread::spawn(move || {
-                // SAFETY: test keeps the cluster alive until the callback returns.
-                cluster::hew_cluster_test_fire_membership_callback(
-                    callback_cluster as *mut cluster::HewCluster,
-                    remote_node_id,
-                    HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+            let reclaim_deadline = Instant::now() + Duration::from_secs(10);
+            while context.frees.load(Ordering::Acquire) < 1
+                || !context.free_completed.load(Ordering::Acquire)
+                || !drop_notifier.load(Ordering::Acquire)
+            {
+                let frees = context.frees.load(Ordering::Acquire);
+                let free_completed = context.free_completed.load(Ordering::Acquire);
+                let dropped = drop_notifier.load(Ordering::Acquire);
+                assert!(
+                    Instant::now() < reclaim_deadline,
+                    "heartbeat thread should finish deferred free and release the supervisor (frees={frees}, free_completed={free_completed}, dropped={dropped})"
                 );
-                done_tx.send(()).expect("callback completion");
-            });
+                thread::sleep(Duration::from_millis(10));
+            }
 
-            done_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("reentrant callback completion");
-            callback_thread.join().expect("callback thread");
-            assert_eq!(context.frees.load(Ordering::Relaxed), 1);
+            drop(heartbeat_callback);
+            assert!(context.frees.load(Ordering::Relaxed) >= 1);
+            assert!(context.free_completed.load(Ordering::Acquire));
             assert_eq!(context.sup_bits.load(Ordering::Acquire), 0);
+            assert!(context.ran_on_heartbeat_thread.load(Ordering::Acquire));
 
             cluster::hew_cluster_replace_membership_callback(cluster_ptr, original_binding);
         }
@@ -1706,7 +2037,6 @@ mod tests {
     fn stale_callback_does_not_target_restarted_supervisor_when_sibling_keeps_entry_alive() {
         static OLD_CALLED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
         static NEW_CALLED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
         unsafe extern "C" fn on_old_death(_remote_pid: u64, _remote_node_id: u16, _reason: c_int) {
             OLD_CALLED.fetch_add(1, Ordering::Relaxed);
         }
@@ -1750,11 +2080,11 @@ mod tests {
                 context.restart_status.store(1, Ordering::Release);
                 return;
             }
-
             // SAFETY: `new_sup` is valid in this callback scope.
             unsafe {
                 (*new_sup).dead_quarantine_ms = 0;
-                (*new_sup).heartbeat_interval_ms = 500;
+                (*new_sup).heartbeat_interval_ms = 5_000;
+                (*new_sup).suppress_heartbeat_thread = true;
                 hew_remote_sup_set_callback(new_sup, Some(on_new_death));
                 if hew_remote_sup_monitor(new_sup, context.target_remote_pid) != 0 {
                     context.restart_status.store(2, Ordering::Release);
@@ -1806,7 +2136,8 @@ mod tests {
             let target_old_sup = hew_remote_sup_new(node.as_ptr(), target_remote_node_id, 0);
             assert!(!target_old_sup.is_null());
             (*target_old_sup).dead_quarantine_ms = 0;
-            (*target_old_sup).heartbeat_interval_ms = 500;
+            (*target_old_sup).heartbeat_interval_ms = 5_000;
+            (*target_old_sup).suppress_heartbeat_thread = true;
             hew_remote_sup_set_callback(target_old_sup, Some(on_old_death));
             assert_eq!(hew_remote_sup_monitor(target_old_sup, target_remote_pid), 0);
             restart_context
@@ -1816,9 +2147,9 @@ mod tests {
 
             let sibling_sup = hew_remote_sup_new(node.as_ptr(), sibling_remote_node_id, 0);
             assert!(!sibling_sup.is_null());
-            (*sibling_sup).heartbeat_interval_ms = 500;
+            (*sibling_sup).heartbeat_interval_ms = 5_000;
+            (*sibling_sup).suppress_heartbeat_thread = true;
             assert_eq!(hew_remote_sup_start(sibling_sup), 0);
-
             cluster::hew_cluster_test_fire_membership_callback(
                 cluster_ptr,
                 target_remote_node_id,
@@ -1871,7 +2202,11 @@ mod tests {
             callback: Mutex::new(None),
             quarantine_state: Mutex::new(QuarantineState::default()),
             running: AtomicBool::new(false),
-            heartbeat_thread: None,
+            heartbeat_thread: HeartbeatThreadLifecycle::default(),
+            #[cfg(test)]
+            drop_notifier: None,
+            #[cfg(test)]
+            suppress_heartbeat_thread: false,
             membership_lease: Arc::new(SupervisorMembershipLease::default()),
         }
     }

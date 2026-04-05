@@ -10,7 +10,8 @@ hew build path/to/main.hew -o app
 hew run path/to/main.hew
 ```
 
-All `hew` commands operate on a single entry-point file and resolve imports
+Source-aware commands such as `hew check`, `hew build`, `hew run`, `hew test`,
+and `hew doc` operate on a single entry-point file and resolve imports
 recursively from there. For multi-file projects, pass `main.hew` (or your real
 top-level entry file), not every file in the tree.
 

@@ -163,6 +163,9 @@ pub struct RunArgs {
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// Execution timeout in seconds.
+    #[arg(long)]
+    pub timeout: Option<u64>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Arguments to pass to the compiled program (after --).

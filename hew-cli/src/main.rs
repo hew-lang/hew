@@ -124,6 +124,14 @@ fn cmd_build(a: &args::BuildArgs) {
 
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
+    let timeout = a
+        .timeout
+        .map(crate::process::timeout_from_seconds)
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
     let options = a.to_compile_options();
     let target_spec =
         target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
@@ -196,14 +204,36 @@ fn cmd_run(a: &args::RunArgs) {
     #[cfg(unix)]
     signal::forward_signals_to_child(child.id());
 
-    let status = child.wait();
+    let status = match timeout {
+        Some(timeout) => crate::process::wait_for_child_with_timeout(
+            &mut child,
+            timeout,
+            crate::process::TimeoutKillTarget::Child,
+        ),
+        None => child
+            .wait()
+            .map(crate::process::ChildWaitOutcome::Exited)
+            .map_err(|e| format!("cannot wait for child process: {e}")),
+    };
 
     // Drop TempPath to clean up before exit (std::process::exit skips destructors)
     drop(tmp_path);
 
-    match status {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(e) => {
+    match (timeout, status) {
+        (_, Ok(crate::process::ChildWaitOutcome::Exited(status))) => {
+            std::process::exit(status.code().unwrap_or(1))
+        }
+        (Some(timeout), Ok(crate::process::ChildWaitOutcome::Timeout)) => {
+            eprintln!(
+                "Error: program timed out after {}",
+                crate::process::format_timeout(timeout)
+            );
+            std::process::exit(1);
+        }
+        (None, Ok(crate::process::ChildWaitOutcome::Timeout)) => {
+            unreachable!("timeout outcome requires an explicit timeout")
+        }
+        (_, Err(e)) => {
             eprintln!("Error: cannot run compiled binary: {e}");
             std::process::exit(1);
         }

@@ -2,7 +2,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// Result of running a native binary under a timeout.
@@ -14,6 +14,24 @@ pub(crate) enum BinaryRunOutcome {
     Failed { stdout: String, stderr: String },
     /// The process exceeded the timeout and was terminated.
     Timeout,
+}
+
+/// Result of waiting for a child process under a timeout.
+#[derive(Debug)]
+pub(crate) enum ChildWaitOutcome {
+    /// The child exited before the timeout expired.
+    Exited(ExitStatus),
+    /// The child exceeded the timeout and was terminated.
+    Timeout,
+}
+
+/// How a timed-out child should be terminated.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TimeoutKillTarget {
+    /// Kill only the direct child process.
+    Child,
+    /// Kill the child's process group.
+    ProcessGroup,
 }
 
 /// Parse a `--timeout` value expressed in seconds.
@@ -43,21 +61,34 @@ pub(crate) fn run_binary_with_timeout(
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = spawn_bounded_child(&mut command)?;
+    match wait_for_child_with_timeout(&mut child, timeout, TimeoutKillTarget::ProcessGroup)? {
+        ChildWaitOutcome::Exited(status) => {
+            let (stdout, stderr) = collect_child_output(&mut child)?;
+            if status.success() {
+                Ok(BinaryRunOutcome::Success { stdout })
+            } else {
+                Ok(BinaryRunOutcome::Failed { stdout, stderr })
+            }
+        }
+        ChildWaitOutcome::Timeout => Ok(BinaryRunOutcome::Timeout),
+    }
+}
+
+/// Wait for a child process to exit before `timeout`, terminating it otherwise.
+pub(crate) fn wait_for_child_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    kill_target: TimeoutKillTarget,
+) -> Result<ChildWaitOutcome, String> {
     let start = Instant::now();
 
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let (stdout, stderr) = collect_child_output(&mut child)?;
-                if status.success() {
-                    return Ok(BinaryRunOutcome::Success { stdout });
-                }
-                return Ok(BinaryRunOutcome::Failed { stdout, stderr });
-            }
+            Ok(Some(status)) => return Ok(ChildWaitOutcome::Exited(status)),
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    terminate_timed_out_child(&mut child)?;
-                    return Ok(BinaryRunOutcome::Timeout);
+                    terminate_timed_out_child(child, kill_target)?;
+                    return Ok(ChildWaitOutcome::Timeout);
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -88,8 +119,11 @@ fn read_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn terminate_timed_out_child(child: &mut Child) -> Result<(), String> {
-    kill_timed_out_child(child)?;
+fn terminate_timed_out_child(
+    child: &mut Child,
+    kill_target: TimeoutKillTarget,
+) -> Result<(), String> {
+    kill_timed_out_child(child, kill_target)?;
     child
         .wait()
         .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
@@ -125,36 +159,54 @@ fn spawn_bounded_child(command: &mut Command) -> Result<Child, String> {
         .map_err(|e| format!("cannot spawn child process: {e}"))
 }
 
+fn kill_child_only(child: &mut Child) -> Result<(), String> {
+    match child.kill() {
+        Ok(()) => Ok(()),
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(format!("cannot kill timed-out child process: {kill_error}")),
+            Err(wait_error) => Err(format!(
+                "cannot kill timed-out child process: {kill_error}; \
+                 failed to confirm child state: {wait_error}"
+            )),
+        },
+    }
+}
+
 #[cfg(unix)]
 #[allow(
     clippy::cast_possible_wrap,
     reason = "PIDs fit in i32 on all supported Unix platforms"
 )]
-fn kill_timed_out_child(child: &mut Child) -> Result<(), String> {
-    let process_group = child.id() as i32;
-    // SAFETY: `killpg` targets the child-created process group. If the group is
-    // already gone, `ESRCH` is treated as success and `wait()` reaps the child.
-    let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
-    if result == 0 {
-        return Ok(());
-    }
+fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<(), String> {
+    match kill_target {
+        TimeoutKillTarget::Child => kill_child_only(child),
+        TimeoutKillTarget::ProcessGroup => {
+            let process_group = child.id() as i32;
+            // SAFETY: `killpg` targets the child-created process group. If the
+            // group is already gone, `ESRCH` is treated as success and `wait()`
+            // reaps the child.
+            let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
+            if result == 0 {
+                return Ok(());
+            }
 
-    let group_error = std::io::Error::last_os_error();
-    if group_error.raw_os_error() == Some(libc::ESRCH) {
-        return Ok(());
-    }
+            let group_error = std::io::Error::last_os_error();
+            if group_error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
 
-    child.kill().map_err(|kill_error| {
-        format!(
-            "cannot kill timed-out child process group: {group_error}; \
-             fallback child kill failed: {kill_error}"
-        )
-    })
+            kill_child_only(child).map_err(|kill_error| {
+                format!(
+                    "cannot kill timed-out child process group: {group_error}; \
+                     fallback child kill failed: {kill_error}"
+                )
+            })
+        }
+    }
 }
 
 #[cfg(not(unix))]
-fn kill_timed_out_child(child: &mut Child) -> Result<(), String> {
-    child
-        .kill()
-        .map_err(|e| format!("cannot kill timed-out child process: {e}"))
+fn kill_timed_out_child(child: &mut Child, _kill_target: TimeoutKillTarget) -> Result<(), String> {
+    kill_child_only(child)
 }

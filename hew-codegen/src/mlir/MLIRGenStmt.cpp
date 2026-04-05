@@ -3438,7 +3438,14 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
 }
 
 void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
-  auto val = generateExpression(stmt.expr.value);
+  mlir::Value val = nullptr;
+  if (auto *blockExpr = std::get_if<ast::ExprBlock>(&stmt.expr.value.kind)) {
+    val = generateBlock(blockExpr->block, /*statementPosition=*/true);
+  } else if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&stmt.expr.value.kind)) {
+    val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);
+  } else {
+    val = generateExpression(stmt.expr.value);
+  }
   // Materialize discarded heap-allocated temporaries (e.g. bare function
   // calls whose return value is an owned string or collection).
   if (val)

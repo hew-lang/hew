@@ -5583,29 +5583,33 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
         if (auto *id = std::get_if<ast::ExprIdentifier>(
                 &exprStmt->expr.value.kind))
           nullOutRaiiAlloca(id->name);
-      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
-        bodyResult = generateIfStmtAsExpr(*ifStmt, statementPosition);
-      } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
-        auto loc_ = loc(lastStmt.span);
-        auto scrutinee = generateExpression(matchNode->scrutinee.value);
-        if (scrutinee) {
-          scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, loc_,
-                                                 &matchNode->arms);
-          mlir::Type resultType;
-          if (currentFunction && currentFunction.getResultTypes().size() == 1)
-            resultType = currentFunction.getResultTypes()[0];
-          else
-            resultType = builder.getI32Type();
-          bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+      } else if (!statementPosition) {
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+          bodyResult = generateIfStmtAsExpr(*ifStmt);
+        } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+          auto loc_ = loc(lastStmt.span);
+          auto scrutinee = generateExpression(matchNode->scrutinee.value);
+          if (scrutinee) {
+            scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, loc_,
+                                                   &matchNode->arms);
+            mlir::Type resultType;
+            if (currentFunction && currentFunction.getResultTypes().size() == 1)
+              resultType = currentFunction.getResultTypes()[0];
+            else
+              resultType = builder.getI32Type();
+            bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+          }
+        } else if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
+                   std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||
+                   std::holds_alternative<ast::StmtWhileLet>(lastStmt.kind) ||
+                   std::holds_alternative<ast::StmtFor>(lastStmt.kind)) {
+          lastBreakValue = nullptr;
+          generateStatement(lastStmt);
+          if (lastBreakValue)
+            bodyResult = lastBreakValue;
+        } else {
+          generateStatement(lastStmt);
         }
-      } else if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
-                 std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||
-                 std::holds_alternative<ast::StmtWhileLet>(lastStmt.kind) ||
-                 std::holds_alternative<ast::StmtFor>(lastStmt.kind)) {
-        lastBreakValue = nullptr;
-        generateStatement(lastStmt);
-        if (lastBreakValue)
-          bodyResult = lastBreakValue;
       } else {
         generateStatement(lastStmt);
       }

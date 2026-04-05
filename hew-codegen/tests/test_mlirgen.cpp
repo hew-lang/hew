@@ -1489,6 +1489,124 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Discarded scope expression must keep tail match lowering in
+//       statement mode
+// ============================================================================
+static void test_discarded_scope_expr_tail_match_no_extra_results() {
+  TEST(discarded_scope_expr_tail_match_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn scope_match_demo(flag: bool) -> int {
+    scope {
+        match flag {
+            true => println(19),
+            false => println(20),
+        }
+    };
+    0
+}
+
+fn main() -> int {
+    scope_match_demo(true)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto demoFn = lookupFuncBySuffix(module, "scope_match_demo");
+  if (!demoFn) {
+    FAIL("scope_match_demo function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(demoFn) != 1) {
+    FAIL("discarded scope match expression should leave only the final return materialization "
+         "scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Nested discarded scope match expressions keep tail lowering in
+//       statement mode
+// ============================================================================
+static void test_nested_discarded_scope_expr_tail_match_no_extra_results() {
+  TEST(nested_discarded_scope_expr_tail_match_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn nested_scope_match_trailing(flag: bool) -> int {
+    {
+        scope {
+            match flag {
+                true => println(21),
+                false => println(22),
+            }
+        }
+    };
+    0
+}
+
+fn nested_scope_match_stmt(flag: bool) -> int {
+    {
+        scope {
+            match flag {
+                true => println(23),
+                false => println(24),
+            }
+        };
+    };
+    0
+}
+
+fn main() -> int {
+    nested_scope_match_trailing(true) + nested_scope_match_stmt(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto trailingFn = lookupFuncBySuffix(module, "nested_scope_match_trailing");
+  auto stmtFn = lookupFuncBySuffix(module, "nested_scope_match_stmt");
+  if (!trailingFn || !stmtFn) {
+    FAIL("nested discarded scope match test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(trailingFn) != 1) {
+    FAIL("nested discarded trailing scope match should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtFn) != 1) {
+    FAIL("nested discarded scope match statement should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -4058,6 +4176,8 @@ int main() {
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();
+  test_discarded_scope_expr_tail_match_no_extra_results();
+  test_nested_discarded_scope_expr_tail_match_no_extra_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

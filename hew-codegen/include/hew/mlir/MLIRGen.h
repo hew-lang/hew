@@ -668,6 +668,10 @@ private:
   // ── Handle type tracking ──────────────────────────────────────────
   // Track typed handle variables: varName → "http.Server", "net.Connection", etc.
   std::unordered_map<std::string, std::string> handleVarTypes;
+  // Explicit handle annotations keyed by the current binding identity (slot for
+  // mutable vars, SSA value for immutable vars). This keeps fallback lookups
+  // scoped to the active binding instead of leaking by bare identifier name.
+  llvm::DenseMap<mlir::Value, const ast::TypeExpr *> annotatedHandleTypes;
 
   // ── Handle type metadata (from Rust type checker) ──────────────
   /// Set of all known handle type names for data-driven type conversion.

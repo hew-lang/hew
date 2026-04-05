@@ -2878,6 +2878,63 @@ mod tests {
     }
 
     #[test]
+    fn dot_completions_for_builtin_stream() {
+        let source = "fn probe(s: Stream<String>) { s.next(); }";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:?}",
+            type_output.errors
+        );
+
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+        };
+        let dot_pos = source.find("s.next").unwrap() + 2;
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            dot_pos,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"next"),
+            "expected method 'next' in completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"collect"),
+            "expected method 'collect' in completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"lines"),
+            "expected method 'lines' in completions, got: {labels:?}"
+        );
+        let next_item = items
+            .iter()
+            .find(|item| item.label == "next")
+            .expect("next completion should exist");
+        assert!(
+            next_item
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("Option<String>")),
+            "expected Stream<String> detail for next(), got: {:?}",
+            next_item.detail
+        );
+    }
+
+    #[test]
     fn spawn_completions_only_actors() {
         let source = "actor Foo {}\nactor Bar {}\nfn baz() {}\nfn main() { let h = spawn  }";
         let parse_result = hew_parser::parse(source);
@@ -3219,6 +3276,38 @@ impl Worker {
         assert!(
             hr.contents.contains("Point"),
             "hover should mention type name, got: {}",
+            hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_on_builtin_type_name() {
+        let source = "fn drain(rx: Receiver<String>) { rx.close(); }";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:?}",
+            type_output.errors
+        );
+        let offset = source.find("Receiver").unwrap();
+        let result = hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
+        assert!(result.is_some(), "expected hover for builtin type name");
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("Receiver"),
+            "hover should mention builtin type name, got: {}",
+            hr.contents
+        );
+        assert!(
+            hr.contents.contains("recv"),
+            "hover should include builtin methods, got: {}",
             hr.contents
         );
     }
@@ -4021,6 +4110,33 @@ impl Worker {
             "signature label should mention function name, got: {}",
             sh.signatures[0].label
         );
+    }
+
+    #[test]
+    fn signature_help_for_builtin_method_call() {
+        let source = "fn send_one(tx: Sender<int>) { tx.send(1); }";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:?}",
+            type_output.errors
+        );
+        let offset = source.find("send(1)").unwrap() + 5;
+        let result =
+            hew_analysis::signature_help::build_signature_help(source, &type_output, offset);
+        assert!(
+            result.is_some(),
+            "expected signature help inside builtin method call"
+        );
+        let sh = result.unwrap();
+        assert_eq!(sh.signatures[0].label, "fn send(value: int)");
     }
 
     // ── Non-empty helper test ───────────────────────────────────────

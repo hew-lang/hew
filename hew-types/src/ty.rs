@@ -4,6 +4,7 @@
 //! the type checker. Types are structural and support substitution for
 //! type inference variables.
 
+use crate::builtin_names::canonical_builtin_named_type_name;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -354,6 +355,9 @@ impl Ty {
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
+        if let Some(canonical) = canonical_builtin_named_type_name(name) {
+            return Some(canonical);
+        }
         Some(match name {
             "Option" => "Option",
             "Result" => "Result",
@@ -362,11 +366,7 @@ impl Ty {
             "ActorRef" => "ActorRef",
             "Actor" => "Actor",
             "Task" => "Task",
-            "Stream" | "stream.Stream" => "Stream",
-            "Sink" | "stream.Sink" => "Sink",
             "StreamPair" => "StreamPair",
-            "Sender" | "channel.Sender" => "Sender",
-            "Receiver" | "channel.Receiver" => "Receiver",
             "Generator" => "Generator",
             "AsyncGenerator" => "AsyncGenerator",
             "Range" => "Range",

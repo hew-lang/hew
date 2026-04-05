@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::builtin_names::{builtin_named_type, BuiltinNamedType};
 
 impl Checker {
     pub(super) fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {
@@ -428,7 +429,8 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args }
-                        if (name == "Stream" || name == "stream.Stream") && args.len() == 1 =>
+                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
+                            && args.len() == 1 =>
                     {
                         args[0].clone()
                     }
@@ -463,7 +465,7 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args }
-                        if (name == "Receiver" || name == "channel.Receiver")
+                        if builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
                             && !args.is_empty() =>
                     {
                         let inner = args[0].clone();

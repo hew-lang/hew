@@ -3,7 +3,14 @@
 use hew_types::check::FnSig;
 use hew_types::TypeCheckOutput;
 
+use crate::method_lookup::{find_receiver_type, lookup_method_sig as lookup_receiver_method_sig};
 use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
+
+struct CallContext {
+    callee: String,
+    receiver_end: Option<usize>,
+    active_param: usize,
+}
 
 /// Build signature help at the given byte offset within `source`.
 ///
@@ -19,9 +26,9 @@ pub fn build_signature_help(
     tc: &TypeCheckOutput,
     offset: usize,
 ) -> Option<SignatureHelpResult> {
-    let (fn_name, active_param) = find_call_context(source, offset)?;
-    let sig = find_fn_sig(&fn_name, tc)?;
-    let label = format_sig_label(&fn_name, sig);
+    let context = find_call_context(source, offset)?;
+    let sig = find_call_sig(&context, tc)?;
+    let label = format_sig_label(&context.callee, &sig);
 
     // Build parameter infos with byte-offset ranges within the label string.
     let mut params = Vec::new();
@@ -41,12 +48,25 @@ pub fn build_signature_help(
             parameters: params,
         }],
         active_signature: Some(0),
-        active_parameter: Some(active_param as u32),
+        active_parameter: Some(context.active_param as u32),
     })
 }
 
+fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
+    if let Some(receiver_end) = context.receiver_end {
+        if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
+            return Some(sig);
+        }
+        let method = context.callee.rsplit('.').next()?;
+        return find_receiver_type(tc, receiver_end)
+            .and_then(|receiver_ty| lookup_receiver_method_sig(tc, receiver_ty, method));
+    }
+
+    find_fn_sig(&context.callee, tc)
+}
+
 /// Find the function name and active parameter index at the cursor offset.
-fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
+fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
     let bytes = &source.as_bytes()[..offset];
     let mut depth: i32 = 0;
     let mut comma_count: usize = 0;
@@ -58,8 +78,12 @@ fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
             b')' | b']' | b'}' => depth += 1,
             b'(' => {
                 if depth == 0 {
-                    let fn_name = extract_fn_name_before(source, i)?;
-                    return Some((fn_name, comma_count));
+                    let (callee, receiver_end) = extract_fn_name_before(source, i)?;
+                    return Some(CallContext {
+                        callee,
+                        receiver_end,
+                        active_param: comma_count,
+                    });
                 }
                 depth -= 1;
             }
@@ -77,7 +101,7 @@ fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
 }
 
 /// Extract the function/method name immediately before the `(` at `paren_pos`.
-fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<String> {
+fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Option<usize>)> {
     let before = source[..paren_pos].trim_end();
     if before.is_empty() {
         return None;
@@ -99,40 +123,36 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<String> {
         return None;
     }
 
-    Some(before[start..end].to_string())
+    let callee = before[start..end].to_string();
+    let receiver_end = callee.rfind('.').map(|dot_pos| start + dot_pos);
+
+    Some((callee, receiver_end))
 }
 
-/// Find a function signature by name, checking `fn_sigs`, `type_defs` methods, and qualified names.
-fn find_fn_sig<'a>(name: &str, tc: &'a TypeCheckOutput) -> Option<&'a FnSig> {
+/// Find a function signature by name, checking `fn_sigs` and qualified-name fallbacks.
+fn find_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(sig) = tc.fn_sigs.get(name) {
-        return Some(sig);
-    }
-
-    // For method calls like `receiver.method`, try the method part.
-    if let Some(method) = name.rsplit('.').next() {
-        if method != name {
-            for type_def in tc.type_defs.values() {
-                if let Some(sig) = type_def.methods.get(method) {
-                    return Some(sig);
-                }
-            }
-            for (sig_name, sig) in &tc.fn_sigs {
-                if sig_name.ends_with(&format!("::{method}")) {
-                    return Some(sig);
-                }
-            }
-        }
+        return Some(sig.clone());
     }
 
     // Try just the last component as a plain function name.
     let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
     if last != name {
         if let Some(sig) = tc.fn_sigs.get(last) {
-            return Some(sig);
+            return Some(sig.clone());
+        }
+        for (sig_name, sig) in &tc.fn_sigs {
+            if sig_name.ends_with(&format!("::{last}")) {
+                return Some(sig.clone());
+            }
         }
     }
 
     None
+}
+
+fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    tc.fn_sigs.get(name).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
@@ -153,6 +173,7 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_types::check::{SpanKey, TypeDef, TypeDefKind};
     use hew_types::Ty;
     use std::collections::{HashMap, HashSet};
 
@@ -256,5 +277,89 @@ mod tests {
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
         assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+    }
+
+    #[test]
+    fn module_qualified_function_sig_help_uses_exact_dotted_name() {
+        let source = "channel.new(";
+        let tc = make_tc_with_fn("channel.new", vec!["capacity"], vec![Ty::I64], Ty::Unit);
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_some(),
+            "module-qualified function call should still provide signature help"
+        );
+        let sh = result.unwrap();
+        assert_eq!(sh.active_parameter, Some(0));
+        assert_eq!(sh.signatures[0].label, "fn new(capacity: int)");
+    }
+
+    #[test]
+    fn method_call_sig_help_does_not_fall_back_to_unrelated_top_level_function() {
+        let source = "value.foo(";
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(
+            "foo".to_string(),
+            FnSig {
+                param_names: vec!["count".to_string()],
+                params: vec![Ty::I32],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+        );
+
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Widget".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Widget".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey { start: 0, end: 5 },
+            Ty::Named {
+                name: "Widget".to_string(),
+                args: vec![],
+            },
+        );
+
+        let tc = TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs,
+            fn_sigs,
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_none(),
+            "method-call syntax must not fall back to unrelated top-level `foo`"
+        );
+    }
+
+    #[test]
+    fn method_call_sig_help_without_receiver_type_does_not_fall_back_to_unrelated_top_level_function(
+    ) {
+        let source = "value.foo(";
+        let tc = make_tc_with_fn("foo", vec!["count"], vec![Ty::I32], Ty::Unit);
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_none(),
+            "method-call syntax without receiver typing must not fall back to unrelated top-level `foo`"
+        );
     }
 }

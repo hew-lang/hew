@@ -5,10 +5,13 @@ use std::collections::HashSet;
 use hew_parser::ast::{
     Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDeclKind,
 };
-use hew_types::check::{FnSig, SpanKey};
-use hew_types::{Ty, TypeCheckOutput};
+use hew_types::check::FnSig;
+use hew_types::TypeCheckOutput;
 
 use crate::hover::format_fn_signature_inline;
+use crate::method_lookup::{
+    collect_method_sigs_for_receiver, find_receiver_type, lookup_type_def_for_receiver,
+};
 use crate::{CompletionItem, CompletionKind};
 
 /// Hew language keywords for completion.
@@ -106,69 +109,26 @@ fn try_dot_completions(
     let receiver_end = dot_pos - 1;
     let tc = type_output?;
     let receiver_ty = find_receiver_type(tc, receiver_end)?;
-    let type_name = type_name_of(receiver_ty)?;
-    let type_def = tc.type_defs.get(&type_name)?;
 
     let mut items = Vec::new();
-    for (field_name, field_ty) in &type_def.fields {
-        items.push(CompletionItem {
-            label: field_name.clone(),
-            kind: CompletionKind::Field,
-            detail: Some(field_ty.user_facing().to_string()),
-            insert_text: None,
-            insert_text_is_snippet: false,
-            sort_text: None,
-        });
-    }
-    for (method_name, sig) in &type_def.methods {
-        items.push(fn_sig_completion(method_name, sig));
-    }
-    // For actors, also check fn_sigs for "TypeName::method" patterns.
-    let prefix = format!("{type_name}::");
-    for (name, sig) in &tc.fn_sigs {
-        if let Some(method) = name.strip_prefix(&prefix) {
-            items.push(fn_sig_completion(method, sig));
+    if let Some(type_def) = lookup_type_def_for_receiver(tc, receiver_ty) {
+        for (field_name, field_ty) in &type_def.fields {
+            items.push(CompletionItem {
+                label: field_name.clone(),
+                kind: CompletionKind::Field,
+                detail: Some(field_ty.user_facing().to_string()),
+                insert_text: None,
+                insert_text_is_snippet: false,
+                sort_text: None,
+            });
         }
+    }
+    for (method_name, sig) in collect_method_sigs_for_receiver(tc, receiver_ty) {
+        items.push(fn_sig_completion(&method_name, &sig));
     }
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
-}
-
-/// Find the type of the receiver expression ending at `end_offset` (byte offset of the last
-/// character of the expression, just before the dot).
-fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Option<&Ty> {
-    let mut best: Option<(&SpanKey, &Ty)> = None;
-    for (span_key, ty) in &tc.expr_types {
-        // The span's end should be at or very close to the position just before the dot.
-        if span_key.end <= end_offset && span_key.end + 1 >= end_offset {
-            match best {
-                Some((prev, _)) if span_key.end > prev.end => {
-                    best = Some((span_key, ty));
-                }
-                Some((prev, _))
-                    if span_key.end == prev.end
-                        && (span_key.end - span_key.start) < (prev.end - prev.start) =>
-                {
-                    best = Some((span_key, ty));
-                }
-                None => {
-                    best = Some((span_key, ty));
-                }
-                _ => {}
-            }
-        }
-    }
-    best.map(|(_, ty)| ty)
-}
-
-/// Extract the type name from a `Ty`, following `ActorRef` wrappers.
-fn type_name_of(ty: &Ty) -> Option<String> {
-    match ty {
-        Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => type_name_of(&args[0]),
-        Ty::Named { name, .. } => Some(name.clone()),
-        _ => None,
-    }
 }
 
 /// If the cursor is right after `spawn `, offer only actor and supervisor names.

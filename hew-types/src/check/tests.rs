@@ -4976,6 +4976,36 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
 }
 
 #[test]
+fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
+    let mut checker = make_checker_with_trait("Closable", &["close"], false, false);
+
+    let mut methods = HashMap::new();
+    methods.insert(
+        "close".to_string(),
+        FnSig {
+            return_type: Ty::I32,
+            ..FnSig::default()
+        },
+    );
+    checker.type_defs.insert(
+        "Sender".to_string(),
+        make_test_type_def("Sender", vec![], methods),
+    );
+    checker.fn_sigs.insert(
+        "Sender::close".to_string(),
+        FnSig {
+            return_type: Ty::I32,
+            ..FnSig::default()
+        },
+    );
+
+    assert!(
+        checker.type_structurally_satisfies("channel.Sender", "Closable"),
+        "structural check should prefer builtin Sender::close over imported stubs"
+    );
+}
+
+#[test]
 fn structural_hardening_qualified_trait_name_matches() {
     // A type registered under "Speaker" must structurally satisfy a bound
     // expressed as "greet.Greet" once "greet" is a known module.

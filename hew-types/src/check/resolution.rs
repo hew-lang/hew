@@ -4,6 +4,7 @@ use super::coerce::cast_is_valid;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::builtin_names::builtin_named_type;
 
 impl Checker {
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
@@ -542,9 +543,12 @@ impl Checker {
                                     .type_defs
                                     .get(resolved_name.as_str())
                                     .is_some_and(|td| td.type_params.is_empty());
-                        let args = match resolved_name.as_str() {
-                            "Sender" | "channel.Sender" | "Receiver" | "channel.Receiver"
-                                if args.is_empty() && !locally_non_generic =>
+                        let builtin_type = builtin_named_type(resolved_name.as_str());
+                        let args = match builtin_type {
+                            Some(kind)
+                                if kind.is_channel_handle()
+                                    && args.is_empty()
+                                    && !locally_non_generic =>
                             {
                                 vec![Ty::Var(TypeVar::fresh())]
                             }

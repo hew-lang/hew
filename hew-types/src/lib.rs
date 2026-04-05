@@ -9,6 +9,7 @@ pub mod check;
 pub mod cycle;
 pub mod env;
 pub mod error;
+pub mod method_resolution;
 pub mod module_registry;
 pub mod stdlib;
 pub mod stdlib_loader;

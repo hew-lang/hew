@@ -2516,7 +2516,8 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return 0;
+        crate::set_last_error("hew_actor_free: null actor pointer");
+        return -1;
     }
 
     // SAFETY: Caller guarantees `actor` is valid.
@@ -2891,6 +2892,24 @@ mod tests {
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             assert_eq!(actor_free_wasm_impl(actor), 0);
         }
+    }
+
+    #[test]
+    fn wasm_free_reports_null_actor_failure_like_native_free() {
+        crate::hew_clear_error();
+
+        // SAFETY: null actor pointer is explicitly rejected by the free path.
+        let rc = unsafe { actor_free_wasm_impl(ptr::null_mut()) };
+
+        assert_eq!(
+            rc, -1,
+            "WASM free should mirror native null-pointer failure"
+        );
+        let err = crate::hew_last_error();
+        assert!(!err.is_null(), "WASM free should populate hew_last_error");
+        // SAFETY: hew_last_error returned a non-null C string.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
+        assert_eq!(msg, "hew_actor_free: null actor pointer");
     }
 
     #[test]

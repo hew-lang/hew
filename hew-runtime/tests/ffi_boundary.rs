@@ -72,6 +72,7 @@ use hew_runtime::vec::{
     hew_vec_set_i32, hew_vec_set_i64, hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32,
     hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate,
 };
+use hew_runtime::{hew_clear_error, hew_last_error};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -825,9 +826,14 @@ fn actor_spawn_null_state() {
 }
 
 #[test]
-fn actor_free_null_is_noop() {
+fn actor_free_null_reports_error() {
     unsafe {
-        hew_actor_free(ptr::null_mut());
+        hew_clear_error();
+        assert_eq!(hew_actor_free(ptr::null_mut()), -1);
+        assert_eq!(
+            read_cstr(hew_last_error()),
+            "hew_actor_free: null actor pointer"
+        );
     }
 }
 

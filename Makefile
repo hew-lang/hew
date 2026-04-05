@@ -25,6 +25,9 @@
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
+#   make playground-manifest       — regenerate examples/playground/manifest.json
+#   make playground-manifest-check — verify examples/playground/manifest.json freshness
+#   make playground-check          — verify playground manifest freshness + build hew-wasm
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
@@ -38,7 +41,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
-.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm wasm-dist release
+.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
@@ -140,6 +143,18 @@ wasm-runtime:
 # Build hew-wasm browser module (requires: cargo install wasm-pack)
 wasm:
 	wasm-pack build hew-wasm --target web --release
+
+# Regenerate the curated playground manifest consumed by downstream browser tooling.
+playground-manifest:
+	python3 scripts/gen-playground-manifest.py
+
+# Verify the checked-in playground manifest is current.
+playground-manifest-check:
+	python3 scripts/gen-playground-manifest.py --check
+
+# Repo-local browser/playground validation path (no downstream app build).
+playground-check: playground-manifest-check
+	$(MAKE) wasm
 
 # Downstream repo roots (sibling directories of hew/)
 HEW_SH  ?= $(CURDIR)/../hew.sh

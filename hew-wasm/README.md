@@ -10,9 +10,19 @@ Compiles the lexer, parser, and type checker to WebAssembly using `wasm-bindgen`
 
 ## Build
 
+From the repo root:
+
 ```sh
-wasm-pack build hew-wasm --target web
+make wasm
 ```
+
+To validate the repo-local browser/playground slice without building the downstream browser app:
+
+```sh
+make playground-check
+```
+
+`make playground-check` checks `examples/playground/manifest.json` freshness and then builds the `hew-wasm` package.
 
 ## Part of the Hew compiler
 

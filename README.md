@@ -214,7 +214,19 @@ make test     # Run Rust + native codegen tests
 make lint     # cargo clippy
 ```
 
-See `make help` or the [Makefile](Makefile) header for all targets.
+See the [Makefile](Makefile) header for all targets.
+
+### Browser / Playground Validation
+
+This repo does not build the downstream browser app, but it does expose the in-repo validation path for the browser/playground inputs:
+
+```bash
+make playground-manifest-check  # check examples/playground/manifest.json only
+make playground-check           # check manifest.json + build hew-wasm
+make playground-manifest        # refresh manifest.json after editing examples/playground/
+```
+
+`make playground-check` wraps the existing repo-local pieces: `make playground-manifest-check` and `make wasm`.
 
 ### Optional Dependencies
 
@@ -224,7 +236,8 @@ These are only needed for specific workflows:
 | -------------------- | --------------------------------------------------- | ---------------------------------------------- |
 | wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run WASM tests (`make test-wasm`)              |
 | wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
-| Python 3             | system package manager                              | Visualization and fuzzing scripts (`scripts/`) |
+| wasm-pack            | `cargo install wasm-pack`                           | Build browser bindings (`make wasm`, `make playground-check`) |
+| Python 3             | system package manager                              | Playground manifest + other scripts (`scripts/`) |
 | Java 21 + ANTLR4     | system package manager                              | Grammar validation (`make grammar`)            |
 | cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |
 

@@ -500,6 +500,22 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     return nullptr;
   };
 
+  auto lowerResultfulMatchValue = [&](auto &&lower) -> std::pair<mlir::Value, bool> {
+    bool sawDiagnostic = false;
+    unsigned prevErrorCount = errorCount_;
+    mlir::ScopedDiagnosticHandler diagnosticProbe(&context, [&](mlir::Diagnostic &) {
+      sawDiagnostic = true;
+      return mlir::failure();
+    });
+    auto value = lower();
+    return {value, sawDiagnostic || errorCount_ != prevErrorCount};
+  };
+
+  auto emitMissingResultfulMatchValue = [&](mlir::Location diagLoc, llvm::StringRef which) {
+    ++errorCount_;
+    emitError(diagLoc) << "match expression " << which << " did not produce a value";
+  };
+
   // Helper to generate if/else chain for tag comparison
   auto generateTagMatch = [&](mlir::Value cond) -> mlir::Value {
     if (resultType) {
@@ -507,29 +523,41 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
                                           /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-      auto thenVal = generateArmBody(arm);
+      auto [thenVal, thenHadDiagnostic] =
+          lowerResultfulMatchValue([&]() -> mlir::Value { return generateArmBody(arm); });
       auto *thenBlock = builder.getInsertionBlock();
       if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
-        if (thenVal) {
-          thenVal = coerceType(thenVal, resultType, location);
-          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
-        } else {
-          auto defVal = createDefaultValue(builder, location, resultType);
-          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
+        if (!thenVal) {
+          if (!thenHadDiagnostic)
+            emitMissingResultfulMatchValue(arm.body ? loc(arm.body->span) : location,
+                                           "arm lowering");
+          return nullptr;
         }
+        thenVal = coerceType(thenVal, resultType, location);
+        if (!thenVal)
+          return nullptr;
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
       }
 
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-      auto elseVal = generateMatchArmsChain(scrutinee, arms, idx + 1, resultType, location);
+      auto [elseVal, elseHadDiagnostic] = lowerResultfulMatchValue([&]() -> mlir::Value {
+        return generateMatchArmsChain(scrutinee, arms, idx + 1, resultType, location);
+      });
       auto *elseBlock = builder.getInsertionBlock();
       if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
-        if (elseVal) {
-          elseVal = coerceType(elseVal, resultType, location);
-          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
-        } else {
-          auto defVal = createDefaultValue(builder, location, resultType);
-          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
+        if (!elseVal) {
+          if (!elseHadDiagnostic) {
+            mlir::Location elseLoc = idx + 1 < arms.size() && arms[idx + 1].body
+                                         ? loc(arms[idx + 1].body->span)
+                                         : location;
+            emitMissingResultfulMatchValue(elseLoc, "else-chain lowering");
+          }
+          return nullptr;
         }
+        elseVal = coerceType(elseVal, resultType, location);
+        if (!elseVal)
+          return nullptr;
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
       }
 
       builder.setInsertionPointAfter(ifOp);

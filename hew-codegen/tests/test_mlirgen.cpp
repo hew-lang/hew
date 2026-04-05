@@ -181,6 +181,96 @@ static int countResultfulIfOps(mlir::Operation *op) {
   return count;
 }
 
+static size_t countSubstringOccurrences(llvm::StringRef haystack, llvm::StringRef needle) {
+  if (needle.empty())
+    return 0;
+
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = haystack.find(needle, pos)) != llvm::StringRef::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
+static std::unique_ptr<hew::ast::Spanned<hew::ast::Expr>> makeExpr(hew::ast::Expr expr,
+                                                                   hew::ast::Span span = {0, 0}) {
+  expr.span = span;
+  return std::make_unique<hew::ast::Spanned<hew::ast::Expr>>(
+      hew::ast::Spanned<hew::ast::Expr>{std::move(expr), span});
+}
+
+static hew::ast::Program
+buildResultfulStmtMatchProgram(std::unique_ptr<hew::ast::Spanned<hew::ast::Expr>> firstBody,
+                               std::unique_ptr<hew::ast::Spanned<hew::ast::Expr>> secondBody,
+                               bool secondArmWildcard) {
+  using namespace hew::ast;
+
+  const Span span{0, 0};
+
+  auto mkNamedType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::nullopt};
+    return {std::move(ty), span};
+  };
+
+  auto mkBoolPattern = [&](bool value) -> Spanned<Pattern> {
+    Pattern pattern;
+    pattern.kind = PatLiteral{Literal(LitBool{value})};
+    return {std::move(pattern), span};
+  };
+
+  auto mkWildcardPattern = [&]() -> Spanned<Pattern> {
+    Pattern pattern;
+    pattern.kind = PatWildcard{};
+    return {std::move(pattern), span};
+  };
+
+  MatchArm firstArm;
+  firstArm.pattern = mkBoolPattern(true);
+  firstArm.guard = nullptr;
+  firstArm.body = std::move(firstBody);
+
+  MatchArm secondArm;
+  secondArm.pattern = secondArmWildcard ? mkWildcardPattern() : mkBoolPattern(false);
+  secondArm.guard = nullptr;
+  secondArm.body = std::move(secondBody);
+
+  Expr scrutineeExpr;
+  scrutineeExpr.kind = ExprIdentifier{"flag"};
+  scrutineeExpr.span = span;
+
+  StmtMatch matchStmt;
+  matchStmt.scrutinee = {std::move(scrutineeExpr), span};
+  matchStmt.arms.push_back(std::move(firstArm));
+  matchStmt.arms.push_back(std::move(secondArm));
+
+  Stmt matchStmtWrapper;
+  matchStmtWrapper.kind = std::move(matchStmt);
+  matchStmtWrapper.span = span;
+
+  FnDecl fnDecl;
+  fnDecl.is_async = false;
+  fnDecl.is_generator = false;
+  fnDecl.visibility = Visibility::Pub;
+  fnDecl.is_pure = false;
+  fnDecl.name = "main";
+  fnDecl.return_type = mkNamedType("i64");
+
+  Param flagParam;
+  flagParam.name = "flag";
+  flagParam.ty = mkNamedType("bool");
+  flagParam.is_mutable = false;
+  fnDecl.params.push_back(std::move(flagParam));
+  fnDecl.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(matchStmtWrapper), span}));
+
+  Program program;
+  program.items.push_back({Item{std::move(fnDecl)}, span});
+  return program;
+}
+
 static bool allSelectAddsReturnI32(mlir::Operation *op) {
   bool ok = true;
   op->walk([&](hew::SelectAddOp add) {
@@ -2542,6 +2632,125 @@ fn main() {
 }
 
 // ============================================================================
+// Test: Resultful match lowering fails closed when an arm body disappears
+// ============================================================================
+static void test_resultful_match_missing_arm_body_fails_closed() {
+  TEST(resultful_match_missing_arm_body_fails_closed);
+
+  hew::ast::Expr firstBodyExpr;
+  firstBodyExpr.kind = hew::ast::ExprLiteral{hew::ast::Literal(hew::ast::LitInteger{1})};
+  auto program = buildResultfulStmtMatchProgram(
+      /*firstBody=*/nullptr,
+      /*secondBody=*/makeExpr(std::move(firstBodyExpr)),
+      /*secondArmWildcard=*/false);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for missing resultful match arm body");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "match expression arm lowering did not produce a value";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL("expected resultful match arm fail-closed diagnostic");
+    return;
+  }
+  if (countSubstringOccurrences(stderrText, kDiag) != 1) {
+    FAIL("expected exactly one resultful match arm fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Resultful match else-chain lowering fails closed on silent nullptr
+// ============================================================================
+static void test_resultful_match_missing_else_chain_value_fails_closed() {
+  TEST(resultful_match_missing_else_chain_value_fails_closed);
+
+  hew::ast::Expr firstBodyExpr;
+  firstBodyExpr.kind = hew::ast::ExprLiteral{hew::ast::Literal(hew::ast::LitInteger{1})};
+  auto program = buildResultfulStmtMatchProgram(
+      /*firstBody=*/makeExpr(std::move(firstBodyExpr)),
+      /*secondBody=*/nullptr,
+      /*secondArmWildcard=*/true);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for missing resultful match else-chain value");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag =
+      "match expression else-chain lowering did not produce a value";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL("expected resultful match else-chain fail-closed diagnostic");
+    return;
+  }
+  if (countSubstringOccurrences(stderrText, kDiag) != 1) {
+    FAIL("expected exactly one resultful match else-chain fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Resultful match fail-closed diagnostics do not double-report nested
+//       arm lowering errors
+// ============================================================================
+static void test_resultful_match_nested_arm_error_is_not_double_reported() {
+  TEST(resultful_match_nested_arm_error_is_not_double_reported);
+
+  hew::ast::Expr firstBodyExpr;
+  firstBodyExpr.kind = hew::ast::ExprLiteral{hew::ast::Literal(hew::ast::LitInteger{1})};
+  hew::ast::Expr secondBodyExpr;
+  secondBodyExpr.kind = hew::ast::ExprIdentifier{"missing"};
+  auto program = buildResultfulStmtMatchProgram(
+      /*firstBody=*/makeExpr(std::move(firstBodyExpr)),
+      /*secondBody=*/makeExpr(std::move(secondBodyExpr)),
+      /*secondArmWildcard=*/true);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for nested resultful match arm error");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (stderrText.find("undeclared variable 'missing'") == std::string::npos) {
+    FAIL("expected nested arm diagnostic for undeclared variable");
+    return;
+  }
+  if (stderrText.find("match expression arm lowering did not produce a value") !=
+          std::string::npos ||
+      stderrText.find("match expression else-chain lowering did not produce a value") !=
+          std::string::npos) {
+    FAIL("nested resultful match arm diagnostics should not be double-reported");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Trailing void if/match use statement lowering
 // ============================================================================
 static void test_void_trailing_if_match_stmt_lowering() {
@@ -4528,6 +4737,9 @@ int main() {
   test_void_trailing_if_match_stmt_lowering();
   test_stmt_match_last_arm_emits_panic();
   test_stmt_match_unmatched_panic_block_does_not_fall_through();
+  test_resultful_match_missing_arm_body_fails_closed();
+  test_resultful_match_missing_else_chain_value_fails_closed();
+  test_resultful_match_nested_arm_error_is_not_double_reported();
   test_builtin_enum_constructors_use_explicit_payload_positions();
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();

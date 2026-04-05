@@ -136,10 +136,11 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
 
         let result = hew_parser::parse(&source);
         if !result.errors.is_empty() {
-            eprintln!(
-                "Warning: {} has parse errors, documentation may be incomplete",
-                file_path.display()
-            );
+            for err in &result.errors {
+                eprintln!("Error: {}: {}", file_path.display(), err.message);
+            }
+            had_errors = true;
+            continue;
         }
 
         let module = extract_docs(&result.program, module_name);

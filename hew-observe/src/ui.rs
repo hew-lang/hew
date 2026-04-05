@@ -136,6 +136,31 @@ fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn active_node_title(app: &App) -> Option<Line<'static>> {
+    app.is_multi_node().then(|| {
+        Line::from(vec![
+            Span::styled(" active: ", theme::muted_style()),
+            Span::styled(
+                app.active_node_label().to_owned(),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .alignment(Alignment::Right)
+    })
+}
+
+fn core_pane_block(app: &App, title: &str) -> Block<'static> {
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "));
+    if let Some(active_node) = active_node_title(app) {
+        block = block.title(active_node);
+    }
+    block
+}
+
 // ---------------------------------------------------------------------------
 // Cluster tab
 // ---------------------------------------------------------------------------
@@ -986,11 +1011,7 @@ fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
     ];
-    let stats = Paragraph::new(stats_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" System Overview "),
-    );
+    let stats = Paragraph::new(stats_text).block(core_pane_block(app, "System Overview"));
     f.render_widget(stats, area);
 }
 
@@ -1089,7 +1110,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
         SortColumn::ProcessingTime => "Time",
     };
     let filter_bar = Paragraph::new(format!("{filter_text}  │  Sort: {sort_label}"))
-        .block(Block::default().borders(Borders::ALL).title(" Actor List "));
+        .block(core_pane_block(app, "Actor List"));
     f.render_widget(filter_bar, chunks[0]);
 
     // Actor table
@@ -1155,9 +1176,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
     if app.tree_rows.is_empty() && !app.demo_mode {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Supervision Tree ");
+        let block = core_pane_block(app, "Supervision Tree");
         let inner = block.inner(area);
         f.render_widget(block, area);
         draw_empty_state(f, inner, "No supervision data available");
@@ -1191,17 +1210,13 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
 
     let table = Table::new(rows, [Constraint::Min(40), Constraint::Length(15)])
         .header(Row::new(vec!["Tree", "State"]).style(theme::header_style()))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Supervision Tree "),
-        );
+        .block(core_pane_block(app, "Supervision Tree"));
     f.render_widget(table, area);
 }
 
 fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
     if app.crashes.is_empty() && !app.demo_mode {
-        let block = Block::default().borders(Borders::ALL).title(" Crash Log ");
+        let block = core_pane_block(app, "Crash Log");
         let inner = block.inner(area);
         f.render_widget(block, area);
         draw_empty_state(f, inner, "No crash data recorded");
@@ -1254,11 +1269,7 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Crash Log (most recent first) "),
-    );
+    .block(core_pane_block(app, "Crash Log (most recent first)"));
     f.render_widget(table, area);
 }
 
@@ -1461,10 +1472,14 @@ fn format_ns(ns: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cluster_member_debug_summary, format_relative_ms, format_route_targets,
+        active_node_title, cluster_member_debug_summary, format_relative_ms, format_route_targets,
         route_targets_for_connection,
     };
-    use crate::client::{ConnectionInfo, RouteEntry};
+    use crate::{
+        app::App,
+        client::{ConnectionInfo, RouteEntry},
+    };
+    use ratatui::layout::Alignment;
 
     #[test]
     fn format_relative_ms_formats_zero_subsecond_and_seconds() {
@@ -1529,5 +1544,27 @@ mod tests {
         );
 
         assert_eq!(summary, "conn:7 ↔ node:42 • route:7 • 1.2s ago");
+    }
+
+    #[test]
+    fn active_node_title_is_hidden_for_single_node_views() {
+        let app = App::new_tcp(&["alpha:6060".to_owned()]);
+
+        assert_eq!(active_node_title(&app), None);
+    }
+
+    #[test]
+    fn active_node_title_surfaces_multi_node_focus() {
+        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+
+        let title = active_node_title(&app).expect("multi-node panes should show the active node");
+        let text: String = title
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(text, " active: alpha:6060");
+        assert_eq!(title.alignment, Some(Alignment::Right));
     }
 }

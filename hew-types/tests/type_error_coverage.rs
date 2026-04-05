@@ -84,13 +84,30 @@ fn test_exhaustive_or_option_match() {
         r"
         fn check(opt: Option<int>) -> int {
             match opt {
-                Option::Some(x) | Option::None => 1,
+                Option::Some(x) => x,
+                Option::None => 1,
             }
         }
         fn main() {
             check(Some(1));
         }
     ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "qualified Option match must not produce an exhaustiveness error: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
+        "qualified Option payload must bind correctly: {:?}",
+        output.errors
     );
     assert!(!output
         .warnings
@@ -143,7 +160,8 @@ fn test_exhaustive_or_result_match() {
         r"
         fn check(res: Result<int, int>) -> int {
             match res {
-                Result::Ok(x) | Result::Err(e) => 1,
+                Result::Ok(x) => x,
+                Result::Err(e) => e,
             }
         }
         fn main() {
@@ -157,6 +175,14 @@ fn test_exhaustive_or_result_match() {
             .iter()
             .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
         "exhaustive Result match must not produce an error"
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
+        "qualified Result payloads must bind correctly: {:?}",
+        output.errors
     );
     assert!(!output
         .warnings

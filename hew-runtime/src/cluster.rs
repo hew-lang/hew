@@ -41,10 +41,10 @@
 //! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
-use crate::connection::HewConnMgr;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 // ── Member states ──────────────────────────────────────────────────────
@@ -963,24 +963,22 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
     0
 }
 
-pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_live(
+pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_removed(
     cluster: *mut HewCluster,
-    mgr: *const HewConnMgr,
     node_id: u16,
-    conn_id: c_int,
     publication_token: u64,
+    publication_removed: *const AtomicBool,
 ) -> c_int {
-    if cluster.is_null() {
+    if cluster.is_null() || publication_removed.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
+    // SAFETY: caller guarantees `publication_removed` points at the live
+    // connection-local removal flag for this publication attempt.
+    let publication_removed = unsafe { &*publication_removed };
     let mut tokens = cluster.connection_tokens.lock_or_recover();
-    // SAFETY: `mgr` points at the live connection manager attempting to publish
-    // this connection; the helper only snapshots the publication liveness state.
-    if !unsafe {
-        crate::connection::hew_connmgr_publication_is_live(mgr, conn_id, publication_token)
-    } {
+    if publication_removed.load(Ordering::Acquire) {
         return 0;
     }
     tokens.insert(node_id, publication_token);

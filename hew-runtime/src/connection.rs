@@ -142,6 +142,10 @@ struct ConnectionActor {
     conn_id: c_int,
     /// Monotonic token used to suppress stale connection-lifecycle callbacks.
     publication_token: u64,
+    /// Serializes establish/remove publication for this specific connection.
+    publication_sync: Arc<Mutex<()>>,
+    /// Set once removal begins so delayed establish publication can abort.
+    publication_removed: Arc<AtomicBool>,
     /// Remote node identity from handshake.
     peer_node_id: u16,
     /// Remote capability bitfield from handshake.
@@ -253,6 +257,8 @@ impl ConnectionActor {
         Self {
             conn_id,
             publication_token: 0,
+            publication_sync: Arc::new(Mutex::new(())),
+            publication_removed: Arc::new(AtomicBool::new(false)),
             peer_node_id: 0,
             peer_feature_flags: 0,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
@@ -352,25 +358,27 @@ fn publish_connection_established(
     peer_node_id: u16,
     conn_id: c_int,
     publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
 ) {
     if peer_node_id == 0 {
         return;
     }
 
+    if publication_removed.load(Ordering::Acquire) {
+        return;
+    }
+
     let published = if mgr.cluster.is_null() {
-        // SAFETY: `mgr` is a live manager for this publication attempt.
-        unsafe {
-            hew_connmgr_publication_is_live(std::ptr::from_ref(mgr), conn_id, publication_token)
-        }
+        true
     } else {
         // SAFETY: pointer validity is checked by the callee.
         unsafe {
-            crate::cluster::hew_cluster_notify_connection_established_for_token_if_live(
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
                 mgr.cluster,
-                std::ptr::from_ref(mgr),
                 peer_node_id,
-                conn_id,
                 publication_token,
+                Arc::as_ptr(publication_removed),
             ) == 1
         }
     };
@@ -378,8 +386,14 @@ fn publish_connection_established(
         return;
     }
 
-    // SAFETY: pointer validity is checked by the callee.
-    unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
+    if !mgr.routing_table.is_null() {
+        let _publication = publication_sync.lock_or_recover();
+        if publication_removed.load(Ordering::Acquire) {
+            return;
+        }
+        // SAFETY: pointer validity is checked by the callee.
+        unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
+    }
 }
 
 fn retire_connection_publication(
@@ -387,12 +401,16 @@ fn retire_connection_publication(
     peer_node_id: u16,
     conn_id: c_int,
     publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
 ) {
     if peer_node_id == 0 {
         return;
     }
 
+    publication_removed.store(true, Ordering::Release);
     if !mgr.routing_table.is_null() {
+        let _publication = publication_sync.lock_or_recover();
         // SAFETY: pointer validity is checked by the callee.
         let _ =
             unsafe { hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id) };
@@ -421,26 +439,6 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
     Some(ReconnectPlan {
         target_addr: reconnect.target_addr.clone(),
         max_retries: reconnect.max_retries.max(1),
-    })
-}
-
-pub(crate) unsafe fn hew_connmgr_publication_is_live(
-    mgr: *const HewConnMgr,
-    conn_id: c_int,
-    publication_token: u64,
-) -> bool {
-    if mgr.is_null() {
-        return false;
-    }
-    // SAFETY: caller guarantees `mgr` is valid for the duration of the check.
-    let mgr = unsafe { &*mgr };
-    let Ok(conns) = mgr.connections.lock() else {
-        return false;
-    };
-    conns.iter().any(|conn| {
-        conn.conn_id == conn_id
-            && conn.publication_token == publication_token
-            && conn.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
     })
 }
 
@@ -1449,10 +1447,19 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     }
     let publication_token = actor.publication_token;
+    let publication_sync = Arc::clone(&actor.publication_sync);
+    let publication_removed = Arc::clone(&actor.publication_removed);
     conns.push(actor);
     drop(conns);
 
-    publish_connection_established(mgr, peer_hs.node_id, conn_id, publication_token);
+    publish_connection_established(
+        mgr,
+        peer_hs.node_id,
+        conn_id,
+        publication_token,
+        &publication_sync,
+        &publication_removed,
+    );
 
     0
 }
@@ -1473,7 +1480,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let (conn, peer_node_id, publication_token) = {
+    let (conn, peer_node_id, publication_token, publication_sync, publication_removed) = {
         let Ok(mut conns) = mgr.connections.lock() else {
             // Policy: per-connection-manager state (C-ABI) — poisoned mutex
             // means connection registry is corrupted; report error and bail.
@@ -1492,20 +1499,39 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         let conn = conns.swap_remove(idx);
         let peer_node_id = conn.peer_node_id;
         let publication_token = conn.publication_token;
+        let publication_sync = Arc::clone(&conn.publication_sync);
+        let publication_removed = Arc::clone(&conn.publication_removed);
         conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-        (conn, peer_node_id, publication_token)
+        (
+            conn,
+            peer_node_id,
+            publication_token,
+            publication_sync,
+            publication_removed,
+        )
     };
 
     // Release the registry lock before waking the reader. The reader cleanup
     // path can re-enter hew_connmgr_remove on an unexpected drop.
+    //
+    publication_removed.store(true, Ordering::Release);
+    // Mark the reader as explicitly stopped before closing the transport so an
+    // awakened reader does not treat this teardown as an unexpected drop.
+    conn.reader_stop.store(1, Ordering::Release);
     //
     // Close the transport connection first so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
     // Now drop/join the reader thread after transport close.
     drop(conn);
-
-    retire_connection_publication(mgr, peer_node_id, conn_id, publication_token);
+    retire_connection_publication(
+        mgr,
+        peer_node_id,
+        conn_id,
+        publication_token,
+        &publication_sync,
+        &publication_removed,
+    );
 
     0
 }
@@ -2145,12 +2171,21 @@ mod tests {
                     .recv()
                     .expect("reader should be released after replacement install");
             }));
+            let old_publication_sync = Arc::clone(&old_actor.publication_sync);
+            let old_publication_removed = Arc::clone(&old_actor.publication_removed);
             (&*mgr)
                 .connections
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(old_actor);
-            publish_connection_established(&*mgr, 2, 11, old_token);
+            publish_connection_established(
+                &*mgr,
+                2,
+                11,
+                old_token,
+                &old_publication_sync,
+                &old_publication_removed,
+            );
 
             let mgr_send = SendConnMgr(mgr);
             let remove_handle = std::thread::spawn(move || {
@@ -2180,6 +2215,14 @@ mod tests {
                 .as_ref()
                 .map(|actor| actor.publication_token)
                 .expect("replacement token should be set before install");
+            let replacement_publication_sync = replacement_actor
+                .as_ref()
+                .map(|actor| Arc::clone(&actor.publication_sync))
+                .expect("replacement sync should be set before install");
+            let replacement_publication_removed = replacement_actor
+                .as_ref()
+                .map(|actor| Arc::clone(&actor.publication_removed))
+                .expect("replacement removed flag should be set before install");
             let replacement_installed = (0..50).any(|_| match (&*mgr).connections.try_lock() {
                 Ok(mut conns) => {
                     conns.push(
@@ -2206,7 +2249,14 @@ mod tests {
                 replacement_installed,
                 "replacement connection should install while old remove waits on reader shutdown"
             );
-            publish_connection_established(&*mgr, 2, 22, replacement_token);
+            publish_connection_established(
+                &*mgr,
+                2,
+                22,
+                replacement_token,
+                &replacement_publication_sync,
+                &replacement_publication_removed,
+            );
 
             reader_release_tx
                 .send(())
@@ -2298,12 +2348,21 @@ mod tests {
             actor.publication_token = publication_token;
             actor.peer_node_id = 2;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr)
                 .connections
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(actor);
-            publish_connection_established(&*mgr, 2, 31, publication_token);
+            publish_connection_established(
+                &*mgr,
+                2,
+                31,
+                publication_token,
+                &publication_sync,
+                &publication_removed,
+            );
 
             assert_eq!(hew_connmgr_remove(mgr, 31), 0);
             assert_eq!(
@@ -2327,6 +2386,12 @@ mod tests {
         reason = "test stages the delayed establish-publish teardown race end-to-end"
     )]
     fn run_connmgr_publish_skips_removed_connection_test(with_routing_table: bool) {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
         struct BlockingMembershipState {
             events: std::sync::Mutex<Vec<(u16, u8)>>,
             suspect_seen: std::sync::mpsc::Sender<()>,
@@ -2358,6 +2423,7 @@ mod tests {
             local_node_id: 1,
             ..crate::cluster::ClusterConfig::default()
         };
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
         let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
         let release = std::sync::Arc::new(std::sync::Barrier::new(2));
         let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
@@ -2365,12 +2431,22 @@ mod tests {
             suspect_seen: suspect_tx,
             release: std::sync::Arc::clone(&release),
         }));
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
 
         // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
         unsafe {
             let transport_ptr = Box::into_raw(Box::new(HewTransport {
-                ops: std::ptr::null(),
-                r#impl: std::ptr::null_mut(),
+                ops: &raw const *ops,
+                r#impl: close_impl,
             }));
             let routing_table = if with_routing_table {
                 crate::routing::hew_routing_table_new(1)
@@ -2400,6 +2476,8 @@ mod tests {
             actor.publication_token = 2;
             actor.peer_node_id = 2;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr)
                 .connections
                 .lock()
@@ -2427,26 +2505,35 @@ mod tests {
             let publish_handle = std::thread::spawn(move || {
                 let mgr = mgr_send;
                 // SAFETY: mgr stays alive until the worker joins.
-                publish_connection_established(&*mgr.0, 2, 22, 2);
+                publish_connection_established(
+                    &*mgr.0,
+                    2,
+                    22,
+                    2,
+                    &publication_sync,
+                    &publication_removed,
+                );
                 publish_done_tx
                     .send(())
                     .expect("publish thread should report completion");
             });
 
-            let removed = {
-                let mut conns = (&*mgr)
-                    .connections
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let idx = conns
-                    .iter()
-                    .position(|conn| conn.conn_id == 22)
-                    .expect("test connection should be present before publish resumes");
-                let conn = conns.swap_remove(idx);
-                conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-                conn
-            };
-            drop(removed);
+            let (remove_done_tx, remove_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let remove_mgr = SendConnMgr(mgr);
+            let remove_handle = std::thread::spawn(move || {
+                let mgr = remove_mgr;
+                // SAFETY: mgr stays alive until the worker joins.
+                let rc = hew_connmgr_remove(mgr.0, 22);
+                remove_done_tx
+                    .send(rc)
+                    .expect("remove thread should report completion");
+            });
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should close the test connection before publish resumes"),
+                22
+            );
             release.wait();
 
             lost_done_rx
@@ -2455,11 +2542,20 @@ mod tests {
             publish_done_rx
                 .recv_timeout(std::time::Duration::from_secs(1))
                 .expect("publish thread should finish after the old lost transition");
+            assert_eq!(
+                remove_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should finish after publication cleanup"),
+                0
+            );
 
             lost_handle.join().expect("lost thread should not panic");
             publish_handle
                 .join()
                 .expect("publish thread should not panic");
+            remove_handle
+                .join()
+                .expect("remove thread should not panic");
 
             let events = (&*callback_state)
                 .events
@@ -2492,8 +2588,12 @@ mod tests {
                 crate::routing::hew_routing_table_free(routing_table);
             }
             drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
             drop(Box::from_raw(callback_state));
         }
+        drop(ops);
     }
 
     #[test]

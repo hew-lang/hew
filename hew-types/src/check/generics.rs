@@ -267,14 +267,28 @@ impl Checker {
     }
 
     /// Collect all required (non-default, non-generic-method) method names from
-    /// `trait_name` and its entire super-trait chain.
+    /// `trait_name` and its effective super-trait surface.
     ///
     /// Returns `None` if any trait in the chain has associated types or generic
     /// methods (the E1 guards), which disqualifies the whole structural check.
+    ///
+    /// A child trait declaration shadows inherited methods of the same name,
+    /// including when the child provides a default implementation. In that case
+    /// the inherited requirement is satisfied by the child trait itself and is
+    /// not re-required from the concrete type.
     pub(super) fn collect_structural_required_methods(
         &self,
         trait_name: &str,
         visited: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        self.collect_structural_required_methods_inner(trait_name, visited, &HashSet::new())
+    }
+
+    fn collect_structural_required_methods_inner(
+        &self,
+        trait_name: &str,
+        visited: &mut Vec<String>,
+        shadowed: &HashSet<String>,
     ) -> Option<Vec<String>> {
         if visited.iter().any(|v| v == trait_name) {
             return Some(vec![]);
@@ -302,19 +316,29 @@ impl Checker {
             .filter(|m| m.body.is_none())
             .map(|m| m.name.clone())
             .collect();
+        let mut inherited_shadowed = shadowed.clone();
+        inherited_shadowed.extend(trait_info.methods.iter().map(|m| m.name.clone()));
 
-        // Walk super-traits — clone to release borrow.
+        // Walk super-traits — clone to release borrow. Each branch gets its own
+        // visited path so sibling super-traits can still observe the same
+        // ancestor through different shadowing contexts.
         let supers: Vec<String> = self
             .trait_super
             .get(trait_name)
             .cloned()
             .unwrap_or_default();
         for super_trait in &supers {
-            let super_required = self.collect_structural_required_methods(super_trait, visited)?;
+            let mut super_visited = visited.clone();
+            let super_required = self.collect_structural_required_methods_inner(
+                super_trait,
+                &mut super_visited,
+                &inherited_shadowed,
+            )?;
             for m in super_required {
-                if !required.contains(&m) {
-                    required.push(m);
+                if inherited_shadowed.contains(&m) || required.contains(&m) {
+                    continue;
                 }
+                required.push(m);
             }
         }
 

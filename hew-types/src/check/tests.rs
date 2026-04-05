@@ -5573,6 +5573,50 @@ fn structural_hardening_super_trait_methods_all_present_succeeds() {
 }
 
 #[test]
+fn structural_hardening_child_default_overrides_super_required_method() {
+    // If a child trait provides a default implementation for a super-trait
+    // method, that inherited requirement is satisfied by the trait itself and
+    // must not be re-required structurally from the concrete type.
+    let source = r"
+        trait Printable {
+            fn print(val: Self);
+        }
+
+        trait PrettyPrintable: Printable {
+            fn print(val: Self) {}
+            fn pretty_print(val: Self);
+        }
+
+        type Doc {}
+
+        impl Doc {
+            fn pretty_print(d: Doc) {}
+        }
+
+        fn use_pp<T: PrettyPrintable>(t: T) {}
+
+        fn main() {
+            let d = Doc {};
+            use_pp(d);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "child default override should satisfy inherited structural requirement: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn structural_hardening_super_trait_e1_guard_propagates() {
     // If a super-trait has an associated type, the E1 guard must veto the
     // entire structural check — even if the immediate trait has no assoc types.
@@ -5659,5 +5703,89 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
         "E1 guard in super-trait must veto structural check for child trait"
+    );
+}
+
+#[test]
+fn structural_hardening_super_trait_generic_method_guard_propagates() {
+    // If a super-trait has a generic method, the E1 guard must veto the whole
+    // structural check for the child trait too.
+    use hew_parser::ast::{Param, TraitDecl, TraitItem, TraitMethod, TypeExpr, TypeParam};
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    let generic_super = TraitDecl {
+        visibility: hew_parser::ast::Visibility::Private,
+        name: "GenericSuper".to_string(),
+        type_params: None,
+        super_traits: None,
+        items: vec![TraitItem::Method(TraitMethod {
+            name: "map".to_string(),
+            is_pure: false,
+            type_params: Some(vec![TypeParam {
+                name: "U".to_string(),
+                bounds: vec![],
+            }]),
+            params: vec![Param {
+                name: "val".to_string(),
+                ty: (
+                    TypeExpr::Named {
+                        name: "Self".to_string(),
+                        type_args: None,
+                    },
+                    0..4,
+                ),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: None,
+        })],
+        doc_comment: None,
+    };
+    let info_super = Checker::trait_info_from_decl(&generic_super);
+    checker
+        .trait_defs
+        .insert("GenericSuper".to_string(), info_super);
+
+    let child = TraitDecl {
+        visibility: hew_parser::ast::Visibility::Private,
+        name: "ChildTrait".to_string(),
+        type_params: None,
+        super_traits: Some(vec![hew_parser::ast::TraitBound {
+            name: "GenericSuper".to_string(),
+            type_args: None,
+        }]),
+        items: vec![TraitItem::Method(TraitMethod {
+            name: "run".to_string(),
+            is_pure: false,
+            type_params: None,
+            params: vec![Param {
+                name: "val".to_string(),
+                ty: (
+                    TypeExpr::Named {
+                        name: "Self".to_string(),
+                        type_args: None,
+                    },
+                    0..4,
+                ),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: None,
+        })],
+        doc_comment: None,
+    };
+    let info_child = Checker::trait_info_from_decl(&child);
+    checker
+        .trait_defs
+        .insert("ChildTrait".to_string(), info_child);
+    checker
+        .trait_super
+        .insert("ChildTrait".to_string(), vec!["GenericSuper".to_string()]);
+
+    assert!(
+        !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
+        "generic-method guard in super-trait must veto structural check for child trait"
     );
 }

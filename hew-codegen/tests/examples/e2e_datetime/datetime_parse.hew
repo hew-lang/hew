@@ -24,4 +24,14 @@ fn main() {
     let ts4 = datetime.parse("2025-01-01 00:00:00", "%Y-%m-%d %H:%M:%S");
     let formatted = datetime.format(ts4, "%Y-%m-%d");
     println(formatted);
+
+    match datetime.try_parse("1969-12-31 23:59:59.999", "%Y-%m-%d %H:%M:%S%.3f") {
+        Ok(pre_epoch) => println(pre_epoch),
+        Err(err) => println(f"unexpected error: {err}"),
+    }
+
+    match datetime.try_parse("not-a-date", "%Y-%m-%d %H:%M:%S") {
+        Ok(_) => println("unexpected ok"),
+        Err(_) => println(true),
+    }
 }

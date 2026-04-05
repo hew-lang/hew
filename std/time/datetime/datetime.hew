@@ -39,15 +39,37 @@ pub fn format(epoch_ms: i64, fmt: String) -> String {
     unsafe { hew_datetime_format(epoch_ms, fmt) }
 }
 
-/// Parse a date string using the given format and return epoch milliseconds.
+fn parse_error_message() -> String {
+    unsafe { hew_datetime_last_error() }
+}
+
+/// Parse a datetime string using the given format and return epoch milliseconds.
 ///
-/// # Examples
+/// Panics if the input does not match the format. Use `try_parse` for a
+/// structured `Result<i64, String>` failure surface.
 ///
-/// ```
-/// let ms = datetime.parse("2025-01-15", "%Y-%m-%d");
-/// ```
 pub fn parse(s: String, fmt: String) -> i64 {
-    unsafe { hew_datetime_parse(s, fmt) }
+    match try_parse(s, fmt) {
+        Ok(epoch_ms) => epoch_ms,
+        Err(err) => {
+            panic(f"datetime.parse failed: {err}");
+            0
+        },
+    }
+}
+
+/// Parse a datetime string using the given format and return epoch
+/// milliseconds.
+///
+/// Returns `Err(String)` with the native parser message when parsing fails.
+pub fn try_parse(s: String, fmt: String) -> Result<i64, String> {
+    let epoch_ms = unsafe { hew_datetime_parse(s, fmt) };
+    let err = parse_error_message();
+    if err.len() == 0 {
+        Ok(epoch_ms)
+    } else {
+        Err(err)
+    }
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.
@@ -127,6 +149,7 @@ extern "C" {
     fn hew_datetime_now_nanos() -> i64;
     fn hew_datetime_format(epoch_ms: i64, fmt: String) -> String;
     fn hew_datetime_parse(s: String, fmt: String) -> i64;
+    fn hew_datetime_last_error() -> String;
     fn hew_datetime_year(epoch_ms: i64) -> i32;
     fn hew_datetime_month(epoch_ms: i64) -> i32;
     fn hew_datetime_day(epoch_ms: i64) -> i32;

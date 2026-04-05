@@ -2619,6 +2619,36 @@ fn import_with_resolved_items_no_error() {
     assert!(output.user_modules.contains("util"));
 }
 
+#[test]
+fn file_import_without_resolved_items_emits_unresolved_error() {
+    let import = ImportDecl {
+        path: vec![],
+        spec: None,
+        file_path: Some("missing.hew".to_string()),
+        resolved_items: None,
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let program = Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..20)],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UnresolvedImport)
+        .expect("expected UnresolvedImport error for unresolved file import");
+
+    assert!(
+        error.message.contains("missing.hew"),
+        "unresolved file import should mention the missing file path: {error:?}"
+    );
+}
+
 // -- Empty module import --
 
 #[test]

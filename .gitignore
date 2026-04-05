@@ -19,6 +19,7 @@ dist/
 
 # Worktrees
 .worktrees/
+worktrees/
 
 # Generated shell completions (produced at install time)
 completions/

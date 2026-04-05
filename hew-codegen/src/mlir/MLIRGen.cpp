@@ -4336,6 +4336,12 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   uint32_t paramIdx = 0;
   for (const auto &param : method.params) {
     declareVariable(param.name, entryBlock->getArgument(paramIdx));
+    auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes);
+    if (!handleStr.empty()) {
+      handleVarTypes[param.name] = handleStr;
+      if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))
+        annotatedHandleTypes[bindingIdentity] = &param.ty.value;
+    }
     ++paramIdx;
   }
 
@@ -4541,8 +4547,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     const auto &paramTy = param.ty.value;
     {
       auto handleStr = typeExprToHandleString(paramTy, knownHandleTypes);
-      if (!handleStr.empty())
+      if (!handleStr.empty()) {
         handleVarTypes[paramName] = handleStr;
+        if (auto bindingIdentity = resolveCurrentBindingIdentity(paramName))
+          annotatedHandleTypes[bindingIdentity] = &paramTy;
+      }
       auto actorName = typeExprToActorName(paramTy);
       if (!actorName.empty() && actorRegistry.count(actorName))
         actorVarTypes[paramName] = actorName;
@@ -5013,6 +5022,12 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     uint32_t paramIdx = 0;
     for (const auto &param : fn.params) {
       declareVariable(param.name, entryBlock->getArgument(paramIdx));
+      auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes);
+      if (!handleStr.empty()) {
+        handleVarTypes[param.name] = handleStr;
+        if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))
+          annotatedHandleTypes[bindingIdentity] = &param.ty.value;
+      }
       ++paramIdx;
     }
 

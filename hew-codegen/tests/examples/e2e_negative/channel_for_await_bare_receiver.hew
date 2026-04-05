@@ -1,0 +1,17 @@
+import std::channel::channel;
+
+fn drain(rx: channel.Receiver) {
+    for await msg in rx {
+        println(msg);
+    }
+
+    rx.close();
+}
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+    tx.send("hello");
+    tx.close();
+
+    drain(rx);
+}

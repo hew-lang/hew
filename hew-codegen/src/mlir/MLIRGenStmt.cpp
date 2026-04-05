@@ -40,6 +40,10 @@ using namespace mlir;
 
 namespace {
 
+bool isReceiverTypeName(llvm::StringRef name) {
+  return name == "Receiver" || name == "channel.Receiver";
+}
+
 bool isInferredType(const ast::Spanned<ast::TypeExpr> &typeExpr) {
   return typeExpr.span.start == 0 && typeExpr.span.end == 0;
 }
@@ -753,8 +757,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // Track handle variables from type annotation (filled by enrich_program)
     if (stmt.ty) {
       auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
-      if (!handleStr.empty())
+      if (!handleStr.empty()) {
         handleVarTypes[varName] = handleStr;
+        if (auto bindingIdentity = resolveCurrentBindingIdentity(varName))
+          annotatedHandleTypes[bindingIdentity] = &stmt.ty->value;
+      }
     }
 
     // ── Track first-class Stream<T> / Sink<T> variables ─────────────────
@@ -897,8 +904,11 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   // Track handle variables from type annotation (filled by enrich_program)
   if (stmt.ty) {
     auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
-    if (!handleStr.empty())
+    if (!handleStr.empty()) {
       handleVarTypes[varNameStr] = handleStr;
+      if (auto bindingIdentity = resolveCurrentBindingIdentity(varNameStr))
+        annotatedHandleTypes[bindingIdentity] = &stmt.ty->value;
+    }
   }
 
   // ── Track first-class Stream<T> / Sink<T> for var statements ────────────
@@ -2197,8 +2207,10 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
     return;
   }
 
-  bool isIntChannel = (inner->name == "int" || inner->name == "i64");
-  bool isStringChannel = !isIntChannel && (inner->name == "String" || inner->name == "string");
+  auto innerName = resolveTypeAlias(inner->name);
+  bool isIntChannel = (innerName == "int" || innerName == "i64");
+  bool isStringChannel =
+      !isIntChannel && (innerName == "String" || innerName == "string" || innerName == "str");
 
   if (!isIntChannel && !isStringChannel) {
     ++errorCount_;
@@ -2500,14 +2512,25 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
     if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
       auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind);
-      if (named && (named->name == "Receiver" || named->name == "channel.Receiver")) {
+      if (named && isReceiverTypeName(named->name)) {
         generateForReceiverStmt(stmt, named);
         return;
       }
     }
-    // Also check the handle-var type map (fallback).
+    if (auto bindingIdentity = resolveCurrentBindingIdentity(identExpr->name)) {
+      auto annotated = annotatedHandleTypes.find(bindingIdentity);
+      if (annotated != annotatedHandleTypes.end()) {
+        auto *named = std::get_if<ast::TypeNamed>(&annotated->second->kind);
+        if (named && isReceiverTypeName(named->name)) {
+          generateForReceiverStmt(stmt, named);
+          return;
+        }
+      }
+    }
+    // A handle-var entry only tells us that this is some Receiver handle; it
+    // does not carry the Receiver<T> element type needed for lowering.
     auto hit = handleVarTypes.find(identExpr->name);
-    if (hit != handleVarTypes.end() && hit->second == "Receiver") {
+    if (hit != handleVarTypes.end() && isReceiverTypeName(hit->second)) {
       generateForReceiverStmt(stmt, nullptr);
       return;
     }

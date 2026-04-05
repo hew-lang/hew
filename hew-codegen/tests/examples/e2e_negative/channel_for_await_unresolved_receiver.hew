@@ -1,0 +1,16 @@
+import std::channel::channel;
+
+fn keep(rx: channel.Receiver<String>) {
+    rx.close();
+}
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+    tx.close();
+
+    for await msg in rx {
+        println(msg);
+    }
+
+    rx.close();
+}

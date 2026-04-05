@@ -84,8 +84,8 @@ When you compile or typecheck a multi-file program with `hew check`,
 directory-form modules pull in the rest, so pass `main.hew`, not every file in
 the tree.
 
-- `import foo;` resolves either `foo.hew` beside the importer or a
-  directory-form module at `foo/foo.hew`.
+- `import foo;` prefers the directory-form module at `foo/foo.hew`, then falls
+  back to `foo.hew` beside the importer.
 - Other top-level `.hew` files inside `foo/` merge into the same module
   automatically.
 - Child directories stay separate submodules, so import them explicitly — for

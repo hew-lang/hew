@@ -103,19 +103,17 @@ fn source_for_path(
     std::fs::read_to_string(path).ok()
 }
 
-/// Recursively populate `ImportDecl::resolved_items` for user-module imports.
+/// Recursively populate `ImportDecl::resolved_items` for user and file imports.
 ///
 /// After parsing a document the `resolved_items` field on every `ImportDecl`
 /// is `None`.  The CLI fills these in by reading files from disk; the LSP
 /// historically skipped this step, so imported modules were only resolved via
 /// the stdlib `ModuleRegistry` and not from the project tree.
 ///
-/// This function walks `items`, finds `Import` nodes whose path does not match
-/// a stdlib module (i.e. `resolved_items` stays `None` after `ModuleRegistry`
-/// lookup), locates the corresponding `.hew` file relative to `source_dir`,
-/// reads it — **preferring any open editor buffer over the on-disk version** —
-/// and populates `resolved_items` so the type checker sees the current
-/// in-memory content.
+/// This function walks `items`, finds unresolved `Import` nodes, locates the
+/// corresponding `.hew` file relative to `source_dir`, reads it — **preferring
+/// any open editor buffer over the on-disk version** — and populates
+/// `resolved_items` so the type checker sees the current in-memory content.
 ///
 /// Depth is capped at [`MAX_IMPORT_DEPTH`] to prevent cycles.
 fn populate_user_module_imports(
@@ -147,32 +145,16 @@ fn populate_user_module_imports_impl(
 
     for (item, _span) in items.iter_mut() {
         let decl = match item {
-            // Only process imports that haven't been resolved yet and have a
-            // non-empty module path (stdlib modules are handled by ModuleRegistry).
-            Item::Import(d) if d.resolved_items.is_none() && !d.path.is_empty() => d,
+            // Only process imports that haven't been resolved yet.
+            Item::Import(d)
+                if d.resolved_items.is_none() && (d.file_path.is_some() || !d.path.is_empty()) =>
+            {
+                d
+            }
             _ => continue,
         };
 
-        let last = match decl.path.last() {
-            Some(l) => l.clone(),
-            None => continue,
-        };
-
-        // Build the two canonical candidate paths the CLI also tries:
-        //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
-        //   2. flat form:               source_dir/<a>/<b>.hew
-        let rel_path: std::path::PathBuf = decl
-            .path
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .with_extension("hew");
-        let dir_path: std::path::PathBuf = decl
-            .path
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .join(format!("{last}.hew"));
-
-        let candidates = [source_dir.join(&dir_path), source_dir.join(&rel_path)];
+        let candidates = import_candidate_paths_from_dir(source_dir, decl);
 
         for candidate in &candidates {
             // `source_for_path` checks the in-memory document store first so
@@ -204,6 +186,166 @@ fn populate_user_module_imports_impl(
     }
 }
 
+fn import_candidate_paths_from_dir(
+    source_dir: &std::path::Path,
+    import: &ImportDecl,
+) -> Vec<std::path::PathBuf> {
+    if let Some(file_path) = &import.file_path {
+        return vec![source_dir.join(file_path)];
+    }
+
+    let Some(last) = import.path.last() else {
+        return vec![];
+    };
+
+    // Build the two canonical candidate paths the CLI also tries:
+    //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
+    //   2. flat form:               source_dir/<a>/<b>.hew
+    let rel_path: std::path::PathBuf = import
+        .path
+        .iter()
+        .collect::<std::path::PathBuf>()
+        .with_extension("hew");
+    let dir_path: std::path::PathBuf = import
+        .path
+        .iter()
+        .collect::<std::path::PathBuf>()
+        .join(format!("{last}.hew"));
+
+    vec![source_dir.join(&dir_path), source_dir.join(&rel_path)]
+}
+
+fn import_candidate_paths(uri: &Url, import: &ImportDecl) -> Vec<std::path::PathBuf> {
+    let Ok(source_path) = uri.to_file_path() else {
+        return vec![];
+    };
+    let Some(source_dir) = source_path.parent() else {
+        return vec![];
+    };
+
+    import_candidate_paths_from_dir(source_dir, import)
+}
+
+fn analyze_document(
+    uri: &Url,
+    source: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> (DocumentState, Vec<Diagnostic>) {
+    let parse_result = hew_parser::parse(source);
+
+    let has_parse_errors = parse_result
+        .errors
+        .iter()
+        .any(|e| e.severity == hew_parser::Severity::Error);
+
+    let type_output = if has_parse_errors {
+        None
+    } else {
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            build_module_search_paths(),
+        ));
+        // Clone the program so we can inject resolved_items for user-module
+        // imports without mutating the parse_result stored in DocumentState
+        // (other LSP features use the raw AST and do not need resolved_items).
+        let mut program = parse_result.program.clone();
+        populate_user_module_imports(uri, &mut program.items, documents);
+        Some(checker.check_program(&program))
+    };
+
+    let line_offsets = compute_line_offsets(source);
+
+    let diagnostics = build_diagnostics(
+        uri,
+        source,
+        &line_offsets,
+        &parse_result,
+        type_output.as_ref(),
+    );
+
+    (
+        DocumentState {
+            source: source.to_string(),
+            line_offsets,
+            parse_result,
+            type_output,
+        },
+        diagnostics,
+    )
+}
+
+fn document_imports_target(
+    importer_uri: &Url,
+    parse_result: &ParseResult,
+    target_uri: &Url,
+) -> bool {
+    parse_result.program.items.iter().any(|(item, _)| {
+        let Item::Import(import) = item else {
+            return false;
+        };
+
+        import_candidate_paths(importer_uri, import)
+            .into_iter()
+            .filter_map(|path| Url::from_file_path(path).ok())
+            .any(|candidate_uri| candidate_uri == *target_uri)
+    })
+}
+
+fn refresh_open_importers(
+    target_uri: &Url,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    let dependents: Vec<_> = documents
+        .iter()
+        .filter_map(|entry| {
+            let importer_uri = entry.key().clone();
+            if &importer_uri == target_uri {
+                return None;
+            }
+
+            let importer = entry.value();
+            if document_imports_target(&importer_uri, &importer.parse_result, target_uri) {
+                Some((importer_uri, importer.source.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut refreshed = Vec::with_capacity(dependents.len());
+
+    for (importer_uri, importer_source) in dependents {
+        let (document, diagnostics) = analyze_document(&importer_uri, &importer_source, documents);
+        documents.insert(importer_uri.clone(), document);
+        refreshed.push((importer_uri, diagnostics));
+    }
+
+    refreshed
+}
+
+fn refresh_document_and_dependents(
+    uri: &Url,
+    source: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    let (document, diagnostics) = analyze_document(uri, source, documents);
+    documents.insert(uri.clone(), document);
+
+    let mut refreshed = vec![(uri.clone(), diagnostics)];
+    refreshed.extend(refresh_open_importers(uri, documents));
+    refreshed
+}
+
+fn close_document_and_dependents(
+    uri: &Url,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    if documents.remove(uri).is_none() {
+        return vec![];
+    }
+
+    refresh_open_importers(uri, documents)
+}
+
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -223,52 +365,16 @@ impl HewLanguageServer {
         }
     }
 
-    /// Re-lex, re-parse, and re-typecheck the document, then publish diagnostics.
+    /// Re-lex, re-parse, and re-typecheck the document and any open importers,
+    /// then publish diagnostics.
     async fn reanalyze(&self, uri: &Url, source: &str) {
-        let parse_result = hew_parser::parse(source);
-
-        let has_parse_errors = parse_result
-            .errors
-            .iter()
-            .any(|e| e.severity == hew_parser::Severity::Error);
-
-        let type_output = if has_parse_errors {
-            None
-        } else {
-            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-                build_module_search_paths(),
-            ));
-            // Clone the program so we can inject resolved_items for user-module
-            // imports without mutating the parse_result stored in DocumentState
-            // (other LSP features use the raw AST and do not need resolved_items).
-            let mut program = parse_result.program.clone();
-            populate_user_module_imports(uri, &mut program.items, &self.documents);
-            Some(checker.check_program(&program))
-        };
-
-        let line_offsets = compute_line_offsets(source);
-
-        let diagnostics = build_diagnostics(
-            uri,
-            source,
-            &line_offsets,
-            &parse_result,
-            type_output.as_ref(),
-        );
-
-        self.documents.insert(
-            uri.clone(),
-            DocumentState {
-                source: source.to_string(),
-                line_offsets,
-                parse_result,
-                type_output,
-            },
-        );
-
-        self.client
-            .publish_diagnostics(uri.clone(), diagnostics, None)
-            .await;
+        for (updated_uri, diagnostics) in
+            refresh_document_and_dependents(uri, source, &self.documents)
+        {
+            self.client
+                .publish_diagnostics(updated_uri, diagnostics, None)
+                .await;
+        }
     }
 }
 
@@ -374,7 +480,13 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.documents.remove(&params.text_document.uri);
+        for (updated_uri, diagnostics) in
+            close_document_and_dependents(&params.text_document.uri, &self.documents)
+        {
+            self.client
+                .publish_diagnostics(updated_uri, diagnostics, None)
+                .await;
+        }
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -4866,6 +4978,20 @@ impl Worker {
         return Url::parse(&format!("file://{posix_path}")).unwrap();
     }
 
+    fn has_unresolved_import(documents: &DashMap<Url, DocumentState>, uri: &Url) -> bool {
+        documents
+            .get(uri)
+            .and_then(|doc| {
+                doc.type_output.as_ref().map(|output| {
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::UnresolvedImport)
+                })
+            })
+            .is_some_and(|has_unresolved| has_unresolved)
+    }
+
     /// Returns the `ImportDecl`s extracted from the parsed program, mirroring
     /// the extraction done in `goto_definition` before the cross-file search.
     fn collect_imports(source: &str) -> Vec<hew_parser::ast::ImportDecl> {
@@ -5494,6 +5620,54 @@ impl Worker {
         );
     }
 
+    /// `populate_user_module_imports` also resolves string-literal file imports
+    /// from the in-memory document store before type checking.
+    #[test]
+    fn populate_prefers_open_document_for_file_import() {
+        let main_source = "import \"shapes/circle.hew\";\nfn main() { area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors in main_source: {:?}",
+            parse_result.errors
+        );
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let import_decl = parse_result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let hew_parser::ast::Item::Import(d) = item {
+                    Some(d)
+                } else {
+                    None
+                }
+            })
+            .expect("import should be present");
+
+        assert!(
+            import_decl.resolved_items.is_some(),
+            "resolved_items should be populated from the open file import document"
+        );
+        let resolved = import_decl.resolved_items.as_ref().unwrap();
+        let has_area_fn = resolved.iter().any(
+            |(item, _)| matches!(item, hew_parser::ast::Item::Function(f) if f.name == "area"),
+        );
+        assert!(
+            has_area_fn,
+            "resolved items should include the 'area' function from shapes/circle.hew"
+        );
+    }
+
     /// Type-checking a file that imports an open sibling module should produce
     /// no `UnresolvedImport` error when the sibling is in the document store.
     #[test]
@@ -5528,6 +5702,211 @@ impl Worker {
         assert!(
             unresolved.is_empty(),
             "should have no UnresolvedImport when sibling is open in documents: {unresolved:?}"
+        );
+    }
+
+    /// Type-checking with an open file import should not emit false editor
+    /// errors once the imported file has been loaded into `resolved_items`.
+    #[test]
+    fn typecheck_sees_open_file_import_no_unresolved_import() {
+        let main_source = "import \"shapes/circle.hew\";\nfn main() -> f64 { area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parse_result.program);
+
+        let hard_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_types::error::Severity::Error)
+            .collect();
+        assert!(
+            hard_errors.is_empty(),
+            "open file import should not produce hard diagnostics: {hard_errors:?}"
+        );
+    }
+
+    #[test]
+    fn typecheck_opening_file_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { exported() }";
+        let foo_source = "pub fn exported() -> i32 { 1 }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert_eq!(
+            initial.len(),
+            1,
+            "opening importer should only analyze itself"
+        );
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before foo.hew is open"
+        );
+
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "opening foo.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "opening foo.hew should clear the importer's stale UnresolvedImport"
+        );
+    }
+
+    #[test]
+    fn typecheck_changing_file_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { exported() }";
+        let invalid_foo_source = "pub fn exported(";
+        let foo_source = "pub fn exported() -> i32 { 1 }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before foo.hew is valid"
+        );
+
+        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should stay unresolved while foo.hew has parse errors"
+        );
+
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "editing foo.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "editing foo.hew to valid source should clear the importer's stale UnresolvedImport"
+        );
+    }
+
+    #[test]
+    fn typecheck_closing_unsaved_file_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { exported() }";
+        let foo_source = "pub fn exported() -> i32 { 1 }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before foo.hew is open"
+        );
+
+        refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "opening foo.hew should clear the importer's stale UnresolvedImport"
+        );
+
+        let refreshed = close_document_and_dependents(&foo_url, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "closing foo.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "closing an unsaved foo.hew should restore the importer's UnresolvedImport"
+        );
+        assert!(
+            !documents.contains_key(&foo_url),
+            "closing foo.hew should remove it from the open document store"
+        );
+    }
+
+    #[test]
+    fn typecheck_opening_package_directory_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert_eq!(
+            initial.len(),
+            1,
+            "opening importer should only analyze itself"
+        );
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before shapes/circle/circle.hew is open"
+        );
+
+        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "opening shapes/circle/circle.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "opening shapes/circle/circle.hew should clear the importer's stale UnresolvedImport"
+        );
+    }
+
+    #[test]
+    fn typecheck_changing_package_directory_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let invalid_circle_source = "pub fn area(";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before shapes/circle/circle.hew is valid"
+        );
+
+        refresh_document_and_dependents(&circle_url, invalid_circle_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should stay unresolved while shapes/circle/circle.hew has parse errors"
+        );
+
+        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "editing shapes/circle/circle.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "editing shapes/circle/circle.hew to valid source should clear the importer's stale UnresolvedImport"
         );
     }
 

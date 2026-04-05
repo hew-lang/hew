@@ -1814,9 +1814,8 @@ impl Checker {
     pub(super) fn register_import(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
         let module_path = decl.path.join("::");
 
-        // Try to load module from registry (works for both stdlib and user modules).
-        // We extract the error detail as an owned String so that the borrow on
-        // `self.module_registry` is released before we mutate `self.errors`.
+        // Try to load from the registry first, keeping any error detail owned so the
+        // `self.module_registry` borrow ends before we mutate `self.errors`.
         let load_error_detail: Option<String> = match self.module_registry.load(&module_path) {
             Ok(info) => {
                 // Clone all data from ModuleInfo before mutating self, because
@@ -1896,11 +1895,12 @@ impl Checker {
                     self.registry.register_drop_type(dt.clone());
                 }
 
-                // Process resolved Hew source items (types, traits, impls) from stdlib
-                // modules that have .hew files alongside their C/Rust bindings.
-                // This enables trait methods like bench.Suite.add() to be visible.
+                // Process resolved Hew source items from stdlib modules that ship
+                // alongside their C/Rust bindings so trait methods stay visible.
                 if let Some(ref resolved_items) = decl.resolved_items {
-                    self.register_stdlib_hew_items(&short, resolved_items);
+                    if !self.stdlib_hew_module_already_registered(&module_path) {
+                        self.register_stdlib_hew_items(&short, resolved_items);
+                    }
                 }
                 return;
             }
@@ -1917,8 +1917,10 @@ impl Checker {
         // --- User module path ---
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.is_empty() {
-                // File-based import (`import "math_lib.hew"`) — register all
-                // functions/consts as top-level names (no module namespace).
+                if self.flat_file_import_already_registered(decl) {
+                    return;
+                }
+                // File imports register top-level names without a module namespace.
                 self.register_file_import_items(resolved_items);
             } else {
                 let short = decl.path.last().expect("import path is non-empty").clone();
@@ -1929,16 +1931,31 @@ impl Checker {
                 }
                 self.register_user_module(&short, resolved_items, &decl.spec);
             }
-        } else if !decl.path.is_empty() {
-            // Fail-closed: no resolved_items and registry load failed.  Emit a
-            // hard diagnostic so the user learns about the missing module rather
-            // than silently compiling a program with unresolved names.
-            if let Some(detail) = load_error_detail {
-                let span = import_span.cloned().unwrap_or(0..0);
-                self.errors
-                    .push(TypeError::unresolved_import(span, &module_path, &detail));
-            }
+        } else if let Some(error) =
+            Self::unresolved_import_error(decl, import_span, &module_path, load_error_detail)
+        {
+            self.errors.push(error);
         }
+    }
+
+    fn unresolved_import_error(
+        decl: &ImportDecl,
+        import_span: Option<&Span>,
+        module_path: &str,
+        load_error_detail: Option<String>,
+    ) -> Option<TypeError> {
+        let detail = if decl.path.is_empty() {
+            Some("file import was not resolved before type checking".to_string())
+        } else {
+            load_error_detail
+        }?;
+        let span = import_span.cloned().unwrap_or(0..0);
+        let import_target = if decl.path.is_empty() {
+            decl.file_path.as_deref().unwrap_or("<file import>")
+        } else {
+            module_path
+        };
+        Some(TypeError::unresolved_import(span, import_target, &detail))
     }
 
     /// Determine whether a name should be imported unqualified based on the `ImportSpec`.
@@ -2216,6 +2233,26 @@ impl Checker {
     ) -> bool {
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
             && self.register_type_namespace_name(name, span)
+    }
+
+    fn flat_file_import_already_registered(&mut self, decl: &ImportDecl) -> bool {
+        let import_source = decl
+            .resolved_source_paths
+            .first()
+            .cloned()
+            .or_else(|| decl.file_path.as_ref().map(std::path::PathBuf::from));
+        let Some(import_source) = import_source else {
+            return false;
+        };
+        !self
+            .registered_flat_file_import_sources
+            .insert(import_source)
+    }
+
+    fn stdlib_hew_module_already_registered(&mut self, module_path: &str) -> bool {
+        !self
+            .registered_stdlib_hew_modules
+            .insert(module_path.to_string())
     }
 
     /// Register items from a user module under the module's namespace.

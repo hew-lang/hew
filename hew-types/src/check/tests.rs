@@ -2649,6 +2649,82 @@ fn import_with_resolved_items_no_error() {
     assert!(output.user_modules.contains("util"));
 }
 
+#[test]
+fn file_import_without_resolved_items_emits_unresolved_error() {
+    let import = ImportDecl {
+        path: vec![],
+        spec: None,
+        file_path: Some("missing.hew".to_string()),
+        resolved_items: None,
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let program = Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..20)],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UnresolvedImport)
+        .expect("expected UnresolvedImport error for unresolved file import");
+
+    assert!(
+        error.message.contains("missing.hew"),
+        "unresolved file import should mention the missing file path: {error:?}"
+    );
+}
+
+#[test]
+fn repeated_stdlib_import_does_not_duplicate_hew_items() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let fs_path = repo_root.join("std/fs.hew");
+    let source = std::fs::read_to_string(&fs_path).expect("std/fs.hew should exist");
+    let parsed = hew_parser::parse(&source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in std/fs.hew: {:?}",
+        parsed.errors
+    );
+
+    let import = ImportDecl {
+        path: vec!["std".to_string(), "fs".to_string()],
+        spec: None,
+        file_path: None,
+        resolved_items: Some(parsed.program.items),
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: vec![fs_path],
+    };
+    let program = Program {
+        module_graph: None,
+        items: vec![
+            (Item::Import(import.clone()), 0..0),
+            (Item::Import(import), 0..0),
+        ],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors for repeated stdlib import: {:?}",
+        output.errors
+    );
+    assert!(
+        output.type_defs.contains_key("IoError"),
+        "expected std::fs Hew items to remain registered"
+    );
+}
+
 // -- Empty module import --
 
 #[test]

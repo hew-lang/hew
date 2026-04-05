@@ -1023,16 +1023,15 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Discarded block-like expressions must keep tail if lowering in
-//       statement mode
+// Test: Discarded block expression must keep tail if lowering in statement mode
 // ============================================================================
-static void test_discarded_block_like_expr_tail_if_no_results() {
-  TEST(discarded_block_like_expr_tail_if_no_results);
+static void test_discarded_block_expr_tail_if_no_extra_results() {
+  TEST(discarded_block_expr_tail_if_no_extra_results);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn demo(flag: bool) -> int {
+fn block_demo(flag: bool) -> int {
     {
         if flag {
             println(1);
@@ -1040,6 +1039,47 @@ fn demo(flag: bool) -> int {
             println(2);
         }
     };
+    0
+}
+
+fn main() -> int {
+    block_demo(true)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto demoFn = lookupFuncBySuffix(module, "block_demo");
+  if (!demoFn) {
+    FAIL("block_demo function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(demoFn) != 1) {
+    FAIL("discarded block expression should leave only the final return materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded unsafe block expression must keep tail if lowering in
+//       statement mode
+// ============================================================================
+static void test_discarded_unsafe_expr_tail_if_no_extra_results() {
+  TEST(discarded_unsafe_expr_tail_if_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn unsafe_demo(flag: bool) -> int {
     unsafe {
         if flag {
             println(3);
@@ -1051,7 +1091,7 @@ fn demo(flag: bool) -> int {
 }
 
 fn main() -> int {
-    demo(true)
+    unsafe_demo(true)
 }
   )");
 
@@ -1060,15 +1100,15 @@ fn main() -> int {
     return;
   }
 
-  auto demoFn = lookupFuncBySuffix(module, "F4demo");
+  auto demoFn = lookupFuncBySuffix(module, "unsafe_demo");
   if (!demoFn) {
-    FAIL("demo function not found");
+    FAIL("unsafe_demo function not found");
     module.getOperation()->destroy();
     return;
   }
 
-  if (countResultfulIfOps(demoFn) > 1) {
-    FAIL("discarded block-like expressions should not introduce extra resultful scf.if ops");
+  if (countResultfulIfOps(demoFn) != 1) {
+    FAIL("discarded unsafe block expression should leave only the final return materialization scf.if");
     module.getOperation()->destroy();
     return;
   }
@@ -3641,7 +3681,8 @@ int main() {
   test_statement_position_if_and_match_lower_without_results();
   test_unannotated_early_return_tail_if_match_lower_without_results();
   test_non_void_nested_stmt_if_no_results();
-  test_discarded_block_like_expr_tail_if_no_results();
+  test_discarded_block_expr_tail_if_no_extra_results();
+  test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

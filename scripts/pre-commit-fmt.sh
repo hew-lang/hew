@@ -27,9 +27,9 @@ fmt_and_restage() {
     # shellcheck disable=SC2154 # _count set via eval above
     if (( _count > 0 )); then
         # shellcheck disable=SC2294 # eval is intentional — Bash 3.2 compat
-        eval '"$@" "\${'"$varname"'[@]}"' 2>/dev/null
+        eval '"$@" "${'"$varname"'[@]}"' 2>/dev/null
         # shellcheck disable=SC2294 # eval is intentional — Bash 3.2 compat
-        eval 'git add "\${'"$varname"'[@]}"'
+        eval 'git add "${'"$varname"'[@]}"'
     fi
 }
 

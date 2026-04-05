@@ -19,7 +19,7 @@ hew wire check file.hew --against baseline.hew
 hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
-hew init [name]                   # Initialize a new project
+hew init [name]                   # Initialize a new project with main.hew
 hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
@@ -28,13 +28,17 @@ hew version                       # Print version info
 
 ## Formatting
 
-`hew fmt` supports three common workflows:
+`hew fmt` supports four common workflows:
 
 ```sh
-hew fmt myapp/main.hew           # Rewrite a file in-place
-hew fmt --stdin < myapp/main.hew # Read stdin, write formatted source to stdout
-hew fmt --check myapp/main.hew   # Exit non-zero if a file needs formatting
+hew fmt myapp/main.hew                    # Rewrite a file in-place
+hew fmt --stdin < myapp/main.hew          # Read stdin, write formatted source to stdout
+hew fmt --check myapp/main.hew            # Exit non-zero if a file needs formatting
+hew fmt --check --stdin < myapp/main.hew  # Verify piped input without writing
 ```
+
+Without flags, `hew fmt` rewrites each named file in-place and leaves
+already-formatted files untouched.
 
 Use `--stdin` for editor integrations or shell pipelines. It reads from stdin,
 writes the formatted result to stdout, and cannot be combined with file
@@ -43,8 +47,8 @@ arguments.
 Use `--check` when you want formatting verification without rewriting files.
 For files, `hew fmt --check` prints `<file>: needs formatting` and exits non-zero
 when any input needs changes, which makes it suitable for CI. Combined with
-`--stdin`, it performs the same verification on piped input and stays silent on
-success.
+`--stdin`, it performs the same verification on piped input, prints
+`<stdin>: needs formatting` on failure, and stays silent on success.
 
 `hew eval` phase-1 runs each inline expression or buffered `-f` chunk through
 the in-process native pipeline with a fresh bounded execution. Session
@@ -57,9 +61,9 @@ For common import-resolution, type-checking, and build failures, see
 
 ## Multi-file projects
 
-All CLI commands accept a **single entry-point file**. The compiler resolves
-imports recursively from that file, so you never need to list every source file
-on the command line.
+For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
+entry-point file**. The compiler resolves imports recursively from that file,
+so you never need to list every source file on the command line.
 
 Given a project with this layout:
 
@@ -83,6 +87,9 @@ The `greeting/` directory is a **directory-form module**: `greeting/greeting.hew
 is the entry file (its stem matches the directory name) and
 `greeting/greeting_helpers.hew` is merged in automatically as a peer file.
 See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
+
+For the current wildcard-import warning caveat, see the
+[troubleshooting guide](../docs/troubleshooting.md).
 
 `hew init [name]` scaffolds a new project with a `main.hew` entry point ready
 to use as the single argument to all commands above.

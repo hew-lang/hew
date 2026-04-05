@@ -34,9 +34,9 @@ pub enum Command {
     Wire(WireCommand),
     /// State machine tools.
     Machine(MachineCommand),
-    /// Format source files in-place.
+    /// Format source files in-place or from stdin.
     Fmt(FmtArgs),
-    /// Scaffold a new project.
+    /// Scaffold a new project with a main.hew entry file.
     Init(InitArgs),
     /// Print shell completion script.
     Completions(CompletionsArgs),
@@ -413,12 +413,12 @@ pub struct MachineListArgs {
 
 #[derive(Debug, Args)]
 pub struct FmtArgs {
-    /// Source files to format.
+    /// Source files to format in-place.
     pub files: Vec<PathBuf>,
-    /// Read source from stdin and write formatted output to stdout.
+    /// Read source from stdin and write formatted output to stdout (cannot be used with FILES).
     #[arg(long, conflicts_with = "files")]
     pub stdin: bool,
-    /// Check formatting without writing (exit 1 if unformatted).
+    /// Check formatting without writing (files or stdin; exit 1 if unformatted).
     #[arg(long)]
     pub check: bool,
 }
@@ -429,9 +429,9 @@ pub struct FmtArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// Project name (creates a directory; omit to init in current dir).
+    /// Project name (creates a directory with main.hew; omit to init in current dir).
     pub name: Option<String>,
-    /// Overwrite existing files.
+    /// Overwrite existing scaffold files.
     #[arg(long)]
     pub force: bool,
 }

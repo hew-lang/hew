@@ -22,6 +22,8 @@ examples/directory_module_demo/
 
 Because both `hello()` and `target()` are reached through `greeting.*`, this
 example exercises peer-file merging instead of a simpler single-file import.
+Run CLI commands against `main.hew`; its `import greeting;` pulls in the
+directory-form module and peer file automatically.
 
 ## Run from the repo root
 

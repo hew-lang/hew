@@ -74,6 +74,11 @@ jobs:
           key: lint-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: lint-${{ runner.os }}-
 
+      - uses: taiki-e/install-action@wasm-pack
+
+      - name: Build playground browser artifact
+        run: make playground-check
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

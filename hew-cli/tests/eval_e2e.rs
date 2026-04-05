@@ -226,6 +226,31 @@ fn eval_large_stderr_completes_before_timeout() {
 }
 
 #[test]
+fn eval_repl_timeout_is_reported_and_quit_still_works() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(
+        &["eval", "--timeout", "1"],
+        "scope {\n    loop {\n        println(\"spin\");\n    }\n}\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("evaluation timed out after 1s"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn eval_inline_parse_errors_render_cli_diagnostics() {
     let output = Command::new(hew_binary())
         .args(["eval", "1 +"])

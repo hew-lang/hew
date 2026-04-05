@@ -61,9 +61,9 @@ For common import-resolution, type-checking, and build failures, see
 
 ## Multi-file projects
 
-All CLI commands accept a **single entry-point file**. The compiler resolves
-imports recursively from that file, so you never need to list every source file
-on the command line.
+For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
+entry-point file**. The compiler resolves imports recursively from that file,
+so you never need to list every source file on the command line.
 
 Given a project with this layout:
 
@@ -88,10 +88,8 @@ is the entry file (its stem matches the directory name) and
 `greeting/greeting_helpers.hew` is merged in automatically as a peer file.
 See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
 
-When reorganizing imports, prefer bare (`import mod;`) or selective
-(`import mod::{Name}`) imports. `import mod::*;` works, but it can still trigger
-a false-positive `unused import` warning in some type-only cases. See the
-troubleshooting guide for the current limitation.
+For the current wildcard-import warning caveat, see the
+[troubleshooting guide](../docs/troubleshooting.md).
 
 `hew init [name]` scaffolds a new project with a `main.hew` entry point ready
 to use as the single argument to all commands above.

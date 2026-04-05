@@ -70,13 +70,11 @@ fn main() {
 
 See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib modules.
 
-Source-aware CLI commands such as `hew check`, `hew run`, `hew build`,
-`hew test`, and `hew doc` take one entry `.hew` file. Imports and
+When you compile or typecheck a multi-file program with `hew check`,
+`hew build`, or `hew run`, pass one entry `.hew` file. Imports and
 directory-form modules pull in the rest, so pass `main.hew`, not every file in
-the tree. If a
-wildcard import is only used through type references, current builds may emit a
-false-positive `unused import` warning; prefer bare or selective imports while
-you reorganize modules.
+the tree. For the current wildcard-import warning caveat, see
+[`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 For directory-form modules and Hew's multi-file import resolution rules, see [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md).
 

@@ -1,7 +1,8 @@
 mod support;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 
 use support::strip_ansi;
@@ -25,6 +26,24 @@ fn require_codegen() -> bool {
 
 fn hew_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_hew"))
+}
+
+fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
+    let mut child = Command::new(hew_binary())
+        .args(args)
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin should be piped");
+        stdin.write_all(input.as_bytes()).unwrap();
+    }
+
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -81,6 +100,25 @@ fn eval_file_in_repl_context_succeeds() {
         .current_dir(dir.path())
         .output()
         .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
+fn eval_stdin_in_repl_context_succeeds() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(
+        &["eval", "-f", "-"],
+        "fn identity<T>(x: T) -> T {\n    x\n}\n\nidentity(42)\n",
+    );
 
     assert!(
         output.status.success(),

@@ -5,6 +5,12 @@
 use super::*;
 use crate::method_resolution::lookup_method_sig as shared_lookup_method_sig;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StructuralMethodStatus {
+    Required,
+    Provided,
+}
+
 impl Checker {
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
         match ty {
@@ -267,17 +273,40 @@ impl Checker {
     }
 
     /// Collect all required (non-default, non-generic-method) method names from
-    /// `trait_name` and its entire super-trait chain.
+    /// `trait_name` and its effective super-trait surface.
     ///
     /// Returns `None` if any trait in the chain has associated types or generic
     /// methods (the E1 guards), which disqualifies the whole structural check.
+    ///
+    /// A child trait declaration shadows inherited methods of the same name,
+    /// including when the child provides a default implementation. In that case
+    /// the inherited requirement is satisfied by the child trait itself and is
+    /// not re-required from the concrete type. Sibling super-trait branches are
+    /// merged by method name, so a default-providing branch covers that method
+    /// for the combined surface.
     pub(super) fn collect_structural_required_methods(
         &self,
         trait_name: &str,
         visited: &mut Vec<String>,
     ) -> Option<Vec<String>> {
+        let surface = self.collect_structural_method_surface(trait_name, visited)?;
+        Some(
+            surface
+                .into_iter()
+                .filter_map(|(name, status)| {
+                    (status == StructuralMethodStatus::Required).then_some(name)
+                })
+                .collect(),
+        )
+    }
+
+    fn collect_structural_method_surface(
+        &self,
+        trait_name: &str,
+        visited: &mut Vec<String>,
+    ) -> Option<HashMap<String, StructuralMethodStatus>> {
         if visited.iter().any(|v| v == trait_name) {
-            return Some(vec![]);
+            return Some(HashMap::new());
         }
         visited.push(trait_name.to_string());
 
@@ -296,29 +325,51 @@ impl Checker {
             return None;
         }
 
-        let mut required: Vec<String> = trait_info
-            .methods
-            .iter()
-            .filter(|m| m.body.is_none())
-            .map(|m| m.name.clone())
-            .collect();
+        let mut surface = HashMap::new();
+        let mut declared_here = HashSet::new();
+        for method in &trait_info.methods {
+            declared_here.insert(method.name.clone());
+            let status = if method.body.is_none() {
+                StructuralMethodStatus::Required
+            } else {
+                StructuralMethodStatus::Provided
+            };
+            surface.insert(method.name.clone(), status);
+        }
 
-        // Walk super-traits — clone to release borrow.
+        // Walk super-traits — clone to release borrow. Each branch gets its own
+        // visited path so sibling super-traits can still observe the same
+        // ancestor. Their effective surfaces are merged back together here so
+        // sibling shadowing/default coverage is preserved at the parent trait.
         let supers: Vec<String> = self
             .trait_super
             .get(trait_name)
             .cloned()
             .unwrap_or_default();
         for super_trait in &supers {
-            let super_required = self.collect_structural_required_methods(super_trait, visited)?;
-            for m in super_required {
-                if !required.contains(&m) {
-                    required.push(m);
+            let mut super_visited = visited.clone();
+            let super_surface =
+                self.collect_structural_method_surface(super_trait, &mut super_visited)?;
+            for (method_name, status) in super_surface {
+                if declared_here.contains(&method_name) {
+                    continue;
+                }
+                match surface.entry(method_name) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(status);
+                    }
+                    Entry::Occupied(mut entry) => {
+                        if *entry.get() == StructuralMethodStatus::Required
+                            && status == StructuralMethodStatus::Provided
+                        {
+                            entry.insert(StructuralMethodStatus::Provided);
+                        }
+                    }
                 }
             }
         }
 
-        Some(required)
+        Some(surface)
     }
 
     /// Structural-bounds check for compositional interfaces (Stage 1 / E2 + hardening).

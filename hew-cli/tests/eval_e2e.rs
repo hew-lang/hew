@@ -244,6 +244,28 @@ fn eval_inline_parse_errors_render_cli_diagnostics() {
 }
 
 #[test]
+fn eval_repl_load_parse_errors_render_cli_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad_load.hew");
+    std::fs::write(&path, "fn broken(\n").unwrap();
+
+    let output = run_eval_with_stdin(&["eval"], &format!(":load {}\n:quit\n", path.display()));
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let header = format!("{}:1:", path.display());
+    assert!(stderr.contains(&header), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | fn broken("), "stderr: {stderr}");
+}
+
+#[test]
 fn eval_file_type_errors_render_cli_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("negative_eval.hew");

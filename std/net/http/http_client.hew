@@ -155,6 +155,8 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 /// This is a convenience function that combines the request and body
 /// extraction in a single call.
 ///
+/// Returns `null` on transport or network failure.
+///
 /// # Examples
 ///
 /// ```
@@ -167,7 +169,7 @@ pub fn get_string(url: String) -> String {
 
 /// Perform an HTTP POST request and return the response body as a string.
 ///
-/// Returns an empty string on network error.
+/// Returns `null` on transport or network failure.
 ///
 /// # Examples
 ///

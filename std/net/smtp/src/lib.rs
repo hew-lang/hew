@@ -29,6 +29,45 @@ impl std::fmt::Debug for HewSmtpConn {
     }
 }
 
+struct CloseOnDrop<C: Copy, F: FnOnce(C)> {
+    conn: Option<C>,
+    close: Option<F>,
+}
+
+impl<C: Copy, F: FnOnce(C)> CloseOnDrop<C, F> {
+    fn new(conn: C, close: F) -> Self {
+        Self {
+            conn: Some(conn),
+            close: Some(close),
+        }
+    }
+
+    fn conn(&self) -> C {
+        self.conn.expect("connection should remain live until drop")
+    }
+}
+
+impl<C: Copy, F: FnOnce(C)> Drop for CloseOnDrop<C, F> {
+    fn drop(&mut self) {
+        if let (Some(conn), Some(close)) = (self.conn.take(), self.close.take()) {
+            close(conn);
+        }
+    }
+}
+
+fn with_connection<C: Copy, Connect, Close, Send>(connect: Connect, close: Close, send: Send) -> i32
+where
+    Connect: FnOnce() -> Option<C>,
+    Close: FnOnce(C),
+    Send: FnOnce(C) -> i32,
+{
+    let Some(conn) = connect() else {
+        return -1;
+    };
+    let guard = CloseOnDrop::new(conn, close);
+    send(guard.conn())
+}
+
 /// Apply optional credentials and port to an SMTP transport builder.
 fn configure_builder(
     builder: lettre::transport::smtp::SmtpTransportBuilder,
@@ -224,6 +263,83 @@ pub unsafe extern "C" fn hew_smtp_send_html(
     }
 }
 
+unsafe fn connect_send_close(
+    host: *const c_char,
+    port: u16,
+    user: *const c_char,
+    pass: *const c_char,
+    send: impl FnOnce(*mut HewSmtpConn) -> i32,
+) -> i32 {
+    with_connection(
+        || {
+            // SAFETY: host/user/pass satisfy hew_smtp_connect's contract.
+            let conn = unsafe { hew_smtp_connect(host, port, user, pass) };
+            (!conn.is_null()).then_some(conn)
+        },
+        |conn| {
+            // SAFETY: conn comes from hew_smtp_connect and has not yet been freed.
+            unsafe { hew_smtp_close(conn) };
+        },
+        send,
+    )
+}
+
+/// Connect using STARTTLS, send one plain-text email, and close the connection.
+///
+/// Returns 0 on success, -1 on connection or send error.
+///
+/// # Safety
+///
+/// - `host` must be a valid NUL-terminated C string.
+/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
+/// - `from`, `to`, `subject`, and `body` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_smtp_send_once(
+    host: *const c_char,
+    port: u16,
+    user: *const c_char,
+    pass: *const c_char,
+    from: *const c_char,
+    to: *const c_char,
+    subject: *const c_char,
+    body: *const c_char,
+) -> i32 {
+    // SAFETY: all pointers satisfy the contracts of connect_send_close/hew_smtp_send.
+    unsafe {
+        connect_send_close(host, port, user, pass, |conn| {
+            hew_smtp_send(conn, from, to, subject, body)
+        })
+    }
+}
+
+/// Connect using STARTTLS, send one HTML email, and close the connection.
+///
+/// Returns 0 on success, -1 on connection or send error.
+///
+/// # Safety
+///
+/// - `host` must be a valid NUL-terminated C string.
+/// - If non-null, `user` and `pass` must be valid NUL-terminated C strings.
+/// - `from`, `to`, `subject`, and `html` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_smtp_send_html_once(
+    host: *const c_char,
+    port: u16,
+    user: *const c_char,
+    pass: *const c_char,
+    from: *const c_char,
+    to: *const c_char,
+    subject: *const c_char,
+    html: *const c_char,
+) -> i32 {
+    // SAFETY: all pointers satisfy the contracts of connect_send_close/hew_smtp_send_html.
+    unsafe {
+        connect_send_close(host, port, user, pass, |conn| {
+            hew_smtp_send_html(conn, from, to, subject, html)
+        })
+    }
+}
+
 /// Close and free an SMTP connection.
 ///
 /// # Safety
@@ -243,8 +359,10 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::ffi::CString;
     use std::ptr;
+    use std::rc::Rc;
 
     #[test]
     fn debug_impl() {
@@ -332,6 +450,38 @@ mod tests {
         };
         assert_eq!(rc, -1);
 
+        // hew_smtp_send_once with null host returns -1.
+        // SAFETY: host is null (tested), remaining pointers are valid CStrings.
+        let rc = unsafe {
+            hew_smtp_send_once(
+                ptr::null(),
+                587,
+                ptr::null(),
+                ptr::null(),
+                from.as_ptr(),
+                to.as_ptr(),
+                subj.as_ptr(),
+                body.as_ptr(),
+            )
+        };
+        assert_eq!(rc, -1);
+
+        // hew_smtp_send_html_once with null host returns -1.
+        // SAFETY: host is null (tested), remaining pointers are valid CStrings.
+        let rc = unsafe {
+            hew_smtp_send_html_once(
+                ptr::null(),
+                587,
+                ptr::null(),
+                ptr::null(),
+                from.as_ptr(),
+                to.as_ptr(),
+                subj.as_ptr(),
+                body.as_ptr(),
+            )
+        };
+        assert_eq!(rc, -1);
+
         // hew_smtp_send_html with null conn returns -1.
         // SAFETY: conn is null (tested), other pointers are valid CStrings.
         let rc = unsafe {
@@ -377,5 +527,58 @@ mod tests {
             )
         };
         assert!(msg.is_none(), "null to should return None");
+    }
+
+    #[test]
+    fn with_connection_closes_after_send() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let send_events = Rc::clone(&events);
+        let close_events = Rc::clone(&events);
+        let rc = with_connection(
+            || Some(7_i32),
+            move |_| close_events.borrow_mut().push("close"),
+            move |conn| {
+                assert_eq!(conn, 7);
+                send_events.borrow_mut().push("send");
+                0
+            },
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(events.borrow().as_slice(), ["send", "close"]);
+    }
+
+    #[test]
+    fn with_connection_closes_after_send_error() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let send_events = Rc::clone(&events);
+        let close_events = Rc::clone(&events);
+        let rc = with_connection(
+            || Some(11_i32),
+            move |_| close_events.borrow_mut().push("close"),
+            move |conn| {
+                assert_eq!(conn, 11);
+                send_events.borrow_mut().push("send");
+                -1
+            },
+        );
+        assert_eq!(rc, -1);
+        assert_eq!(events.borrow().as_slice(), ["send", "close"]);
+    }
+
+    #[test]
+    fn with_connection_skips_close_when_connect_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let close_events = Rc::clone(&events);
+        let send_events = Rc::clone(&events);
+        let rc = with_connection(
+            || None::<i32>,
+            move |_| close_events.borrow_mut().push("close"),
+            move |_| {
+                send_events.borrow_mut().push("send");
+                0
+            },
+        );
+        assert_eq!(rc, -1);
+        assert!(events.borrow().is_empty());
     }
 }

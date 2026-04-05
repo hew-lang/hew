@@ -58,6 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check playground manifest freshness
+        run: python3 scripts/gen-playground-manifest.py --check
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

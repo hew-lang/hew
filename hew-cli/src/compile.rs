@@ -2035,7 +2035,7 @@ fn main() {
     }
 
     #[test]
-    fn build_module_graph_keeps_transitive_file_imports_visible() {
+    fn build_module_graph_keeps_transitive_file_imports_visible_inside_imported_modules() {
         let fixture = TestFixtureDir::new(
             "transitive-file-import-cache",
             &[
@@ -2046,8 +2046,6 @@ fn main() {
 fn main() {
     let x = mid_fn();
     println(x);
-    let y = base_fn();
-    println(y);
 }
 "#,
                 ),

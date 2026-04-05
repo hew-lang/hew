@@ -5087,7 +5087,7 @@ If you want this to be directly executable as an engineering project, the next m
   syntax, inference rules, trailing-comma and empty-block coercion, and
   `HashMap` method table.  Grounded in `e2e_collections/map_literal.hew`,
   `hew-parser/src/parser.rs` (`parse_map_literal_entries`), and
-  `hew-types/src/check.rs` (`synthesize_map_literal`).
+  `hew-types/src/check/expressions.rs` (`synthesize_map_literal`).
 - **Updated §11 intro** — added `machine` declarations and map literals to the
   list of constructs covered by `grammar.ebnf` / `Hew.g4`.
 

@@ -53,7 +53,7 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 - `make test-rust` runs only Rust tests
 - `make test-codegen` runs only codegen/E2E tests
 
-When adding new language features, add E2E tests in `hew-codegen/tests/examples/` and type checker tests in `hew-types/src/check.rs`.
+When adding new language features, add E2E tests in `hew-codegen/tests/examples/` and type checker tests in `hew-types/src/check/tests.rs`.
 
 ## License
 

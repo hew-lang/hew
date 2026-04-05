@@ -358,6 +358,89 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   return program;
 }
 
+static hew::ast::Program makeStatementStyleMatchArmBadBodyProgram() {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 900000001000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto mkPattern = [&](bool value) -> Spanned<Pattern> {
+    Pattern pattern;
+    pattern.kind = PatLiteral{LitBool{value}};
+    return {std::move(pattern), mkSpan()};
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkBool = [&](bool value) -> Spanned<Expr> {
+    Expr expr;
+    expr.kind = ExprLiteral{LitBool{value}};
+    expr.span = mkSpan();
+    return {std::move(expr), mkSpan()};
+  };
+  auto mkPrintCall = [&](int64_t value) {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(value)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall(1);
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  MatchArm trueArm;
+  trueArm.pattern = mkPattern(true);
+  trueArm.body = mkBadBinary();
+
+  MatchArm falseArm;
+  falseArm.pattern = mkPattern(false);
+  falseArm.body = mkPrintCall(0);
+
+  StmtMatch matchStmt;
+  matchStmt.scrutinee = mkBool(true);
+  matchStmt.arms.push_back(std::move(trueArm));
+  matchStmt.arms.push_back(std::move(falseArm));
+
+  Stmt stmt;
+  stmt.kind = std::move(matchStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: simulate the frontend's TypeDecl-based wire-enum path in MLIRGen.
 // ---------------------------------------------------------------------------
@@ -1247,6 +1330,37 @@ static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
   if (stderrText.find("discarded unsafe expression in statement position failed to lower") ==
       std::string::npos) {
     FAIL("expected discarded unsafe-expression fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm bodies fail-close when expression lowering
+//       returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_bad_body_fails_closed() {
+  TEST(statement_style_match_arm_bad_body_fails_closed);
+
+  auto program = makeStatementStyleMatchArmBadBodyProgram();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm bad body");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm fail-closed diagnostic");
     return;
   }
 
@@ -4055,6 +4169,7 @@ int main() {
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_block_expr_bad_tail_fails_closed();
   test_discarded_unsafe_expr_bad_tail_fails_closed();
+  test_statement_style_match_arm_bad_body_fails_closed();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();

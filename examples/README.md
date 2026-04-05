@@ -64,7 +64,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 - **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing
 - **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities
-- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the checked-in metadata index for the playground example-truth pipeline (refresh it with `python3 scripts/gen-playground-manifest.py`):
+- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the checked-in metadata index for the playground example-truth pipeline (refresh it with `make playground-manifest` or `python3 scripts/gen-playground-manifest.py`, and verify the repo-local browser/playground slice with `make playground-check`):
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
   - `types/` -- Collections, pattern matching, wire types

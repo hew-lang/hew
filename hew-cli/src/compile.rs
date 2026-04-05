@@ -89,7 +89,7 @@ pub struct CompileOptions {
 ///
 /// Groups the parameters that remain constant across recursive calls to
 /// [`resolve_file_imports()`] and [`parse_and_resolve_file()`], plus the
-/// accumulating set of already-imported files.
+/// in-progress/cached import state shared across recursive resolution.
 #[derive(Clone)]
 struct ResolvedImport {
     items: Vec<Spanned<Item>>,
@@ -98,8 +98,8 @@ struct ResolvedImport {
 }
 
 struct ImportResolutionContext<'a> {
-    /// Canonical paths of files already imported (prevents cycles and duplicates).
-    imported: HashSet<PathBuf>,
+    /// Canonical paths of files currently being resolved (prevents cycles).
+    in_progress_imports: HashSet<PathBuf>,
     /// Fully resolved imports keyed by canonical path so sibling imports can
     /// reuse prior resolution without reopening fail-closed unresolved paths.
     resolved_imports: HashMap<PathBuf, ResolvedImport>,
@@ -368,7 +368,7 @@ fn resolve_imports(
 
     let input_path = Path::new(input);
     let mut import_ctx = ImportResolutionContext {
-        imported: HashSet::new(),
+        in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
         manifest_deps: project.manifest_deps.as_deref(),
         extra_pkg_path: options.pkg_path.as_deref(),
@@ -1000,8 +1000,10 @@ fn build_module_graph(
 
     // Phase 1: resolve imports so imported definitions remain available for
     // flattening into the top-level item list before enrichment/codegen.
-    ctx.imported.insert(input_canonical.clone());
-    resolve_file_imports(&input_canonical, items, ctx).map_err(|e| vec![e])?;
+    ctx.in_progress_imports.insert(input_canonical.clone());
+    let resolve_result = resolve_file_imports(&input_canonical, items, ctx).map_err(|e| vec![e]);
+    ctx.in_progress_imports.remove(&input_canonical);
+    resolve_result?;
 
     // Phase 2: build the module graph from the resolved data.
     let root_id = module_id_from_file(source_dir, &input_canonical);
@@ -1337,90 +1339,9 @@ fn resolve_file_imports(
             _ => continue,
         };
 
-        if let Some(cached) = ctx.resolved_imports.get(&canonical) {
-            if let Item::Import(decl) = &mut items[*idx].0 {
-                decl.resolved_items = Some(cached.items.clone());
-                decl.resolved_item_source_paths
-                    .clone_from(&cached.item_source_paths);
-                decl.resolved_source_paths.clone_from(&cached.source_paths);
-            }
+        let Some(resolved_import) = resolve_completed_import(&canonical, ctx, &items[*idx].0)?
+        else {
             continue;
-        }
-
-        if ctx.imported.contains(&canonical) {
-            continue;
-        }
-        ctx.imported.insert(canonical.clone());
-
-        // Check if this is a directory-form module (e.g. std/net/http/http.hew).
-        // If so, collect all peer .hew files in that directory and merge their items.
-        let module_dir = canonical.parent();
-        let is_directory_module = module_dir.is_some_and(|dir| {
-            let dir_name = dir.file_name().and_then(|n| n.to_str());
-            let file_stem = canonical.file_stem().and_then(|n| n.to_str());
-            dir_name.is_some() && dir_name == file_stem
-        });
-
-        let peer_files = if is_directory_module {
-            let dir = module_dir.unwrap();
-            let mut peers: Vec<PathBuf> = std::fs::read_dir(dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(std::result::Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension().and_then(|e| e.to_str()) == Some("hew") && *p != canonical
-                })
-                .collect();
-            peers.sort(); // deterministic order
-            peers
-        } else {
-            Vec::new()
-        };
-
-        let mut import_items = parse_and_resolve_file(&canonical, ctx)?;
-        let mut import_item_source_paths = vec![canonical.clone(); import_items.len()];
-
-        // Parse and merge peer files for directory modules.
-        for peer in &peer_files {
-            let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
-            if ctx.imported.contains(&peer_canonical) {
-                continue;
-            }
-            ctx.imported.insert(peer_canonical.clone());
-
-            let mut peer_items = parse_and_resolve_file(&peer_canonical, ctx)?;
-            import_item_source_paths.extend(std::iter::repeat_n(
-                peer_canonical.clone(),
-                peer_items.len(),
-            ));
-            import_items.append(&mut peer_items);
-        }
-
-        // Check for duplicate pub names in multi-file modules.
-        if !peer_files.is_empty() {
-            if let Item::Import(decl) = &items[*idx].0 {
-                let module_str = if decl.path.is_empty() {
-                    canonical.display().to_string()
-                } else {
-                    decl.path.join("::")
-                };
-                check_duplicate_pub_names(&import_items, &module_str)?;
-            }
-        }
-
-        // Store resolved items and source paths on the ImportDecl instead of
-        // flattening them into the parent's item list. This preserves module
-        // boundaries so the type checker can register items under the module's namespace.
-        let mut source_paths = vec![canonical.clone()];
-        for peer in &peer_files {
-            source_paths.push(peer.canonicalize().unwrap_or_else(|_| peer.clone()));
-        }
-        let resolved_import = ResolvedImport {
-            items: import_items,
-            item_source_paths: import_item_source_paths,
-            source_paths,
         };
 
         if let Item::Import(decl) = &mut items[*idx].0 {
@@ -1430,11 +1351,105 @@ fn resolve_file_imports(
             decl.resolved_source_paths
                 .clone_from(&resolved_import.source_paths);
         }
-        ctx.resolved_imports
-            .insert(canonical.clone(), resolved_import);
     }
 
     Ok(())
+}
+
+fn resolve_completed_import(
+    canonical: &Path,
+    ctx: &mut ImportResolutionContext<'_>,
+    import_item: &Item,
+) -> Result<Option<ResolvedImport>, String> {
+    if let Some(cached) = ctx.resolved_imports.get(canonical) {
+        return Ok(Some(cached.clone()));
+    }
+    if ctx.in_progress_imports.contains(canonical) {
+        return Ok(None);
+    }
+
+    ctx.in_progress_imports.insert(canonical.to_path_buf());
+    let resolved = build_resolved_import(canonical, ctx, import_item);
+    ctx.in_progress_imports.remove(canonical);
+
+    match resolved {
+        Ok(resolved_import) => {
+            ctx.resolved_imports
+                .insert(canonical.to_path_buf(), resolved_import.clone());
+            Ok(Some(resolved_import))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn build_resolved_import(
+    canonical: &Path,
+    ctx: &mut ImportResolutionContext<'_>,
+    import_item: &Item,
+) -> Result<ResolvedImport, String> {
+    // Check if this is a directory-form module (e.g. std/net/http/http.hew).
+    // If so, collect all peer .hew files in that directory and merge their items.
+    let module_dir = canonical.parent();
+    let is_directory_module = module_dir.is_some_and(|dir| {
+        let dir_name = dir.file_name().and_then(|n| n.to_str());
+        let file_stem = canonical.file_stem().and_then(|n| n.to_str());
+        dir_name.is_some() && dir_name == file_stem
+    });
+
+    let peer_files = if is_directory_module {
+        let dir = module_dir.unwrap();
+        let mut peers: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("hew") && *p != canonical)
+            .collect();
+        peers.sort(); // deterministic order
+        peers
+    } else {
+        Vec::new()
+    };
+
+    let mut import_items = parse_and_resolve_file(canonical, ctx)?;
+    let mut import_item_source_paths = vec![canonical.to_path_buf(); import_items.len()];
+    let mut source_paths = vec![canonical.to_path_buf()];
+
+    // Parse and merge peer files for directory modules.
+    for peer in &peer_files {
+        let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
+        let Some(peer_resolved) = resolve_completed_import(&peer_canonical, ctx, import_item)?
+        else {
+            continue;
+        };
+        import_item_source_paths.extend(std::iter::repeat_n(
+            peer_canonical.clone(),
+            peer_resolved.items.len(),
+        ));
+        import_items.extend(peer_resolved.items);
+        source_paths.push(peer_canonical);
+    }
+
+    // Check for duplicate pub names in multi-file modules.
+    if !peer_files.is_empty() {
+        let module_str = if let Item::Import(decl) = import_item {
+            if decl.path.is_empty() {
+                canonical.display().to_string()
+            } else {
+                decl.path.join("::")
+            }
+        } else {
+            canonical.display().to_string()
+        };
+        check_duplicate_pub_names(&import_items, &module_str)?;
+    }
+
+    Ok(ResolvedImport {
+        items: import_items,
+        item_source_paths: import_item_source_paths,
+        source_paths,
+    })
 }
 
 /// Parse a single `.hew` file, report diagnostics, and recursively resolve its imports.
@@ -1959,7 +1974,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
         let mut ctx = ImportResolutionContext {
-            imported: HashSet::new(),
+            in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
             manifest_deps: None,
             extra_pkg_path: None,
@@ -2048,7 +2063,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
         let mut ctx = ImportResolutionContext {
-            imported: HashSet::new(),
+            in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
             manifest_deps: None,
             extra_pkg_path: None,

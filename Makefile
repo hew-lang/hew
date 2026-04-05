@@ -28,6 +28,7 @@
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
 #   make playground-check          — repo-local browser/tooling smoke: manifest freshness + build hew-wasm
+#   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
@@ -41,7 +42,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
-.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check wasm-dist release
+.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check ci-preflight wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
@@ -155,6 +156,11 @@ playground-manifest-check:
 # Repo-local browser/tooling smoke path (manifest drift + hew-wasm build only).
 playground-check: playground-manifest-check
 	$(MAKE) wasm
+
+# Conservative diff-based local preflight dispatcher.
+# Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
+ci-preflight:
+	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
 # Downstream repo roots (sibling directories of hew/)
 HEW_SH  ?= $(CURDIR)/../hew.sh

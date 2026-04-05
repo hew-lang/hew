@@ -182,7 +182,7 @@ impl ReplSession {
         let kind = classify::classify(trimmed);
 
         if let InputKind::Command(cmd) = &kind {
-            return self.handle_cli_command(cmd);
+            return self.handle_cli_command(cmd, input_name);
         }
 
         let checked_program = match self.prepare_program(trimmed, kind) {
@@ -216,14 +216,25 @@ impl ReplSession {
     ///
     /// Returns parse or type errors if the expression is invalid.
     pub fn type_of(&mut self, expr: &str) -> Result<String, Vec<String>> {
+        match self.type_of_checked(expr) {
+            Ok(ty) => Ok(ty),
+            Err(EvalCheckFailure::Parse { errors, .. }) => {
+                Err(errors.into_iter().map(|error| error.message).collect())
+            }
+            Err(EvalCheckFailure::Type { errors, .. }) => {
+                Err(errors.into_iter().map(|error| error.message).collect())
+            }
+        }
+    }
+
+    fn type_of_checked(&mut self, expr: &str) -> Result<String, EvalCheckFailure> {
         let source = self.session.build_type_query(expr);
         let parse_result = hew_parser::parse(&source);
         if !parse_result.errors.is_empty() {
-            return Err(parse_result
-                .errors
-                .iter()
-                .map(|e| e.message.clone())
-                .collect());
+            return Err(EvalCheckFailure::Parse {
+                source,
+                errors: parse_result.errors,
+            });
         }
 
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
@@ -231,7 +242,10 @@ impl ReplSession {
         ));
         let tco = checker.check_program(&parse_result.program);
         if !tco.errors.is_empty() {
-            return Err(tco.errors.iter().map(|e| e.message.clone()).collect());
+            return Err(EvalCheckFailure::Type {
+                source,
+                errors: tco.errors,
+            });
         }
 
         // Find the type of `__repl_type_query` in the fn_sigs or expr_types.
@@ -276,6 +290,30 @@ impl ReplSession {
         Ok("unknown".to_string())
     }
 
+    fn eval_type_command_cli(
+        &mut self,
+        expr: &str,
+        input_name: &str,
+    ) -> Result<String, CliEvalError> {
+        if expr.is_empty() {
+            return Err(CliEvalError::Message(
+                "Usage: :type <expression>".to_string(),
+            ));
+        }
+
+        match self.type_of_checked(expr) {
+            Ok(ty) => Ok(format!("{ty}\n")),
+            Err(EvalCheckFailure::Parse { source, errors }) => {
+                crate::diagnostic::render_parse_diagnostics(&source, input_name, &errors);
+                Err(CliEvalError::DiagnosticsRendered)
+            }
+            Err(EvalCheckFailure::Type { source, errors }) => {
+                crate::diagnostic::render_type_diagnostics(&source, input_name, &errors);
+                Err(CliEvalError::DiagnosticsRendered)
+            }
+        }
+    }
+
     /// Load a file into the session.
     ///
     /// # Errors
@@ -317,8 +355,13 @@ impl ReplSession {
         self.session.clear();
     }
 
-    fn handle_cli_command(&mut self, cmd: &ReplCommand) -> Result<String, CliEvalError> {
+    fn handle_cli_command(
+        &mut self,
+        cmd: &ReplCommand,
+        input_name: &str,
+    ) -> Result<String, CliEvalError> {
         match cmd {
+            ReplCommand::Type(expr) => self.eval_type_command_cli(expr, input_name),
             ReplCommand::Load(path) if !path.is_empty() => match self.load_file(path) {
                 Ok(message) => Ok(format!("{message}\n")),
                 Err(LoadFileError::Parse { source, errors }) => {
@@ -1013,6 +1056,24 @@ mod tests {
             handle_interactive_input(&mut session, "let answer: i64 = \"oops\";"),
             InteractiveEvalOutcome::RenderedDiagnostics
         );
+    }
+
+    #[test]
+    fn type_command_parse_errors_use_shared_diagnostics_path() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_cli(":type 1 +", "<repl>"),
+            Err(CliEvalError::DiagnosticsRendered)
+        ));
+    }
+
+    #[test]
+    fn type_command_type_errors_use_shared_diagnostics_path() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_cli(":type 1 + \"x\"", "<repl>"),
+            Err(CliEvalError::DiagnosticsRendered)
+        ));
     }
 
     #[test]

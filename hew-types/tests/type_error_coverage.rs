@@ -84,7 +84,7 @@ fn test_exhaustive_or_option_match() {
         r"
         fn check(opt: Option<int>) -> int {
             match opt {
-                Some(x) | None => 1,
+                Option::Some(x) | Option::None => 1,
             }
         }
         fn main() {
@@ -143,7 +143,7 @@ fn test_exhaustive_or_result_match() {
         r"
         fn check(res: Result<int, int>) -> int {
             match res {
-                Ok(x) | Err(e) => 1,
+                Result::Ok(x) | Result::Err(e) => 1,
             }
         }
         fn main() {

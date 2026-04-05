@@ -476,24 +476,24 @@ impl Checker {
                 continue;
             }
             visit_or(&arm.pattern.0, &mut |pattern| match pattern {
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                    if name == variant_a =>
-                {
-                    has_a = true;
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_a {
+                        has_a = true;
+                    }
+                    if short == variant_b {
+                        has_b = true;
+                    }
                 }
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                    if name == variant_b =>
-                {
-                    has_b = true;
-                }
-                Pattern::Identifier(name) if name == variant_a => {
-                    has_a = true;
-                }
-                Pattern::Identifier(name) if name == variant_b => {
-                    has_b = true;
-                }
-                Pattern::Identifier(_) => {
-                    has_binding_identifier = true;
+                Pattern::Identifier(name) => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_a {
+                        has_a = true;
+                    } else if short == variant_b {
+                        has_b = true;
+                    } else {
+                        has_binding_identifier = true;
+                    }
                 }
                 _ => {}
             });

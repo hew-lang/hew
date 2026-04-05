@@ -825,9 +825,9 @@ add_test(
 # ── WASM target tests ─────────────────────────────────────────────────────────
 # Mirror of native E2E tests compiled for wasm32-wasi and run with wasmtime.
 # WASM tests: covers all features that compile and run under wasm32-wasi.
-# Excluded: supervision, scopes, select, linking (require OS threads), and
-# ecosystem FFI that is not linked into the WASM runtime (regex, json/yaml
-# serialization, crypto, sort, file I/O, networking).
+# Excluded: supervision, scopes, select races that require OS threads,
+# linking, and ecosystem FFI that is not linked into the WASM runtime
+# (regex, json/yaml serialization, crypto, sort, file I/O, networking).
 
 # Core language features
 add_wasm_test(struct test_struct.hew "30\n")
@@ -878,6 +878,7 @@ add_wasm_file_test(duration_methods    e2e_duration duration_methods)
 add_wasm_file_test(duration_arithmetic e2e_duration duration_arithmetic)
 add_wasm_file_test(duration_from_nanos e2e_duration duration_from_nanos)
 add_wasm_file_test(duration_suffixes   e2e_duration duration_suffixes)
+add_wasm_file_test(timeout              e2e_timeout timeout)
 add_wasm_file_test(json_try_parse      e2e_json json_try_parse)
 add_wasm_file_test(toml_try_parse      e2e_toml toml_try_parse)
 add_wasm_file_test(yaml_try_parse      e2e_yaml yaml_try_parse)

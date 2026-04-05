@@ -1139,6 +1139,11 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto i64Type = rewriter.getI64Type();
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
                                                          static_cast<int64_t>(op.getMsgType()));
+    auto timeoutMs = op.getTimeoutMs();
+    auto isDirectReplyLoadType = [&](mlir::Type type) {
+      return llvm::isa<mlir::LLVM::LLVMPointerType, mlir::IntegerType, mlir::FloatType,
+                       mlir::LLVM::LLVMStructType>(type);
+    };
 
     // Deep-copy owned values (strings, vecs) for the same reason as actor_send.
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
@@ -1148,13 +1153,13 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     // hew_node_api_ask, which sends the message with a request_id over
     // the mesh and blocks until the reply arrives.
     if (targetVal.getType() == i64Type) {
+      if (timeoutMs.has_value()) {
+        op.emitError("timed remote actor asks are not yet supported");
+        return mlir::failure();
+      }
       auto resultType = op.getResult().getType();
       auto zeroReplySize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
       auto loadType = resultType;
-      auto isDirectReplyLoadType = [&](mlir::Type type) {
-        return llvm::isa<mlir::LLVM::LLVMPointerType, mlir::IntegerType, mlir::FloatType,
-                         mlir::LLVM::LLVMStructType>(type);
-      };
       mlir::Value replySize = zeroReplySize;
       if (!llvm::isa<mlir::NoneType>(resultType)) {
         loadType = getTypeConverter()->convertType(resultType);
@@ -1216,6 +1221,88 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
                                  mlir::ValueRange{replyPtr});
 
       rewriter.replaceOp(op, resultVal);
+      return mlir::success();
+    }
+
+    if (timeoutMs.has_value()) {
+      constexpr uint64_t kMaxTimeoutMs = 2147483647ull;
+      if (*timeoutMs > kMaxTimeoutMs) {
+        op.emitError("timed actor ask timeout exceeds i32 millisecond runtime limit");
+        return mlir::failure();
+      }
+
+      auto resultType = op.getResult().getType();
+      auto optionType = mlir::dyn_cast<hew::OptionEnumType>(resultType);
+      if (!optionType) {
+        op.emitError("timed actor asks require an Option<T> result type");
+        return mlir::failure();
+      }
+
+      auto loweredOptionType = getTypeConverter()->convertType(resultType);
+      if (!loweredOptionType) {
+        op.emitError("could not lower timed actor ask Option result type");
+        return mlir::failure();
+      }
+
+      auto innerLoadType = getTypeConverter()->convertType(optionType.getInnerType());
+      if (!innerLoadType)
+        innerLoadType = optionType.getInnerType();
+
+      auto timeoutVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
+                                                           static_cast<int64_t>(*timeoutMs));
+      auto askFuncType =
+          rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType, i32Type}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_ask_timeout", askFuncType);
+      auto call = mlir::func::CallOp::create(
+          rewriter, loc, "hew_actor_ask_timeout", mlir::TypeRange{ptrType},
+          mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize, timeoutVal});
+      auto replyPtr = call.getResult(0);
+
+      auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      auto timedOut = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                 replyPtr, nullPtr);
+      auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+
+      auto wrapIfOp = mlir::scf::IfOp::create(rewriter, loc, loweredOptionType, timedOut,
+                                              /*withElseRegion=*/true);
+
+      rewriter.setInsertionPointToStart(&wrapIfOp.getThenRegion().front());
+      auto noneVal = mlir::LLVM::UndefOp::create(rewriter, loc, loweredOptionType);
+      auto zeroTag = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
+      auto noneWrapped = mlir::LLVM::InsertValueOp::create(rewriter, loc, noneVal.getResult(),
+                                                           zeroTag, llvm::ArrayRef<int64_t>{0});
+      mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{noneWrapped.getResult()});
+
+      rewriter.setInsertionPointToStart(&wrapIfOp.getElseRegion().front());
+      mlir::Value loadedValue;
+      if (innerLoadType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(innerLoadType)) {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
+        loadedValue = loaded.getResult();
+      } else if (innerLoadType == i32Type || innerLoadType == rewriter.getI64Type() ||
+                 llvm::isa<mlir::IntegerType>(innerLoadType) ||
+                 llvm::isa<mlir::FloatType>(innerLoadType) ||
+                 llvm::isa<mlir::LLVM::LLVMStructType>(innerLoadType)) {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, innerLoadType, replyPtr);
+        loadedValue = loaded.getResult();
+      } else {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
+        loadedValue = mlir::UnrealizedConversionCastOp::create(rewriter, loc, innerLoadType,
+                                                               mlir::ValueRange{loaded.getResult()})
+                          .getResult(0);
+      }
+      mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                 mlir::ValueRange{replyPtr});
+      auto someVal = mlir::LLVM::UndefOp::create(rewriter, loc, loweredOptionType);
+      auto oneTag = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 1);
+      auto taggedVal = mlir::LLVM::InsertValueOp::create(rewriter, loc, someVal.getResult(), oneTag,
+                                                         llvm::ArrayRef<int64_t>{0});
+      auto wrappedVal = mlir::LLVM::InsertValueOp::create(rewriter, loc, taggedVal.getResult(),
+                                                          loadedValue, llvm::ArrayRef<int64_t>{1});
+      mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{wrappedVal.getResult()});
+
+      rewriter.setInsertionPointAfter(wrapIfOp);
+      rewriter.replaceOp(op, wrapIfOp.getResult(0));
       return mlir::success();
     }
 

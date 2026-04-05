@@ -27,7 +27,15 @@ impl Checker {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Tasks);
             }
             Expr::Select { .. } => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
+                let supports_single_arm_timeout = matches!(
+                    expr,
+                    Expr::Select { arms, timeout: Some(timeout) }
+                        if arms.len() == 1
+                            && matches!(timeout.duration.0, Expr::Literal(Literal::Duration(_)))
+                );
+                if !supports_single_arm_timeout {
+                    self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
+                }
             }
             _ => {}
         }

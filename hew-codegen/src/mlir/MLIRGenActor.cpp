@@ -75,10 +75,9 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
   std::vector<std::string> initParamNames;
   if (decl.init) {
     for (const auto &param : decl.init->params) {
-      auto hewType = convertTypeOrError(param.ty.value,
-                                        "cannot resolve type for init parameter '" + param.name +
-                                            "'",
-                                        typeLoc(param.ty));
+      auto hewType = convertTypeOrError(
+          param.ty.value, "cannot resolve type for init parameter '" + param.name + "'",
+          typeLoc(param.ty));
       if (!hewType)
         return;
       initParamNames.push_back(param.name);
@@ -198,8 +197,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
 
     for (const auto &param : recv.params) {
       auto ty = convertTypeOrError(param.ty.value,
-                                   "cannot resolve type for receive parameter '" + param.name +
-                                       "'",
+                                   "cannot resolve type for receive parameter '" + param.name + "'",
                                    typeLoc(param.ty));
       if (!ty)
         return;
@@ -626,8 +624,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     funcLevelEarlyReturnExcludeValues.clear();
     funcLevelEarlyReturnExcludeResolvedNames.clear();
     if (recv.body.trailing_expr) {
-      if (auto *id = std::get_if<ast::ExprIdentifier>(
-              &recv.body.trailing_expr->value.kind))
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&recv.body.trailing_expr->value.kind))
         funcLevelDropExcludeVars.insert({id->name, 0});
     } else if (!recv.body.stmts.empty()) {
       const auto &last = recv.body.stmts.back()->value;
@@ -734,7 +731,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
-    auto terminateFuncOp = mlir::func::FuncOp::create(builder, location, terminateName, terminateFuncType);
+    auto terminateFuncOp =
+        mlir::func::FuncOp::create(builder, location, terminateName, terminateFuncType);
     auto *entryBlock = terminateFuncOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
@@ -760,8 +758,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // 3. Generate dispatch function:
   //    void ActorName_dispatch(ptr state, i32 msg_type, ptr data, size_t data_size)
   {
-    auto location = decl.receive_fns.size() == 1 ? receiveSourceLoc(decl.receive_fns.front().name)
-                                                 : actorLoc;
+    auto location =
+        decl.receive_fns.size() == 1 ? receiveSourceLoc(decl.receive_fns.front().name) : actorLoc;
     std::string dispatchName = actorName + "_dispatch";
     auto i32Type = builder.getI32Type();
     auto dispatchType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
@@ -1172,27 +1170,24 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
       auto i32Type = builder.getI32Type();
       auto i64Type = builder.getI64Type();
 
-      auto msgTypeVal = mlir::arith::ConstantIntOp::create(
-          builder, location, i32Type, static_cast<int64_t>(i));
+      auto msgTypeVal =
+          mlir::arith::ConstantIntOp::create(builder, location, i32Type, static_cast<int64_t>(i));
 
       // Convert nanoseconds to milliseconds for the runtime.
       int64_t intervalMs = *recvFn.periodicIntervalNs / 1'000'000;
-      if (intervalMs <= 0) intervalMs = 1; // minimum 1ms
-      auto intervalVal = mlir::arith::ConstantIntOp::create(
-          builder, location, i64Type, intervalMs);
+      if (intervalMs <= 0)
+        intervalMs = 1; // minimum 1ms
+      auto intervalVal = mlir::arith::ConstantIntOp::create(builder, location, i64Type, intervalMs);
 
       // Cast typed_actor_ref → ptr for the runtime call.
-      auto actorPtr = hew::BitcastOp::create(
-          builder, location, ptrType, result).getResult();
+      auto actorPtr = hew::BitcastOp::create(builder, location, ptrType, result).getResult();
 
       // void* hew_actor_schedule_periodic(ptr actor, i32 msg_type, i64 interval_ms)
-      auto schedFnType = builder.getFunctionType(
-          {ptrType, i32Type, i64Type}, {ptrType});
+      auto schedFnType = builder.getFunctionType({ptrType, i32Type, i64Type}, {ptrType});
       getOrCreateExternFunc("hew_actor_schedule_periodic", schedFnType);
-      mlir::func::CallOp::create(
-          builder, location, "hew_actor_schedule_periodic",
-          mlir::TypeRange{ptrType},
-          mlir::ValueRange{actorPtr, msgTypeVal, intervalVal});
+      mlir::func::CallOp::create(builder, location, "hew_actor_schedule_periodic",
+                                 mlir::TypeRange{ptrType},
+                                 mlir::ValueRange{actorPtr, msgTypeVal, intervalVal});
     }
   }
 
@@ -1518,7 +1513,8 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     }
   }
 
-  auto argVals = generateActorCallArgs(args, location, /*retainAllTemporaries=*/wireNames != nullptr);
+  auto argVals =
+      generateActorCallArgs(args, location, /*retainAllTemporaries=*/wireNames != nullptr);
   if (!argVals)
     return nullptr;
 
@@ -1573,8 +1569,7 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
       if (!identExpr)
         continue;
       auto argType = (*argVals)[i].getType();
-      if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
-                    hew::ClosureType>(argType))
+      if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(argType))
         continue;
       // Auto-field-drop structs retain an independent sender copy after the
       // deep-copy boundary. User-Drop structs still transfer ownership to the
@@ -1599,7 +1594,8 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
 mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInfo &actorInfo,
                                             const std::string &methodName,
                                             const std::vector<ast::CallArg> &args,
-                                            mlir::Location location) {
+                                            mlir::Location location,
+                                            std::optional<int64_t> timeoutMs) {
   // Find receive function index by name
   int64_t msgIdx = -1;
   const ActorReceiveInfo *recvInfo = nullptr;
@@ -1625,10 +1621,19 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
   // Void-return handlers use NoneType; the caller discards the result.
   mlir::Type resultType =
       recvInfo->returnType.has_value() ? *recvInfo->returnType : mlir::NoneType::get(&context);
-  auto askOp =
-      hew::ActorAskOp::create(builder, location, resultType, actorPtr,
-                              builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
-                              /*timeout_ms=*/mlir::IntegerAttr{});
+  mlir::IntegerAttr timeoutAttr;
+  if (timeoutMs.has_value()) {
+    if (!recvInfo->returnType.has_value()) {
+      emitError(location) << "timed actor ask requires receive handler '" << methodName
+                          << "' with a return type";
+      return nullptr;
+    }
+    resultType = hew::OptionEnumType::get(&context, *recvInfo->returnType);
+    timeoutAttr = builder.getI64IntegerAttr(*timeoutMs);
+  }
+  auto askOp = hew::ActorAskOp::create(builder, location, resultType, actorPtr,
+                                       builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)),
+                                       *argVals, timeoutAttr);
 
   // Ownership parity with the non-wire send path: String, Vec, HashMap,
   // Closure, and struct fields thereof are deep-copied at the actor boundary
@@ -1643,8 +1648,7 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     if (!identExpr)
       continue;
     auto argType = (*argVals)[i].getType();
-    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
-                  hew::ClosureType>(argType))
+    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(argType))
       continue;
     // Auto-field-drop structs retain an independent sender copy after the
     // deep-copy boundary. User-Drop structs still transfer ownership to the
@@ -1726,8 +1730,7 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
     if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
       auto msgType = msgVal.getType();
       bool senderRetains =
-          mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
-                    hew::ClosureType>(msgType);
+          mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(msgType);
       if (!senderRetains && actorBoundarySenderRetainsOwnership(msgType)) {
         senderRetains = true;
         if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType);

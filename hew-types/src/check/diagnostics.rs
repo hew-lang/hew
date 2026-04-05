@@ -252,6 +252,10 @@ impl Checker {
             }
         }
 
+        if matches!(scrutinee_ty, Ty::Error) {
+            return;
+        }
+
         let mut has_wildcard = false;
         for arm in arms {
             if arm.guard.is_some() {

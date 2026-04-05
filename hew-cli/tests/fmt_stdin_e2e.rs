@@ -126,6 +126,71 @@ fn fmt_stdin_parse_errors_render_cli_diagnostics() {
 }
 
 #[test]
+fn fmt_inplace_reports_formatted_to_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("needs_fmt.hew");
+    std::fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("fmt")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew fmt in-place failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected = format!("Formatted {}", path.display());
+    assert!(stderr.contains(&expected), "stderr: {stderr}");
+
+    let rewritten = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        rewritten.contains("fn main() {\n"),
+        "file not rewritten: {rewritten}"
+    );
+}
+
+#[test]
+fn fmt_inplace_already_formatted_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("already_fmt.hew");
+    std::fs::write(&path, "fn main() {\n    let x = 1;\n}\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("fmt")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew fmt in-place failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no stderr for already-formatted file, got: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn fmt_file_parse_errors_render_cli_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("broken.hew");

@@ -38,7 +38,8 @@ hew fmt --check --stdin < myapp/main.hew  # Verify piped input without writing
 ```
 
 Without flags, `hew fmt` rewrites each named file in-place and leaves
-already-formatted files untouched.
+already-formatted files untouched. When a file is rewritten, `hew fmt` prints
+`Formatted <file>` on stderr; already-formatted files produce no output.
 
 Use `--stdin` for editor integrations or shell pipelines. It reads from stdin,
 writes the formatted result to stdout, and cannot be combined with file

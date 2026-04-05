@@ -15,6 +15,17 @@
 //! }
 //! ```
 
+/// Structured error type for JSON parsing failures.
+///
+/// Use `Result<Value, ParseError>` with `try_parse` for structured error
+/// handling. Import `std::encoding::json` when matching on the returned error
+/// value so you can use the existing unqualified
+/// `ParseError::Invalid(message)` constructor/pattern style.
+pub enum ParseError {
+    // The input was not valid JSON. Carries the native parser message.
+    Invalid(String);
+}
+
 /// An opaque JSON value.
 ///
 /// Represents any JSON type: null, bool, integer, float, String, array,
@@ -150,13 +161,15 @@ pub fn parse(s: String) -> Value {
 
 /// Parse a JSON string into a `Value`.
 ///
-/// Returns `Err(String)` with the native parser message when parsing fails.
-pub fn try_parse(s: String) -> Result<Value, String> {
+/// Returns `Err(ParseError::Invalid(message))` with the native parser message
+/// when parsing fails. Match on `ParseError::Invalid(message)` to recover the
+/// original parser message.
+pub fn try_parse(s: String) -> Result<Value, ParseError> {
     let val = parse(s);
     if val.type_of() >= 0 {
         Ok(val)
     } else {
-        Err(parse_error_message())
+        Err(ParseError::Invalid(parse_error_message()))
     }
 }
 

@@ -24,12 +24,12 @@ Many examples — especially those under `ux/` and `progressive/` — ship with 
 
 ```sh
 # Run an example and diff its output against the expected file
-diff <(hew run examples/ux/01_hello.hew) examples/ux/01_hello.expected
+hew run examples/ux/01_hello.hew | diff examples/ux/01_hello.expected -
 
 # Run all ux examples and check output
 for f in examples/ux/*.hew; do
     expected="${f%.hew}.expected"
-    diff <(hew run "$f") "$expected" && echo "OK: $f" || echo "FAIL: $f"
+    hew run "$f" | diff "$expected" - && echo "OK: $f" || echo "FAIL: $f"
 done
 ```
 

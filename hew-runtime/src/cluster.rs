@@ -41,6 +41,7 @@
 //! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
+use crate::connection::HewConnMgr;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
@@ -944,6 +945,10 @@ pub unsafe extern "C" fn hew_cluster_notify_connection_established(
     0
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "token-only helper is exercised by focused tests")
+)]
 pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
     cluster: *mut HewCluster,
     node_id: u16,
@@ -956,6 +961,33 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
     let cluster = unsafe { &*cluster };
     cluster.notify_connection_established_for_token(node_id, publication_token);
     0
+}
+
+pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_live(
+    cluster: *mut HewCluster,
+    mgr: *const HewConnMgr,
+    node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    let mut tokens = cluster.connection_tokens.lock_or_recover();
+    // SAFETY: `mgr` points at the live connection manager attempting to publish
+    // this connection; the helper only snapshots the publication liveness state.
+    if !unsafe {
+        crate::connection::hew_connmgr_publication_is_live(mgr, conn_id, publication_token)
+    } {
+        return 0;
+    }
+    tokens.insert(node_id, publication_token);
+    // Keep the token guard until the membership state update completes so a
+    // concurrent remove cannot retire the connection before it is published.
+    cluster.notify_connection_established(node_id);
+    1
 }
 
 /// Get the number of alive members.

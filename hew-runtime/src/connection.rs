@@ -357,18 +357,29 @@ fn publish_connection_established(
         return;
     }
 
-    // SAFETY: pointer validity is checked by the callees.
-    unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
-    if !mgr.cluster.is_null() {
+    let published = if mgr.cluster.is_null() {
+        // SAFETY: `mgr` is a live manager for this publication attempt.
+        unsafe {
+            hew_connmgr_publication_is_live(std::ptr::from_ref(mgr), conn_id, publication_token)
+        }
+    } else {
         // SAFETY: pointer validity is checked by the callee.
-        let _ = unsafe {
-            crate::cluster::hew_cluster_notify_connection_established_for_token(
+        unsafe {
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_live(
                 mgr.cluster,
+                std::ptr::from_ref(mgr),
                 peer_node_id,
+                conn_id,
                 publication_token,
-            )
-        };
+            ) == 1
+        }
+    };
+    if !published {
+        return;
     }
+
+    // SAFETY: pointer validity is checked by the callee.
+    unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
 }
 
 fn retire_connection_publication(
@@ -381,13 +392,12 @@ fn retire_connection_publication(
         return;
     }
 
-    let retired_publication = if mgr.routing_table.is_null() {
-        true
-    } else {
+    if !mgr.routing_table.is_null() {
         // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id) }
-    };
-    if retired_publication && !mgr.cluster.is_null() {
+        let _ =
+            unsafe { hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id) };
+    }
+    if !mgr.cluster.is_null() {
         // SAFETY: pointer validity is checked by the callee.
         let _ = unsafe {
             crate::cluster::hew_cluster_notify_connection_lost_if_current(
@@ -411,6 +421,26 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
     Some(ReconnectPlan {
         target_addr: reconnect.target_addr.clone(),
         max_retries: reconnect.max_retries.max(1),
+    })
+}
+
+pub(crate) unsafe fn hew_connmgr_publication_is_live(
+    mgr: *const HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+) -> bool {
+    if mgr.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the check.
+    let mgr = unsafe { &*mgr };
+    let Ok(conns) = mgr.connections.lock() else {
+        return false;
+    };
+    conns.iter().any(|conn| {
+        conn.conn_id == conn_id
+            && conn.publication_token == publication_token
+            && conn.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
     })
 }
 
@@ -2290,6 +2320,190 @@ mod tests {
             drop(Box::from_raw(transport_ptr));
             crate::cluster::hew_cluster_free(cluster);
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the delayed establish-publish teardown race end-to-end"
+    )]
+    fn run_connmgr_publish_skips_removed_connection_test(with_routing_table: bool) {
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+        }
+
+        extern "C" fn block_on_suspect(node_id: u16, event: u8, user_data: *mut std::ffi::c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut crate::cluster::HewCluster);
+        // SAFETY: the test keeps the cluster alive until both worker threads complete.
+        unsafe impl Send for SendCluster {}
+
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+        }));
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let transport_ptr = Box::into_raw(Box::new(HewTransport {
+                ops: std::ptr::null(),
+                r#impl: std::ptr::null_mut(),
+            }));
+            let routing_table = if with_routing_table {
+                crate::routing::hew_routing_table_new(1)
+            } else {
+                std::ptr::null_mut()
+            };
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!cluster.is_null());
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                block_on_suspect,
+                callback_state.cast(),
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut actor = ConnectionActor::new(22);
+            actor.publication_token = 2;
+            actor.peer_node_id = 2;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(actor);
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                let rc =
+                    crate::cluster::hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<()>();
+            let mgr_send = SendConnMgr(mgr);
+            let publish_handle = std::thread::spawn(move || {
+                let mgr = mgr_send;
+                // SAFETY: mgr stays alive until the worker joins.
+                publish_connection_established(&*mgr.0, 2, 22, 2);
+                publish_done_tx
+                    .send(())
+                    .expect("publish thread should report completion");
+            });
+
+            let removed = {
+                let mut conns = (&*mgr)
+                    .connections
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let idx = conns
+                    .iter()
+                    .position(|conn| conn.conn_id == 22)
+                    .expect("test connection should be present before publish resumes");
+                let conn = conns.swap_remove(idx);
+                conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+                conn
+            };
+            drop(removed);
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish once released");
+            publish_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("publish thread should finish after the old lost transition");
+
+            lost_handle.join().expect("lost thread should not panic");
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a removed connection must not publish a delayed ALIVE/JOINED transition"
+            );
+            if with_routing_table {
+                assert_eq!(
+                    crate::routing::hew_routing_lookup(
+                        routing_table,
+                        crate::pid::hew_pid_make(2, 0),
+                    ),
+                    -1,
+                    "a removed connection must not publish a delayed route"
+                );
+            }
+            assert_eq!(hew_connmgr_count(mgr), 0);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            if !routing_table.is_null() {
+                crate::routing::hew_routing_table_free(routing_table);
+            }
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(callback_state));
+        }
+    }
+
+    #[test]
+    fn connmgr_publish_skips_removed_connection_while_establish_blocks() {
+        run_connmgr_publish_skips_removed_connection_test(true);
+    }
+
+    #[test]
+    fn connmgr_publish_skips_removed_connection_without_routing_table() {
+        run_connmgr_publish_skips_removed_connection_test(false);
     }
 
     #[test]

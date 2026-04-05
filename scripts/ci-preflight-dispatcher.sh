@@ -235,13 +235,13 @@ case "$LANE" in
         add_command "make grammar"
         ;;
     parser)
-        add_command "cargo test -p hew-parser -p hew-lexer"
+        add_command "make test-parser"
         ;;
     types)
-        add_command "cargo test -p hew-types -p hew-parser -p hew-lexer"
+        add_command "make test-types"
         ;;
     cli)
-        add_command "cargo test -p hew-cli -p adze-cli"
+        add_command "make test-cli"
         ;;
     fallback)
         add_command "cargo fmt --all -- --check"

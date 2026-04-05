@@ -54,6 +54,9 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 - `make test-wasm` runs WASM E2E tests (requires wasmtime)
 - `make test-rust` runs only Rust tests
 - `make test-codegen` runs only codegen/E2E tests
+- `make test-parser` runs narrow parser + lexer crate tests
+- `make test-types` runs narrow type-checker + parser + lexer crate tests
+- `make test-cli` runs narrow CLI crate tests
 
 When adding new language features, add E2E tests in `hew-codegen/tests/examples/` and type checker tests in `hew-types/src/check/tests.rs`.
 

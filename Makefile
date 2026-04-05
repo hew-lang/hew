@@ -32,6 +32,9 @@
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
+#   make test-parser  — parser + lexer crate tests (narrow)
+#   make test-types   — type-checker + parser + lexer crate tests (narrow)
+#   make test-cli     — CLI crate tests (narrow)
 #   make test-codegen — just hew-codegen ctest (native E2E + unit)
 #   make test-hew     — run Hew test files (std/ *_test.hew)
 #   make test-wasm    — just WASM E2E tests (requires wasmtime)
@@ -43,7 +46,7 @@
 # ============================================================================
 
 .PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check ci-preflight wasm-dist release
-.PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -329,6 +332,15 @@ test-all: test-rust test-codegen test-stdlib test-hew test-wasm
 
 test-rust:
 	cargo test
+
+test-parser:
+	cargo test -p hew-parser -p hew-lexer
+
+test-types:
+	cargo test -p hew-types -p hew-parser -p hew-lexer
+
+test-cli:
+	cargo test -p hew-cli -p adze-cli
 
 test-codegen: hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm

@@ -48,6 +48,8 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 
 ## Testing
 
+- `make ci-preflight` dispatches a conservative local preflight from your current diff
+- `make ci-preflight ARGS="--dry-run"` previews the selected commands without running them
 - `make test` runs Rust workspace tests and native codegen E2E tests
 - `make test-wasm` runs WASM E2E tests (requires wasmtime)
 - `make test-rust` runs only Rust tests

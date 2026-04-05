@@ -237,11 +237,17 @@ brew install llvm ninja cmake
 ```bash
 make          # Build everything (debug)
 make release  # Build everything (optimized)
+make ci-preflight  # Dispatch a conservative local preflight from your current diff
 make test     # Run Rust + native codegen tests
 make lint     # cargo clippy
 ```
 
 See the [Makefile](Makefile) header for all targets.
+
+Use `make ci-preflight ARGS="--dry-run"` to inspect the selected commands before
+running them. The first slice stays conservative: known docs/parser/types/CLI
+diffs get narrower checks, and everything else falls back to broader local
+preflight commands.
 
 ### Browser / Playground Validation
 

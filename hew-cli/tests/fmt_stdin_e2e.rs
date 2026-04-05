@@ -147,3 +147,127 @@ fn fmt_file_parse_errors_render_cli_diagnostics() {
     assert!(stderr.contains('^'), "stderr: {stderr}");
     assert!(!stderr.contains("ParseError {"), "stderr: {stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// Multi-file --check batch behavior
+// ---------------------------------------------------------------------------
+
+/// All files already formatted → exit 0, no output on stdout or stderr.
+#[test]
+fn fmt_check_multi_file_all_formatted_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.hew");
+    let b = dir.path().join("b.hew");
+    std::fs::write(&a, "fn foo() {\n    1\n}\n").unwrap();
+    std::fs::write(&b, "fn bar() {\n    2\n}\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--check"])
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 when all files are formatted\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no stderr, got: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Some files need formatting → per-file message on stderr, aggregate exit 1,
+/// no final summary count line.
+#[test]
+fn fmt_check_multi_file_some_unformatted_reports_per_file_and_exits_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.hew");
+    let bad = dir.path().join("bad.hew");
+    // already formatted
+    std::fs::write(&good, "fn foo() {\n    1\n}\n").unwrap();
+    // needs formatting (single-line)
+    std::fs::write(&bad, "fn bar() { 2 }\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--check"])
+        .arg(&good)
+        .arg(&bad)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // only the unformatted file is reported
+    let bad_name = bad.display().to_string();
+    assert!(
+        stderr.contains(&format!("{bad_name}: needs formatting")),
+        "expected '{bad_name}: needs formatting' in stderr: {stderr}",
+    );
+    // the already-formatted file must not appear
+    let good_name = good.display().to_string();
+    assert!(
+        !stderr.contains(&good_name),
+        "good file should not appear in stderr: {stderr}",
+    );
+    // no summary count line (e.g. "2 files checked, 1 needs formatting")
+    assert!(
+        !stderr.contains("files checked"),
+        "unexpected summary line in stderr: {stderr}",
+    );
+}
+
+/// All files need formatting → each gets its own line, exit 1, no summary.
+#[test]
+fn fmt_check_multi_file_all_unformatted_reports_each_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.hew");
+    let b = dir.path().join("b.hew");
+    std::fs::write(&a, "fn foo() { 1 }\n").unwrap();
+    std::fs::write(&b, "fn bar() { 2 }\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--check"])
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let a_name = a.display().to_string();
+    let b_name = b.display().to_string();
+    assert!(
+        stderr.contains(&format!("{a_name}: needs formatting")),
+        "expected '{a_name}: needs formatting' in stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains(&format!("{b_name}: needs formatting")),
+        "expected '{b_name}: needs formatting' in stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("files checked"),
+        "unexpected summary line in stderr: {stderr}",
+    );
+}

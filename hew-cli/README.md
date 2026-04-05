@@ -33,10 +33,11 @@ hew version                       # Print version info
 `hew fmt` supports four common workflows:
 
 ```sh
-hew fmt myapp/main.hew                    # Rewrite a file in-place
-hew fmt --stdin < myapp/main.hew          # Read stdin, write formatted source to stdout
-hew fmt --check myapp/main.hew            # Exit non-zero if a file needs formatting
-hew fmt --check --stdin < myapp/main.hew  # Verify piped input without writing
+hew fmt myapp/main.hew                        # Rewrite a file in-place
+hew fmt --stdin < myapp/main.hew              # Read stdin, write formatted source to stdout
+hew fmt --check myapp/main.hew                # Exit non-zero if a file needs formatting
+hew fmt --check a.hew b.hew c.hew             # Check multiple files (batch)
+hew fmt --check --stdin < myapp/main.hew      # Verify piped input without writing
 ```
 
 Without flags, `hew fmt` rewrites each named file in-place and leaves
@@ -47,10 +48,16 @@ writes the formatted result to stdout, and cannot be combined with file
 arguments.
 
 Use `--check` when you want formatting verification without rewriting files.
-For files, `hew fmt --check` prints `<file>: needs formatting` and exits non-zero
-when any input needs changes, which makes it suitable for CI. Combined with
-`--stdin`, it performs the same verification on piped input, prints
-`<stdin>: needs formatting` on failure, and stays silent on success.
+For files, `hew fmt --check` prints `<file>: needs formatting` to stderr and
+exits non-zero when any input needs changes, which makes it suitable for CI.
+Combined with `--stdin`, it performs the same verification on piped input,
+prints `<stdin>: needs formatting` on failure, and stays silent on success.
+
+When multiple files are passed to `--check`, each file that needs formatting
+gets its own `<file>: needs formatting` line on stderr. Files that are already
+correctly formatted produce no output. The process exits 1 if **any** file
+needs formatting (aggregate exit), and exits 0 only if all files pass. There
+is no final summary count line.
 
 `hew eval` phase-1 runs each inline expression or buffered `-f` chunk through
 the in-process native pipeline with a fresh bounded execution. Session

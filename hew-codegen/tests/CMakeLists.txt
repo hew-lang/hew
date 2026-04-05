@@ -480,6 +480,7 @@ add_e2e_reject_test(let_vec_actor_ref_reject      e2e_negative let_vec_actor_ref
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
+add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")
 add_e2e_panic_test(wire_binary_integer_sign e2e_wire wire_binary_integer_sign_panic
   "wire binary decode error for field 'byte_value': expected byte in range [0, 255]")
 add_e2e_panic_test(wire_binary_integer_range e2e_wire wire_binary_integer_range_panic

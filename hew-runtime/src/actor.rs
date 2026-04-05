@@ -299,6 +299,13 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
     false
 }
 
+#[inline]
+fn actor_free_state_is_quiescent(state: i32) -> bool {
+    state == HewActorState::Stopped as i32
+        || state == HewActorState::Crashed as i32
+        || state == HewActorState::Idle as i32
+}
+
 /// Check whether an actor pointer is still live (tracked and not yet freed).
 pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
     let guard = LIVE_ACTORS.lock_or_recover();
@@ -432,6 +439,18 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// currently being dispatched.
 #[cfg(target_arch = "wasm32")]
 unsafe fn free_actor_resources(actor: *mut HewActor) {
+    // SAFETY: target_arch = wasm32 shares the same invariants as the test helper.
+    unsafe { free_actor_resources_wasm(actor) };
+}
+
+/// Free an actor's resources using the WASM cleanup path.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live `HewActor` that is not
+/// currently being dispatched.
+#[cfg(any(target_arch = "wasm32", test))]
+unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -441,10 +460,9 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
         libc::free(a.init_state);
     }
 
-    // Free the mailbox if present.
-    let mb = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-    if !mb.is_null() {
-        // SAFETY: Mailbox was allocated by hew_mailbox_new.
+    if !a.mailbox.is_null() {
+        let mb = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+        // SAFETY: this helper is only used with WASM mailboxes.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
     }
 
@@ -1175,10 +1193,7 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let state = a.actor_state.load(Ordering::Acquire);
-        if state == HewActorState::Stopped as i32
-            || state == HewActorState::Crashed as i32
-            || state == HewActorState::Idle as i32
-        {
+        if actor_free_state_is_quiescent(state) {
             break;
         }
         if std::time::Instant::now() >= deadline {
@@ -1188,10 +1203,7 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Stopped as i32
-        && state != HewActorState::Crashed as i32
-        && state != HewActorState::Idle as i32
-    {
+    if !actor_free_state_is_quiescent(state) {
         crate::set_last_error("actor still running after timeout");
         return -2;
     }
@@ -2003,20 +2015,22 @@ pub extern "C" fn hew_actor_self_stop() {
 
 /// Self-stop: the currently running actor requests its own shutdown.
 ///
-/// CAS transitions from `Running` to `Stopping`.
+/// Closes the mailbox and CAS transitions from `Running` to `Stopping`.
 /// The WASM scheduler will handle the final transition to `Stopped` after
-/// dispatch returns. No mailbox close needed — WASM is cooperative
-/// single-threaded, so no concurrent sends can race.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_actor_self_stop() {
-    // SAFETY: WASM is single-threaded.
-    let actor = unsafe { CURRENT_ACTOR_WASM };
+/// dispatch returns.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn actor_self_stop_wasm_impl(actor: *mut HewActor) {
     if actor.is_null() {
         return;
     }
-    // SAFETY: The static is only set to a valid actor during dispatch.
+    // SAFETY: caller guarantees `actor` is the currently running actor.
     let a = unsafe { &*actor };
+
+    let mailbox = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+    if !mailbox.is_null() {
+        // SAFETY: mailbox is valid for the actor's lifetime.
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(mailbox) };
+    }
 
     // CAS Running → Stopping.
     let _ = a.actor_state.compare_exchange(
@@ -2025,6 +2039,15 @@ pub extern "C" fn hew_actor_self_stop() {
         Ordering::AcqRel,
         Ordering::Acquire,
     );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_actor_self_stop() {
+    // SAFETY: WASM is single-threaded.
+    let actor = unsafe { CURRENT_ACTOR_WASM };
+    // SAFETY: CURRENT_ACTOR_WASM is only set during dispatch.
+    unsafe { actor_self_stop_wasm_impl(actor) };
 }
 
 // ── WASM actor API ──────────────────────────────────────────────────────
@@ -2483,24 +2506,61 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 
 /// Free an actor and all associated resources (WASM).
 ///
+/// Waits until the actor is quiescent (`Stopped`, `Crashed`, or `Idle`)
+/// before untracking and freeing it, mirroring the native free contract.
+///
 /// # Safety
 ///
 /// - `actor` must have been returned by a spawn function.
 /// - The actor must not be used after this call.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
         return 0;
+    }
+
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let state = a.actor_state.load(Ordering::Acquire);
+        if actor_free_state_is_quiescent(state) {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        #[cfg(target_arch = "wasm32")]
+        std::hint::spin_loop();
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::yield_now();
+    }
+
+    let state = a.actor_state.load(Ordering::Acquire);
+    if !actor_free_state_is_quiescent(state) {
+        return -2;
     }
 
     if !untrack_actor(actor) {
         return 0;
     }
 
+    if state != HewActorState::Crashed as i32 {
+        // SAFETY: the wait loop above ensures the actor is not being dispatched.
+        unsafe { call_terminate_fn(actor) };
+    }
+
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
-    unsafe { free_actor_resources(actor) };
+    unsafe { free_actor_resources_wasm(actor) };
     0
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
+    // SAFETY: same preconditions as actor_free_wasm_impl.
+    unsafe { actor_free_wasm_impl(actor) }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -2550,6 +2610,40 @@ mod tests {
             }));
             (actor, mailbox)
         }
+    }
+
+    fn make_tracked_wasm_free_test_actor(initial_state: HewActorState) -> *mut HewActor {
+        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
+        let actor = Box::into_raw(Box::new(HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: actor_id,
+            pid: actor_id,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox: ptr::null_mut(),
+            actor_state: AtomicI32::new(initial_state as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+        }));
+        track_actor(actor);
+        actor
     }
 
     #[test]
@@ -2768,6 +2862,34 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "should not hang much longer than the timeout, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn wasm_free_waits_for_quiescent_actor_state_before_freeing() {
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Runnable);
+
+        let start = std::time::Instant::now();
+        // SAFETY: actor is tracked and owned by this test.
+        let rc = unsafe { actor_free_wasm_impl(actor) };
+        let elapsed = start.elapsed();
+
+        assert_eq!(rc, -2, "runnable WASM actors must not be freed immediately");
+        assert!(
+            elapsed >= std::time::Duration::from_secs(1),
+            "WASM free should wait for quiescence before timing out, took {elapsed:?}"
+        );
+        assert!(
+            is_actor_live(actor),
+            "timed-out WASM free must leave the actor tracked to avoid dangling scheduler pointers"
+        );
+
+        // SAFETY: actor remains tracked after the timed-out free attempt.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            assert_eq!(actor_free_wasm_impl(actor), 0);
+        }
     }
 
     #[test]

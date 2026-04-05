@@ -55,9 +55,8 @@ pub fn build_signature_help(
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(receiver_end) = context.receiver_end {
         let method = context.callee.rsplit('.').next()?;
-        if let Some(receiver_ty) = find_receiver_type(tc, receiver_end) {
-            return lookup_receiver_method_sig(tc, receiver_ty, method);
-        }
+        return find_receiver_type(tc, receiver_end)
+            .and_then(|receiver_ty| lookup_receiver_method_sig(tc, receiver_ty, method));
     }
 
     find_fn_sig(&context.callee, tc)
@@ -326,6 +325,19 @@ mod tests {
         assert!(
             result.is_none(),
             "method-call syntax must not fall back to unrelated top-level `foo`"
+        );
+    }
+
+    #[test]
+    fn method_call_sig_help_without_receiver_type_does_not_fall_back_to_unrelated_top_level_function(
+    ) {
+        let source = "value.foo(";
+        let tc = make_tc_with_fn("foo", vec!["count"], vec![Ty::I32], Ty::Unit);
+
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(
+            result.is_none(),
+            "method-call syntax without receiver typing must not fall back to unrelated top-level `foo`"
         );
     }
 }

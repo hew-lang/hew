@@ -1044,6 +1044,9 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
 
     // SAFETY: caller guarantees `sup` is valid for this start path.
     let sup = unsafe { &mut *sup };
+    if sup.running.load(Ordering::Acquire) {
+        return 0;
+    }
     if !sup.heartbeat_thread.prepare_start() {
         return -1;
     }
@@ -2386,6 +2389,39 @@ mod tests {
         // SAFETY: testing null guard.
         unsafe {
             assert_eq!(hew_remote_sup_start(ptr::null_mut()), -1);
+        }
+    }
+
+    #[test]
+    fn start_is_idempotent_while_running() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(4030) };
+        let remote_node_id = 4031;
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
+            assert!(!sup.is_null());
+            (*sup).heartbeat_interval_ms = 5_000;
+            assert_eq!(hew_remote_sup_start(sup), 0);
+
+            let (start_tx, start_rx) = std::sync::mpsc::channel();
+            let sup_addr = sup as usize;
+            let start_thread = thread::spawn(move || {
+                let result = hew_remote_sup_start(sup_addr as *mut HewRemoteSupervisor);
+                start_tx.send(result).expect("start result");
+            });
+
+            let second_start = start_rx.recv_timeout(Duration::from_millis(250));
+
+            assert_eq!(hew_remote_sup_stop(sup), 0);
+            start_thread.join().expect("start thread");
+            hew_remote_sup_free(sup);
+
+            assert_eq!(
+                second_start.expect("second start should return promptly while already running"),
+                0
+            );
         }
     }
 

@@ -44,7 +44,6 @@
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
-<<<<<<< HEAD
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -518,12 +517,10 @@ impl HewCluster {
 
         self.emit_event(transition.node_id, transition.state, transition.incarnation);
         self.notify_callback(transition.node_id, transition.state, transition.incarnation);
-        if let (Some(cb), Some(event)) = (self.membership_callback, membership_event) {
-            cb(
-                transition.node_id,
-                event,
-                self.membership_callback_user_data,
-            );
+        if let Some(event) = membership_event {
+            let _ = self.with_membership_callback_dispatch(|callback, user_data| {
+                callback(transition.node_id, event, user_data);
+            });
         }
     }
 

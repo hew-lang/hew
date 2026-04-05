@@ -78,8 +78,7 @@ impl RemoteDeathDispatch {
 #[derive(Debug)]
 struct ClusterCallbackContext {
     cluster_key: usize,
-    previous_callback: cluster::MembershipCallbackBinding,
-    callback_epoch: Arc<cluster::MembershipCallbackEpoch>,
+    previous_membership_callback: cluster::MembershipCallbackGeneration,
 }
 
 #[derive(Debug)]
@@ -208,13 +207,9 @@ fn retire_callback_context(context: Arc<ClusterCallbackContext>) {
 fn reap_retired_callback_contexts() {
     retired_callback_contexts()
         .lock_or_recover()
-        .retain(|context| Arc::strong_count(context) > 1 || context.callback_epoch.in_flight() > 0);
-}
-
-fn forward_previous_membership_callback(context: &ClusterCallbackContext, node_id: u16, event: u8) {
-    if let Some(callback) = context.previous_callback.callback {
-        callback(node_id, event, context.previous_callback.user_data());
-    }
+        .retain(|context| {
+            Arc::strong_count(context) > 1 || context.previous_membership_callback.in_flight() > 0
+        });
 }
 
 fn unregister_remote_sup_subscription(
@@ -232,7 +227,12 @@ fn unregister_remote_sup_subscription(
                 .supervisors
                 .retain(|registered| !Arc::ptr_eq(registered, lease));
             if entry.supervisors.is_empty() {
-                previous_callback = Some(entry.callback_context.previous_callback);
+                previous_callback = Some(
+                    entry
+                        .callback_context
+                        .previous_membership_callback
+                        .binding(),
+                );
                 retired_context = Some(reclaim_owned_callback_context(entry.callback_user_data()));
             }
         }
@@ -902,7 +902,9 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
     // this callback's lease to drain. Snapshotting the lease list first also
     // prevents a reentrant restart from adding a fresh supervisor to this
     // stale callback's dispatch set.
-    forward_previous_membership_callback(&callback_context, node_id, event);
+    callback_context
+        .previous_membership_callback
+        .invoke(node_id, event);
     let supervisor_guards = supervisor_leases
         .iter()
         .map(SupervisorMembershipLease::acquire)
@@ -1075,12 +1077,8 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
             let callback_context = Arc::new(ClusterCallbackContext {
                 cluster_key,
                 // SAFETY: the cluster pointer stays valid while the owning node lives.
-                previous_callback: unsafe {
-                    cluster::hew_cluster_membership_callback_binding(node.cluster)
-                },
-                // SAFETY: the cluster pointer stays valid while the owning node lives.
-                callback_epoch: unsafe {
-                    cluster::hew_cluster_membership_callback_epoch(node.cluster)
+                previous_membership_callback: unsafe {
+                    cluster::hew_cluster_membership_callback_generation(node.cluster)
                 },
             });
             let callback_user_data = owned_callback_context_user_data(&callback_context);

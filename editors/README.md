@@ -4,6 +4,28 @@ Syntax highlighting and editor configuration for editors other than VSCode.
 
 For VSCode, see [vscode-hew](https://github.com/hew-lang/vscode-hew).
 
+## Language Server
+
+The Hew language server is the standalone `hew-lsp` binary crate. The `hew`
+CLI does not currently expose a `hew lsp` subcommand, so LSP clients should
+launch `hew-lsp` directly.
+
+From a source checkout:
+
+```sh
+cargo build -p hew-lsp
+# binary: target/debug/hew-lsp
+```
+
+To install it onto your `PATH`:
+
+```sh
+cargo install --path hew-lsp
+```
+
+For quick testing from a checkout, `cargo run -p hew-lsp --` also works. See
+[`../hew-lsp/README.md`](../hew-lsp/README.md) for crate-specific details.
+
 ## Vim / Neovim
 
 Install via any plugin manager from [hew-lang/vim-hew](https://github.com/hew-lang/vim-hew):

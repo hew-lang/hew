@@ -2,7 +2,7 @@
 
 Language Server Protocol implementation for Hew.
 
-Provides IDE features for Hew source files via the LSP protocol:
+Core IDE features for Hew source files include:
 
 - Real-time diagnostics (parse errors, type errors)
 - Go-to-definition
@@ -11,13 +11,31 @@ Provides IDE features for Hew source files via the LSP protocol:
 
 ## Usage
 
-The language server is built into the `hew` CLI:
+The language server is the standalone `hew-lsp` binary crate. The `hew` CLI
+does not currently expose a `hew lsp` subcommand.
+
+From a source checkout, run:
 
 ```sh
-hew lsp
+cargo run -p hew-lsp --
 ```
 
-Editor integrations (VS Code, Neovim, Emacs, etc.) can connect to this server using standard LSP client configuration.
+For editor integrations, point your LSP client at the `hew-lsp` binary. You
+can either build it in the workspace:
+
+```sh
+cargo build -p hew-lsp
+# binary: target/debug/hew-lsp
+```
+
+or install it onto your `PATH`:
+
+```sh
+cargo install --path hew-lsp
+```
+
+See [`../editors/README.md`](../editors/README.md) for editor-specific setup
+notes.
 
 ## Part of the Hew compiler
 

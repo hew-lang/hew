@@ -1956,6 +1956,73 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     );
 }
 
+#[test]
+fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items() {
+    let mut root = hew_parser::parse(
+        r"
+            import std::bench;
+            import std::bench;
+        ",
+    );
+    assert!(
+        root.errors.is_empty(),
+        "root parse errors: {:?}",
+        root.errors
+    );
+
+    let bench_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("std/bench/bench.hew")
+        .canonicalize()
+        .expect("stdlib bench module should exist");
+    let bench_source =
+        std::fs::read_to_string(&bench_path).expect("should read stdlib bench Hew source");
+    let bench_module = hew_parser::parse(&bench_source);
+    assert!(
+        bench_module.errors.is_empty(),
+        "bench parse errors: {:?}",
+        bench_module.errors
+    );
+
+    for import_decl in root
+        .program
+        .items
+        .iter_mut()
+        .filter_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+    {
+        import_decl.resolved_items = Some(bench_module.program.items.clone());
+        import_decl.resolved_source_paths = vec![bench_path.clone()];
+    }
+
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&root.program);
+
+    assert!(
+        !output.user_modules.contains("bench"),
+        "stdlib Hew import should not go through the user-module import path"
+    );
+    assert!(
+        output.type_defs.contains_key("Suite"),
+        "stdlib Hew items should still register public types"
+    );
+    assert!(
+        output.fn_sigs.contains_key("bench.suite"),
+        "stdlib Hew items should still register qualified functions"
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "duplicate stdlib imports should dedupe Hew item registration: {:?}",
+        output.errors
+    );
+}
+
 // ── Warning severity tests ──────────────────────────────────────────
 
 #[test]

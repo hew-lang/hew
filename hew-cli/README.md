@@ -19,7 +19,7 @@ hew wire check file.hew --against baseline.hew
 hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
-hew init [name]                   # Initialize a new project with main.hew
+hew init [name]                   # Scaffold main.hew + README.md only (no hew.toml)
 hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
@@ -91,8 +91,11 @@ See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
 For the current wildcard-import warning caveat, see the
 [troubleshooting guide](../docs/troubleshooting.md).
 
-`hew init [name]` scaffolds a new project with a `main.hew` entry point ready
-to use as the single argument to all commands above.
+For the canonical project bootstrap flow, start with `adze init [name]`. It
+creates `hew.toml`, `main.hew`, and `.gitignore`, after which
+`hew check main.hew` and `hew run main.hew` both operate on the same entry
+file. `hew init [name]` remains the lighter source-only scaffold: it writes
+`main.hew` plus `README.md`, but no `hew.toml`.
 
 ## Debugging
 

@@ -36,7 +36,7 @@ pub enum Command {
     Machine(MachineCommand),
     /// Format source files in-place or from stdin.
     Fmt(FmtArgs),
-    /// Scaffold a new project with a main.hew entry file.
+    /// Scaffold a source-only project with `main.hew` + `README.md` (no `hew.toml`).
     Init(InitArgs),
     /// Print shell completion script.
     Completions(CompletionsArgs),
@@ -429,7 +429,7 @@ pub struct FmtArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// Project name (creates a directory with main.hew; omit to init in current dir).
+    /// Project name (creates a directory with `main.hew` + `README.md`; omit to init in current dir).
     pub name: Option<String>,
     /// Overwrite existing scaffold files.
     #[arg(long)]

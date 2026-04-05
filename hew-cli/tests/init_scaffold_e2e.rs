@@ -75,3 +75,49 @@ fn init_scaffold_passes_hew_check() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+#[test]
+fn init_scaffold_stays_source_only_and_points_to_adze_init() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = run_init(tmp.path(), "docs_test");
+
+    assert!(
+        out.status.success(),
+        "hew init failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let project_dir = tmp.path().join("docs_test");
+    assert!(
+        !project_dir.join("hew.toml").exists(),
+        "hew init must remain source-only and not create hew.toml"
+    );
+
+    let readme = std::fs::read_to_string(project_dir.join("README.md")).unwrap();
+    assert!(
+        readme.contains("It does not create `hew.toml`"),
+        "README should explain that hew init is source-only; got:\n{readme}"
+    );
+    assert!(
+        readme.contains("adze init"),
+        "README should point manifest-first onboarding at adze init; got:\n{readme}"
+    );
+    assert!(
+        readme.contains("hew check main.hew"),
+        "README should recommend `hew check main.hew`; got:\n{readme}"
+    );
+    assert!(
+        readme.contains("hew run main.hew"),
+        "README should recommend `hew run main.hew`; got:\n{readme}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Created source-only project"),
+        "stdout should describe the source-only scaffold; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("No hew.toml was created"),
+        "stdout should explain the missing manifest and point to adze init; got:\n{stdout}"
+    );
+}

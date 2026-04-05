@@ -20,14 +20,18 @@ echo 'fn main() { println("Hello from Hew!"); }' > hello.hew
 hew run hello.hew
 
 # Start a new project
-hew init my_project
-# hew init creates main.hew, the entry file for check/build/run
+adze init my_project
 cd my_project
+# adze init creates hew.toml, main.hew, and .gitignore
+hew check main.hew
 hew run main.hew
 
 # Interactive REPL
 hew eval
 ```
+
+Need a lighter source-only scaffold instead? `hew init my_project` writes
+`main.hew` + `README.md`, but no `hew.toml`.
 
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 

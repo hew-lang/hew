@@ -172,6 +172,25 @@ pub enum ManifestTemplate {
     Actor,
 }
 
+impl ManifestTemplate {
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Bin => "A Hew binary project",
+            Self::Lib => "A Hew library",
+            Self::Actor => "A Hew actor project",
+        }
+    }
+
+    #[must_use]
+    pub fn scaffold_source(self) -> &'static str {
+        match self {
+            Self::Bin | Self::Actor => "main.hew",
+            Self::Lib => "lib.hew",
+        }
+    }
+}
+
 /// A parsed `hew.toml` manifest.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HewManifest {
@@ -249,13 +268,9 @@ pub fn write_manifest_with_template(
     name: &str,
     template: ManifestTemplate,
 ) -> Result<(), ManifestError> {
-    let description = match template {
-        ManifestTemplate::Bin => "A Hew binary project",
-        ManifestTemplate::Lib => "A Hew library",
-        ManifestTemplate::Actor => "A Hew actor project",
-    };
     let content = format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"{description}\"\n\n[dependencies]\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"{}\"\n\n[dependencies]\n",
+        template.description()
     );
     std::fs::write(path, content)?;
     Ok(())
@@ -537,17 +552,19 @@ mod tests {
     #[test]
     fn manifest_template_descriptions() {
         let dir = tempfile::tempdir().unwrap();
-        for (template, expected) in [
-            (ManifestTemplate::Bin, "A Hew binary project"),
-            (ManifestTemplate::Lib, "A Hew library"),
-            (ManifestTemplate::Actor, "A Hew actor project"),
+        for (template, expected_desc, expected_source) in [
+            (ManifestTemplate::Bin, "A Hew binary project", "main.hew"),
+            (ManifestTemplate::Lib, "A Hew library", "lib.hew"),
+            (ManifestTemplate::Actor, "A Hew actor project", "main.hew"),
         ] {
             let path = dir.path().join(format!("{template:?}.toml"));
             write_manifest_with_template(&path, "tpl", template).unwrap();
             let m = parse_manifest(&path).unwrap();
-            assert_eq!(m.package.description.as_deref(), Some(expected));
+            assert_eq!(m.package.description.as_deref(), Some(expected_desc));
             assert_eq!(m.package.name, "tpl");
             assert_eq!(m.package.version, "0.1.0");
+            assert_eq!(template.description(), expected_desc);
+            assert_eq!(template.scaffold_source(), expected_source);
         }
     }
 

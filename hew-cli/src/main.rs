@@ -14,7 +14,7 @@
 //! hew fmt file.hew                 # Format source file in-place
 //! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
-//! hew init [name]                  # Scaffold a project with main.hew
+//! hew init [name]                  # Scaffold main.hew + README.md only (no hew.toml)
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! ```
@@ -510,13 +510,16 @@ fn main() {
         "\
 # {project_name}
 
-A [Hew](https://hew.sh) project.
+A source-only [Hew](https://hew.sh) scaffold.
 
-## Build & Run
+`hew init` created `main.hew` and this README. It does not create `hew.toml`;
+use `adze init` for the manifest-first bootstrap flow.
+
+## Next steps
 
 ```sh
-hew build main.hew -o {project_name}
-./{project_name}
+hew check main.hew
+hew run main.hew
 ```
 "
     );
@@ -530,7 +533,8 @@ hew build main.hew -o {project_name}
         std::process::exit(1);
     }
 
-    println!("Created project \"{project_name}\" with main.hew entry file");
+    println!("Created source-only project \"{project_name}\" with main.hew and README.md");
+    println!("No hew.toml was created; use `adze init` for manifest-first bootstrap.");
 }
 
 fn cmd_completions(a: &args::CompletionsArgs) {

@@ -378,8 +378,8 @@ fn publish_connection_established(
                 mgr.cluster,
                 peer_node_id,
                 publication_token,
-                publication_sync.as_ref(),
-                publication_removed.as_ref(),
+                publication_sync,
+                publication_removed,
             ) == 1
         }
     };
@@ -2400,6 +2400,7 @@ mod tests {
             events: std::sync::Mutex<Vec<(u16, u8)>>,
             suspect_seen: std::sync::mpsc::Sender<()>,
             release: std::sync::Arc<std::sync::Barrier>,
+            blocked_first_suspect: std::sync::atomic::AtomicBool,
         }
 
         extern "C" fn block_on_suspect(node_id: u16, event: u8, user_data: *mut std::ffi::c_void) {
@@ -2410,7 +2411,9 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((node_id, event));
-            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT {
+            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+                && !state.blocked_first_suspect.swap(true, Ordering::AcqRel)
+            {
                 state
                     .suspect_seen
                     .send(())
@@ -2434,6 +2437,7 @@ mod tests {
             events: std::sync::Mutex::new(Vec::new()),
             suspect_seen: suspect_tx,
             release: std::sync::Arc::clone(&release),
+            blocked_first_suspect: std::sync::atomic::AtomicBool::new(false),
         }));
         let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
         let ops = Box::new(crate::transport::HewTransportOps {

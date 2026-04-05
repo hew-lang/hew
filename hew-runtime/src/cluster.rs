@@ -45,7 +45,7 @@ use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // ── Member states ──────────────────────────────────────────────────────
 
@@ -146,6 +146,11 @@ struct ConnectionTokens {
 enum PublicationTransition {
     Plain,
     TokenEstablished(u64),
+    GuardedTokenEstablished {
+        publication_token: u64,
+        publication_sync: Arc<Mutex<()>>,
+        publication_removed: Arc<AtomicBool>,
+    },
     TokenLost(u64),
 }
 
@@ -156,6 +161,7 @@ struct MemberTransition {
     incarnation: u64,
     is_new_member: bool,
     old_state: Option<i32>,
+    old_incarnation: Option<u64>,
     publication: PublicationTransition,
 }
 
@@ -312,6 +318,7 @@ impl HewCluster {
                 || (incarnation == existing.incarnation && state > existing.state)
             {
                 let old_state = existing.state;
+                let old_incarnation = existing.incarnation;
                 existing.state = state;
                 existing.incarnation = incarnation;
                 if !addr.is_empty() {
@@ -325,6 +332,7 @@ impl HewCluster {
                     incarnation,
                     is_new_member: false,
                     old_state: Some(old_state),
+                    old_incarnation: Some(old_incarnation),
                     publication: PublicationTransition::Plain,
                 });
             }
@@ -347,6 +355,7 @@ impl HewCluster {
             incarnation,
             is_new_member: true,
             old_state: None,
+            old_incarnation: None,
             publication: PublicationTransition::Plain,
         })
     }
@@ -400,6 +409,59 @@ impl HewCluster {
                         true
                     }
                     _ => false,
+                }
+            }
+            PublicationTransition::GuardedTokenEstablished {
+                publication_token,
+                publication_sync,
+                publication_removed,
+            } => {
+                let _publication = publication_sync.lock_or_recover();
+                if publication_removed.load(Ordering::Acquire) {
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    if matches!(
+                        tokens.current.get(&transition.node_id),
+                        Some(current) if *current == *publication_token
+                    ) {
+                        tokens.current.remove(&transition.node_id);
+                    }
+                    if matches!(
+                        tokens.visible.get(&transition.node_id),
+                        Some(current) if *current == *publication_token
+                    ) {
+                        tokens.visible.remove(&transition.node_id);
+                    }
+                    false
+                } else {
+                    let Some(old_state) = transition.old_state else {
+                        return;
+                    };
+                    let Some(old_incarnation) = transition.old_incarnation else {
+                        return;
+                    };
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    match tokens.current.get(&transition.node_id) {
+                        Some(current) if *current == *publication_token => {
+                            let mut members = self.members.lock_or_recover();
+                            match members.iter_mut().find(|m| m.node_id == transition.node_id) {
+                                Some(member)
+                                    if member.state == old_state
+                                        && member.incarnation == old_incarnation =>
+                                {
+                                    member.state = transition.state;
+                                    member.incarnation = transition.incarnation;
+                                    // SAFETY: hew_now_ms has no preconditions.
+                                    member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                                    tokens
+                                        .visible
+                                        .insert(transition.node_id, *publication_token);
+                                    true
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    }
                 }
             }
             PublicationTransition::TokenLost(publication_token) => {
@@ -1262,8 +1324,8 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
     cluster: *mut HewCluster,
     node_id: u16,
     publication_token: u64,
-    publication_sync: &Mutex<()>,
-    publication_removed: &AtomicBool,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
 ) -> c_int {
     if cluster.is_null() {
         return -1;
@@ -1284,7 +1346,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             .iter()
             .find(|m| m.node_id == node_id)
             .map(|m| (m.state, m.incarnation));
-        if let Some((state, incarnation)) = member {
+        if let Some((state, old_incarnation)) = member {
             if state == MEMBER_ALIVE {
                 if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                     // SAFETY: hew_now_ms has no preconditions.
@@ -1292,22 +1354,21 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 }
                 tokens.visible.insert(node_id, publication_token);
             } else {
-                let incarnation = incarnation.saturating_add(1);
-                if let Some(transition) = HewCluster::stage_member_transition_locked(
-                    &mut members,
+                let incarnation = old_incarnation.saturating_add(1);
+                let transition = MemberTransition {
                     node_id,
-                    MEMBER_ALIVE,
+                    state: MEMBER_ALIVE,
                     incarnation,
-                    &[],
-                ) {
-                    if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
-                    }
-                    should_drain = cluster.queue_member_transition(transition.with_publication(
-                        PublicationTransition::TokenEstablished(publication_token),
-                    ));
-                }
+                    is_new_member: false,
+                    old_state: Some(state),
+                    old_incarnation: Some(old_incarnation),
+                    publication: PublicationTransition::GuardedTokenEstablished {
+                        publication_token,
+                        publication_sync: Arc::clone(publication_sync),
+                        publication_removed: Arc::clone(publication_removed),
+                    },
+                };
+                should_drain = cluster.queue_member_transition(transition);
             }
             true
         } else {
@@ -1885,8 +1946,8 @@ mod tests {
                     cluster.0,
                     2,
                     2,
-                    publication_sync_for_thread.as_ref(),
-                    publication_removed_for_thread.as_ref(),
+                    &publication_sync_for_thread,
+                    &publication_removed_for_thread,
                 );
                 publish_done_tx
                     .send(rc)
@@ -1934,6 +1995,193 @@ mod tests {
             );
 
             hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test coordinates delayed guarded publish cancellation end-to-end"
+    )]
+    fn tokenized_connection_established_skips_removed_delivery_after_queueing() {
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+            blocked_first_suspect: AtomicBool,
+        }
+
+        extern "C" fn block_on_first_suspect(node_id: u16, event: u8, user_data: *mut c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+                && !state.blocked_first_suspect.swap(true, Ordering::AcqRel)
+            {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until all worker threads join.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let publication_sync = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let publication_removed = std::sync::Arc::new(AtomicBool::new(false));
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+            blocked_first_suspect: AtomicBool::new(false),
+        }));
+
+        // SAFETY: test-owned cluster and callback state remain valid until the
+        // explicit free/drop calls after all worker threads complete.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                block_on_first_suspect,
+                callback_state.cast(),
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let publish_cluster = SendCluster(cluster);
+            let publication_sync_for_thread = std::sync::Arc::clone(&publication_sync);
+            let publication_removed_for_thread = std::sync::Arc::clone(&publication_removed);
+            let publish_handle = std::thread::spawn(move || {
+                let cluster = publish_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster.0,
+                    2,
+                    2,
+                    &publication_sync_for_thread,
+                    &publication_removed_for_thread,
+                );
+                publish_done_tx
+                    .send(rc)
+                    .expect("publish thread should report completion");
+            });
+
+            assert_eq!(
+                publish_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("guarded publish should queue while the lost callback is blocked"),
+                1
+            );
+
+            {
+                let _publication = publication_sync
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                publication_removed.store(true, Ordering::Release);
+            }
+
+            let (retire_done_tx, retire_done_rx) = std::sync::mpsc::channel::<()>();
+            let retire_cluster = SendCluster(cluster);
+            let retire_handle = std::thread::spawn(move || {
+                let cluster = retire_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 2);
+                assert_eq!(rc, 0);
+                retire_done_tx
+                    .send(())
+                    .expect("retire thread should report completion");
+            });
+
+            retire_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("removal should retire the hidden token before lost drains");
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish after the callback is released");
+
+            lost_handle.join().expect("lost thread should not panic");
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+            retire_handle
+                .join()
+                .expect("retire thread should not panic");
+
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "removing a hidden delayed publish must not emit stale JOINED or duplicate SUSPECT events"
+            );
+            let cluster_ref = &*cluster;
+            {
+                let tokens = cluster_ref
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    !tokens.current.contains_key(&2),
+                    "removing a hidden delayed publish must clear the staged token"
+                );
+                assert!(
+                    !tokens.visible.contains_key(&2),
+                    "removing a hidden delayed publish must not leak visibility"
+                );
+            }
+            {
+                let members = cluster_ref
+                    .members
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(
+                    member.state, MEMBER_SUSPECT,
+                    "removing a hidden delayed publish must leave the node suspect"
+                );
+            }
+
+            hew_cluster_free(cluster);
+            drop(Box::from_raw(callback_state));
         }
     }
 

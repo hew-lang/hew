@@ -11,10 +11,15 @@ fn main() {
         },
     }
 
+    let manual: json.ParseError = ParseError::Invalid("typed parse error");
+    match manual {
+        ParseError::Invalid(message) => println(message),
+    }
+
     match json.try_parse("{invalid json}") {
         Ok(_) => println("unexpected ok"),
         Err(err) => match err {
-            ParseError::Invalid(_) => println(true),
+            ParseError::Invalid(message) => println(message),
         },
     }
 }

@@ -627,6 +627,18 @@ if(TEST e2e_quic_quic_string_loopback)
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 
+# json_try_parse exercises the branch's std/encoding/json/json.hew typed
+# ParseError wrapper. Point HEW_STD at the worktree std so the focused
+# contract test compiles against the slice under review.
+if(TEST e2e_json_json_try_parse)
+  set_tests_properties(e2e_json_json_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+if(TEST wasm_e2e_json_json_try_parse)
+  set_tests_properties(wasm_e2e_json_json_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+
 # ── Sorted-output E2E tests (non-deterministic output ordering) ───────────────
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)

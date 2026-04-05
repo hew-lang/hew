@@ -1031,8 +1031,8 @@ mod tests {
             return;
         }
         let mut session = ReplSession::with_timeout(Duration::from_millis(100));
-        let define =
-            session.eval("fn spin_forever() {\n    loop {\n        println(\"spin\");\n    }\n}");
+        let define = session
+            .eval("fn spin_forever() {\n    var i = 0;\n    loop {\n        i = i + 1;\n    }\n}");
         assert!(!define.had_errors, "errors: {:?}", define.errors);
 
         let result = session.eval("spin_forever()");

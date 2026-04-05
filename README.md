@@ -20,8 +20,8 @@ echo 'fn main() { println("Hello from Hew!"); }' > hello.hew
 hew run hello.hew
 
 # Start a new project
-adze init my_project
-# adze init creates main.hew in the project root
+hew init my_project
+# hew init creates main.hew in the project root
 cd my_project
 hew run main.hew
 

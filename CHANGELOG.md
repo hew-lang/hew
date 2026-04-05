@@ -473,7 +473,7 @@ hew run hello.hew
 hew eval
 
 # Start a new project
-adze init my_project
+hew init my_project
 ```
 
 Visit [hew.sh](https://hew.sh) for documentation and examples.

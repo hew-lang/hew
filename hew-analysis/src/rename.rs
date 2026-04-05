@@ -10,7 +10,7 @@ use crate::{OffsetSpan, RenameEdit};
 /// Check whether rename is valid at `offset`. Returns the word span if yes.
 ///
 /// Returns `None` if the cursor is not on an identifier, the identifier contains
-/// a dot or `::` qualifier, or no references exist for the name.
+/// a dot or `::` qualifier, or neither a definition nor any references exist for the name.
 #[must_use]
 pub fn prepare_rename(
     source: &str,
@@ -21,15 +21,19 @@ pub fn prepare_rename(
     if word.contains('.') || word.contains("::") {
         return None;
     }
-    // Verify that references exist for this name.
-    find_all_references(source, parse_result, offset)?;
+    if find_all_references(source, parse_result, offset).is_none()
+        && find_definition(source, parse_result, &word).is_none()
+    {
+        return None;
+    }
     let (_word, span) = simple_word_at_offset(source, offset)?;
     Some(span)
 }
 
 /// Compute rename edits: replace every reference (and the definition site) with `new_name`.
 ///
-/// Returns `None` if no identifier is found at `offset` or no references exist.
+/// Returns `None` if no identifier is found at `offset` or the symbol has neither
+/// a definition nor any references.
 #[must_use]
 pub fn rename(
     source: &str,
@@ -37,7 +41,10 @@ pub fn rename(
     offset: usize,
     new_name: &str,
 ) -> Option<Vec<RenameEdit>> {
-    let (name, spans) = find_all_references(source, parse_result, offset)?;
+    let (name, _) = simple_word_at_offset(source, offset)?;
+    let spans = find_all_references(source, parse_result, offset)
+        .map(|(_, spans)| spans)
+        .unwrap_or_default();
 
     let mut edits: Vec<RenameEdit> = spans
         .iter()
@@ -100,9 +107,21 @@ mod tests {
     fn prepare_rename_at_whitespace() {
         let source = "fn main() { }";
         let pr = parse(source);
-        // Offset 3 is whitespace
-        let result = prepare_rename(source, &pr, 3);
+        let offset = source.find("{ }").unwrap() + 1;
+        let result = prepare_rename(source, &pr, offset);
         assert!(result.is_none(), "cannot rename at whitespace");
+    }
+
+    #[test]
+    fn prepare_rename_on_definition_without_local_references() {
+        let source = "fn main() { }";
+        let pr = parse(source);
+        let offset = source.find("main").unwrap();
+        let result = prepare_rename(source, &pr, offset);
+        assert!(
+            result.is_some(),
+            "definition-only symbols should still be renameable"
+        );
     }
 
     #[test]

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "basics/hello_world",
+    "category": "basics",
+    "name": "Hello World",
+    "description": "Your first Hew program",
+    "source_path": "examples/playground/basics/hello_world.hew",
+    "expected_path": "examples/playground/basics/hello_world.expected"
+  },
+  {
+    "id": "basics/fibonacci",
+    "category": "basics",
+    "name": "Fibonacci",
+    "description": "Calculate Fibonacci numbers recursively",
+    "source_path": "examples/playground/basics/fibonacci.hew",
+    "expected_path": "examples/playground/basics/fibonacci.expected"
+  },
+  {
+    "id": "basics/higher_order_functions",
+    "category": "basics",
+    "name": "Higher-Order Functions",
+    "description": "Lambdas and function passing",
+    "source_path": "examples/playground/basics/higher_order_functions.hew",
+    "expected_path": "examples/playground/basics/higher_order_functions.expected"
+  },
+  {
+    "id": "basics/string_interpolation",
+    "category": "basics",
+    "name": "String Interpolation",
+    "description": "Format strings with embedded expressions",
+    "source_path": "examples/playground/basics/string_interpolation.hew",
+    "expected_path": "examples/playground/basics/string_interpolation.expected"
+  },
+  {
+    "id": "concurrency/actor_pipeline",
+    "category": "concurrency",
+    "name": "Actor Pipeline",
+    "description": "Actors processing messages independently",
+    "source_path": "examples/playground/concurrency/actor_pipeline.hew",
+    "expected_path": "examples/playground/concurrency/actor_pipeline.expected"
+  },
+  {
+    "id": "concurrency/async_await",
+    "category": "concurrency",
+    "name": "Async/Await",
+    "description": "Async functions with await",
+    "source_path": "examples/playground/concurrency/async_await.hew",
+    "expected_path": "examples/playground/concurrency/async_await.expected"
+  },
+  {
+    "id": "concurrency/counter_actor",
+    "category": "concurrency",
+    "name": "Counter Actor",
+    "description": "A simple actor that counts messages",
+    "source_path": "examples/playground/concurrency/counter_actor.hew",
+    "expected_path": "examples/playground/concurrency/counter_actor.expected"
+  },
+  {
+    "id": "concurrency/supervisor",
+    "category": "concurrency",
+    "name": "Supervisor",
+    "description": "Supervision tree for fault-tolerant actors",
+    "source_path": "examples/playground/concurrency/supervisor.hew",
+    "expected_path": "examples/playground/concurrency/supervisor.expected"
+  },
+  {
+    "id": "types/collections",
+    "category": "types",
+    "name": "Collections",
+    "description": "Vec and HashMap usage",
+    "source_path": "examples/playground/types/collections.hew",
+    "expected_path": "examples/playground/types/collections.expected"
+  },
+  {
+    "id": "types/pattern_matching",
+    "category": "types",
+    "name": "Pattern Matching",
+    "description": "Match expressions with enums",
+    "source_path": "examples/playground/types/pattern_matching.hew",
+    "expected_path": "examples/playground/types/pattern_matching.expected"
+  },
+  {
+    "id": "types/wire_types",
+    "category": "types",
+    "name": "Wire Types",
+    "description": "Wire structs and enums for serialization",
+    "source_path": "examples/playground/types/wire_types.hew",
+    "expected_path": "examples/playground/types/wire_types.expected"
+  }
+]

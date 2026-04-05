@@ -37,7 +37,7 @@ The [`examples/`](examples/) directory contains structured learning paths for ne
 
 - **[`examples/ux/`](examples/ux/)** — 15 quick-start lessons (hello world through hashmaps), each paired with an `.expected` output file; ideal for a first 20-minute tour
 - **[`examples/progressive/`](examples/progressive/)** — 11 numbered lessons building from variables to actors, also with `.expected` files
-- **[`examples/playground/`](examples/playground/)** — Topic-grouped snippets covering basics, concurrency, and types
+- **[`examples/playground/`](examples/playground/)** — Topic-grouped snippets covering basics, concurrency, and types, with checked-in metadata in [`manifest.json`](examples/playground/manifest.json)
 
 See [`examples/README.md`](examples/README.md) for the complete directory guide.
 

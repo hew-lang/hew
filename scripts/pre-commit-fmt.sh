@@ -22,14 +22,13 @@ staged_files() {
 fmt_and_restage() {
     local varname=$1
     shift
-    # shellcheck disable=SC2294,SC2154 # eval + indirect variable — Bash 3.2 compat
-    eval "local _count=\${#${varname}[@]}"
-    # shellcheck disable=SC2154 # _count set via eval above
+    local _files=()
+    # shellcheck disable=SC2294 # eval is intentional — Bash 3.2 compat
+    eval "_files=(\"\${${varname}[@]}\")"
+    local _count=${#_files[@]}
     if (( _count > 0 )); then
-        # shellcheck disable=SC2294 # eval is intentional — Bash 3.2 compat
-        eval '"$@" "\${'"$varname"'[@]}"' 2>/dev/null
-        # shellcheck disable=SC2294 # eval is intentional — Bash 3.2 compat
-        eval 'git add "\${'"$varname"'[@]}"'
+        "$@" "${_files[@]}" 2>/dev/null
+        git add "${_files[@]}"
     fi
 }
 

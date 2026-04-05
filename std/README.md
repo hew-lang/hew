@@ -4,6 +4,8 @@ The Hew standard library provides core types, data structures, networking, encod
 
 This file is the canonical index of shipped stdlib modules in this repository. Module links below go to the public `.hew` surface that Hew programs import.
 
+For the curated language-only playground snippets, start with [`../examples/playground/manifest.json`](../examples/playground/manifest.json) and [`../examples/README.md`](../examples/README.md). Use this README when you need the canonical index of shipped `std::*` modules.
+
 ## Builtins — auto-imported, plain function calls
 
 `println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.

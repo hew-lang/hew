@@ -2219,9 +2219,16 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
                                     bool statementPosition) {
   auto location = currentLoc;
 
+  auto condErrorsBefore = errorCount_;
   auto cond = generateExpression(ifE.condition->value);
-  if (!cond)
+  if (!cond) {
+    if (statementPosition && errorCount_ == condErrorsBefore) {
+      ++errorCount_;
+      emitError(location)
+          << "discarded if expression in statement position failed to lower the condition";
+    }
     return nullptr;
+  }
 
   if (cond.getType() != builder.getI1Type()) {
     auto zero = createIntConstant(builder, location, cond.getType(), 0);
@@ -2232,21 +2239,49 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   bool hasElse = ifE.else_block.has_value();
 
   if (statementPosition) {
+    auto failClosedDiscardedIfPart = [&](llvm::StringRef part) {
+      ++errorCount_;
+      emitError(location) << "discarded if expression in statement position failed to lower "
+                          << part;
+    };
+    auto branchNeedsValue = [&](const ast::Spanned<ast::Expr> &expr) -> bool {
+      if (auto *resolvedType = resolvedTypeOf(expr.span))
+        if (auto *tupleType = std::get_if<ast::TypeTuple>(&resolvedType->kind);
+            tupleType && tupleType->elements.empty())
+          return false;
+
+      if (std::holds_alternative<ast::ExprIf>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprBlock>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprScope>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprUnsafe>(expr.value.kind))
+        return false;
+
+      return true;
+    };
+
     auto ifOp = mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond,
                                         hasElse);
 
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     if (ifE.then_block) {
+      auto errorsBefore = errorCount_;
       if (auto thenVal = generateDiscardedExpr(*ifE.then_block))
         materializeTemporary(thenVal, ifE.then_block->value);
+      else if (errorCount_ == errorsBefore && !hasRealTerminator(builder.getInsertionBlock()) &&
+               branchNeedsValue(*ifE.then_block))
+        failClosedDiscardedIfPart("the then-branch expression");
     }
     ensureYieldTerminator(location);
 
     if (hasElse) {
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
       if (ifE.else_block.has_value() && *ifE.else_block) {
+        auto errorsBefore = errorCount_;
         if (auto elseVal = generateDiscardedExpr(*(*ifE.else_block)))
           materializeTemporary(elseVal, (*ifE.else_block)->value);
+        else if (errorCount_ == errorsBefore && !hasRealTerminator(builder.getInsertionBlock()) &&
+                 branchNeedsValue(*(*ifE.else_block)))
+          failClosedDiscardedIfPart("the else-branch expression");
       }
       ensureYieldTerminator(location);
     }

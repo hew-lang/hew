@@ -1,6 +1,7 @@
 //! Hover analysis: produce rich hover information for identifiers and expressions.
 
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
+use hew_types::method_resolution;
 use hew_types::{Ty, TypeCheckOutput, VariantDef};
 
 use crate::{HoverResult, OffsetSpan};
@@ -32,8 +33,10 @@ pub fn hover(
         }
 
         // Check if the word is a known type definition.
-        if let Some(type_def) = type_output.type_defs.get(word.as_str()) {
-            let hover_text = format_type_def_hover(type_def);
+        if let Some(type_def) =
+            method_resolution::lookup_type_def(&type_output.type_defs, word.as_str())
+        {
+            let hover_text = format_type_def_hover(&type_def);
             return Some(HoverResult {
                 contents: hover_text,
                 span: None,

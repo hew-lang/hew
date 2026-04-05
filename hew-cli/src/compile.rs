@@ -1,7 +1,7 @@
 //! Build command: parse, type-check, serialize to `MessagePack`, invoke the
 //! embedded MLIR/LLVM backend, and link the final executable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::Write;
@@ -90,9 +90,19 @@ pub struct CompileOptions {
 /// Groups the parameters that remain constant across recursive calls to
 /// [`resolve_file_imports()`] and [`parse_and_resolve_file()`], plus the
 /// accumulating set of already-imported files.
+#[derive(Clone)]
+struct ResolvedImport {
+    items: Vec<Spanned<Item>>,
+    item_source_paths: Vec<PathBuf>,
+    source_paths: Vec<PathBuf>,
+}
+
 struct ImportResolutionContext<'a> {
     /// Canonical paths of files already imported (prevents cycles and duplicates).
     imported: HashSet<PathBuf>,
+    /// Fully resolved imports keyed by canonical path so sibling imports can
+    /// reuse prior resolution without reopening fail-closed unresolved paths.
+    resolved_imports: HashMap<PathBuf, ResolvedImport>,
     /// Dependencies declared in `hew.toml` (`None` in script mode).
     manifest_deps: Option<&'a [String]>,
     /// Override for the package search directory (default: `.adze/packages/`).
@@ -359,6 +369,7 @@ fn resolve_imports(
     let input_path = Path::new(input);
     let mut import_ctx = ImportResolutionContext {
         imported: HashSet::new(),
+        resolved_imports: HashMap::new(),
         manifest_deps: project.manifest_deps.as_deref(),
         extra_pkg_path: options.pkg_path.as_deref(),
         locked_versions: project.locked_versions.as_deref(),
@@ -1326,6 +1337,16 @@ fn resolve_file_imports(
             _ => continue,
         };
 
+        if let Some(cached) = ctx.resolved_imports.get(&canonical) {
+            if let Item::Import(decl) = &mut items[*idx].0 {
+                decl.resolved_items = Some(cached.items.clone());
+                decl.resolved_item_source_paths
+                    .clone_from(&cached.item_source_paths);
+                decl.resolved_source_paths.clone_from(&cached.source_paths);
+            }
+            continue;
+        }
+
         if ctx.imported.contains(&canonical) {
             continue;
         }
@@ -1392,15 +1413,25 @@ fn resolve_file_imports(
         // Store resolved items and source paths on the ImportDecl instead of
         // flattening them into the parent's item list. This preserves module
         // boundaries so the type checker can register items under the module's namespace.
-        if let Item::Import(decl) = &mut items[*idx].0 {
-            decl.resolved_items = Some(import_items);
-            decl.resolved_item_source_paths = import_item_source_paths;
-            let mut source_paths = vec![canonical.clone()];
-            for peer in &peer_files {
-                source_paths.push(peer.canonicalize().unwrap_or_else(|_| peer.clone()));
-            }
-            decl.resolved_source_paths = source_paths;
+        let mut source_paths = vec![canonical.clone()];
+        for peer in &peer_files {
+            source_paths.push(peer.canonicalize().unwrap_or_else(|_| peer.clone()));
         }
+        let resolved_import = ResolvedImport {
+            items: import_items,
+            item_source_paths: import_item_source_paths,
+            source_paths,
+        };
+
+        if let Item::Import(decl) = &mut items[*idx].0 {
+            decl.resolved_items = Some(resolved_import.items.clone());
+            decl.resolved_item_source_paths
+                .clone_from(&resolved_import.item_source_paths);
+            decl.resolved_source_paths
+                .clone_from(&resolved_import.source_paths);
+        }
+        ctx.resolved_imports
+            .insert(canonical.clone(), resolved_import);
     }
 
     Ok(())
@@ -1440,7 +1471,6 @@ fn parse_and_resolve_file(
 /// Check for duplicate `pub` item names across files in a multi-file module.
 fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Result<(), String> {
     use hew_parser::ast::Visibility;
-    use std::collections::HashMap;
 
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (item, _) in items {
@@ -1530,8 +1560,9 @@ fn source_contains_regex_literal(source: &str) -> bool {
 mod tests {
     use super::*;
     use hew_parser::ast::{Block, Expr, FnDecl, Pattern, Program, Stmt, Visibility};
-    use hew_types::{check::TypeCheckOutput, Ty};
-    use std::collections::HashMap;
+    use hew_types::{
+        check::TypeCheckOutput, error::TypeErrorKind, module_registry::ModuleRegistry, Ty,
+    };
 
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
@@ -1555,6 +1586,49 @@ mod tests {
             resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
+    }
+
+    struct TestFixtureDir {
+        path: PathBuf,
+    }
+
+    impl TestFixtureDir {
+        fn new(name: &str, files: &[(&str, &str)]) -> Self {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("compile-tests")
+                .join(name);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("fixture directory should be created");
+            for (relative_path, contents) in files {
+                let file_path = path.join(relative_path);
+                if let Some(parent) = file_path.parent() {
+                    fs::create_dir_all(parent).expect("fixture parent directories should exist");
+                }
+                fs::write(&file_path, contents).expect("fixture file should be written");
+            }
+            Self { path }
+        }
+
+        fn join(&self, relative_path: &str) -> PathBuf {
+            self.path.join(relative_path)
+        }
+    }
+
+    impl Drop for TestFixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn find_file_import<'a>(items: &'a [Spanned<Item>], file: &str) -> &'a ImportDecl {
+        items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Import(decl) if decl.file_path.as_deref() == Some(file) => Some(decl),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected file import `{file}`"))
     }
 
     fn implicit_import_paths_for(source: &str) -> Vec<Vec<String>> {
@@ -1844,6 +1918,104 @@ fn main() {
         assert!(
             ty.is_none(),
             "unresolved best-effort binding types should stay implicit"
+        );
+    }
+
+    #[test]
+    fn build_module_graph_reuses_resolved_file_imports_for_diamond_deps() {
+        let fixture = TestFixtureDir::new(
+            "diamond-file-import-cache",
+            &[
+                (
+                    "module_diamond.hew",
+                    r#"import "diamond_base.hew";
+import "diamond_left.hew";
+import "diamond_right.hew";
+
+fn main() {
+    let b = base_value();
+    let l = left_value();
+    let r = right_value();
+    println(f"{b}");
+    println(f"{l}");
+    println(f"{r}");
+    println(f"{l + r}");
+}
+"#,
+                ),
+                ("diamond_base.hew", "pub fn base_value() -> int { 100 }\n"),
+                (
+                    "diamond_left.hew",
+                    "import \"diamond_base.hew\";\npub fn left_value() -> int { base_value() + 1 }\n",
+                ),
+                (
+                    "diamond_right.hew",
+                    "import \"diamond_base.hew\";\npub fn right_value() -> int { base_value() + 2 }\n",
+                ),
+            ],
+        );
+        let root_path = fixture.join("module_diamond.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
+        let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let mut ctx = ImportResolutionContext {
+            imported: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("diamond fixture should build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let left_import = find_file_import(&program.items, "diamond_left.hew");
+        let left_items = left_import
+            .resolved_items
+            .as_ref()
+            .expect("left import should be resolved");
+        assert!(
+            find_file_import(left_items, "diamond_base.hew")
+                .resolved_items
+                .is_some(),
+            "left branch should reuse resolved diamond_base import items"
+        );
+
+        let right_import = find_file_import(&program.items, "diamond_right.hew");
+        let right_items = right_import
+            .resolved_items
+            .as_ref()
+            .expect("right import should be resolved");
+        assert!(
+            find_file_import(right_items, "diamond_base.hew")
+                .resolved_items
+                .is_some(),
+            "right branch should reuse resolved diamond_base import items"
+        );
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        let unresolved: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::UnresolvedImport)
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "diamond fixture should not produce unresolved import errors: {unresolved:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "diamond fixture should fully type-check: {:?}",
+            output.errors
         );
     }
 }

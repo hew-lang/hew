@@ -1913,6 +1913,13 @@ impl Checker {
         // `self.module_registry` borrow is released here.
 
         // --- User module path ---
+        if decl.path.is_empty() && self.current_module.is_some() {
+            // Nested file imports are internal dependencies of another imported
+            // module. `resolve_file_imports` already validated them; re-registering
+            // them here would incorrectly leak their flat names into the root scope.
+            return;
+        }
+
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.is_empty() {
                 // File imports register top-level names without a module namespace.

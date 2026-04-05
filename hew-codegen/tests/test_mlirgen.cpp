@@ -1165,6 +1165,78 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Nested discarded block-like expressions keep tail if lowering in
+//       statement mode
+// ============================================================================
+static void test_nested_discarded_scope_expr_tail_if_no_extra_results() {
+  TEST(nested_discarded_scope_expr_tail_if_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn nested_scope_trailing(flag: bool) -> int {
+    {
+        scope {
+            if flag {
+                println(7);
+            } else {
+                println(8);
+            }
+        }
+    };
+    0
+}
+
+fn nested_scope_stmt(flag: bool) -> int {
+    {
+        scope {
+            if flag {
+                println(9);
+            } else {
+                println(10);
+            }
+        };
+    };
+    0
+}
+
+fn main() -> int {
+    nested_scope_trailing(true) + nested_scope_stmt(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto trailingFn = lookupFuncBySuffix(module, "nested_scope_trailing");
+  auto stmtFn = lookupFuncBySuffix(module, "nested_scope_stmt");
+  if (!trailingFn || !stmtFn) {
+    FAIL("nested discarded scope test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(trailingFn) != 1) {
+    FAIL("nested discarded trailing scope expression should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(stmtFn) != 1) {
+    FAIL("nested discarded scope expression statement should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -3731,6 +3803,7 @@ int main() {
   test_discarded_block_expr_tail_if_no_extra_results();
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_scope_expr_tail_if_no_extra_results();
+  test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

@@ -38,3 +38,7 @@ Expected output:
 ```text
 Hello from a merged directory module!
 ```
+
+If you want the next step after this minimal layout, continue with
+[`../multifile/README.md`](../multifile/README.md) for selective imports and
+nested module hierarchies.

@@ -110,6 +110,39 @@ jobs:
           wait-for-processing: true
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Browser/playground verification — check manifest freshness and ensure the
+  # browser-facing hew-wasm package still builds without pulling in downstream apps.
+  # ─────────────────────────────────────────────────────────────────────────
+  playground-wasm-build:
+    name: Playground WASM build
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: playground-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: playground-wasm-${{ runner.os }}-
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Run hew-wasm library smoke tests
+        run: cargo test -p hew-wasm --lib
+
+      - name: Check repo-local playground browser build inputs
+        run: make playground-check
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace tests + hew-codegen E2E (single LLVM install)
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────

@@ -10,6 +10,8 @@ keywords = ["hew", "programming-language", "wasm", "webassembly"]
 categories = ["compilers", "wasm"]
 
 [lib]
+# Keep an rlib alongside the browser-facing cdylib so the dedicated
+# playground/browser smoke lane can run `cargo test -p hew-wasm --lib`.
 crate-type = ["cdylib", "rlib"]
 
 [lints]

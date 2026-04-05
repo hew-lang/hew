@@ -138,6 +138,45 @@ pub fn render_warning_with_raw_notes(
     render_warning(source, filename, span, message, &notes, suggestions);
 }
 
+/// Render parser diagnostics using the shared CLI diagnostic layout.
+pub fn render_parse_diagnostics(source: &str, filename: &str, errors: &[hew_parser::ParseError]) {
+    for err in errors {
+        let hints: Vec<String> = err.hint.iter().cloned().collect();
+        match err.severity {
+            hew_parser::Severity::Warning => {
+                render_warning(source, filename, &err.span, &err.message, &[], &hints);
+            }
+            hew_parser::Severity::Error => {
+                render_diagnostic(source, filename, &err.span, &err.message, &[], &hints);
+            }
+        }
+    }
+}
+
+/// Render type-check diagnostics using the shared CLI diagnostic layout.
+pub fn render_type_diagnostics(source: &str, filename: &str, diagnostics: &[hew_types::TypeError]) {
+    for diagnostic in diagnostics {
+        match diagnostic.severity {
+            hew_types::error::Severity::Warning => render_warning_with_raw_notes(
+                source,
+                filename,
+                &diagnostic.span,
+                &diagnostic.message,
+                &diagnostic.notes,
+                &diagnostic.suggestions,
+            ),
+            hew_types::error::Severity::Error => render_diagnostic_with_raw_notes(
+                source,
+                filename,
+                &diagnostic.span,
+                &diagnostic.message,
+                &diagnostic.notes,
+                &diagnostic.suggestions,
+            ),
+        }
+    }
+}
+
 /// Render the source line and `^^^` underline for a span.
 fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     let lines: Vec<&str> = source.lines().collect();

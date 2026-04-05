@@ -2,6 +2,7 @@
 
 use super::classify::{self, InputKind, ReplCommand};
 use super::session::Session;
+use std::fmt;
 use std::time::Duration;
 
 const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -22,6 +23,40 @@ pub struct EvalResult {
 pub struct ReplSession {
     session: Session,
     execution_timeout: Duration,
+}
+
+#[derive(Debug)]
+pub enum CliEvalError {
+    DiagnosticsRendered,
+    Message(String),
+}
+
+impl fmt::Display for CliEvalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiagnosticsRendered => write!(f, "diagnostics already rendered"),
+            Self::Message(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for CliEvalError {}
+
+struct CheckedProgram {
+    kind: InputKind,
+    program: hew_parser::ast::Program,
+    source: String,
+}
+
+enum EvalCheckFailure {
+    Parse {
+        source: String,
+        errors: Vec<hew_parser::ParseError>,
+    },
+    Type {
+        source: String,
+        errors: Vec<hew_types::TypeError>,
+    },
 }
 
 impl Default for ReplSession {
@@ -65,54 +100,36 @@ impl ReplSession {
         }
 
         // Build the synthetic program.
-        let program = self.session.build_program_with_kind(trimmed, kind);
-
-        // Parse.
-        let parse_result = hew_parser::parse(&program.source);
-        if !parse_result.errors.is_empty() {
-            let errors: Vec<String> = parse_result
-                .errors
-                .iter()
-                .map(|e| e.message.clone())
-                .collect();
-            return EvalResult {
-                output: String::new(),
-                had_errors: true,
-                errors,
-            };
-        }
-
-        // Type-check.
-        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
-        ));
-        let tco = checker.check_program(&parse_result.program);
-        let type_errors: Vec<String> = tco.errors.iter().map(|e| e.message.clone()).collect();
-
-        if !type_errors.is_empty() {
-            return EvalResult {
-                output: String::new(),
-                had_errors: true,
-                errors: type_errors,
-            };
-        }
+        let checked_program = match self.prepare_program(trimmed, kind) {
+            Ok(program) => program,
+            Err(EvalCheckFailure::Parse { errors, .. }) => {
+                return EvalResult {
+                    output: String::new(),
+                    had_errors: true,
+                    errors: errors.into_iter().map(|error| error.message).collect(),
+                };
+            }
+            Err(EvalCheckFailure::Type { errors, .. }) => {
+                return EvalResult {
+                    output: String::new(),
+                    had_errors: true,
+                    errors: errors.into_iter().map(|error| error.message).collect(),
+                };
+            }
+        };
 
         // Compile and execute in-process.  Import resolution and typecheck are
         // re-run inside compile_from_source_checked with correct stage ordering
         // (resolve imports BEFORE typecheck) so that stdlib type metadata is
         // available to the enrichment and codegen passes.
         match run_inprocess_compiled(
-            parse_result.program,
-            &program.source,
+            checked_program.program,
+            &checked_program.source,
             self.execution_timeout,
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
-                match &program.kind {
-                    InputKind::Item => self.session.add_item(trimmed),
-                    InputKind::Statement => self.session.add_binding(trimmed),
-                    InputKind::Expression | InputKind::Command(_) => {}
-                }
+                self.record_success(trimmed, &checked_program.kind);
 
                 EvalResult {
                     output,
@@ -125,6 +142,48 @@ impl ReplSession {
                 had_errors: true,
                 errors: vec![e],
             },
+        }
+    }
+
+    fn eval_cli(&mut self, input: &str, input_name: &str) -> Result<String, CliEvalError> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(String::new());
+        }
+
+        let kind = classify::classify(trimmed);
+
+        if let InputKind::Command(cmd) = &kind {
+            let result = self.handle_command(cmd);
+            return if result.had_errors {
+                Err(CliEvalError::Message(result.errors.join("\n")))
+            } else {
+                Ok(result.output)
+            };
+        }
+
+        let checked_program = match self.prepare_program(trimmed, kind) {
+            Ok(program) => program,
+            Err(EvalCheckFailure::Parse { source, errors }) => {
+                crate::diagnostic::render_parse_diagnostics(&source, input_name, &errors);
+                return Err(CliEvalError::DiagnosticsRendered);
+            }
+            Err(EvalCheckFailure::Type { source, errors }) => {
+                crate::diagnostic::render_type_diagnostics(&source, input_name, &errors);
+                return Err(CliEvalError::DiagnosticsRendered);
+            }
+        };
+
+        match run_inprocess_compiled(
+            checked_program.program,
+            &checked_program.source,
+            self.execution_timeout,
+        ) {
+            Ok(output) => {
+                self.record_success(trimmed, &checked_program.kind);
+                Ok(output)
+            }
+            Err(error) => Err(CliEvalError::Message(error)),
         }
     }
 
@@ -307,6 +366,48 @@ impl ReplSession {
             },
         }
     }
+
+    fn prepare_program(
+        &self,
+        input: &str,
+        kind: InputKind,
+    ) -> Result<CheckedProgram, EvalCheckFailure> {
+        let synthetic_program = self.session.build_program_with_kind(input, kind.clone());
+
+        let parse_result = hew_parser::parse(&synthetic_program.source);
+        if !parse_result.errors.is_empty() {
+            return Err(EvalCheckFailure::Parse {
+                source: synthetic_program.source,
+                errors: parse_result.errors,
+            });
+        }
+
+        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        ));
+        let tco = checker.check_program(&parse_result.program);
+
+        if !tco.errors.is_empty() {
+            return Err(EvalCheckFailure::Type {
+                source: synthetic_program.source,
+                errors: tco.errors,
+            });
+        }
+
+        Ok(CheckedProgram {
+            kind,
+            program: parse_result.program,
+            source: synthetic_program.source,
+        })
+    }
+
+    fn record_success(&mut self, input: &str, kind: &InputKind) {
+        match kind {
+            InputKind::Item => self.session.add_item(input),
+            InputKind::Statement => self.session.add_binding(input),
+            InputKind::Expression | InputKind::Command(_) => {}
+        }
+    }
 }
 
 /// Compile the given already-parsed program to a native binary in a temporary
@@ -424,14 +525,9 @@ pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Erro
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, String> {
+pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout(timeout);
-    let result = session.eval(expr);
-    if result.had_errors {
-        Err(result.errors.join("\n"))
-    } else {
-        Ok(result.output)
-    }
+    session.eval_cli(expr, "<eval>")
 }
 
 /// Evaluate a file in REPL context.
@@ -439,8 +535,9 @@ pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, String> {
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_file(path: &str, timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
-    let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
+pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| CliEvalError::Message(format!("cannot read '{path}': {e}")))?;
 
     let mut session = ReplSession::with_timeout(timeout);
     let mut buffer = String::new();
@@ -467,12 +564,9 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), Box<dyn std::error
             continue;
         }
 
-        let result = session.eval(input);
-        if result.had_errors {
-            return Err(result.errors.join("\n").into());
-        }
-        if !result.output.is_empty() {
-            print!("{}", result.output);
+        let output = session.eval_cli(input, path)?;
+        if !output.is_empty() {
+            print!("{output}");
         }
         buffer.clear();
     }
@@ -480,12 +574,9 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), Box<dyn std::error
     // Evaluate any remaining buffered input.
     let input = buffer.trim();
     if !input.is_empty() {
-        let result = session.eval(input);
-        if result.had_errors {
-            return Err(result.errors.join("\n").into());
-        }
-        if !result.output.is_empty() {
-            print!("{}", result.output);
+        let output = session.eval_cli(input, path)?;
+        if !output.is_empty() {
+            print!("{output}");
         }
     }
 

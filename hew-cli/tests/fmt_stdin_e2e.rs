@@ -1,6 +1,10 @@
+mod support;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+
+use support::strip_ansi;
 
 fn hew_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_hew"))
@@ -100,4 +104,46 @@ fn fmt_stdin_rejects_file_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--stdin"), "stderr: {stderr}");
     assert!(stderr.contains("cannot be used with"), "stderr: {stderr}");
+}
+
+#[test]
+fn fmt_stdin_parse_errors_render_cli_diagnostics() {
+    let output = run_fmt(&["fmt", "--stdin"], "fn main( {\n");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | fn main( {"), "stderr: {stderr}");
+    assert!(stderr.contains('^'), "stderr: {stderr}");
+    assert!(!stderr.contains("ParseError {"), "stderr: {stderr}");
+}
+
+#[test]
+fn fmt_file_parse_errors_render_cli_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("broken.hew");
+    std::fs::write(&path, "fn main( {\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("fmt")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let header = format!("{}:1:", path.display());
+    assert!(stderr.contains(&header), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | fn main( {"), "stderr: {stderr}");
+    assert!(stderr.contains('^'), "stderr: {stderr}");
+    assert!(!stderr.contains("ParseError {"), "stderr: {stderr}");
 }

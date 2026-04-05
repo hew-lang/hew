@@ -146,6 +146,7 @@ pub struct SyntheticProgram {
     /// The full Hew source code.
     pub source: String,
     /// What kind of input produced this program.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub kind: InputKind,
 }
 

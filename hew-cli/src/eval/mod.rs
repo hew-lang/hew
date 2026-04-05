@@ -29,8 +29,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     if let Some(ref file) = args.file {
         let path = file.display().to_string();
         if let Err(e) = repl::eval_file(&path, timeout) {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
+            exit_eval_error(e);
         }
         return;
     }
@@ -52,9 +51,13 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
                 print!("{output}");
             }
         }
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => exit_eval_error(e),
     }
+}
+
+fn exit_eval_error(error: repl::CliEvalError) -> ! {
+    if let repl::CliEvalError::Message(message) = error {
+        eprintln!("Error: {message}");
+    }
+    std::process::exit(1);
 }

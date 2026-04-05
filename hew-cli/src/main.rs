@@ -413,9 +413,7 @@ fn format_for_display(input_name: &str, source: &str) -> Option<String> {
         .iter()
         .any(|e| matches!(e.severity, hew_parser::Severity::Error));
     if is_fatal {
-        for err in &result.errors {
-            eprintln!("{input_name}: {err:?}");
-        }
+        diagnostic::render_parse_diagnostics(source, input_name, &result.errors);
         return None;
     }
 

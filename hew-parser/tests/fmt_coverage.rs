@@ -91,6 +91,15 @@ fn fmt_generic_function_with_bounds() {
     assert!(out.contains("<T: Display>"), "output: {out}");
 }
 
+#[test]
+fn fmt_pure_function() {
+    let src = r"pure fn checksum(x: i32) -> i32 {
+    x
+}";
+    let out = roundtrip(src);
+    assert!(out.contains("pure fn checksum"), "output: {out}");
+}
+
 // -----------------------------------------------------------------------
 // If / else
 // -----------------------------------------------------------------------
@@ -446,6 +455,20 @@ fn fmt_simple_actor() {
 }
 
 #[test]
+fn fmt_actor_receive_without_preamble() {
+    let src = r"actor Worker {
+    receive fn work(n: i32) -> i32 {
+        n
+    }
+}";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("actor Worker {\n    receive fn work(n: i32) -> i32 {"),
+        "output: {out}"
+    );
+}
+
+#[test]
 fn fmt_actor_with_mailbox() {
     let src = r"actor Worker {
     let id: i32;
@@ -458,6 +481,20 @@ fn fmt_actor_with_mailbox() {
 }";
     let out = roundtrip(src);
     assert!(out.contains("mailbox 16;"), "output: {out}");
+}
+
+#[test]
+fn fmt_actor_pure_method_without_preamble() {
+    let src = r"actor Counter {
+    pure fn current() -> i32 {
+        0
+    }
+}";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("actor Counter {\n    pure fn current() -> i32 {"),
+        "output: {out}"
+    );
 }
 
 // -----------------------------------------------------------------------

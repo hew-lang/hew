@@ -617,6 +617,10 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
     let callback_context = retain_callback_context(user_data);
     #[cfg(test)]
     maybe_pause_membership_callback_before_subscriptions_lock();
+    // Forward the previously installed callback before leasing supervisors so a
+    // reentrant stop/free can unregister the same supervisor without waiting on
+    // this callback's lease to drain.
+    forward_previous_membership_callback(&callback_context, node_id, event);
     let supervisor_guards = {
         let subscriptions = cluster_subscriptions();
         let registry = subscriptions.lock_or_recover();
@@ -633,8 +637,6 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
             })
             .unwrap_or_default()
     };
-
-    forward_previous_membership_callback(&callback_context, node_id, event);
     #[cfg(test)]
     maybe_pause_membership_callback_after_supervisor_acquire();
 
@@ -1614,6 +1616,84 @@ mod tests {
                 .expect("free completion");
             free_thread.join().expect("free thread");
             drop(pause);
+        }
+    }
+
+    #[test]
+    fn forwarded_callback_can_reentrantly_stop_and_free_supervisor() {
+        struct ReentrantFreeContext {
+            sup_bits: AtomicUsize,
+            frees: std::sync::atomic::AtomicI32,
+        }
+
+        extern "C" fn free_supervisor_from_forwarded_callback(
+            _node_id: u16,
+            _event: u8,
+            user_data: *mut c_void,
+        ) {
+            if user_data.is_null() {
+                return;
+            }
+            // SAFETY: test installs a valid pointer to `ReentrantFreeContext`
+            // for the duration of the callback.
+            let context = unsafe { &*user_data.cast::<ReentrantFreeContext>() };
+            context.frees.fetch_add(1, Ordering::Relaxed);
+            let sup_addr = context.sup_bits.swap(0, Ordering::AcqRel);
+            if sup_addr != 0 {
+                // SAFETY: callback consumes the live supervisor exactly once.
+                unsafe { hew_remote_sup_free(sup_addr as *mut HewRemoteSupervisor) };
+            }
+        }
+
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(4025) };
+        let remote_node_id = 4026;
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            let cluster_ptr = (*node.as_ptr()).cluster;
+            let original_binding = cluster::hew_cluster_membership_callback_binding(cluster_ptr);
+            let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
+            assert!(!sup.is_null());
+            (*sup).heartbeat_interval_ms = 500;
+
+            let context = ReentrantFreeContext {
+                sup_bits: AtomicUsize::new(sup as usize),
+                frees: std::sync::atomic::AtomicI32::new(0),
+            };
+            cluster::hew_cluster_replace_membership_callback(
+                cluster_ptr,
+                cluster::MembershipCallbackBinding::new(
+                    Some(free_supervisor_from_forwarded_callback),
+                    (&raw const context).cast_mut().cast(),
+                ),
+            );
+
+            assert_eq!(hew_remote_sup_start(sup), 0);
+            // Let the heartbeat thread finish its initial tick and enter sleep
+            // so the forwarded callback owns the reentrant free path.
+            thread::sleep(Duration::from_millis(100));
+
+            let callback_cluster = cluster_ptr as usize;
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let callback_thread = thread::spawn(move || {
+                // SAFETY: test keeps the cluster alive until the callback returns.
+                cluster::hew_cluster_test_fire_membership_callback(
+                    callback_cluster as *mut cluster::HewCluster,
+                    remote_node_id,
+                    HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+                );
+                done_tx.send(()).expect("callback completion");
+            });
+
+            done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reentrant callback completion");
+            callback_thread.join().expect("callback thread");
+            assert_eq!(context.frees.load(Ordering::Relaxed), 1);
+            assert_eq!(context.sup_bits.load(Ordering::Acquire), 0);
+
+            cluster::hew_cluster_replace_membership_callback(cluster_ptr, original_binding);
         }
     }
 

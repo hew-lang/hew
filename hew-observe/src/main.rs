@@ -248,7 +248,11 @@ fn run_app(cli: &Cli, mut app: App) -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Char('?') if !app.filter_active => {
                         app.show_help = !app.show_help;
                     }
-                    _ => handle_tab_keys(&mut app, key.code),
+                    _ => {
+                        if handle_tab_keys(&mut app, key.code) {
+                            last_refresh = Instant::now();
+                        }
+                    }
                 }
             }
         }
@@ -293,7 +297,7 @@ fn main() {
     }
 }
 
-fn handle_tab_keys(app: &mut App, key: KeyCode) {
+fn handle_tab_keys(app: &mut App, key: KeyCode) -> bool {
     if app.filter_active {
         match key {
             KeyCode::Esc => {
@@ -312,7 +316,13 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             }
             _ => {}
         }
-        return;
+        return false;
+    }
+
+    match key {
+        KeyCode::Char('[') => return app.switch_active_node_prev(),
+        KeyCode::Char(']') => return app.switch_active_node_next(),
+        _ => {}
     }
 
     match app.active_tab {
@@ -354,6 +364,8 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
         },
         Tab::Overview | Tab::Cluster => {}
     }
+
+    false
 }
 
 #[cfg(test)]

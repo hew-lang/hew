@@ -1273,11 +1273,11 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+fn status_bar_text(app: &App) -> String {
     let mode = if app.demo_mode { "DEMO" } else { "LIVE" };
-    let text = if app.is_multi_node() {
+    if app.is_multi_node() {
         format!(
-            " [{mode}] {} │ showing: {} │ {}/{} connected │ Tab: switch │ ?: help │ r: refresh │ q: quit",
+            " [{mode}] {} │ showing: {} │ {}/{} connected │ []: node │ Tab: switch │ ?: help │ r: refresh │ q: quit",
             app.configured_target_label(),
             app.active_node_label(),
             app.connected_node_count(),
@@ -1293,8 +1293,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             " [{mode}] {} │ {node_count} node(s) │ Tab: switch │ ?: help │ r: refresh │ q: quit",
             app.base_url
         )
-    };
-    let bar = Paragraph::new(text).style(
+    }
+}
+
+fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    let bar = Paragraph::new(status_bar_text(app)).style(
         Style::default()
             .bg(theme::STATUS_BAR_BG)
             .fg(theme::STATUS_BAR_FG),
@@ -1307,7 +1310,7 @@ fn draw_help_popup(f: &mut Frame) {
 
     // Content dimensions (number of help lines + 2 for block border)
     let content_width: u16 = 55;
-    let content_height: u16 = 23;
+    let content_height: u16 = 24;
 
     // Proportional sizing: 80% of terminal, capped at content size
     let popup_width = (area.width * 4 / 5).min(content_width).min(area.width);
@@ -1336,6 +1339,10 @@ fn draw_help_popup(f: &mut Frame) {
         Line::from(vec![
             Span::styled("  ?              ", theme::key_style()),
             Span::raw("Toggle help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [ ]            ", theme::key_style()),
+            Span::raw("Prev/next active node (multi-node)"),
         ]),
         Line::from(vec![
             Span::styled("  ↑/↓            ", theme::key_style()),
@@ -1473,7 +1480,7 @@ fn format_ns(ns: u64) -> String {
 mod tests {
     use super::{
         active_node_title, cluster_member_debug_summary, format_relative_ms, format_route_targets,
-        route_targets_for_connection,
+        route_targets_for_connection, status_bar_text,
     };
     use crate::{
         app::App,
@@ -1566,5 +1573,15 @@ mod tests {
 
         assert_eq!(text, " active: alpha:6060");
         assert_eq!(title.alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn multi_node_status_bar_mentions_active_node_switching() {
+        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+
+        let text = status_bar_text(&app);
+
+        assert!(text.contains("showing: alpha:6060"), "{text}");
+        assert!(text.contains("[]: node"), "{text}");
     }
 }

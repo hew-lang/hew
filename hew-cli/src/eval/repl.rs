@@ -35,6 +35,15 @@ pub enum CliEvalError {
     Message(String),
 }
 
+#[derive(Debug)]
+enum LoadFileError {
+    Message(String),
+    Parse {
+        source: String,
+        errors: Vec<hew_parser::ParseError>,
+    },
+}
+
 impl fmt::Display for CliEvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -45,6 +54,21 @@ impl fmt::Display for CliEvalError {
 }
 
 impl std::error::Error for CliEvalError {}
+
+impl fmt::Display for LoadFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Message(message) => f.write_str(message),
+            Self::Parse { errors, .. } => f.write_str(
+                &errors
+                    .iter()
+                    .map(|error| error.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        }
+    }
+}
 
 struct CheckedProgram {
     kind: InputKind,
@@ -158,12 +182,7 @@ impl ReplSession {
         let kind = classify::classify(trimmed);
 
         if let InputKind::Command(cmd) = &kind {
-            let result = self.handle_command(cmd);
-            return if result.had_errors {
-                Err(CliEvalError::Message(result.errors.join("\n")))
-            } else {
-                Ok(result.output)
-            };
+            return self.handle_cli_command(cmd);
         }
 
         let checked_program = match self.prepare_program(trimmed, kind) {
@@ -262,19 +281,17 @@ impl ReplSession {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read or parsed.
-    pub fn load_file(&mut self, path: &str) -> Result<String, String> {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
+    fn load_file(&mut self, path: &str) -> Result<String, LoadFileError> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
 
         // Parse the file to extract items and statements.
         let parse_result = hew_parser::parse(&source);
         if !parse_result.errors.is_empty() {
-            let errors: Vec<String> = parse_result
-                .errors
-                .iter()
-                .map(|e| e.message.clone())
-                .collect();
-            return Err(errors.join("\n"));
+            return Err(LoadFileError::Parse {
+                source,
+                errors: parse_result.errors,
+            });
         }
 
         // Add all non-main items from the file.
@@ -298,6 +315,27 @@ impl ReplSession {
     /// Reset the session.
     pub fn clear(&mut self) {
         self.session.clear();
+    }
+
+    fn handle_cli_command(&mut self, cmd: &ReplCommand) -> Result<String, CliEvalError> {
+        match cmd {
+            ReplCommand::Load(path) if !path.is_empty() => match self.load_file(path) {
+                Ok(message) => Ok(format!("{message}\n")),
+                Err(LoadFileError::Parse { source, errors }) => {
+                    crate::diagnostic::render_parse_diagnostics(&source, path, &errors);
+                    Err(CliEvalError::DiagnosticsRendered)
+                }
+                Err(error) => Err(CliEvalError::Message(error.to_string())),
+            },
+            _ => {
+                let result = self.handle_command(cmd);
+                if result.had_errors {
+                    Err(CliEvalError::Message(result.errors.join("\n")))
+                } else {
+                    Ok(result.output)
+                }
+            }
+        }
     }
 
     /// Handle a REPL command.
@@ -359,7 +397,7 @@ impl ReplSession {
                     Err(e) => EvalResult {
                         output: String::new(),
                         had_errors: true,
-                        errors: vec![e],
+                        errors: vec![e.to_string()],
                     },
                 }
             }

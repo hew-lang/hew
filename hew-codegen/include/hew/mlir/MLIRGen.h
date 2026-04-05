@@ -187,8 +187,8 @@ private:
                                       mlir::Location location);
   mlir::Value generateActorMethodAsk(mlir::Value actorPtr, const ActorInfo &actorInfo,
                                      const std::string &methodName,
-                                     const std::vector<ast::CallArg> &args,
-                                     mlir::Location location);
+                                     const std::vector<ast::CallArg> &args, mlir::Location location,
+                                     std::optional<int64_t> timeoutMs = std::nullopt);
   bool actorBoundarySenderRetainsOwnership(mlir::Type valueType) const;
   /// Generate args for an actor send/ask call, handling self-reference substitution.
   std::optional<llvm::SmallVector<mlir::Value, 4>>

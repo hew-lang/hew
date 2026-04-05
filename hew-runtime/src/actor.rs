@@ -2338,6 +2338,17 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         // SAFETY: scheduler must be initialized by the runtime/host.
         let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
 
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            // The tick may have run a blocking dispatch (for example, the
+            // current WASM sleep shim). Treat replies that materialize after
+            // the deadline as timed out and free any buffered payload.
+            // SAFETY: ch remains live until we release the caller-side ref below.
+            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
+            // SAFETY: release the caller-side reference after recording cancellation.
+            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+            return ptr::null_mut();
+        }
+
         // SAFETY: ch stays live until we release the caller-side reference below.
         if unsafe { reply_channel_wasm::reply_ready(ch) } {
             break;
@@ -2984,6 +2995,24 @@ mod wasm_tests {
         }
     }
 
+    unsafe extern "C" fn late_reply_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        let mut value: i32 = 99;
+        unsafe {
+            crate::reply_channel_wasm::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                size_of::<i32>(),
+            );
+        }
+    }
+
     #[test]
     fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -3038,6 +3067,36 @@ mod wasm_tests {
                 crate::reply_channel_wasm::active_channel_count(),
                 0,
                 "successful asks should leave no live WASM reply channels"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    #[test]
+    fn wasm_ask_timeout_rejects_late_reply_after_blocking_tick() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(late_reply_dispatch));
+            assert!(!actor.is_null());
+
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, Some(1));
+            assert!(
+                reply.is_null(),
+                "timed WASM asks should reject replies that only arrive after the timeout"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "timed-out WASM asks should free buffered late replies and reply channels"
             );
 
             assert_eq!(hew_actor_free(actor), 0);

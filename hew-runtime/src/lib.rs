@@ -169,6 +169,7 @@ mod tagged_union;
 pub mod wasm_stubs {
     //! Minimal stubs for runtime functions used by codegen but not applicable
     //! to WASM (no actors, no arena scoping, no threads).
+    use std::ffi::c_int;
     use std::os::raw::c_void;
 
     /// WASM stub: allocate via libc malloc (no arena scoping on WASM).
@@ -191,6 +192,24 @@ pub mod wasm_stubs {
     pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
         // SAFETY: Caller guarantees ptr was allocated by hew_arena_malloc.
         unsafe { libc::free(ptr) };
+    }
+
+    /// WASM shim: block the current command thread for `ms` milliseconds.
+    ///
+    /// # Safety
+    ///
+    /// No preconditions.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+        if ms <= 0 {
+            return;
+        }
+
+        // WASM-TODO: replace this blocking shim with cooperative actor-local
+        // suspension once the WASM runtime has timer-backed rescheduling.
+        #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
+        let dur = std::time::Duration::from_millis(ms as u64);
+        std::thread::sleep(dur);
     }
 }
 

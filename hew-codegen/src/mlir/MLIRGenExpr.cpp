@@ -6045,6 +6045,114 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     return nullptr;
   }
 
+  auto getSelectMethodCall = [](const ast::SelectArm &arm) -> const ast::ExprMethodCall * {
+    if (auto *mc = std::get_if<ast::ExprMethodCall>(&arm.source->value.kind))
+      return mc;
+    if (auto *awaitE = std::get_if<ast::ExprAwait>(&arm.source->value.kind)) {
+      if (auto *mc = std::get_if<ast::ExprMethodCall>(&awaitE->inner->value.kind))
+        return mc;
+    }
+    return nullptr;
+  };
+
+  bool hasTimeoutBody = sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->body;
+  auto literalTimeoutMs = [&]() -> std::optional<int64_t> {
+    if (!(sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->duration))
+      return std::nullopt;
+    auto *durationExpr = std::get_if<ast::ExprLiteral>(&(*sel.timeout)->duration->value.kind);
+    if (!durationExpr)
+      return std::nullopt;
+    auto *durationLit = std::get_if<ast::LitDuration>(&durationExpr->lit);
+    if (!durationLit)
+      return std::nullopt;
+    return durationLit->value < 0 ? 0 : durationLit->value / 1'000'000;
+  }();
+
+  if (isWasm32_ && armCount == 1 && hasTimeoutBody && literalTimeoutMs.has_value()) {
+    const auto &arm = arms.front();
+    auto *mcPtr = getSelectMethodCall(arm);
+    if (!mcPtr) {
+      emitError(location) << "select arm source must be actor.method(args)";
+      return nullptr;
+    }
+
+    auto receiver = generateExpression(mcPtr->receiver->value);
+    if (!receiver)
+      return nullptr;
+
+    std::string actorTypeName =
+        resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
+    if (actorTypeName.empty()) {
+      emitError(location) << "cannot resolve actor type for select arm source";
+      return nullptr;
+    }
+    auto actorIt = actorRegistry.find(actorTypeName);
+    if (actorIt == actorRegistry.end()) {
+      emitError(location) << "unknown actor type '" << actorTypeName << "' in select arm";
+      return nullptr;
+    }
+
+    auto timedResult = generateActorMethodAsk(receiver, actorIt->second, mcPtr->method, mcPtr->args,
+                                              location, *literalTimeoutMs);
+    if (!timedResult)
+      return nullptr;
+
+    auto optionType = mlir::dyn_cast<hew::OptionEnumType>(timedResult.getType());
+    if (!optionType) {
+      emitError(location) << "WASM single-arm select timeout lowering expected Option result";
+      return nullptr;
+    }
+
+    auto selectResultType = optionType.getInnerType();
+    auto coerceSelectResultForSink = [&](mlir::Value value) -> mlir::Value {
+      auto coerced = coerceType(value, selectResultType, location);
+      if (coerced && coerced.getType() == selectResultType)
+        return coerced;
+
+      if (coerced)
+        ++errorCount_;
+      return createDefaultValue(builder, location, selectResultType);
+    };
+
+    auto tag = hew::EnumExtractTagOp::create(builder, location, i32Type, timedResult);
+    auto someTag = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 1);
+    auto hasReply = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                                tag, someTag);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, selectResultType, hasReply,
+                                        /*withElseRegion=*/true);
+
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    {
+      SymbolTableScopeT scope(symbolTable);
+      MutableTableScopeT mutScope(mutableVars);
+
+      auto resultVal =
+          hew::EnumExtractPayloadOp::create(builder, location, selectResultType, timedResult, 1);
+      if (auto *ip = std::get_if<ast::PatIdentifier>(&arm.binding.value.kind))
+        declareVariable(ip->name, resultVal);
+
+      auto bodyVal = generateExpression(arm.body->value);
+      auto yieldVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
+      yieldVal = coerceSelectResultForSink(yieldVal);
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+    }
+
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    {
+      SymbolTableScopeT scope(symbolTable);
+      MutableTableScopeT mutScope(mutableVars);
+
+      auto timeoutVal = generateExpression((*sel.timeout)->body->value);
+      auto yieldVal =
+          timeoutVal ? timeoutVal : createDefaultValue(builder, location, selectResultType);
+      yieldVal = coerceSelectResultForSink(yieldVal);
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+    }
+
+    builder.setInsertionPointAfter(ifOp);
+    return ifOp.getResult(0);
+  }
+
   llvm::SmallVector<mlir::Value, 4> channels;
   llvm::SmallVector<mlir::Type, 4> resultTypes;
 
@@ -6052,14 +6160,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     const auto &arm = arms[i];
 
     // Source is either actor.method(args) or await actor.method(args)
-    const ast::ExprMethodCall *mcPtr = nullptr;
-    if (auto *mc = std::get_if<ast::ExprMethodCall>(&arm.source->value.kind)) {
-      mcPtr = mc;
-    } else if (auto *awaitE = std::get_if<ast::ExprAwait>(&arm.source->value.kind)) {
-      if (auto *mc = std::get_if<ast::ExprMethodCall>(&awaitE->inner->value.kind)) {
-        mcPtr = mc;
-      }
-    }
+    const ast::ExprMethodCall *mcPtr = getSelectMethodCall(arm);
     if (!mcPtr) {
       emitError(location) << "select arm source must be actor.method(args)";
       return nullptr;
@@ -6162,7 +6263,6 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
 
   mlir::Type selectResultType = resultTypes[0];
 
-  bool hasTimeoutBody = sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->body;
   auto coerceSelectResultForSink = [&](mlir::Value value) -> mlir::Value {
     auto coerced = coerceType(value, selectResultType, location);
     if (coerced && coerced.getType() == selectResultType)

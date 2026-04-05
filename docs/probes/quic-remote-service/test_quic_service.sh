@@ -6,6 +6,7 @@
 #
 # Usage:
 #   sh test_quic_service.sh
+#   HEW_QUIC_SERVICE_PORT=4545 sh test_quic_service.sh
 
 set -e
 
@@ -27,12 +28,12 @@ hew build service_client.hew > /dev/null 2>&1
 
 echo ""
 echo "Starting server (PID background)..."
-hew run service_server.hew 2>&1 | grep -v "^ld: warning" &
+hew run service_server.hew &
 SERVER_PID=$!
 sleep 2
 
 echo "Running client..."
-if hew run service_client.hew 2>&1 | grep -v "^ld: warning"; then
+if hew run service_client.hew; then
     CLIENT_EXIT=0
 else
     CLIENT_EXIT=$?

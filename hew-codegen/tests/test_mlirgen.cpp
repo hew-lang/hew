@@ -358,7 +358,14 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   return program;
 }
 
-static hew::ast::Program makeStatementStyleMatchArmBadBodyProgram() {
+enum class StatementStyleMatchArmBadBodyKind {
+  DirectExpr,
+  BlockTailIf,
+  BlockTailMatch,
+};
+
+static hew::ast::Program
+makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind) {
   using namespace hew::ast;
 
   uint64_t nextSpan = 900000001000ULL;
@@ -377,6 +384,14 @@ static hew::ast::Program makeStatementStyleMatchArmBadBodyProgram() {
     expr.kind = std::move(node);
     expr.span = mkSpan();
     return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto takeExpr = [&](std::unique_ptr<Spanned<Expr>> expr) -> Spanned<Expr> {
+    return std::move(*expr);
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()});
   };
   auto mkPattern = [&](bool value) -> Spanned<Pattern> {
     Pattern pattern;
@@ -412,7 +427,46 @@ static hew::ast::Program makeStatementStyleMatchArmBadBodyProgram() {
 
   MatchArm trueArm;
   trueArm.pattern = mkPattern(true);
-  trueArm.body = mkBadBinary();
+  switch (kind) {
+  case StatementStyleMatchArmBadBodyKind::DirectExpr:
+    trueArm.body = mkBadBinary();
+    break;
+  case StatementStyleMatchArmBadBodyKind::BlockTailIf: {
+    StmtIf ifStmt;
+    ifStmt.condition = takeExpr(mkBadBinary());
+    ifStmt.then_block.trailing_expr = mkInt(10);
+
+    ElseBlock elseBlock;
+    elseBlock.is_if = false;
+    elseBlock.block = Block{};
+    elseBlock.block->trailing_expr = mkInt(20);
+    ifStmt.else_block = std::move(elseBlock);
+
+    Block outerBlock;
+    outerBlock.stmts.push_back(mkStmt(std::move(ifStmt)));
+    trueArm.body = mkExpr(ExprBlock{std::move(outerBlock)});
+    break;
+  }
+  case StatementStyleMatchArmBadBodyKind::BlockTailMatch: {
+    MatchArm nestedTrueArm;
+    nestedTrueArm.pattern = mkPattern(true);
+    nestedTrueArm.body = mkInt(10);
+
+    MatchArm nestedFalseArm;
+    nestedFalseArm.pattern = mkPattern(false);
+    nestedFalseArm.body = mkInt(20);
+
+    StmtMatch nestedMatch;
+    nestedMatch.scrutinee = takeExpr(mkBadBinary());
+    nestedMatch.arms.push_back(std::move(nestedTrueArm));
+    nestedMatch.arms.push_back(std::move(nestedFalseArm));
+
+    Block outerBlock;
+    outerBlock.stmts.push_back(mkStmt(std::move(nestedMatch)));
+    trueArm.body = mkExpr(ExprBlock{std::move(outerBlock)});
+    break;
+  }
+  }
 
   MatchArm falseArm;
   falseArm.pattern = mkPattern(false);
@@ -1343,7 +1397,8 @@ static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
 static void test_statement_style_match_arm_bad_body_fails_closed() {
   TEST(statement_style_match_arm_bad_body_fails_closed);
 
-  auto program = makeStatementStyleMatchArmBadBodyProgram();
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::DirectExpr);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -1361,6 +1416,70 @@ static void test_statement_style_match_arm_bad_body_fails_closed() {
   if (stderrText.find("discarded match arm body in statement position failed to lower") ==
       std::string::npos) {
     FAIL("expected statement-style match arm fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm block tails fail-close when a value-producing
+//       tail if returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_block_tail_if_fails_closed() {
+  TEST(statement_style_match_arm_block_tail_if_fails_closed);
+
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::BlockTailIf);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm block-tail if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm block-tail if fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm block tails fail-close when a value-producing
+//       tail match returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_block_tail_match_fails_closed() {
+  TEST(statement_style_match_arm_block_tail_match_fails_closed);
+
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::BlockTailMatch);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm block-tail match");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm block-tail match fail-closed diagnostic");
     return;
   }
 
@@ -4170,6 +4289,8 @@ int main() {
   test_discarded_block_expr_bad_tail_fails_closed();
   test_discarded_unsafe_expr_bad_tail_fails_closed();
   test_statement_style_match_arm_bad_body_fails_closed();
+  test_statement_style_match_arm_block_tail_if_fails_closed();
+  test_statement_style_match_arm_block_tail_match_fails_closed();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();

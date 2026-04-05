@@ -406,11 +406,16 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     if (block.stmts.empty())
       return false;
 
-    auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind);
-    if (!exprStmt)
-      return false;
+    const auto &lastStmt = block.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind))
+      return exprRequiresValue(exprStmt->expr.value, exprRequiresValue);
 
-    return exprRequiresValue(exprStmt->expr.value, exprRequiresValue);
+    if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind))
+      return ifStmt->else_block.has_value();
+    if (std::holds_alternative<ast::StmtMatch>(lastStmt.kind))
+      return true;
+
+    return false;
   };
   auto exprRequiresValue = [&](const ast::Expr &expr, const auto &self) -> bool {
     if (auto *resolvedType = resolvedTypeOf(expr.span))

@@ -1615,6 +1615,79 @@ mod tests {
     }
 
     #[test]
+    fn zero_timeout_wasm_ask_unblocks_promptly_and_mailbox_cleanup_releases_channel() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        // Pretend the target is already mid-activation so the zero-timeout ask
+        // cannot wake it; this leaves the cancelled request queued for the
+        // explicit mailbox teardown path to retire.
+        replier
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        let started = std::time::Instant::now();
+        // SAFETY: actor remains valid for the duration of the cancelled ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(replier_ptr.cast(), 1, ptr::null_mut(), 0, Some(0))
+        };
+        let elapsed = started.elapsed();
+
+        assert!(
+            reply.is_null(),
+            "zero-timeout ask should return null before cleanup runs"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "zero-timeout ask should unblock promptly (elapsed={elapsed:?})"
+        );
+        assert_eq!(REPLY_DISPATCHES.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            hew_sched_metrics_global_queue_len(),
+            0,
+            "non-runnable actors must not be enqueued while the ask is timing out"
+        );
+        // SAFETY: mailbox remains owned by this test until the explicit free below.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(replier.mailbox.cast()),
+                1,
+                "cancelled ask should remain queued until mailbox cleanup retires it"
+            );
+        }
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            1,
+            "only the queued sender-side reply-channel ref should remain live before cleanup"
+        );
+
+        // SAFETY: mailbox belongs to this test and is not referenced by the run queue.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_close(replier.mailbox.cast());
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+        }
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            0,
+            "mailbox teardown must retire orphaned cancelled asks"
+        );
+
+        hew_sched_shutdown();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+    }
+
+    #[test]
     fn unbounded_wasm_ask_cancels_when_no_runnable_work_remains() {
         let _guard = TEST_LOCK.lock().unwrap();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.

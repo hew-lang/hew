@@ -410,6 +410,31 @@ impl ReplSession {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InteractiveEvalOutcome {
+    Continue,
+    Output(String),
+    RenderedDiagnostics,
+    MessageError(String),
+    Quit,
+}
+
+fn handle_interactive_input(session: &mut ReplSession, input: &str) -> InteractiveEvalOutcome {
+    if matches!(
+        classify::classify(input),
+        InputKind::Command(ReplCommand::Quit)
+    ) {
+        return InteractiveEvalOutcome::Quit;
+    }
+
+    match session.eval_cli(input, "<repl>") {
+        Ok(output) if output.is_empty() => InteractiveEvalOutcome::Continue,
+        Ok(output) => InteractiveEvalOutcome::Output(output),
+        Err(CliEvalError::DiagnosticsRendered) => InteractiveEvalOutcome::RenderedDiagnostics,
+        Err(CliEvalError::Message(message)) => InteractiveEvalOutcome::MessageError(message),
+    }
+}
+
 /// Compile the given already-parsed program to a native binary in a temporary
 /// directory and execute it, returning its stdout.
 ///
@@ -502,18 +527,11 @@ pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Erro
 
         let _ = rl.add_history_entry(&input);
 
-        // Check for quit command before eval.
-        if let InputKind::Command(ReplCommand::Quit) = classify::classify(trimmed) {
-            break;
-        }
-
-        let result = session.eval(trimmed);
-        if result.had_errors {
-            for err in &result.errors {
-                eprintln!("error: {err}");
-            }
-        } else if !result.output.is_empty() {
-            print!("{}", result.output);
+        match handle_interactive_input(&mut session, trimmed) {
+            InteractiveEvalOutcome::Continue | InteractiveEvalOutcome::RenderedDiagnostics => {}
+            InteractiveEvalOutcome::Output(output) => print!("{output}"),
+            InteractiveEvalOutcome::MessageError(message) => eprintln!("error: {message}"),
+            InteractiveEvalOutcome::Quit => break,
         }
     }
 
@@ -761,6 +779,24 @@ mod tests {
         let result = session.eval("spin_forever()");
         assert!(result.had_errors);
         assert!(result.errors[0].contains("evaluation timed out after 100ms"));
+    }
+
+    #[test]
+    fn interactive_parse_errors_use_shared_diagnostics_path() {
+        let mut session = ReplSession::new();
+        assert_eq!(
+            handle_interactive_input(&mut session, "1 +"),
+            InteractiveEvalOutcome::RenderedDiagnostics
+        );
+    }
+
+    #[test]
+    fn interactive_type_errors_use_shared_diagnostics_path() {
+        let mut session = ReplSession::new();
+        assert_eq!(
+            handle_interactive_input(&mut session, "let answer: i64 = \"oops\";"),
+            InteractiveEvalOutcome::RenderedDiagnostics
+        );
     }
 
     #[test]

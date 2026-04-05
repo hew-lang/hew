@@ -4925,6 +4925,92 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
 }
 
 #[test]
+fn custom_index_uses_named_method_get_for_type_def() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    let mut methods = HashMap::new();
+    methods.insert(
+        "get".to_string(),
+        FnSig {
+            param_names: vec!["index".to_string()],
+            params: vec![Ty::I64],
+            return_type: Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            },
+            ..FnSig::default()
+        },
+    );
+    checker.type_defs.insert(
+        "Boxy".to_string(),
+        make_test_type_def("Boxy", vec!["T".to_string()], methods),
+    );
+    checker.env.define(
+        "boxy".to_string(),
+        Ty::Named {
+            name: "Boxy".to_string(),
+            args: vec![Ty::String],
+        },
+        false,
+    );
+
+    let expr = Expr::Index {
+        object: Box::new((Expr::Identifier("boxy".to_string()), 0..4)),
+        index: Box::new(make_int_literal(0, 5..6)),
+    };
+
+    let ty = checker.synthesize(&expr, &(0..6));
+    assert_eq!(ty, Ty::String);
+    assert!(
+        checker.errors.is_empty(),
+        "expected type-def get lookup to succeed, got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn custom_index_uses_named_method_get_for_fn_sig_fallback() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Wrapper".to_string(),
+        make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+    );
+    checker.fn_sigs.insert(
+        "Wrapper::get".to_string(),
+        FnSig {
+            param_names: vec!["index".to_string()],
+            params: vec![Ty::I64],
+            return_type: Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            },
+            ..FnSig::default()
+        },
+    );
+    checker.env.define(
+        "wrapper".to_string(),
+        Ty::Named {
+            name: "Wrapper".to_string(),
+            args: vec![Ty::String],
+        },
+        false,
+    );
+
+    let expr = Expr::Index {
+        object: Box::new((Expr::Identifier("wrapper".to_string()), 0..7)),
+        index: Box::new(make_int_literal(0, 8..9)),
+    };
+
+    let ty = checker.synthesize(&expr, &(0..9));
+    assert_eq!(ty, Ty::String);
+    assert!(
+        checker.errors.is_empty(),
+        "expected fn_sigs get fallback to succeed, got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
 fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(

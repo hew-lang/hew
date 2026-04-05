@@ -695,32 +695,21 @@ impl Checker {
             Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
             // Custom type indexing: desugar obj[key] → obj.get(key)
             Ty::Named { name, args } => {
-                if let Some(td) = self.lookup_type_def(name) {
-                    if let Some(sig) = td.methods.get("get") {
-                        if let Some(param_ty) = sig.params.first() {
-                            self.check_against(&index.0, &index.1, param_ty);
-                        }
-                        let mut ret = sig.return_type.clone();
-                        for (param, arg) in td.type_params.iter().zip(args.iter()) {
-                            ret = self.substitute_named_param(&ret, param, arg);
-                        }
-                        ret
-                    } else {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "cannot index into `{}`: type has no `get` method",
-                                obj_ty.user_facing()
-                            ),
-                        );
-                        Ty::Error
-                    }
-                } else if let Some(sig) = self.lookup_fn_sig(&format!("{name}::get")) {
-                    if let Some(param_ty) = sig.params.get(1) {
+                if let Some(sig) = self.lookup_named_method_sig(name, args, "get") {
+                    if let Some(param_ty) = sig.params.first() {
                         self.check_against(&index.0, &index.1, param_ty);
                     }
-                    sig.return_type.clone()
+                    sig.return_type
+                } else if self.lookup_type_def(name).is_some() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "cannot index into `{}`: type has no `get` method",
+                            obj_ty.user_facing()
+                        ),
+                    );
+                    Ty::Error
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

@@ -48,11 +48,11 @@ jobs:
               - 'Makefile'
               - '.github/workflows/ci.yml'
             playground:
-              - '**/*.rs'
-              - '**/Cargo.toml'
-              - '**/Cargo.lock'
+              - 'hew-wasm/**'
               - 'examples/playground/**'
               - 'scripts/gen-playground-manifest.py'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'Makefile'
               - '.github/workflows/ci.yml'
 

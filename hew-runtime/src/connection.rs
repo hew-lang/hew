@@ -2611,6 +2611,130 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages a full publish-callback-remove cycle in one place"
+    )]
+    fn connmgr_publish_allows_reentrant_remove_from_membership_callback() {
+        struct ReentrantRemoveState {
+            mgr: std::sync::atomic::AtomicPtr<HewConnMgr>,
+            conn_id: c_int,
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            remove_result_tx: std::sync::mpsc::Sender<c_int>,
+        }
+
+        extern "C" fn remove_on_joined(node_id: u16, event: u8, user_data: *mut std::ffi::c_void) {
+            // SAFETY: user_data points at the ReentrantRemoveState allocated in this test.
+            let state = unsafe { &*user_data.cast::<ReentrantRemoveState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED {
+                let mgr = state.mgr.load(Ordering::Acquire);
+                assert!(!mgr.is_null(), "callback manager should be initialized");
+                // SAFETY: the manager remains valid until the test explicitly frees it.
+                let rc = unsafe { hew_connmgr_remove(mgr, state.conn_id) };
+                state
+                    .remove_result_tx
+                    .send(rc)
+                    .expect("reentrant remove should report completion");
+            }
+        }
+
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        let (remove_result_tx, remove_result_rx) = std::sync::mpsc::channel::<c_int>();
+        let callback_state = Box::into_raw(Box::new(ReentrantRemoveState {
+            mgr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            conn_id: 44,
+            events: std::sync::Mutex::new(Vec::new()),
+            remove_result_tx,
+        }));
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let transport_ptr = Box::into_raw(Box::new(HewTransport {
+                ops: std::ptr::null(),
+                r#impl: std::ptr::null_mut(),
+            }));
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!cluster.is_null());
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+            (&*callback_state).mgr.store(mgr, Ordering::Release);
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                remove_on_joined,
+                callback_state.cast(),
+            );
+
+            let mut actor = ConnectionActor::new(44);
+            let publication_token = next_publication_token(&*mgr);
+            actor.publication_token = publication_token;
+            actor.peer_node_id = 2;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(actor);
+
+            publish_connection_established(
+                &*mgr,
+                2,
+                44,
+                publication_token,
+                &publication_sync,
+                &publication_removed,
+            );
+
+            assert_eq!(
+                remove_result_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("reentrant remove should finish without deadlocking"),
+                0
+            );
+            assert_eq!(
+                (&*callback_state)
+                    .events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                vec![
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "reentrant remove should observe ordered JOINED/SUSPECT delivery"
+            );
+            assert_eq!(hew_connmgr_count(mgr), 0);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(callback_state));
+        }
+    }
+
+    #[test]
     fn null_mgr_safety() {
         // All operations on null manager should return gracefully.
         // SAFETY: testing null safety.

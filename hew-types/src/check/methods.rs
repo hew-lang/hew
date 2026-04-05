@@ -38,17 +38,6 @@ impl Checker {
         self.type_defs.get_mut(unqualified)
     }
 
-    /// Look up a function signature, handling module-qualified names.
-    pub(super) fn lookup_fn_sig(&self, key: &str) -> Option<FnSig> {
-        self.fn_sigs
-            .get(key)
-            .or_else(|| {
-                self.strip_module_prefix(key)
-                    .and_then(|u| self.fn_sigs.get(u))
-            })
-            .cloned()
-    }
-
     /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
     pub(super) fn lookup_named_method_sig(
         &self,

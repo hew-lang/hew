@@ -1,28 +1,36 @@
-//! HTTP client for making outbound requests.
+//! HTTP client compatibility module for outbound requests.
 //!
-//! Provides functions for performing HTTP GET and POST requests and
-//! reading the response.
+//! Provides basic outbound HTTP functionality for native Hew programs via
+//! `import std::net::http::http_client;`.
+//!
+//! This compatibility module now carries the bounded v0.3 client slice:
+//! `request`, `request_string`, `set_timeout`, plus the legacy `get` / `post`
+//! helpers built on the same request path.
 //!
 //! # Examples
 //!
 //! ```
-//! import std::net::http;
+//! import std::net::http::http_client;
 //!
 //! fn main() {
 //!     let body = http_client.get_string("https://example.com");
 //!     println(body);
 //!
-//!     let resp = http_client.get("https://api.example.com/data");
+//!     let headers: Vec<String> = Vec::new();
+//!     headers.push("Accept: application/json");
+//!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
-//!     println(resp.content_type());
 //!     resp.free();
 //! }
 //! ```
+//
+// WASM-TODO: outbound std::net::http client wrappers remain native-only until
+// a browser/WASM networking bridge exists.
 
 /// An opaque HTTP response handle.
 ///
-/// Obtained from `http_client.get(url)` or `http_client.post(...)`.
-/// Must be freed with `free()` when no longer needed.
+/// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
+/// `http_client.post(...)`. Must be freed with `free()` when no longer needed.
 type Response {}
 
 // ── Response methods ──────────────────────────────────────────────────
@@ -62,7 +70,60 @@ impl ResponseMethods for Response {
     fn free(resp: Response) { unsafe { hew_http_response_free(resp) }; }
 }
 
+// ── Module-level helpers ──────────────────────────────────────────────
+
+fn empty_headers() -> Vec<String> {
+    let headers: Vec<String> = Vec::new();
+    headers
+}
+
+fn content_type_headers(content_type: String) -> Vec<String> {
+    let headers: Vec<String> = Vec::new();
+    headers.push(f"Content-Type: {content_type}");
+    headers
+}
+
 // ── Module-level functions ────────────────────────────────────────────
+
+/// Perform an HTTP request and return a `Response` handle.
+///
+/// Each header entry must use the form `"Header-Name: value"`.
+///
+/// # Examples
+///
+/// ```
+/// let headers: Vec<String> = Vec::new();
+/// headers.push("Accept: application/json");
+/// let resp = http_client.request("GET", "https://example.com", "", headers);
+/// println(resp.status());
+/// resp.free();
+/// ```
+pub fn request(method: String, url: String, body: String, headers: Vec<String>) -> Response {
+    unsafe { hew_http_request_hew(method, url, body, headers) }
+}
+
+/// Perform an HTTP request and return the response body as a string.
+///
+/// Each header entry must use the form `"Header-Name: value"`.
+/// Returns an empty string on network or validation error.
+///
+/// # Examples
+///
+/// ```
+/// let headers: Vec<String> = Vec::new();
+/// let body = http_client.request_string("GET", "https://example.com", "", headers);
+/// println(body);
+/// ```
+pub fn request_string(method: String, url: String, body: String, headers: Vec<String>) -> String {
+    unsafe { hew_http_request_string_hew(method, url, body, headers) }
+}
+
+/// Set the global timeout applied to subsequent outbound HTTP requests.
+///
+/// Pass `0` to disable the timeout.
+pub fn set_timeout(timeout_ms: i32) {
+    unsafe { hew_http_set_timeout(timeout_ms) };
+}
 
 /// Perform an HTTP GET request and return a `Response` handle.
 ///
@@ -74,7 +135,7 @@ impl ResponseMethods for Response {
 /// resp.free();
 /// ```
 pub fn get(url: String) -> Response {
-    unsafe { hew_http_get(url) }
+    request("GET", url, "", empty_headers())
 }
 
 /// Perform an HTTP POST request and return a `Response` handle.
@@ -86,7 +147,7 @@ pub fn get(url: String) -> Response {
 /// resp.free();
 /// ```
 pub fn post(url: String, content_type: String, body: String) -> Response {
-    unsafe { hew_http_post(url, content_type, body) }
+    request("POST", url, body, content_type_headers(content_type))
 }
 
 /// Perform an HTTP GET request and return the response body as a string.
@@ -101,7 +162,7 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 /// println(body);
 /// ```
 pub fn get_string(url: String) -> String {
-    unsafe { hew_http_get_string(url) }
+    request_string("GET", url, "", empty_headers())
 }
 
 /// Perform an HTTP POST request and return the response body as a string.
@@ -119,19 +180,18 @@ pub fn get_string(url: String) -> String {
 /// println(body);
 /// ```
 pub fn post_string(url: String, content_type: String, body: String) -> String {
-    unsafe { hew_http_post_string(url, content_type, body) }
+    request_string("POST", url, body, content_type_headers(content_type))
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 
 extern "C" {
-    fn hew_http_get(url: String) -> Response;
-    fn hew_http_post(url: String, content_type: String, body: String) -> Response;
+    fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<String>) -> Response;
+    fn hew_http_request_string_hew(method: String, url: String, body: String, headers: Vec<String>) -> String;
+    fn hew_http_set_timeout(timeout_ms: i32);
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;
     fn hew_http_response_body(resp: Response) -> String;
     fn hew_http_response_header(resp: Response, name: String) -> String;
     fn hew_http_response_content_type(resp: Response) -> String;
-    fn hew_http_get_string(url: String) -> String;
-    fn hew_http_post_string(url: String, content_type: String, body: String) -> String;
 }

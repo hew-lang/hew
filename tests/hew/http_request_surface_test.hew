@@ -1,0 +1,23 @@
+//! Smoke tests for the bounded std::net::http::http_client slice.
+
+import std::net::http::http_client;
+import std::testing;
+
+#[test]
+fn test_request_surface_is_importable_from_http_client() {
+    let headers: Vec<String> = Vec::new();
+    http_client.set_timeout(250);
+
+    let resp = http_client.request("TRACE", "http://example.com", "", headers);
+    testing.assert_true(resp.status() == -1);
+    resp.free();
+}
+
+#[test]
+fn test_request_string_surface_is_importable_from_http_client() {
+    let headers: Vec<String> = Vec::new();
+    http_client.set_timeout(250);
+
+    let _body = http_client.request_string("TRACE", "http://example.com", "", headers);
+    testing.assert_true(true);
+}

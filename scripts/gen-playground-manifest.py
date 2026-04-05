@@ -37,6 +37,32 @@ EXAMPLE_ORDER = {
 }
 
 
+def curated_source_paths() -> list[Path]:
+    curated_categories = set(CATEGORY_ORDER)
+    configured_categories = set(EXAMPLE_ORDER)
+
+    missing_categories = sorted(curated_categories - configured_categories)
+    if missing_categories:
+        raise SystemExit(
+            "error: curated category list missing EXAMPLE_ORDER entries for: "
+            + ", ".join(missing_categories)
+        )
+
+    unexpected_categories = sorted(configured_categories - curated_categories)
+    if unexpected_categories:
+        raise SystemExit(
+            "error: EXAMPLE_ORDER contains unexpected categories: "
+            + ", ".join(unexpected_categories)
+        )
+
+    curated_paths: list[Path] = []
+    for category in CATEGORY_ORDER:
+        for example in EXAMPLE_ORDER[category]:
+            curated_paths.append(PLAYGROUND_DIR / category / f"{example}.hew")
+
+    return curated_paths
+
+
 def parse_header_metadata(source_path: Path) -> dict[str, str]:
     metadata: dict[str, str] = {}
 
@@ -62,28 +88,47 @@ def parse_header_metadata(source_path: Path) -> dict[str, str]:
     return metadata
 
 
-def example_sort_key(source_path: Path) -> tuple[int, int, str]:
-    category = source_path.parent.name
-    stem = source_path.stem
+def fail_on_curated_scope_mismatch(curated_paths: list[Path]) -> None:
+    curated_rel_paths = {
+        source_path.relative_to(ROOT).as_posix() for source_path in curated_paths
+    }
+    actual_rel_paths = {
+        source_path.relative_to(ROOT).as_posix()
+        for source_path in PLAYGROUND_DIR.rglob("*.hew")
+    }
 
-    try:
-        category_index = CATEGORY_ORDER.index(category)
-    except ValueError:
-        category_index = len(CATEGORY_ORDER)
+    missing_sources = sorted(curated_rel_paths - actual_rel_paths)
+    unexpected_sources = sorted(actual_rel_paths - curated_rel_paths)
+    if not missing_sources and not unexpected_sources:
+        return
 
-    category_examples = EXAMPLE_ORDER.get(category, ())
-    try:
-        example_index = category_examples.index(stem)
-    except ValueError:
-        example_index = len(category_examples)
+    details = []
+    if missing_sources:
+        details.append(
+            "missing curated playground snippets:\n  - "
+            + "\n  - ".join(missing_sources)
+        )
+    if unexpected_sources:
+        details.append(
+            "unexpected playground snippets outside the curated 11:\n  - "
+            + "\n  - ".join(unexpected_sources)
+        )
 
-    return (category_index, example_index, stem)
+    raise SystemExit(
+        "error: examples/playground no longer matches the curated manifest scope\n"
+        + "\n".join(details)
+    )
 
 
 def build_manifest_entries() -> list[dict[str, str]]:
-    entries: list[dict[str, str]] = []
+    curated_paths = curated_source_paths()
+    fail_on_curated_scope_mismatch(curated_paths)
 
-    for source_path in sorted(PLAYGROUND_DIR.glob("*/*.hew"), key=example_sort_key):
+    entries: list[dict[str, str]] = []
+    for source_path in curated_paths:
+        if not source_path.is_file():
+            rel_path = source_path.relative_to(ROOT)
+            raise SystemExit(f"error: missing curated playground snippet: {rel_path}")
         expected_path = source_path.with_suffix(".expected")
         if not expected_path.is_file():
             rel_path = expected_path.relative_to(ROOT)

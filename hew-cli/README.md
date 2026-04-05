@@ -19,7 +19,9 @@ hew wire check file.hew --against baseline.hew
 hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
-hew init [name]                   # Scaffold main.hew + README.md only (no hew.toml)
+hew init [name]                   # Scaffold main.hew + README.md in new dir (no hew.toml)
+hew init                          # Scaffold main.hew + README.md in current dir
+hew init [name] --force           # Overwrite existing scaffold files
 hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
@@ -59,6 +61,46 @@ session or file.
 For common import-resolution, type-checking, and build failures, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
 
+## Scaffolding a new project
+
+`hew init` writes two files — `main.hew` and `README.md` — and nothing else.
+It intentionally does **not** create `hew.toml`. For the manifest-first
+bootstrap flow (including `hew.toml`, `.gitignore`, and dependency management)
+use `adze init` instead.
+
+**Create a new directory:**
+
+```sh
+hew init myapp        # creates myapp/main.hew + myapp/README.md
+```
+
+**Initialise the current directory:**
+
+```sh
+cd myapp
+hew init              # writes main.hew + README.md here
+```
+
+**Overwrite existing scaffold files:**
+
+```sh
+hew init myapp --force        # overwrites main.hew and README.md if they exist
+hew init       --force        # same, but in the current directory
+```
+
+`--force` only applies to the two scaffold files; it will not delete
+unrelated files in the directory.
+
+### After scaffolding
+
+```sh
+hew check main.hew    # parse and typecheck
+hew run   main.hew    # compile and run
+```
+
+When you are ready to add dependencies or publish, run `adze init` in the same
+directory to layer `hew.toml` on top of the existing source files.
+
 ## Multi-file projects
 
 For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
@@ -90,12 +132,6 @@ See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
 
 For the current wildcard-import warning caveat, see the
 [troubleshooting guide](../docs/troubleshooting.md).
-
-For the canonical project bootstrap flow, start with `adze init [name]`. It
-creates `hew.toml`, `main.hew`, and `.gitignore`, after which
-`hew check main.hew` and `hew run main.hew` both operate on the same entry
-file. `hew init [name]` remains the lighter source-only scaffold: it writes
-`main.hew` plus `README.md`, but no `hew.toml`.
 
 ## Debugging
 

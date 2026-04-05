@@ -316,7 +316,7 @@ fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
         type_def.type_params = builtin.type_params;
     }
     for (method_name, sig) in builtin.methods {
-        type_def.methods.entry(method_name).or_insert(sig);
+        type_def.methods.insert(method_name, sig);
     }
     type_def
 }
@@ -381,8 +381,8 @@ pub fn lookup_method_sig(
     method: &str,
 ) -> Option<FnSig> {
     let (type_name, type_args) = named_receiver_parts(receiver_ty)?;
-    lookup_named_method_sig(type_defs, fn_sigs, type_name, type_args, method)
-        .or_else(|| lookup_builtin_method_sig(receiver_ty, method))
+    lookup_builtin_method_sig(receiver_ty, method)
+        .or_else(|| lookup_named_method_sig(type_defs, fn_sigs, type_name, type_args, method))
 }
 
 /// Synthesize a type definition for a builtin type name.
@@ -552,5 +552,89 @@ mod tests {
             .expect("fallback method should be collected");
         assert_eq!(value_sig.params, vec![Ty::String]);
         assert_eq!(value_sig.return_type, Ty::String);
+    }
+
+    #[test]
+    fn lookup_method_sig_prefers_builtin_channel_method_over_imported_stdlib_signature() {
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Sender".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Sender".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: {
+                    let mut methods = HashMap::new();
+                    methods.insert(
+                        "send".to_string(),
+                        FnSig {
+                            param_names: vec!["data".to_string()],
+                            params: vec![Ty::String],
+                            return_type: Ty::Unit,
+                            ..FnSig::default()
+                        },
+                    );
+                    methods
+                },
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(
+            "Sender::send".to_string(),
+            FnSig {
+                param_names: vec!["data".to_string()],
+                params: vec![Ty::String],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+        );
+
+        let sig = lookup_method_sig(&type_defs, &fn_sigs, &Ty::sender(Ty::I64), "send")
+            .expect("builtin channel method should resolve");
+        assert_eq!(sig.params, vec![Ty::I64]);
+    }
+
+    #[test]
+    fn lookup_type_def_overrides_imported_stdlib_channel_methods_with_builtin_generics() {
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Receiver".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Receiver".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: {
+                    let mut methods = HashMap::new();
+                    methods.insert(
+                        "recv".to_string(),
+                        FnSig {
+                            return_type: Ty::option(Ty::String),
+                            ..FnSig::default()
+                        },
+                    );
+                    methods
+                },
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let type_def = lookup_type_def(&type_defs, "Receiver")
+            .expect("builtin receiver type def should resolve");
+        assert_eq!(type_def.type_params, vec!["T".to_string()]);
+        assert_eq!(
+            type_def.methods["recv"].return_type,
+            Ty::option(Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            })
+        );
     }
 }

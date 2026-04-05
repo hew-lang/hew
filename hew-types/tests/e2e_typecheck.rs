@@ -553,6 +553,47 @@ fn http_respond_four_arg_rejected() {
     );
 }
 
+// ── SMTP send() ergonomics ───────────────────────────────────────────────────
+
+/// `smtp.send(...)` and `smtp.send_html(...)` should typecheck as one-shot
+/// convenience wrappers.
+#[test]
+fn smtp_one_shot_helpers_typecheck() {
+    let output = typecheck_inline(
+        r#"
+        import std::net::smtp;
+
+        fn main() {
+            smtp.send(
+                "smtp.example.com",
+                587,
+                "user",
+                "pass",
+                "from@example.com",
+                "to@example.com",
+                "Subject",
+                "Body",
+            );
+            smtp.send_html(
+                "smtp.example.com",
+                587,
+                "user",
+                "pass",
+                "from@example.com",
+                "to@example.com",
+                "Subject",
+                "<h1>Hello</h1>",
+            );
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "smtp one-shot helpers should typecheck without errors, got: {:#?}",
+        output.errors
+    );
+}
+
 /// Regression: the CLI injects a synthetic `import std::text::regex` when regex
 /// literals appear in source. The type checker must mark that import as used when
 /// synthesising the `regex.Pattern` type so no false-positive unused-import

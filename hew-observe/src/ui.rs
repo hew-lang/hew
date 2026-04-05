@@ -77,9 +77,44 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     // Connection indicator
     let (status_text, status_colour) = match app.connection_status {
-        ConnectionStatus::Connected => ("● Connected", theme::CONN_CONNECTED),
-        ConnectionStatus::Disconnected => ("● Disconnected", theme::CONN_DISCONNECTED),
-        ConnectionStatus::Connecting => ("● Connecting…", theme::CONN_CONNECTING),
+        ConnectionStatus::Connected => {
+            if app.is_multi_node() {
+                (
+                    format!(
+                        "● Connected {}/{} nodes",
+                        app.connected_node_count(),
+                        app.configured_node_count()
+                    ),
+                    theme::CONN_CONNECTED,
+                )
+            } else {
+                ("● Connected".to_owned(), theme::CONN_CONNECTED)
+            }
+        }
+        ConnectionStatus::Disconnected => {
+            if app.is_multi_node() {
+                (
+                    format!("● Disconnected 0/{} nodes", app.configured_node_count()),
+                    theme::CONN_DISCONNECTED,
+                )
+            } else {
+                ("● Disconnected".to_owned(), theme::CONN_DISCONNECTED)
+            }
+        }
+        ConnectionStatus::Connecting => {
+            if app.is_multi_node() {
+                (
+                    format!(
+                        "● Connecting {}/{} nodes",
+                        app.connected_node_count(),
+                        app.configured_node_count()
+                    ),
+                    theme::CONN_CONNECTING,
+                )
+            } else {
+                ("● Connecting…".to_owned(), theme::CONN_CONNECTING)
+            }
+        }
     };
     let mode = if app.demo_mode { " [DEMO]" } else { "" };
     let conn = Paragraph::new(format!("{status_text}{mode}"))
@@ -1229,15 +1264,25 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let mode = if app.demo_mode { "DEMO" } else { "LIVE" };
-    let node_count = if app.cluster_members.is_empty() {
-        1
+    let text = if app.is_multi_node() {
+        format!(
+            " [{mode}] {} │ showing: {} │ {}/{} connected │ Tab: switch │ ?: help │ r: refresh │ q: quit",
+            app.configured_target_label(),
+            app.active_node_label(),
+            app.connected_node_count(),
+            app.configured_node_count(),
+        )
     } else {
-        app.cluster_members.len()
+        let node_count = if app.cluster_members.is_empty() {
+            1
+        } else {
+            app.cluster_members.len()
+        };
+        format!(
+            " [{mode}] {} │ {node_count} node(s) │ Tab: switch │ ?: help │ r: refresh │ q: quit",
+            app.base_url
+        )
     };
-    let text = format!(
-        " [{mode}] {} │ {node_count} node(s) │ Tab: switch │ ?: help │ r: refresh │ q: quit",
-        app.base_url
-    );
     let bar = Paragraph::new(text).style(
         Style::default()
             .bg(theme::STATUS_BAR_BG)

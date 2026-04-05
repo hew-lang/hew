@@ -167,6 +167,7 @@ pub struct App {
     pub connection_status: ConnectionStatus,
     pub demo_mode: bool,
     pub base_url: String,
+    active_node_label: String,
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
@@ -255,12 +256,73 @@ impl App {
                 ConnectionStatus::Connecting
             },
             demo_mode: demo,
+            active_node_label: base_url.clone(),
             base_url,
             auto_discover,
             last_discovery_scan: Instant::now(),
             prev_messages_sent: 0,
             prev_timestamp: 0.0,
         }
+    }
+
+    pub fn is_multi_node(&self) -> bool {
+        self.cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.nodes.len() > 1)
+    }
+
+    pub fn configured_node_count(&self) -> usize {
+        self.cluster
+            .as_ref()
+            .map_or(1, |cluster| cluster.nodes.len().max(1))
+    }
+
+    pub fn connected_node_count(&self) -> usize {
+        self.cluster.as_ref().map_or_else(
+            || usize::from(self.connection_status == ConnectionStatus::Connected),
+            |cluster| {
+                cluster
+                    .nodes
+                    .iter()
+                    .filter(|node| node.client.status == ConnectionStatus::Connected)
+                    .count()
+            },
+        )
+    }
+
+    pub fn configured_target_label(&self) -> String {
+        let Some(cluster) = &self.cluster else {
+            return if self.base_url.is_empty() {
+                "waiting for profiler".to_owned()
+            } else {
+                self.base_url.clone()
+            };
+        };
+
+        match cluster.nodes.as_slice() {
+            [] => self.base_url.clone(),
+            [node] => node.addr.clone(),
+            [first, rest @ ..] => format!("{} +{} more", first.addr, rest.len()),
+        }
+    }
+
+    pub fn active_node_label(&self) -> &str {
+        if self.active_node_label.is_empty() {
+            self.base_url.as_str()
+        } else {
+            self.active_node_label.as_str()
+        }
+    }
+
+    fn set_active_node(&mut self, label: &str) {
+        if self.active_node_label == label {
+            return;
+        }
+        self.active_node_label.clear();
+        self.active_node_label.push_str(label);
+        self.msg_rate = 0.0;
+        self.prev_messages_sent = 0;
+        self.prev_timestamp = 0.0;
     }
 
     /// Clamp all selection indices to valid ranges so they never exceed
@@ -459,84 +521,106 @@ impl App {
             return;
         }
 
+        let fetch_actors = self.active_tab == Tab::Actors || self.active_tab == Tab::Overview;
+        let fetch_history = self.active_tab == Tab::Overview;
+        let fetch_supervisors = self.active_tab == Tab::Supervisors;
+        let fetch_crashes = self.active_tab == Tab::Crashes;
+        let fetch_cluster = self.active_tab == Tab::Cluster || self.active_tab == Tab::Timeline;
+        let fetch_traces = self.should_fetch_traces();
+
         // In auto-discover mode, periodically re-scan for profilers.
         #[cfg(unix)]
         if self.auto_discover {
             self.try_rediscover();
         }
 
-        let Some(cluster) = &mut self.cluster else {
-            return;
-        };
+        let mut metrics = None;
+        let mut actors = None;
+        let mut history = None;
+        let mut supervisors = None;
+        let mut crashes = None;
+        let mut cluster_members = None;
+        let mut connections = None;
+        let mut routing = None;
+        let mut traces = None;
+        let mut next_active_node = None;
+        let cluster_status;
 
-        // Use first node for single-node data (metrics, actors, history)
-        let Some(first) = cluster.nodes.first_mut() else {
-            return;
-        };
-
-        // Only fetch data needed for the current tab to avoid unnecessary blocking
-        let metrics = first.client.fetch_metrics();
-        let status = first.client.status;
-        if status == ConnectionStatus::Disconnected {
-            self.connection_status = status;
-            return;
-        }
-
-        let actors = if self.active_tab == Tab::Actors || self.active_tab == Tab::Overview {
-            first.client.fetch_actors()
-        } else {
-            None
-        };
-
-        let history = if self.active_tab == Tab::Overview {
-            first.client.fetch_history()
-        } else {
-            None
-        };
-
-        let supervisors = if self.active_tab == Tab::Supervisors {
-            first.client.fetch_supervisors()
-        } else {
-            None
-        };
-
-        let crashes = if self.active_tab == Tab::Crashes {
-            first.client.fetch_crashes()
-        } else {
-            None
-        };
-
-        // Cluster tab: fetch cluster data from first connected node
-        let (cluster_members, connections, routing) =
-            if self.active_tab == Tab::Cluster || self.active_tab == Tab::Timeline {
-                (
-                    first.client.fetch_cluster_members(),
-                    first.client.fetch_connections(),
-                    first.client.fetch_routing(),
-                )
-            } else {
-                (None, None, None)
+        {
+            let Some(cluster) = &mut self.cluster else {
+                return;
             };
 
-        // Messages/Timeline tab: fetch traces from all nodes
-        let traces = if self.should_fetch_traces() {
-            let cluster_ref = self.cluster.as_mut().unwrap();
-            let mut all_traces = Vec::new();
-            for node in &mut cluster_ref.nodes {
-                if let Some(mut t) = node.client.fetch_traces() {
-                    all_traces.append(&mut t);
+            let mut primary_idx = None;
+            for (idx, node) in cluster.nodes.iter_mut().enumerate() {
+                if let Some(node_metrics) = node.client.fetch_metrics() {
+                    if metrics.is_none() {
+                        metrics = Some(node_metrics);
+                        next_active_node = Some(node.addr.clone());
+                        primary_idx = Some(idx);
+                    }
                 }
             }
-            if all_traces.is_empty() {
-                None
-            } else {
-                Some(all_traces)
-            }
-        } else {
-            None
-        };
 
-        let cluster_status = self.cluster.as_ref().unwrap().status();
+            cluster_status = cluster.status();
+
+            if let Some(primary_idx) = primary_idx {
+                {
+                    let primary = &mut cluster.nodes[primary_idx].client;
+                    actors = if fetch_actors {
+                        primary.fetch_actors()
+                    } else {
+                        None
+                    };
+                    history = if fetch_history {
+                        primary.fetch_history()
+                    } else {
+                        None
+                    };
+                    supervisors = if fetch_supervisors {
+                        primary.fetch_supervisors()
+                    } else {
+                        None
+                    };
+                    crashes = if fetch_crashes {
+                        primary.fetch_crashes()
+                    } else {
+                        None
+                    };
+                    (cluster_members, connections, routing) = if fetch_cluster {
+                        (
+                            primary.fetch_cluster_members(),
+                            primary.fetch_connections(),
+                            primary.fetch_routing(),
+                        )
+                    } else {
+                        (None, None, None)
+                    };
+                }
+
+                traces = if fetch_traces {
+                    let mut all_traces = Vec::new();
+                    for node in &mut cluster.nodes {
+                        if let Some(mut node_traces) = node.client.fetch_traces() {
+                            all_traces.append(&mut node_traces);
+                        }
+                    }
+                    if all_traces.is_empty() {
+                        None
+                    } else {
+                        Some(all_traces)
+                    }
+                } else {
+                    None
+                };
+            }
+        }
+
+        self.connection_status = cluster_status;
+        let Some(active_node) = next_active_node else {
+            return;
+        };
+        self.set_active_node(&active_node);
 
         if let Some(m) = metrics {
             if self.prev_timestamp > 0.0 && m.timestamp_secs > self.prev_timestamp {
@@ -596,8 +680,6 @@ impl App {
                 self.trace_events.drain(..drain);
             }
         }
-
-        self.connection_status = cluster_status;
     }
 
     #[cfg(unix)]
@@ -625,6 +707,7 @@ impl App {
         if let Some(p) = profilers.first() {
             self.cluster = Some(ClusterClient::from_unix(&p.socket_path, &p.program));
             self.base_url.clone_from(&p.program);
+            self.set_active_node(&p.program);
             self.connection_status = ConnectionStatus::Connecting;
         }
     }
@@ -1109,6 +1192,9 @@ mod tests {
     fn trace_response_body(path: &str, state: &Arc<Mutex<TestTraceState>>) -> String {
         match path {
             "/api/metrics" => r#"{"timestamp_secs":1.0}"#.to_owned(),
+            "/api/actors" | "/api/metrics/history" | "/api/supervisors" | "/api/crashes" => {
+                "[]".to_owned()
+            }
             "/api/cluster/members" | "/api/connections" => "[]".to_owned(),
             "/api/routing/table" => r#"{"local_node_id":1,"routes":[]}"#.to_owned(),
             "/api/traces" => {
@@ -1151,6 +1237,14 @@ mod tests {
             .iter()
             .map(|event| event.timestamp_ns)
             .collect()
+    }
+
+    fn unused_tcp_addr() -> String {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("bind unused tcp addr")
+            .local_addr()
+            .expect("read unused tcp addr")
+            .to_string()
     }
 
     /// Pressing `/` to re-activate filter mode must NOT clear an existing filter.
@@ -1261,5 +1355,39 @@ mod tests {
             "unpaused timeline refreshes must continue fetching traces"
         );
         assert_eq!(trace_timestamps(&app), vec![1, 2]);
+    }
+
+    #[test]
+    fn refresh_uses_first_connected_node_when_primary_is_down() {
+        let live = TestTraceServer::new(Vec::new());
+        let dead_addr = unused_tcp_addr();
+        let live_addr = live.addr();
+        let mut app = App::new_tcp(&[dead_addr.clone(), live_addr.clone()]);
+
+        app.refresh();
+
+        assert_eq!(app.connection_status, ConnectionStatus::Connected);
+        assert_eq!(app.connected_node_count(), 1);
+        assert_eq!(app.active_node_label(), live_addr);
+        assert_eq!(
+            app.configured_target_label(),
+            format!("{dead_addr} +1 more")
+        );
+        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn switching_active_node_resets_rate_baseline() {
+        let mut app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+        app.msg_rate = 42.0;
+        app.prev_messages_sent = 9;
+        app.prev_timestamp = 3.5;
+
+        app.set_active_node("beta:6061");
+
+        assert_eq!(app.active_node_label(), "beta:6061");
+        assert!(app.msg_rate.abs() < f64::EPSILON);
+        assert_eq!(app.prev_messages_sent, 0);
+        assert!(app.prev_timestamp.abs() < f64::EPSILON);
     }
 }

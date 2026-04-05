@@ -716,6 +716,7 @@ impl<'a> Formatter<'a> {
         }
         self.write(" {\n");
         self.indent += 1;
+        let mut has_body_item = false;
 
         for field in &decl.fields {
             if self.has_comments() {
@@ -724,10 +725,13 @@ impl<'a> Formatter<'a> {
                 self.flush_comments_before(pos);
             }
             self.format_field_decl(field);
+            has_body_item = true;
         }
 
         if let Some(cap) = &decl.mailbox_capacity {
-            self.newline();
+            if has_body_item {
+                self.newline();
+            }
             self.write_indent();
             self.write("mailbox ");
             self.write(&cap.to_string());
@@ -758,16 +762,18 @@ impl<'a> Formatter<'a> {
                 }
             }
             self.write(";\n");
+            has_body_item = true;
         }
 
         if let Some(init) = &decl.init {
             if self.has_comments() {
                 let pos = self.find_keyword_after("init(", self.prev_source_pos);
                 self.flush_comments_before(pos);
-            } else if !decl.fields.is_empty() {
+            } else if has_body_item {
                 self.newline();
             }
             self.format_actor_init(init, span_end);
+            has_body_item = true;
         }
 
         for recv in &decl.receive_fns {
@@ -779,10 +785,11 @@ impl<'a> Formatter<'a> {
                 };
                 let pos = self.find_keyword_after(&kw, self.prev_source_pos);
                 self.flush_comments_before(pos);
-            } else {
+            } else if has_body_item {
                 self.newline();
             }
             self.format_receive_fn(recv, span_end);
+            has_body_item = true;
         }
 
         for method in &decl.methods {
@@ -790,10 +797,11 @@ impl<'a> Formatter<'a> {
                 let pos =
                     self.find_keyword_after(&format!("fn {}", method.name), self.prev_source_pos);
                 self.flush_comments_before(pos);
-            } else {
+            } else if has_body_item {
                 self.newline();
             }
             self.format_fn(method, span_end);
+            has_body_item = true;
         }
 
         if self.has_comments() {
@@ -1052,6 +1060,9 @@ impl<'a> Formatter<'a> {
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
+        if decl.is_pure {
+            self.write("pure ");
+        }
         if decl.is_async {
             self.write("async ");
         }

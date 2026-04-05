@@ -73,7 +73,7 @@ pub struct CommonBuildArgs {
 pub struct BuildArgs {
     /// Input .hew file.
     pub input: PathBuf,
-    /// Output executable path.
+    /// Output path. Defaults to `<input stem><target suffix>`.
     #[arg(short = 'o', value_name = "FILE")]
     pub output: Option<PathBuf>,
     /// Build with debug info (no optimization, no stripping).

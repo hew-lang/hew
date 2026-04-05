@@ -210,6 +210,9 @@ jobs:
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
+      - name: Run hew-wasm library smoke tests
+        run: cargo test -p hew-wasm --lib
+
       - name: Run codegen unit tests
         run: >
           cd hew-codegen/build &&

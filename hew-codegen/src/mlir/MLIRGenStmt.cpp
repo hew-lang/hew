@@ -2183,20 +2183,25 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
   auto i64Type = builder.getI64Type();
 
   // Determine element type: int or string.
-  bool isIntChannel = false;
-  bool isStringChannel = false;
-  if (receiverType && receiverType->type_args && !receiverType->type_args->empty()) {
-    if (auto *inner = std::get_if<ast::TypeNamed>(&(*receiverType->type_args)[0].value.kind)) {
-      isIntChannel = (inner->name == "int" || inner->name == "i64");
-      if (!isIntChannel)
-        isStringChannel = (inner->name == "String" || inner->name == "string");
-    }
-  } else {
-    // No type args: default to String for backward compatibility.
-    isStringChannel = true;
+  if (!receiverType || !receiverType->type_args || receiverType->type_args->empty()) {
+    ++errorCount_;
+    emitError(location)
+        << "for await on Receiver<T> requires a resolved element type; bare Receiver is not supported";
+    return;
   }
 
+  auto *inner = std::get_if<ast::TypeNamed>(&(*receiverType->type_args)[0].value.kind);
+  if (!inner) {
+    ++errorCount_;
+    emitError(location) << "for await on Receiver<T> requires a resolved named element type";
+    return;
+  }
+
+  bool isIntChannel = (inner->name == "int" || inner->name == "i64");
+  bool isStringChannel = !isIntChannel && (inner->name == "String" || inner->name == "string");
+
   if (!isIntChannel && !isStringChannel) {
+    ++errorCount_;
     emitError(location) << "for await on Receiver<T> is currently only supported for String and int";
     return;
   }

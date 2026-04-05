@@ -153,8 +153,7 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 ### Distribution
 
 - **editors/** — Editor support (Emacs, Nano, Sublime)
-- **completions/** — Shell completions (bash, zsh, fish)
-- **installers/** — Package installers (Homebrew, Debian, RPM, Arch, Alpine, Nix, Docker)
+- **installers/** — Package installers (Homebrew, Debian, RPM, Arch, Alpine, Nix, Docker) plus install-time shell completion generation
 - **examples/** — Example programs and benchmarks
 - **scripts/** — Development scripts
 - **docs/** — Language specification and API references

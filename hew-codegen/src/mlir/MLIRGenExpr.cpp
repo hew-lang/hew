@@ -5506,7 +5506,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 // Scope expression codegen
 // ============================================================================
 
-mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
+mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
+                                       bool statementPosition) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
@@ -5572,7 +5573,7 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
                 &exprStmt->expr.value.kind))
           nullOutRaiiAlloca(id->name);
       } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
-        bodyResult = generateIfStmtAsExpr(*ifStmt);
+        bodyResult = generateIfStmtAsExpr(*ifStmt, statementPosition);
       } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
         auto loc_ = loc(lastStmt.span);
         auto scrutinee = generateExpression(matchNode->scrutinee.value);

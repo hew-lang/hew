@@ -1118,6 +1118,53 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Discarded scope expression must keep tail if lowering in statement mode
+// ============================================================================
+static void test_discarded_scope_expr_tail_if_no_extra_results() {
+  TEST(discarded_scope_expr_tail_if_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn scope_demo(flag: bool) -> int {
+    scope {
+        if flag {
+            println(5);
+        } else {
+            println(6);
+        }
+    };
+    0
+}
+
+fn main() -> int {
+    scope_demo(true)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto demoFn = lookupFuncBySuffix(module, "scope_demo");
+  if (!demoFn) {
+    FAIL("scope_demo function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(demoFn) != 1) {
+    FAIL("discarded scope expression should leave only the final return materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -3683,6 +3730,7 @@ int main() {
   test_non_void_nested_stmt_if_no_results();
   test_discarded_block_expr_tail_if_no_extra_results();
   test_discarded_unsafe_expr_tail_if_no_extra_results();
+  test_discarded_scope_expr_tail_if_no_extra_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

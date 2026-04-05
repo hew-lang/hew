@@ -1698,7 +1698,13 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
 // If statement as expression (value-producing if at end of block)
 // ============================================================================
 
-mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
+mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt,
+                                          bool statementPosition) {
+  if (statementPosition) {
+    generateIfStmt(stmt);
+    return nullptr;
+  }
+
   auto location = currentLoc;
 
   mlir::Value cond = generateExpression(stmt.condition.value);
@@ -1715,8 +1721,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
-    // Statement-position if-else: result is discarded, type is irrelevant.
-    // TODO: generate statement-position if-else without value-producing path.
+    // Expression-position callers without a single-result function sink still
+    // need a concrete result type for the value-producing scf.if.
     resultType = defaultIntType();
   }
 
@@ -3441,6 +3447,8 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
   mlir::Value val = nullptr;
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&stmt.expr.value.kind)) {
     val = generateBlock(blockExpr->block, /*statementPosition=*/true);
+  } else if (auto *scopeExpr = std::get_if<ast::ExprScope>(&stmt.expr.value.kind)) {
+    val = generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
   } else if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&stmt.expr.value.kind)) {
     val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);
   } else {

@@ -5617,6 +5617,57 @@ fn structural_hardening_child_default_overrides_super_required_method() {
 }
 
 #[test]
+fn structural_hardening_diamond_sibling_shadowing_merges_across_supers() {
+    // In a diamond, sibling default branches must cover inherited methods
+    // collectively so only the root trait's still-required methods remain.
+    let source = r"
+        trait A {
+            fn a(val: Self);
+            fn b(val: Self);
+        }
+
+        trait B: A {
+            fn a(val: Self) {}
+        }
+
+        trait C: A {
+            fn b(val: Self) {}
+        }
+
+        trait D: B + C {
+            fn d(val: Self);
+        }
+
+        type Doc {}
+
+        impl Doc {
+            fn d(d: Doc) {}
+        }
+
+        fn use_d<T: D>(t: T) {}
+
+        fn main() {
+            let d = Doc {};
+            use_d(d);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "diamond sibling shadowing should merge across supers: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn structural_hardening_super_trait_e1_guard_propagates() {
     // If a super-trait has an associated type, the E1 guard must veto the
     // entire structural check — even if the immediate trait has no assoc types.

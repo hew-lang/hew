@@ -209,6 +209,104 @@ fn populate_user_module_imports_impl(
     }
 }
 
+fn analyze_document(
+    uri: &Url,
+    source: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> (DocumentState, Vec<Diagnostic>) {
+    let parse_result = hew_parser::parse(source);
+
+    let has_parse_errors = parse_result
+        .errors
+        .iter()
+        .any(|e| e.severity == hew_parser::Severity::Error);
+
+    let type_output = if has_parse_errors {
+        None
+    } else {
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            build_module_search_paths(),
+        ));
+        // Clone the program so we can inject resolved_items for user-module
+        // imports without mutating the parse_result stored in DocumentState
+        // (other LSP features use the raw AST and do not need resolved_items).
+        let mut program = parse_result.program.clone();
+        populate_user_module_imports(uri, &mut program.items, documents);
+        Some(checker.check_program(&program))
+    };
+
+    let line_offsets = compute_line_offsets(source);
+
+    let diagnostics = build_diagnostics(
+        uri,
+        source,
+        &line_offsets,
+        &parse_result,
+        type_output.as_ref(),
+    );
+
+    (
+        DocumentState {
+            source: source.to_string(),
+            line_offsets,
+            parse_result,
+            type_output,
+        },
+        diagnostics,
+    )
+}
+
+fn document_imports_target(
+    importer_uri: &Url,
+    parse_result: &ParseResult,
+    target_uri: &Url,
+) -> bool {
+    parse_result.program.items.iter().any(|(item, _)| {
+        let Item::Import(import) = item else {
+            return false;
+        };
+
+        compute_import_path(importer_uri, import).and_then(|path| Url::from_file_path(path).ok())
+            == Some(target_uri.clone())
+    })
+}
+
+fn refresh_document_and_dependents(
+    uri: &Url,
+    source: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    let (document, diagnostics) = analyze_document(uri, source, documents);
+    documents.insert(uri.clone(), document);
+
+    let dependents: Vec<_> = documents
+        .iter()
+        .filter_map(|entry| {
+            let importer_uri = entry.key().clone();
+            if &importer_uri == uri {
+                return None;
+            }
+
+            let importer = entry.value();
+            if document_imports_target(&importer_uri, &importer.parse_result, uri) {
+                Some((importer_uri, importer.source.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut refreshed = vec![(uri.clone(), diagnostics)];
+
+    for (importer_uri, importer_source) in dependents {
+        let (document, diagnostics) = analyze_document(&importer_uri, &importer_source, documents);
+        documents.insert(importer_uri.clone(), document);
+        refreshed.push((importer_uri, diagnostics));
+    }
+
+    refreshed
+}
+
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -228,52 +326,16 @@ impl HewLanguageServer {
         }
     }
 
-    /// Re-lex, re-parse, and re-typecheck the document, then publish diagnostics.
+    /// Re-lex, re-parse, and re-typecheck the document and any open importers,
+    /// then publish diagnostics.
     async fn reanalyze(&self, uri: &Url, source: &str) {
-        let parse_result = hew_parser::parse(source);
-
-        let has_parse_errors = parse_result
-            .errors
-            .iter()
-            .any(|e| e.severity == hew_parser::Severity::Error);
-
-        let type_output = if has_parse_errors {
-            None
-        } else {
-            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-                build_module_search_paths(),
-            ));
-            // Clone the program so we can inject resolved_items for user-module
-            // imports without mutating the parse_result stored in DocumentState
-            // (other LSP features use the raw AST and do not need resolved_items).
-            let mut program = parse_result.program.clone();
-            populate_user_module_imports(uri, &mut program.items, &self.documents);
-            Some(checker.check_program(&program))
-        };
-
-        let line_offsets = compute_line_offsets(source);
-
-        let diagnostics = build_diagnostics(
-            uri,
-            source,
-            &line_offsets,
-            &parse_result,
-            type_output.as_ref(),
-        );
-
-        self.documents.insert(
-            uri.clone(),
-            DocumentState {
-                source: source.to_string(),
-                line_offsets,
-                parse_result,
-                type_output,
-            },
-        );
-
-        self.client
-            .publish_diagnostics(uri.clone(), diagnostics, None)
-            .await;
+        for (updated_uri, diagnostics) in
+            refresh_document_and_dependents(uri, source, &self.documents)
+        {
+            self.client
+                .publish_diagnostics(updated_uri, diagnostics, None)
+                .await;
+        }
     }
 }
 
@@ -4293,6 +4355,20 @@ impl Worker {
         return Url::parse(&format!("file://{posix_path}")).unwrap();
     }
 
+    fn has_unresolved_import(documents: &DashMap<Url, DocumentState>, uri: &Url) -> bool {
+        documents
+            .get(uri)
+            .and_then(|doc| {
+                doc.type_output.as_ref().map(|output| {
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::UnresolvedImport)
+                })
+            })
+            .is_some_and(|has_unresolved| has_unresolved)
+    }
+
     /// Returns the `ImportDecl`s extracted from the parsed program, mirroring
     /// the extraction done in `goto_definition` before the cross-file search.
     fn collect_imports(source: &str) -> Vec<hew_parser::ast::ImportDecl> {
@@ -4581,6 +4657,72 @@ impl Worker {
         assert!(
             hard_errors.is_empty(),
             "open file import should not produce hard diagnostics: {hard_errors:?}"
+        );
+    }
+
+    #[test]
+    fn typecheck_opening_file_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { exported() }";
+        let foo_source = "pub fn exported() -> i32 { 1 }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert_eq!(
+            initial.len(),
+            1,
+            "opening importer should only analyze itself"
+        );
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before foo.hew is open"
+        );
+
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "opening foo.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "opening foo.hew should clear the importer's stale UnresolvedImport"
+        );
+    }
+
+    #[test]
+    fn typecheck_changing_file_import_target_refreshes_open_importer_diagnostics() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { exported() }";
+        let invalid_foo_source = "pub fn exported(";
+        let foo_source = "pub fn exported() -> i32 { 1 }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&main_url, main_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should start with UnresolvedImport before foo.hew is valid"
+        );
+
+        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &main_url),
+            "importer should stay unresolved while foo.hew has parse errors"
+        );
+
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &main_url),
+            "editing foo.hew should refresh diagnostics for the open importer"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &main_url),
+            "editing foo.hew to valid source should clear the importer's stale UnresolvedImport"
         );
     }
 

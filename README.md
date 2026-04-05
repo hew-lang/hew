@@ -218,15 +218,15 @@ See the [Makefile](Makefile) header for all targets.
 
 ### Browser / Playground Validation
 
-This repo does not build the downstream browser app, but it does expose the in-repo validation path for the browser/playground inputs:
+This repo does not build the downstream browser app, but it does keep the browser/playground inputs fresh locally. [`examples/playground/manifest.json`](examples/playground/manifest.json) is the curated source of truth consumed by downstream browser tooling.
 
 ```bash
-make playground-manifest-check  # check examples/playground/manifest.json only
-make playground-check           # check manifest.json + build hew-wasm
-make playground-manifest        # refresh manifest.json after editing examples/playground/
+make playground-manifest        # regenerate examples/playground/manifest.json
+make playground-manifest-check  # cheap freshness check for manifest.json only
+make playground-check           # repo-local preflight: manifest check + build hew-wasm
 ```
 
-`make playground-check` wraps the existing repo-local pieces: `make playground-manifest-check` and `make wasm`.
+Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the repo-local `hew-wasm` build (`make wasm`).
 
 ### Optional Dependencies
 

@@ -19,10 +19,11 @@ make wasm
 To validate the repo-local browser/playground slice without building the downstream browser app:
 
 ```sh
-make playground-check
+make playground-manifest-check  # cheap manifest freshness check
+make playground-check           # same check + build hew-wasm
 ```
 
-`make playground-check` checks `examples/playground/manifest.json` freshness and then builds the `hew-wasm` package.
+`examples/playground/manifest.json` is the curated source of truth for the downstream browser catalog. Use `make playground-manifest-check` when you only need to confirm that manifest is current, or `make playground-check` when you also want the repo-local `hew-wasm` build.
 
 ## Part of the Hew compiler
 

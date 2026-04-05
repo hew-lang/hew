@@ -1,7 +1,7 @@
 //! Find-all-references analysis: scope-aware identifier reference collection.
 
 use hew_parser::ast::{
-    Block, Expr, ImportSpec, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Block, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -33,21 +33,35 @@ pub fn find_all_references(
     Some((name, offset_spans))
 }
 
-/// Check if a name matches a module-scope binding (item definition or named import).
+/// Walk item bodies collecting references that resolve to an imported module-scope
+/// binding named `name`.
+///
+/// If the current file also defines a top-level item with the same name, the
+/// imported binding is considered hidden and no reference spans are returned.
+#[must_use]
+pub fn find_import_binding_references(parse_result: &ParseResult, name: &str) -> Vec<OffsetSpan> {
+    if is_top_level_name(parse_result, name) {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    for (item, _span) in &parse_result.program.items {
+        collect_import_binding_refs_in_item(item, name, &mut spans);
+    }
+
+    spans
+        .into_iter()
+        .map(|span| OffsetSpan {
+            start: span.start,
+            end: span.end,
+        })
+        .collect()
+}
+
+/// Check if a name matches a module-scope item definition.
 #[must_use]
 pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
     parse_result.program.items.iter().any(|(item, _)| {
-        if let Item::Import(import) = item {
-            if let Some(ImportSpec::Names(names)) = &import.spec {
-                if names
-                    .iter()
-                    .any(|entry| entry.alias.as_deref().unwrap_or(entry.name.as_str()) == name)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
         // Check item-level names (functions, actors, types, etc.)
         let item_name = match item {
             Item::Function(f) => Some(f.name.as_str()),
@@ -177,6 +191,470 @@ fn is_binding_span(source: &str, span: &Span, _name: &str) -> bool {
     let prefix = source.get(prefix_start..span.start).unwrap_or("");
     let trimmed = prefix.trim_end();
     trimmed.ends_with("let") || trimmed.ends_with("var") || trimmed.ends_with("for")
+}
+
+fn collect_import_binding_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
+    match item {
+        Item::Function(f) => {
+            let shadowed = f.params.iter().any(|param| param.name == name);
+            collect_import_binding_refs_in_block(&f.body, name, shadowed, spans);
+        }
+        Item::Actor(a) => {
+            let field_shadowed = a.fields.iter().any(|field| field.name == name);
+            if let Some(init) = &a.init {
+                collect_import_binding_refs_in_block(&init.body, name, field_shadowed, spans);
+            }
+            if let Some(term) = &a.terminate {
+                collect_import_binding_refs_in_block(&term.body, name, field_shadowed, spans);
+            }
+            for recv in &a.receive_fns {
+                let shadowed = field_shadowed || recv.params.iter().any(|param| param.name == name);
+                collect_import_binding_refs_in_block(&recv.body, name, shadowed, spans);
+            }
+            for method in &a.methods {
+                let shadowed =
+                    field_shadowed || method.params.iter().any(|param| param.name == name);
+                collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
+            }
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &td.body {
+                if let TypeBodyItem::Method(method) = body_item {
+                    let shadowed = method.params.iter().any(|param| param.name == name);
+                    collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
+                }
+            }
+        }
+        Item::Impl(i) => {
+            for method in &i.methods {
+                let shadowed = method.params.iter().any(|param| param.name == name);
+                collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
+            }
+        }
+        Item::Trait(t) => {
+            for trait_item in &t.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(body) = &method.body {
+                        let shadowed = method.params.iter().any(|param| param.name == name);
+                        collect_import_binding_refs_in_block(body, name, shadowed, spans);
+                    }
+                }
+            }
+        }
+        Item::Const(c) => {
+            collect_import_binding_refs_in_expr(&c.value.0, &c.value.1, name, false, spans);
+        }
+        Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_)
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {}
+    }
+}
+
+fn collect_import_binding_refs_in_block(
+    block: &Block,
+    name: &str,
+    shadowed: bool,
+    spans: &mut Vec<Span>,
+) {
+    let mut shadowed = shadowed;
+    for (stmt, _span) in &block.stmts {
+        shadowed = collect_import_binding_refs_in_stmt(stmt, name, shadowed, spans);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        collect_import_binding_refs_in_expr(&trailing.0, &trailing.1, name, shadowed, spans);
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "statement traversal must preserve shadowing order across variants"
+)]
+fn collect_import_binding_refs_in_stmt(
+    stmt: &Stmt,
+    name: &str,
+    shadowed: bool,
+    spans: &mut Vec<Span>,
+) -> bool {
+    match stmt {
+        Stmt::Let { pattern, value, .. } => {
+            if let Some(val) = value {
+                collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
+            }
+            shadowed || pattern_binds_name(&pattern.0, name)
+        }
+        Stmt::Var {
+            name: binding_name,
+            value,
+            ..
+        } => {
+            if let Some(val) = value {
+                collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
+            }
+            shadowed || binding_name == name
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(then_block, name, shadowed, spans);
+            if let Some(else_block) = else_block {
+                if let Some(if_stmt) = &else_block.if_stmt {
+                    collect_import_binding_refs_in_stmt(&if_stmt.0, name, shadowed, spans);
+                }
+                if let Some(block) = &else_block.block {
+                    collect_import_binding_refs_in_block(block, name, shadowed, spans);
+                }
+            }
+            shadowed
+        }
+        Stmt::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(
+                body,
+                name,
+                shadowed || pattern_binds_name(&pattern.0, name),
+                spans,
+            );
+            if let Some(block) = else_body {
+                collect_import_binding_refs_in_block(block, name, shadowed, spans);
+            }
+            shadowed
+        }
+        Stmt::Match { scrutinee, arms } => {
+            collect_import_binding_refs_in_expr(&scrutinee.0, &scrutinee.1, name, shadowed, spans);
+            for arm in arms {
+                let arm_shadowed = shadowed || pattern_binds_name(&arm.pattern.0, name);
+                if let Some(guard) = &arm.guard {
+                    collect_import_binding_refs_in_expr(
+                        &guard.0,
+                        &guard.1,
+                        name,
+                        arm_shadowed,
+                        spans,
+                    );
+                }
+                collect_import_binding_refs_in_expr(
+                    &arm.body.0,
+                    &arm.body.1,
+                    name,
+                    arm_shadowed,
+                    spans,
+                );
+            }
+            shadowed
+        }
+        Stmt::Loop { body, .. } => {
+            collect_import_binding_refs_in_block(body, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(body, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+            ..
+        } => {
+            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(
+                body,
+                name,
+                shadowed || pattern_binds_name(&pattern.0, name),
+                spans,
+            );
+            shadowed
+        }
+        Stmt::For {
+            pattern,
+            iterable,
+            body,
+            ..
+        } => {
+            collect_import_binding_refs_in_expr(&iterable.0, &iterable.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(
+                body,
+                name,
+                shadowed || pattern_binds_name(&pattern.0, name),
+                spans,
+            );
+            shadowed
+        }
+        Stmt::Return(Some(val)) => {
+            collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::Defer(expr) => {
+            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::Expression(expr) => {
+            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            collect_import_binding_refs_in_expr(&v.0, &v.1, name, shadowed, spans);
+            shadowed
+        }
+        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => shadowed,
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "match arms over all Expr variants is clearest as one function"
+)]
+fn collect_import_binding_refs_in_expr(
+    expr: &Expr,
+    span: &Span,
+    name: &str,
+    shadowed: bool,
+    spans: &mut Vec<Span>,
+) {
+    match expr {
+        Expr::Identifier(ident) if !shadowed && ident == name => {
+            spans.push(span.clone());
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_import_binding_refs_in_expr(&left.0, &left.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&right.0, &right.1, name, shadowed, spans);
+        }
+        Expr::Unary { operand, .. } => {
+            collect_import_binding_refs_in_expr(&operand.0, &operand.1, name, shadowed, spans);
+        }
+        Expr::Call { function, args, .. } => {
+            collect_import_binding_refs_in_expr(&function.0, &function.1, name, shadowed, spans);
+            for arg in args {
+                let expr = arg.expr();
+                collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_import_binding_refs_in_expr(&receiver.0, &receiver.1, name, shadowed, spans);
+            for arg in args {
+                let expr = arg.expr();
+                collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            }
+        }
+        Expr::FieldAccess { object, .. } => {
+            collect_import_binding_refs_in_expr(&object.0, &object.1, name, shadowed, spans);
+        }
+        Expr::Index { object, index } => {
+            collect_import_binding_refs_in_expr(&object.0, &object.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&index.0, &index.1, name, shadowed, spans);
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
+            }
+        }
+        Expr::Spawn { target, args } => {
+            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
+            for (_, value) in args {
+                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
+            }
+        }
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
+            collect_import_binding_refs_in_block(block, name, shadowed, spans);
+        }
+        Expr::Scope { binding, body } => {
+            collect_import_binding_refs_in_block(
+                body,
+                name,
+                shadowed || binding.as_deref() == Some(name),
+                spans,
+            );
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(
+                &then_block.0,
+                &then_block.1,
+                name,
+                shadowed,
+                spans,
+            );
+            if let Some(else_block) = else_block {
+                collect_import_binding_refs_in_expr(
+                    &else_block.0,
+                    &else_block.1,
+                    name,
+                    shadowed,
+                    spans,
+                );
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+            collect_import_binding_refs_in_block(
+                body,
+                name,
+                shadowed || pattern_binds_name(&pattern.0, name),
+                spans,
+            );
+            if let Some(block) = else_body {
+                collect_import_binding_refs_in_block(block, name, shadowed, spans);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_import_binding_refs_in_expr(&scrutinee.0, &scrutinee.1, name, shadowed, spans);
+            for arm in arms {
+                let arm_shadowed = shadowed || pattern_binds_name(&arm.pattern.0, name);
+                if let Some(guard) = &arm.guard {
+                    collect_import_binding_refs_in_expr(
+                        &guard.0,
+                        &guard.1,
+                        name,
+                        arm_shadowed,
+                        spans,
+                    );
+                }
+                collect_import_binding_refs_in_expr(
+                    &arm.body.0,
+                    &arm.body.1,
+                    name,
+                    arm_shadowed,
+                    spans,
+                );
+            }
+        }
+        Expr::Lambda { params, body, .. } | Expr::SpawnLambdaActor { params, body, .. } => {
+            let shadowed = shadowed || params.iter().any(|param| param.name == name);
+            collect_import_binding_refs_in_expr(&body.0, &body.1, name, shadowed, spans);
+        }
+        Expr::ArrayRepeat { value, count } => {
+            collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&count.0, &count.1, name, shadowed, spans);
+        }
+        Expr::MapLiteral { entries } => {
+            for (key, value) in entries {
+                collect_import_binding_refs_in_expr(&key.0, &key.1, name, shadowed, spans);
+                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
+            }
+        }
+        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
+            for elem in elems {
+                collect_import_binding_refs_in_expr(&elem.0, &elem.1, name, shadowed, spans);
+            }
+        }
+        Expr::Send { target, message } => {
+            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&message.0, &message.1, name, shadowed, spans);
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                collect_import_binding_refs_in_expr(
+                    &arm.source.0,
+                    &arm.source.1,
+                    name,
+                    shadowed,
+                    spans,
+                );
+                collect_import_binding_refs_in_expr(
+                    &arm.body.0,
+                    &arm.body.1,
+                    name,
+                    shadowed || pattern_binds_name(&arm.binding.0, name),
+                    spans,
+                );
+            }
+            if let Some(timeout) = timeout {
+                collect_import_binding_refs_in_expr(
+                    &timeout.duration.0,
+                    &timeout.duration.1,
+                    name,
+                    shadowed,
+                    spans,
+                );
+                collect_import_binding_refs_in_expr(
+                    &timeout.body.0,
+                    &timeout.body.1,
+                    name,
+                    shadowed,
+                    spans,
+                );
+            }
+        }
+        Expr::Timeout {
+            expr: inner,
+            duration,
+        } => {
+            collect_import_binding_refs_in_expr(&inner.0, &inner.1, name, shadowed, spans);
+            collect_import_binding_refs_in_expr(&duration.0, &duration.1, name, shadowed, spans);
+        }
+        Expr::Await(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Yield(Some(inner))
+        | Expr::Cast { expr: inner, .. } => {
+            collect_import_binding_refs_in_expr(&inner.0, &inner.1, name, shadowed, spans);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_import_binding_refs_in_expr(&start.0, &start.1, name, shadowed, spans);
+            }
+            if let Some(end) = end {
+                collect_import_binding_refs_in_expr(&end.0, &end.1, name, shadowed, spans);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(expr) = part {
+                    collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
+    match pattern {
+        Pattern::Identifier(ident) => ident == name,
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+            .iter()
+            .any(|(pattern, _)| pattern_binds_name(pattern, name)),
+        Pattern::Struct { fields, .. } => fields.iter().any(|field| {
+            field
+                .pattern
+                .as_ref()
+                .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
+        }),
+        Pattern::Or(left, right) => {
+            pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => false,
+    }
 }
 
 fn collect_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {

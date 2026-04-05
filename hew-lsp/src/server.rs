@@ -1506,6 +1506,35 @@ fn find_named_import_match(
     None
 }
 
+fn span_contains_offset(span: hew_analysis::OffsetSpan, offset: usize) -> bool {
+    span.start <= offset && offset < span.end
+}
+
+fn find_resolved_named_import_match(
+    current_uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    word: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<(NamedImportMatch, Vec<hew_analysis::OffsetSpan>)> {
+    let import_match =
+        find_named_import_match(current_uri, &doc.source, &doc.parse_result, word, documents)?;
+    let usage_spans = hew_analysis::references::find_import_binding_references(
+        &doc.parse_result,
+        &import_match.visible_name,
+    );
+
+    if span_contains_offset(import_match.visible_name_span, offset)
+        || usage_spans
+            .iter()
+            .any(|span| span_contains_offset(*span, offset))
+    {
+        Some((import_match, usage_spans))
+    } else {
+        None
+    }
+}
+
 fn find_open_named_importers(
     target_uri: &Url,
     target_name: &str,
@@ -1664,142 +1693,12 @@ fn rename_edit_to_text_edit(doc: &DocumentState, edit: hew_analysis::RenameEdit)
     }
 }
 
-fn build_reference_locations(
+fn workspace_edit_from_changes(
     uri: &Url,
     doc: &DocumentState,
-    offset: usize,
-    include_declaration: bool,
     documents: &DashMap<Url, DocumentState>,
-) -> Vec<Location> {
-    let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
-        return Vec::new();
-    };
-
-    let mut locations = collect_local_reference_locations(uri, doc, offset, include_declaration);
-
-    if let Some(import_match) =
-        find_named_import_match(uri, &doc.source, &doc.parse_result, &name, documents)
-    {
-        push_location_for_span(
-            &mut locations,
-            &import_match.importer_uri,
-            &doc.source,
-            &doc.line_offsets,
-            import_match.visible_name_span,
-        );
-
-        if let Some(target_doc) = documents.get(&import_match.imported_uri) {
-            if let Some(def_span) = find_definition_name_span(
-                &target_doc.source,
-                &target_doc.parse_result,
-                &import_match.imported_name,
-            ) {
-                locations.extend(collect_local_reference_locations(
-                    &import_match.imported_uri,
-                    &target_doc,
-                    def_span.start,
-                    include_declaration,
-                ));
-            }
-        }
-    } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
-        for importer in find_open_named_importers(uri, &name, documents) {
-            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
-                push_location_for_span(
-                    &mut locations,
-                    &importer.importer_uri,
-                    &importer_doc.source,
-                    &importer_doc.line_offsets,
-                    importer.import_name_span,
-                );
-                locations.extend(collect_local_reference_locations(
-                    &importer.importer_uri,
-                    &importer_doc,
-                    importer.visible_name_span.start,
-                    false,
-                ));
-            }
-        }
-    }
-
-    sort_and_dedup_locations(&mut locations);
-    locations
-}
-
-fn build_workspace_edit(
-    uri: &Url,
-    doc: &DocumentState,
-    offset: usize,
-    new_name: &str,
-    documents: &DashMap<Url, DocumentState>,
+    mut changes: HashMap<Url, Vec<hew_analysis::RenameEdit>>,
 ) -> Option<WorkspaceEdit> {
-    let (name, _) = hew_analysis::util::simple_word_at_offset(&doc.source, offset)?;
-
-    let mut changes: HashMap<Url, Vec<hew_analysis::RenameEdit>> = HashMap::new();
-    let local_edits = collect_local_rename_edits(doc, offset, new_name);
-    if !local_edits.is_empty() {
-        changes.insert(uri.clone(), local_edits);
-    }
-
-    if let Some(import_match) =
-        find_named_import_match(uri, &doc.source, &doc.parse_result, &name, documents)
-    {
-        if !import_match.is_aliased() {
-            changes
-                .entry(uri.clone())
-                .or_default()
-                .push(hew_analysis::RenameEdit {
-                    span: import_match.import_name_span,
-                    new_text: new_name.to_string(),
-                });
-
-            if let Some(target_doc) = documents.get(&import_match.imported_uri) {
-                if let Some(def_span) = find_definition_name_span(
-                    &target_doc.source,
-                    &target_doc.parse_result,
-                    &import_match.imported_name,
-                ) {
-                    let target_edits =
-                        collect_local_rename_edits(&target_doc, def_span.start, new_name);
-                    if !target_edits.is_empty() {
-                        changes
-                            .entry(import_match.imported_uri.clone())
-                            .or_default()
-                            .extend(target_edits);
-                    }
-                }
-            }
-        }
-    } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
-        for importer in find_open_named_importers(uri, &name, documents) {
-            changes
-                .entry(importer.importer_uri.clone())
-                .or_default()
-                .push(hew_analysis::RenameEdit {
-                    span: importer.import_name_span,
-                    new_text: new_name.to_string(),
-                });
-
-            if importer.is_aliased() {
-                continue;
-            }
-
-            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
-                let importer_edits = collect_local_rename_edits(
-                    &importer_doc,
-                    importer.visible_name_span.start,
-                    new_name,
-                );
-                if !importer_edits.is_empty() {
-                    changes
-                        .entry(importer.importer_uri.clone())
-                        .or_default()
-                        .extend(importer_edits);
-                }
-            }
-        }
-    }
-
     for edits in changes.values_mut() {
         sort_and_dedup_rename_edits(edits);
     }
@@ -1831,6 +1730,182 @@ fn build_workspace_edit(
         changes: Some(lsp_changes),
         ..Default::default()
     })
+}
+
+fn build_reference_locations(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    include_declaration: bool,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<Location> {
+    let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
+        return Vec::new();
+    };
+
+    if let Some((import_match, usage_spans)) =
+        find_resolved_named_import_match(uri, doc, offset, &name, documents)
+    {
+        let mut locations = Vec::new();
+        push_location_for_span(
+            &mut locations,
+            &import_match.importer_uri,
+            &doc.source,
+            &doc.line_offsets,
+            import_match.visible_name_span,
+        );
+        for span in usage_spans {
+            push_location_for_span(
+                &mut locations,
+                &import_match.importer_uri,
+                &doc.source,
+                &doc.line_offsets,
+                span,
+            );
+        }
+
+        if let Some(target_doc) = documents.get(&import_match.imported_uri) {
+            if let Some(def_span) = find_definition_name_span(
+                &target_doc.source,
+                &target_doc.parse_result,
+                &import_match.imported_name,
+            ) {
+                locations.extend(collect_local_reference_locations(
+                    &import_match.imported_uri,
+                    &target_doc,
+                    def_span.start,
+                    include_declaration,
+                ));
+            }
+        }
+
+        sort_and_dedup_locations(&mut locations);
+        return locations;
+    }
+
+    let mut locations = collect_local_reference_locations(uri, doc, offset, include_declaration);
+
+    if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
+        for importer in find_open_named_importers(uri, &name, documents) {
+            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                push_location_for_span(
+                    &mut locations,
+                    &importer.importer_uri,
+                    &importer_doc.source,
+                    &importer_doc.line_offsets,
+                    importer.import_name_span,
+                );
+                for span in hew_analysis::references::find_import_binding_references(
+                    &importer_doc.parse_result,
+                    &importer.visible_name,
+                ) {
+                    push_location_for_span(
+                        &mut locations,
+                        &importer.importer_uri,
+                        &importer_doc.source,
+                        &importer_doc.line_offsets,
+                        span,
+                    );
+                }
+            }
+        }
+    }
+
+    sort_and_dedup_locations(&mut locations);
+    locations
+}
+
+fn build_workspace_edit(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<WorkspaceEdit> {
+    let (name, _) = hew_analysis::util::simple_word_at_offset(&doc.source, offset)?;
+
+    if let Some((import_match, usage_spans)) =
+        find_resolved_named_import_match(uri, doc, offset, &name, documents)
+    {
+        let mut changes: HashMap<Url, Vec<hew_analysis::RenameEdit>> = HashMap::new();
+        let mut importer_edits: Vec<_> = usage_spans
+            .into_iter()
+            .map(|span| hew_analysis::RenameEdit {
+                span,
+                new_text: new_name.to_string(),
+            })
+            .collect();
+        importer_edits.push(hew_analysis::RenameEdit {
+            span: import_match.visible_name_span,
+            new_text: new_name.to_string(),
+        });
+        changes.insert(uri.clone(), importer_edits);
+
+        if !import_match.is_aliased() {
+            if let Some(target_doc) = documents.get(&import_match.imported_uri) {
+                if let Some(def_span) = find_definition_name_span(
+                    &target_doc.source,
+                    &target_doc.parse_result,
+                    &import_match.imported_name,
+                ) {
+                    let target_edits =
+                        collect_local_rename_edits(&target_doc, def_span.start, new_name);
+                    if !target_edits.is_empty() {
+                        changes
+                            .entry(import_match.imported_uri.clone())
+                            .or_default()
+                            .extend(target_edits);
+                    }
+                }
+            }
+        }
+
+        return workspace_edit_from_changes(uri, doc, documents, changes);
+    }
+
+    let mut changes: HashMap<Url, Vec<hew_analysis::RenameEdit>> = HashMap::new();
+    let local_edits = collect_local_rename_edits(doc, offset, new_name);
+    if !local_edits.is_empty() {
+        changes.insert(uri.clone(), local_edits);
+    }
+
+    if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
+        for importer in find_open_named_importers(uri, &name, documents) {
+            changes
+                .entry(importer.importer_uri.clone())
+                .or_default()
+                .push(hew_analysis::RenameEdit {
+                    span: importer.import_name_span,
+                    new_text: new_name.to_string(),
+                });
+
+            if importer.is_aliased() {
+                continue;
+            }
+
+            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                let importer_edits: Vec<_> =
+                    hew_analysis::references::find_import_binding_references(
+                        &importer_doc.parse_result,
+                        &importer.visible_name,
+                    )
+                    .into_iter()
+                    .map(|span| hew_analysis::RenameEdit {
+                        span,
+                        new_text: new_name.to_string(),
+                    })
+                    .collect();
+                if !importer_edits.is_empty() {
+                    changes
+                        .entry(importer.importer_uri.clone())
+                        .or_default()
+                        .extend(importer_edits);
+                }
+            }
+        }
+    }
+
+    workspace_edit_from_changes(uri, doc, documents, changes)
 }
 
 // ── Cross-file go-to-definition ───────────────────────────────────────
@@ -4865,6 +4940,135 @@ impl Worker {
             .expect("rename should include main.hew edits");
         assert_eq!(main_edits.len(), 3, "expected import + two call-site edits");
         assert!(main_edits.iter().all(|edit| edit.new_text == "welcome"));
+    }
+
+    #[test]
+    fn cross_file_references_shadowed_local_usage_stays_local() {
+        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+        let locations = build_reference_locations(&main_uri, &main_doc, offset, true, &documents);
+
+        assert!(
+            locations.len() >= 2,
+            "expected at least the local shadow binding references"
+        );
+        assert!(
+            locations.iter().all(|location| location.uri == main_uri),
+            "shadowed local references must stay within main.hew"
+        );
+    }
+
+    #[test]
+    fn cross_file_rename_shadowed_local_usage_stays_local() {
+        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+        let workspace_edit =
+            build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should produce local edits");
+        let changes = workspace_edit
+            .changes
+            .expect("workspace edit should contain per-document text edits");
+
+        assert_eq!(changes.len(), 1, "expected only main.hew edits");
+        let main_edits = changes
+            .get(&main_uri)
+            .expect("rename should include main.hew edits");
+        assert!(
+            main_edits.len() >= 2,
+            "expected at least the local binding + usage edits"
+        );
+        assert!(main_edits.iter().all(|edit| edit.new_text == "welcome"));
+        assert!(
+            !changes.contains_key(&util_uri),
+            "shadowed local rename must not touch util.hew"
+        );
+    }
+
+    #[test]
+    fn cross_file_rename_from_imported_definition_skips_shadowed_local_usage() {
+        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("greet").unwrap();
+        let workspace_edit =
+            build_workspace_edit(&util_uri, &util_doc, offset, "welcome", &documents)
+                .expect("rename should produce a cross-file workspace edit");
+        let changes = workspace_edit
+            .changes
+            .expect("workspace edit should contain per-document text edits");
+
+        let util_edits = changes
+            .get(&util_uri)
+            .expect("rename should include util.hew edits");
+        assert_eq!(
+            util_edits.len(),
+            2,
+            "expected definition + wrapper call edits"
+        );
+        assert!(util_edits.iter().all(|edit| edit.new_text == "welcome"));
+
+        let main_edits = changes
+            .get(&main_uri)
+            .expect("rename should include main.hew edits");
+        assert_eq!(
+            main_edits.len(),
+            2,
+            "expected import + unshadowed call edit"
+        );
+        assert!(main_edits.iter().all(|edit| edit.new_text == "welcome"));
+    }
+
+    #[test]
+    fn cross_file_references_top_level_collision_stays_local() {
+        let main_source =
+            "import util::{ greet };\nfn greet() -> i32 { 0 }\nfn main() -> i32 { greet() }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+        let locations = build_reference_locations(&main_uri, &main_doc, offset, true, &documents);
+
+        assert_eq!(
+            locations.len(),
+            2,
+            "expected only the local top-level symbol"
+        );
+        assert!(locations.iter().all(|location| location.uri == main_uri));
     }
 
     #[test]

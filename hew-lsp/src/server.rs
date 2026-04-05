@@ -103,19 +103,17 @@ fn source_for_path(
     std::fs::read_to_string(path).ok()
 }
 
-/// Recursively populate `ImportDecl::resolved_items` for user-module imports.
+/// Recursively populate `ImportDecl::resolved_items` for user and file imports.
 ///
 /// After parsing a document the `resolved_items` field on every `ImportDecl`
 /// is `None`.  The CLI fills these in by reading files from disk; the LSP
 /// historically skipped this step, so imported modules were only resolved via
 /// the stdlib `ModuleRegistry` and not from the project tree.
 ///
-/// This function walks `items`, finds `Import` nodes whose path does not match
-/// a stdlib module (i.e. `resolved_items` stays `None` after `ModuleRegistry`
-/// lookup), locates the corresponding `.hew` file relative to `source_dir`,
-/// reads it — **preferring any open editor buffer over the on-disk version** —
-/// and populates `resolved_items` so the type checker sees the current
-/// in-memory content.
+/// This function walks `items`, finds unresolved `Import` nodes, locates the
+/// corresponding `.hew` file relative to `source_dir`, reads it — **preferring
+/// any open editor buffer over the on-disk version** — and populates
+/// `resolved_items` so the type checker sees the current in-memory content.
 ///
 /// Depth is capped at [`MAX_IMPORT_DEPTH`] to prevent cycles.
 fn populate_user_module_imports(
@@ -147,32 +145,39 @@ fn populate_user_module_imports_impl(
 
     for (item, _span) in items.iter_mut() {
         let decl = match item {
-            // Only process imports that haven't been resolved yet and have a
-            // non-empty module path (stdlib modules are handled by ModuleRegistry).
-            Item::Import(d) if d.resolved_items.is_none() && !d.path.is_empty() => d,
+            // Only process imports that haven't been resolved yet.
+            Item::Import(d)
+                if d.resolved_items.is_none() && (d.file_path.is_some() || !d.path.is_empty()) =>
+            {
+                d
+            }
             _ => continue,
         };
 
-        let last = match decl.path.last() {
-            Some(l) => l.clone(),
-            None => continue,
+        let candidates = if let Some(file_path) = &decl.file_path {
+            vec![source_dir.join(file_path)]
+        } else {
+            let last = match decl.path.last() {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+
+            // Build the two canonical candidate paths the CLI also tries:
+            //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
+            //   2. flat form:               source_dir/<a>/<b>.hew
+            let rel_path: std::path::PathBuf = decl
+                .path
+                .iter()
+                .collect::<std::path::PathBuf>()
+                .with_extension("hew");
+            let dir_path: std::path::PathBuf = decl
+                .path
+                .iter()
+                .collect::<std::path::PathBuf>()
+                .join(format!("{last}.hew"));
+
+            vec![source_dir.join(&dir_path), source_dir.join(&rel_path)]
         };
-
-        // Build the two canonical candidate paths the CLI also tries:
-        //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
-        //   2. flat form:               source_dir/<a>/<b>.hew
-        let rel_path: std::path::PathBuf = decl
-            .path
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .with_extension("hew");
-        let dir_path: std::path::PathBuf = decl
-            .path
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .join(format!("{last}.hew"));
-
-        let candidates = [source_dir.join(&dir_path), source_dir.join(&rel_path)];
 
         for candidate in &candidates {
             // `source_for_path` checks the in-memory document store first so
@@ -4458,6 +4463,54 @@ impl Worker {
         );
     }
 
+    /// `populate_user_module_imports` also resolves string-literal file imports
+    /// from the in-memory document store before type checking.
+    #[test]
+    fn populate_prefers_open_document_for_file_import() {
+        let main_source = "import \"shapes/circle.hew\";\nfn main() { area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors in main_source: {:?}",
+            parse_result.errors
+        );
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let import_decl = parse_result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let hew_parser::ast::Item::Import(d) = item {
+                    Some(d)
+                } else {
+                    None
+                }
+            })
+            .expect("import should be present");
+
+        assert!(
+            import_decl.resolved_items.is_some(),
+            "resolved_items should be populated from the open file import document"
+        );
+        let resolved = import_decl.resolved_items.as_ref().unwrap();
+        let has_area_fn = resolved.iter().any(
+            |(item, _)| matches!(item, hew_parser::ast::Item::Function(f) if f.name == "area"),
+        );
+        assert!(
+            has_area_fn,
+            "resolved items should include the 'area' function from shapes/circle.hew"
+        );
+    }
+
     /// Type-checking a file that imports an open sibling module should produce
     /// no `UnresolvedImport` error when the sibling is in the document store.
     #[test]
@@ -4492,6 +4545,42 @@ impl Worker {
         assert!(
             unresolved.is_empty(),
             "should have no UnresolvedImport when sibling is open in documents: {unresolved:?}"
+        );
+    }
+
+    /// Type-checking with an open file import should not emit false editor
+    /// errors once the imported file has been loaded into `resolved_items`.
+    #[test]
+    fn typecheck_sees_open_file_import_no_unresolved_import() {
+        let main_source = "import \"shapes/circle.hew\";\nfn main() -> f64 { area(1.0) }";
+        let circle_source = "pub fn area(r: f64) -> f64 { r }";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url, make_doc(circle_source));
+
+        let mut parse_result = hew_parser::parse(main_source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parse_result.program);
+
+        let hard_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_types::error::Severity::Error)
+            .collect();
+        assert!(
+            hard_errors.is_empty(),
+            "open file import should not produce hard diagnostics: {hard_errors:?}"
         );
     }
 

@@ -246,7 +246,7 @@ void MLIRGen::generateLoopBodyWithContinueGuards(
 // ============================================================================
 
 mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPosition,
-                                    bool isFunctionBodyBlock) {
+                                   bool isFunctionBodyBlock) {
   // Create a new scope for variables in this block
   SymbolTableScopeT varScope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
@@ -300,8 +300,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     auto result = generateTailExpr(block.trailing_expr->value);
     // Null RAII close alloca for the tail expression variable so the
     // block's scope-exit drop doesn't close a handle being returned.
-    if (auto *id = std::get_if<ast::ExprIdentifier>(
-            &block.trailing_expr->value.kind)) {
+    if (auto *id = std::get_if<ast::ExprIdentifier>(&block.trailing_expr->value.kind)) {
       nullOutRaiiAlloca(id->name);
     }
     return result;
@@ -415,8 +414,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
       auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind);
       if (exprStmt) {
         auto result = generateTailExpr(exprStmt->expr.value);
-        if (auto *id = std::get_if<ast::ExprIdentifier>(
-                &exprStmt->expr.value.kind)) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&exprStmt->expr.value.kind)) {
           nullOutRaiiAlloca(id->name);
         }
         return result;
@@ -571,8 +569,8 @@ void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
           if (fi.name == pf.name) {
             auto fieldVal = hew::FieldGetOp::create(
                 builder, location,
-                mlir::cast<mlir::LLVM::LLVMStructType>(value.getType()).getBody()[fi.index],
-                value, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
+                mlir::cast<mlir::LLVM::LLVMStructType>(value.getType()).getBody()[fi.index], value,
+                builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
             if (pf.pattern) {
               bindLetSubPattern(pf.pattern->value, fieldVal, location);
             } else {
@@ -583,8 +581,7 @@ void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
         }
       }
     } else {
-      emitError(location) << "unknown struct type '" << structPat->name
-                          << "' in let pattern";
+      emitError(location) << "unknown struct type '" << structPat->name << "' in let pattern";
     }
   } else {
     emitError(location) << "unsupported sub-pattern in let destructuring";
@@ -631,7 +628,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     auto declaredType = convertType(stmt.ty->value);
     // Timeout lowering still evaluates the inner expression directly while the
     // enriched AST annotates `| after` results as inferred Option<T>.
-    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    bool skipInferredTimeoutCoercion =
+        isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
     if (isValidType(declaredType) && !skipInferredTimeoutCoercion) {
       bool isUnsigned =
           mlir::isa<mlir::IntegerType>(declaredType) && isUnsignedTypeExpr(stmt.ty->value);
@@ -790,8 +788,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
               streamHandleVarTypes[varName] = "Pair";
             else if (fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_lines" ||
                      fi->name == "hew_stream_pair_stream" || fi->name == "hew_stream_chunks" ||
-                     fi->name == "hew_stream_map_string" || fi->name == "hew_stream_filter_string" ||
-                     fi->name == "hew_stream_take")
+                     fi->name == "hew_stream_map_string" ||
+                     fi->name == "hew_stream_filter_string" || fi->name == "hew_stream_take")
               streamHandleVarTypes[varName] = "Stream";
             else if (fi->name == "hew_stream_pair_sink" ||
                      fi->name == "hew_stream_from_file_write" ||
@@ -806,8 +804,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       if (auto *ce = std::get_if<ast::ExprCall>(&stmt.value->value.kind)) {
         if (ce->function) {
           if (auto *fi = std::get_if<ast::ExprIdentifier>(&ce->function->value.kind)) {
-            if (fi->name == "hew_channel_sender_clone" ||
-                fi->name == "hew_channel_pair_sender")
+            if (fi->name == "hew_channel_sender_clone" || fi->name == "hew_channel_pair_sender")
               handleVarTypes[varName] = "Sender";
             else if (fi->name == "hew_channel_pair_receiver")
               handleVarTypes[varName] = "Receiver";
@@ -898,7 +895,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.ty) {
     varType = convertType(stmt.ty->value);
-    bool skipInferredTimeoutCoercion = isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
+    bool skipInferredTimeoutCoercion =
+        isInferredType(*stmt.ty) && usesTimeoutPlaceholder(stmt.value);
     if (isValidType(varType) && initValue && !skipInferredTimeoutCoercion) {
       bool isUnsigned = mlir::isa<mlir::IntegerType>(varType) && isUnsignedTypeExpr(stmt.ty->value);
       initValue = coerceType(initValue, varType, location, isUnsigned);
@@ -938,11 +936,10 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 // Shared drop registration for let/var bindings
 // ═══════════════════════════════════════════════════════════════════════════
 
-void MLIRGen::registerDropsForVariable(
-    const std::string &varName, mlir::Value value,
-    const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
-    const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
-    bool isMutable, mlir::Location location) {
+void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value value,
+                                       const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
+                                       const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
+                                       bool isMutable, mlir::Location location) {
 
   // ── RAII auto-close for Stream/Sink handles ──────────────────────────
   {
@@ -952,8 +949,8 @@ void MLIRGen::registerDropsForVariable(
     bool isStreamPipelineResult = false;
     if (sit == streamHandleVarTypes.end() && stmtValue && *stmtValue) {
       if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind)) {
-        if (mc->method == "filter" || mc->method == "map" ||
-            mc->method == "take" || mc->method == "chunks") {
+        if (mc->method == "filter" || mc->method == "map" || mc->method == "take" ||
+            mc->method == "chunks") {
           if (mc->receiver) {
             if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
               auto recvSit = streamHandleVarTypes.find(recvId->name);
@@ -973,8 +970,9 @@ void MLIRGen::registerDropsForVariable(
     }
     if ((sit != streamHandleVarTypes.end() || isStreamPipelineResult) && value) {
       std::string closeFn;
-      std::string kind = isStreamPipelineResult ? "Stream" :
-          (sit != streamHandleVarTypes.end() ? sit->second : "");
+      std::string kind = isStreamPipelineResult
+                             ? "Stream"
+                             : (sit != streamHandleVarTypes.end() ? sit->second : "");
       if (kind == "Stream")
         closeFn = "hew_stream_close";
       else if (kind == "Sink")
@@ -1032,8 +1030,7 @@ void MLIRGen::registerDropsForVariable(
         // (A) AST-based path: look up the identifier's resolved type.
         if (auto *srcTy = resolvedTypeOf(fa->object->span)) {
           if (auto *named = std::get_if<ast::TypeNamed>(&srcTy->kind)) {
-            if (structTypes.count(named->name) &&
-                !userDropFuncs.count(named->name) &&
+            if (structTypes.count(named->name) && !userDropFuncs.count(named->name) &&
                 structHasOwnedFields(named->name))
               isFieldExtractionFromOwnedStruct = true;
           }
@@ -1126,7 +1123,8 @@ void MLIRGen::registerDropsForVariable(
         isBytesLiteral = std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
                          std::holds_alternative<ast::ExprByteArrayLiteral>(vk);
       }
-      if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod || isBytesLiteral))
+      if ((typeName == "Vec" || typeName == "bytes") &&
+          (isVecCtor || isNewCollectionMethod || isBytesLiteral))
         registerDroppable(varName, "hew_vec_free");
       else if (typeName == "HashMap" && (isHashMapCtor || isNewCollectionMethod))
         registerDroppable(varName, "hew_hashmap_free_impl");
@@ -1142,7 +1140,7 @@ void MLIRGen::registerDropsForVariable(
         if (isRcCtor || isCloneCall)
           registerDroppable(varName, "hew_rc_drop");
       } else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
-               !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
+                 !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
         bool isBorrowed = isBorrowedGetString;
         if (stmtValue && *stmtValue) {
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
@@ -1242,9 +1240,11 @@ void MLIRGen::registerDropsForVariable(
       }
     }
     auto alreadyRegistered = [&]() {
-      if (dropScopes.empty()) return false;
+      if (dropScopes.empty())
+        return false;
       for (auto &e : dropScopes.back())
-        if (e.varName == varName) return true;
+        if (e.varName == varName)
+          return true;
       return false;
     };
     if (isOwned && mlir::isa<hew::VecType>(valType) && !alreadyRegistered())
@@ -1290,8 +1290,7 @@ void MLIRGen::registerDropsForVariable(
   // lacks a user-written Drop impl must have its fields freed automatically.
   if (value && !dropScopes.empty()) {
     auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
-    if (structTy && structTy.isIdentified() &&
-        !userDropFuncs.count(structTy.getName().str()) &&
+    if (structTy && structTy.isIdentified() && !userDropFuncs.count(structTy.getName().str()) &&
         structTypes.count(structTy.getName().str())) {
       bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
       if (needsFieldDrop) {
@@ -1312,7 +1311,10 @@ void MLIRGen::registerDropsForVariable(
         }
         bool alreadyReg = false;
         for (auto &e : dropScopes.back())
-          if (e.varName == varName) { alreadyReg = true; break; }
+          if (e.varName == varName) {
+            alreadyReg = true;
+            break;
+          }
         if (isOwnedStruct && !alreadyReg) {
           registerDroppable(varName, "__auto_field_drop");
           // If a return guard is active (returnFlag non-null) and the struct
@@ -1351,7 +1353,10 @@ void MLIRGen::registerDropsForVariable(
     bool rcDropRegistered = false;
     if (!dropScopes.empty()) {
       for (auto &e : dropScopes.back())
-        if (e.varName == varName) { rcDropRegistered = true; break; }
+        if (e.varName == varName) {
+          rcDropRegistered = true;
+          break;
+        }
     }
     if (!rcDropRegistered) {
       bool isRcByResolved = false;
@@ -1709,8 +1714,7 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
 // If statement as expression (value-producing if at end of block)
 // ============================================================================
 
-mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt,
-                                          bool statementPosition) {
+mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statementPosition) {
   if (statementPosition) {
     generateIfStmt(stmt);
     return nullptr;
@@ -2212,8 +2216,8 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
   // Determine element type: int or string.
   if (!receiverType || !receiverType->type_args || receiverType->type_args->empty()) {
     ++errorCount_;
-    emitError(location)
-        << "for await on Receiver<T> requires a resolved element type; bare Receiver is not supported";
+    emitError(location) << "for await on Receiver<T> requires a resolved element type; bare "
+                           "Receiver is not supported";
     return;
   }
 
@@ -2231,7 +2235,8 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
 
   if (!isIntChannel && !isStringChannel) {
     ++errorCount_;
-    emitError(location) << "for await on Receiver<T> is currently only supported for String and int";
+    emitError(location)
+        << "for await on Receiver<T> is currently only supported for String and int";
     return;
   }
 
@@ -2295,7 +2300,8 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
     ensureYieldTerminator(location);
     builder.setInsertionPointAfter(recvGuard);
 
-    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+    auto validFlag =
+        mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
     auto zero32 = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero32);
@@ -3455,13 +3461,75 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
 }
 
 void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
+  auto location = currentLoc;
+  auto blockTailRequiresValue = [&](const ast::Block &block,
+                                    const auto &exprRequiresValue) -> bool {
+    if (block.trailing_expr)
+      return exprRequiresValue(block.trailing_expr->value, exprRequiresValue);
+
+    if (block.stmts.empty())
+      return false;
+
+    auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind);
+    if (!exprStmt)
+      return false;
+
+    return exprRequiresValue(exprStmt->expr.value, exprRequiresValue);
+  };
+  auto exprRequiresValue = [&](const ast::Expr &expr, const auto &self) -> bool {
+    if (auto *resolvedType = resolvedTypeOf(expr.span))
+      if (auto *tupleType = std::get_if<ast::TypeTuple>(&resolvedType->kind);
+          tupleType && tupleType->elements.empty())
+        return false;
+
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+      return blockTailRequiresValue(blockExpr->block, self);
+    if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+      return blockTailRequiresValue(scopeExpr->block, self);
+    if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+      return blockTailRequiresValue(unsafeExpr->block, self);
+    if (auto *ifExpr = std::get_if<ast::ExprIf>(&expr.kind))
+      return ifExpr->else_block.has_value();
+    if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprSend>(expr.kind) ||
+        std::holds_alternative<ast::ExprJoin>(expr.kind) ||
+        std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
+        std::holds_alternative<ast::ExprYield>(expr.kind) ||
+        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+      return false;
+
+    return true;
+  };
+  auto failClosedDiscardedBlockLike = [&](llvm::StringRef exprKind, const ast::Block &block,
+                                          mlir::Value value, size_t errorsBefore) -> bool {
+    auto *insertBlock = builder.getInsertionBlock();
+    if (value || errorCount_ != errorsBefore || (insertBlock && hasRealTerminator(insertBlock)) ||
+        !blockTailRequiresValue(block, exprRequiresValue))
+      return false;
+
+    ++errorCount_;
+    emitError(location) << "discarded " << exprKind
+                        << " in statement position failed to lower a nested value expression";
+    return true;
+  };
+
   mlir::Value val = nullptr;
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&stmt.expr.value.kind)) {
+    auto errorsBefore = errorCount_;
     val = generateBlock(blockExpr->block, /*statementPosition=*/true);
+    if (failClosedDiscardedBlockLike("block expression", blockExpr->block, val, errorsBefore))
+      return;
   } else if (auto *scopeExpr = std::get_if<ast::ExprScope>(&stmt.expr.value.kind)) {
     val = generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
   } else if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&stmt.expr.value.kind)) {
+    auto errorsBefore = errorCount_;
     val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);
+    if (failClosedDiscardedBlockLike("unsafe expression", unsafeExpr->block, val, errorsBefore))
+      return;
   } else {
     val = generateExpression(stmt.expr.value);
   }

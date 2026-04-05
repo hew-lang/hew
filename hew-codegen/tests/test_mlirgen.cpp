@@ -285,6 +285,79 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   return generateMLIR(ctx, program, dumpIR);
 }
 
+static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 900000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkPrintCall = [&]() {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(1)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall();
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  Block innerBlock;
+  innerBlock.trailing_expr = mkBadBinary();
+
+  auto outerSpan = mkSpan();
+  Expr outerExpr;
+  outerExpr.span = outerSpan;
+  if (useUnsafe)
+    outerExpr.kind = ExprUnsafe{std::move(innerBlock)};
+  else
+    outerExpr.kind = ExprBlock{std::move(innerBlock)};
+
+  StmtExpression exprStmt;
+  exprStmt.expr = Spanned<Expr>{std::move(outerExpr), outerSpan};
+
+  Stmt stmt;
+  stmt.kind = std::move(exprStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: simulate the frontend's TypeDecl-based wire-enum path in MLIRGen.
 // ---------------------------------------------------------------------------
@@ -1108,12 +1181,75 @@ fn main() -> int {
   }
 
   if (countResultfulIfOps(demoFn) != 1) {
-    FAIL("discarded unsafe block expression should leave only the final return materialization scf.if");
+    FAIL("discarded unsafe block expression should leave only the final return materialization "
+         "scf.if");
     module.getOperation()->destroy();
     return;
   }
 
   module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded block expression fail-closes when a nested tail expression
+//       lowers to null without its own diagnostic
+// ============================================================================
+static void test_discarded_block_expr_bad_tail_fails_closed() {
+  TEST(discarded_block_expr_bad_tail_fails_closed);
+
+  auto program = makeDiscardedBlockLikeBadTailProgram(/*useUnsafe=*/false);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded block expression with bad tail");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded block expression in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected discarded block-expression fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded unsafe expression fail-closes when a nested tail expression
+//       lowers to null without its own diagnostic
+// ============================================================================
+static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
+  TEST(discarded_unsafe_expr_bad_tail_fails_closed);
+
+  auto program = makeDiscardedBlockLikeBadTailProgram(/*useUnsafe=*/true);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded unsafe expression with bad tail");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded unsafe expression in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected discarded unsafe-expression fail-closed diagnostic");
+    return;
+  }
+
   PASS();
 }
 
@@ -3320,14 +3456,13 @@ fn main() {
     println(val.stringify());
 }
   )",
-                           program)) {
+                             program)) {
     FAIL("failed to load typed json scope-drop program");
     return;
   }
 
-  bool jsonValueInHandleTypes =
-      std::find(program.handle_types.begin(), program.handle_types.end(), "json.Value") !=
-      program.handle_types.end();
+  bool jsonValueInHandleTypes = std::find(program.handle_types.begin(), program.handle_types.end(),
+                                          "json.Value") != program.handle_types.end();
   if (!jsonValueInHandleTypes) {
     FAIL("json.Value missing from handle metadata");
     return;
@@ -3918,6 +4053,8 @@ int main() {
   test_non_void_nested_stmt_if_no_results();
   test_discarded_block_expr_tail_if_no_extra_results();
   test_discarded_unsafe_expr_tail_if_no_extra_results();
+  test_discarded_block_expr_bad_tail_fails_closed();
+  test_discarded_unsafe_expr_bad_tail_fails_closed();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();

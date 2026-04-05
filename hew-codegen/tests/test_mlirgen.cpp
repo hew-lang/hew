@@ -624,6 +624,7 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
 enum class DiscardedIfBadPart {
   Condition,
   ThenBranch,
+  SideEffectBranches,
 };
 
 static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPart) {
@@ -674,8 +675,16 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
 
   ExprIf ifExpr;
   ifExpr.condition = badPart == DiscardedIfBadPart::Condition ? mkBadBinary() : mkBool(true);
-  ifExpr.then_block = badPart == DiscardedIfBadPart::ThenBranch ? mkBadBinary() : mkInt(10);
-  ifExpr.else_block = mkInt(20);
+  if (badPart == DiscardedIfBadPart::ThenBranch) {
+    ifExpr.then_block = mkBadBinary();
+    ifExpr.else_block = mkInt(20);
+  } else if (badPart == DiscardedIfBadPart::SideEffectBranches) {
+    ifExpr.then_block = mkPrintCall();
+    ifExpr.else_block = mkPrintCall();
+  } else {
+    ifExpr.then_block = mkInt(10);
+    ifExpr.else_block = mkInt(20);
+  }
 
   auto ifSpan = mkSpan();
   Expr ifNode;
@@ -1834,6 +1843,37 @@ static void test_discarded_scope_tail_if_bad_branch_fails_closed() {
     return;
   }
 
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded scope-tail if with side-effect-only branches lowers cleanly
+// ============================================================================
+static void test_discarded_scope_tail_if_side_effect_branches_lower() {
+  TEST(discarded_scope_tail_if_side_effect_branches_lower);
+
+  auto program = makeDiscardedIfBadPartProgram(DiscardedIfBadPart::SideEffectBranches);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected MLIR generation success for discarded scope-tail if with side-effect branches");
+    return;
+  }
+
+  if (stderrText.find("discarded if expression in statement position failed to lower") !=
+      std::string::npos) {
+    FAIL("unexpected discarded if-expression fail-closed diagnostic for side-effect branches");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
   PASS();
 }
 
@@ -5381,6 +5421,7 @@ int main() {
   test_discarded_scope_expr_bad_tail_fails_closed();
   test_discarded_scope_tail_if_bad_condition_fails_closed();
   test_discarded_scope_tail_if_bad_branch_fails_closed();
+  test_discarded_scope_tail_if_side_effect_branches_lower();
   test_statement_style_match_arm_bad_body_fails_closed();
   test_statement_style_match_arm_block_tail_if_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();

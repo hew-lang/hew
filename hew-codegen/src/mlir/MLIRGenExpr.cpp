@@ -2255,6 +2255,17 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
           std::holds_alternative<ast::ExprScope>(expr.value.kind) ||
           std::holds_alternative<ast::ExprUnsafe>(expr.value.kind))
         return false;
+      if (std::holds_alternative<ast::ExprCall>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprMethodCall>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprSend>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprJoin>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprTimeout>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprYield>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprCooperate>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprScopeLaunch>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprScopeSpawn>(expr.value.kind) ||
+          std::holds_alternative<ast::ExprScopeCancel>(expr.value.kind))
+        return false;
 
       return true;
     };

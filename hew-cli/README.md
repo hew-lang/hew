@@ -12,6 +12,7 @@ hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
 hew check file.hew                # Parse + typecheck only
 hew doc file.hew                  # Generate documentation
 hew eval "expr"                   # Evaluate an expression
+hew eval -f file.hew              # Evaluate a file in REPL context
 hew test file.hew                 # Run tests
 hew wire check file.hew --against baseline.hew
                                   # Validate wire compatibility
@@ -23,8 +24,11 @@ hew version                       # Print version info
 
 `hew file.hew` is shorthand for `hew build file.hew`.
 
-`hew eval` bounds each native execution to 30 seconds by default; override it
-with `--timeout <seconds>`.
+`hew eval` phase-1 runs each inline expression or buffered `-f` chunk through
+the in-process native pipeline with a fresh bounded execution. Session
+definitions persist between evaluations, but `--timeout <seconds>` applies to
+each evaluation independently (30 seconds by default), not to the entire REPL
+session or file.
 
 For common import-resolution, type-checking, and build failures, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).

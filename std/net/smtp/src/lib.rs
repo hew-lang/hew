@@ -84,6 +84,10 @@ fn configure_builder(
     builder.build()
 }
 
+fn normalize_port(port: i32) -> Option<u16> {
+    u16::try_from(port).ok()
+}
+
 /// Connect to an SMTP server using STARTTLS.
 ///
 /// Returns a heap-allocated [`HewSmtpConn`] on success, or null on error.
@@ -97,10 +101,13 @@ fn configure_builder(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect(
     host: *const c_char,
-    port: u16,
+    port: i32,
     user: *const c_char,
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
+    let Some(port) = normalize_port(port) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: host is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
         return std::ptr::null_mut();
@@ -131,10 +138,13 @@ pub unsafe extern "C" fn hew_smtp_connect(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect_tls(
     host: *const c_char,
-    port: u16,
+    port: i32,
     user: *const c_char,
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
+    let Some(port) = normalize_port(port) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: host is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
         return std::ptr::null_mut();
@@ -265,7 +275,7 @@ pub unsafe extern "C" fn hew_smtp_send_html(
 
 unsafe fn connect_send_close(
     host: *const c_char,
-    port: u16,
+    port: i32,
     user: *const c_char,
     pass: *const c_char,
     send: impl FnOnce(*mut HewSmtpConn) -> i32,
@@ -296,7 +306,7 @@ unsafe fn connect_send_close(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_once(
     host: *const c_char,
-    port: u16,
+    port: i32,
     user: *const c_char,
     pass: *const c_char,
     from: *const c_char,
@@ -324,7 +334,7 @@ pub unsafe extern "C" fn hew_smtp_send_once(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_html_once(
     host: *const c_char,
-    port: u16,
+    port: i32,
     user: *const c_char,
     pass: *const c_char,
     from: *const c_char,
@@ -363,6 +373,15 @@ mod tests {
     use std::ffi::CString;
     use std::ptr;
     use std::rc::Rc;
+
+    #[test]
+    fn normalize_port_rejects_out_of_range_values() {
+        assert_eq!(normalize_port(0), Some(0));
+        assert_eq!(normalize_port(587), Some(587));
+        assert_eq!(normalize_port(65_535), Some(65_535));
+        assert_eq!(normalize_port(-1), None);
+        assert_eq!(normalize_port(65_536), None);
+    }
 
     #[test]
     fn debug_impl() {

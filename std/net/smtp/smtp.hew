@@ -21,6 +21,7 @@
 //!     );
 //! }
 //! ```
+// WASM-TODO: std::net::smtp remains native-only until Hew has a wasm SMTP transport.
 
 /// An open SMTP connection handle.
 ///

@@ -1237,6 +1237,122 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Discarded scope wrappers keep nested tail if lowering in statement mode
+// ============================================================================
+static void test_discarded_scope_wrapper_tail_if_no_extra_results() {
+  TEST(discarded_scope_wrapper_tail_if_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn nested_scope_block_wrapper_trailing(flag: bool) -> int {
+    scope {
+        {
+            if flag {
+                println(11);
+            } else {
+                println(12);
+            }
+        }
+    };
+    0
+}
+
+fn nested_scope_block_wrapper_stmt(flag: bool) -> int {
+    scope {
+        {
+            if flag {
+                println(13);
+            } else {
+                println(14);
+            }
+        };
+    };
+    0
+}
+
+fn nested_scope_unsafe_wrapper_trailing(flag: bool) -> int {
+    scope {
+        unsafe {
+            if flag {
+                println(15);
+            } else {
+                println(16);
+            }
+        }
+    };
+    0
+}
+
+fn nested_scope_unsafe_wrapper_stmt(flag: bool) -> int {
+    scope {
+        unsafe {
+            if flag {
+                println(17);
+            } else {
+                println(18);
+            }
+        };
+    };
+    0
+}
+
+fn main() -> int {
+    nested_scope_block_wrapper_trailing(true) +
+    nested_scope_block_wrapper_stmt(false) +
+    nested_scope_unsafe_wrapper_trailing(true) +
+    nested_scope_unsafe_wrapper_stmt(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto blockTrailingFn = lookupFuncBySuffix(module, "nested_scope_block_wrapper_trailing");
+  auto blockStmtFn = lookupFuncBySuffix(module, "nested_scope_block_wrapper_stmt");
+  auto unsafeTrailingFn = lookupFuncBySuffix(module, "nested_scope_unsafe_wrapper_trailing");
+  auto unsafeStmtFn = lookupFuncBySuffix(module, "nested_scope_unsafe_wrapper_stmt");
+  if (!blockTrailingFn || !blockStmtFn || !unsafeTrailingFn || !unsafeStmtFn) {
+    FAIL("nested scope wrapper test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(blockTrailingFn) != 1) {
+    FAIL("discarded scope block wrapper trailing expression should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(blockStmtFn) != 1) {
+    FAIL("discarded scope block wrapper statement should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(unsafeTrailingFn) != 1) {
+    FAIL("discarded scope unsafe wrapper trailing expression should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(unsafeStmtFn) != 1) {
+    FAIL("discarded scope unsafe wrapper statement should leave only the final return "
+         "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -3804,6 +3920,7 @@ int main() {
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
+  test_discarded_scope_wrapper_tail_if_no_extra_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

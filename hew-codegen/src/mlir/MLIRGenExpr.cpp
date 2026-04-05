@@ -5541,6 +5541,17 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
   pushDropScope();
 
   const auto &stmts = se.block.stmts;
+  auto generateTailExpr = [&](const ast::Expr &expr) -> mlir::Value {
+    if (statementPosition) {
+      if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+        return generateBlock(blockExpr->block, /*statementPosition=*/true);
+      if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+        return generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
+      if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return generateBlock(unsafeExpr->block, /*statementPosition=*/true);
+    }
+    return generateExpression(expr);
+  };
 
   mlir::Value bodyResult = nullptr;
   if (se.block.trailing_expr) {
@@ -5550,7 +5561,7 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
       if (hasRealTerminator(builder.getInsertionBlock()))
         break;
     }
-    bodyResult = generateExpression(se.block.trailing_expr->value);
+    bodyResult = generateTailExpr(se.block.trailing_expr->value);
     // Null RAII close alloca so scope-exit drop doesn't close a
     // handle being returned out of the scope block.
     if (auto *id = std::get_if<ast::ExprIdentifier>(
@@ -5568,7 +5579,7 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
     if (!hasRealTerminator(builder.getInsertionBlock())) {
       const auto &lastStmt = stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind)) {
-        bodyResult = generateExpression(exprStmt->expr.value);
+        bodyResult = generateTailExpr(exprStmt->expr.value);
         if (auto *id = std::get_if<ast::ExprIdentifier>(
                 &exprStmt->expr.value.kind))
           nullOutRaiiAlloca(id->name);

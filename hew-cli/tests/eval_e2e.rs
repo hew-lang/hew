@@ -138,7 +138,7 @@ fn eval_timeout_exit_code_is_non_zero() {
     let path = dir.path().join("timeout_eval.hew");
     std::fs::write(
         &path,
-        "fn spin_forever() {\n    loop {\n        println(\"spin\");\n    }\n}\n\nspin_forever()\n",
+        "fn spin_forever() {\n    var i = 0;\n    loop {\n        i = i + 1;\n    }\n}\n\nspin_forever()\n",
     )
     .unwrap();
 

@@ -1898,7 +1898,9 @@ impl Checker {
                 // Process resolved Hew source items from stdlib modules that ship
                 // alongside their C/Rust bindings so trait methods stay visible.
                 if let Some(ref resolved_items) = decl.resolved_items {
-                    self.register_stdlib_hew_items(&short, resolved_items);
+                    if !self.stdlib_hew_module_already_registered(&module_path) {
+                        self.register_stdlib_hew_items(&short, resolved_items);
+                    }
                 }
                 return;
             }
@@ -2245,6 +2247,12 @@ impl Checker {
         !self
             .registered_flat_file_import_sources
             .insert(import_source)
+    }
+
+    fn stdlib_hew_module_already_registered(&mut self, module_path: &str) -> bool {
+        !self
+            .registered_stdlib_hew_modules
+            .insert(module_path.to_string())
     }
 
     /// Register items from a user module under the module's namespace.

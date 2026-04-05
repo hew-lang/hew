@@ -205,6 +205,9 @@ pub struct Checker {
     /// Canonical source paths for flat file imports already registered in the
     /// current checker run so repeated imports stay idempotent.
     pub(super) registered_flat_file_import_sources: HashSet<PathBuf>,
+    /// Full stdlib module paths whose parsed Hew items have already been
+    /// registered so repeated imports do not re-register the same public types.
+    pub(super) registered_stdlib_hew_modules: HashSet<String>,
     pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
@@ -325,6 +328,7 @@ impl Checker {
             type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
             registered_flat_file_import_sources: HashSet::new(),
+            registered_stdlib_hew_modules: HashSet::new(),
             generic_ctx: Vec::new(),
             current_return_type: None,
             in_generator: false,

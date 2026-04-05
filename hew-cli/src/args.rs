@@ -412,6 +412,9 @@ pub struct MachineListArgs {
 pub struct FmtArgs {
     /// Source files to format.
     pub files: Vec<PathBuf>,
+    /// Read source from stdin and write formatted output to stdout.
+    #[arg(long, conflicts_with = "files")]
+    pub stdin: bool,
     /// Check formatting without writing (exit 1 if unformatted).
     #[arg(long)]
     pub check: bool,

@@ -12,6 +12,7 @@
 //! hew wire check file.hew --against baseline.hew
 //!                                  # Validate wire compatibility
 //! hew fmt file.hew                 # Format source file in-place
+//! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
 //! hew init [name]                  # Scaffold a new project
 //! hew completions <shell>          # Print shell completion script
@@ -36,6 +37,7 @@ mod util;
 mod watch;
 mod wire;
 
+use std::io::{Read, Write};
 use std::path::Path;
 
 use args::{Cli, Command};
@@ -334,8 +336,34 @@ fn find_debug_script(name: &str) -> Option<String> {
 }
 
 fn cmd_fmt(a: &args::FmtArgs) {
+    if a.stdin {
+        let mut source = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut source) {
+            eprintln!("Error: cannot read stdin: {e}");
+            std::process::exit(1);
+        }
+
+        let formatted = format_for_display("<stdin>", &source).unwrap_or_else(|| {
+            std::process::exit(1);
+        });
+
+        if a.check {
+            if formatted != source {
+                eprintln!("<stdin>: needs formatting");
+                std::process::exit(1);
+            }
+            return;
+        }
+
+        if let Err(e) = std::io::stdout().write_all(formatted.as_bytes()) {
+            eprintln!("Error: cannot write output: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if a.files.is_empty() {
-        eprintln!("Usage: hew fmt [--check] <file.hew>...");
+        eprintln!("Usage: hew fmt [--check] (--stdin | <file.hew>...)");
         std::process::exit(1);
     }
 
@@ -353,20 +381,10 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
-        let result = hew_parser::parse(&source);
-        let is_fatal = result
-            .errors
-            .iter()
-            .any(|e| matches!(e.severity, hew_parser::Severity::Error));
-        if is_fatal {
-            for err in &result.errors {
-                eprintln!("{file}: {err:?}");
-            }
+        let Some(formatted) = format_for_display(&file, &source) else {
             had_errors = true;
             continue;
-        }
-
-        let formatted = hew_parser::fmt::format_source(&source, &result.program);
+        };
 
         if a.check {
             if formatted != source {
@@ -386,6 +404,22 @@ fn cmd_fmt(a: &args::FmtArgs) {
     if had_errors || needs_formatting {
         std::process::exit(1);
     }
+}
+
+fn format_for_display(input_name: &str, source: &str) -> Option<String> {
+    let result = hew_parser::parse(source);
+    let is_fatal = result
+        .errors
+        .iter()
+        .any(|e| matches!(e.severity, hew_parser::Severity::Error));
+    if is_fatal {
+        for err in &result.errors {
+            eprintln!("{input_name}: {err:?}");
+        }
+        return None;
+    }
+
+    Some(hew_parser::fmt::format_source(source, &result.program))
 }
 
 fn cmd_init(a: &args::InitArgs) {

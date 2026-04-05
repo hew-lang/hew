@@ -1057,6 +1057,32 @@ fn typecheck_match_wrong_enum_variant_errors() {
 }
 
 #[test]
+fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let _value = match missing {\n",
+        "        Some(x) => x,\n",
+        "        None => panic(\"boom\"),\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .count(),
+        1,
+        "expected only the errored scrutinee to report UndefinedVariable: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::InferenceFailed)),
+        "errored scrutinees must not seed constructor-pattern inference holes: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_generic_enum_constructor_infers_type_args() {
     let (errors, _) = parse_and_check(concat!(
         "enum Option<T> { Some(T); None; }\n",

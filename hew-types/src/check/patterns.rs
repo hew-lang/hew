@@ -27,7 +27,7 @@ impl Checker {
             }
             Pattern::Constructor { name, patterns } => {
                 // Look up variant in enum definition
-                if let Some(payload_tys) = self.lookup_variant_types(name, ty) {
+                if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
                     }
@@ -147,7 +147,12 @@ impl Checker {
         }
     }
 
-    pub(super) fn lookup_variant_types(&self, variant_name: &str, enum_ty: &Ty) -> Option<Vec<Ty>> {
+    pub(super) fn lookup_variant_types(
+        &self,
+        variant_name: &str,
+        enum_ty: &Ty,
+        fallback_arity: usize,
+    ) -> Option<Vec<Ty>> {
         // Handle Option<T> variants
         if let Some(inner) = enum_ty.as_option() {
             return match variant_name {
@@ -198,9 +203,14 @@ impl Checker {
                 }
             }
         }
-        // If scrutinee type is unknown/var, still allow binding
-        if let Ty::Var(_) | Ty::Error = enum_ty {
+        // If the scrutinee is still unknown, keep constructor payloads flexible.
+        if let Ty::Var(_) = enum_ty {
             return Some(vec![Ty::Var(TypeVar::fresh())]);
+        }
+        // Preserve payload bindings for recovery, but fail closed: an already
+        // errored scrutinee must not seed fresh inference variables.
+        if let Ty::Error = enum_ty {
+            return Some(vec![Ty::Error; fallback_arity]);
         }
         // Search all enum types for the variant only when scrutinee type is
         // not a known enum (e.g. int, string, or other non-enum named types).

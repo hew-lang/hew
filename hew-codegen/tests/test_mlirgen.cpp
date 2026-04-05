@@ -2302,6 +2302,19 @@ fn discarded_named_tracker_temp(flag: bool) -> int {
     0
 }
 
+fn discarded_named_tracker_loop(flag: bool) -> int {
+    var i = 0;
+    while i < 2 {
+        (if flag {
+            NamedTracker { name: "left", id: i }
+        } else {
+            NamedTracker { name: "right", id: i }
+        });
+        i = i + 1;
+    }
+    0
+}
+
 fn main() -> int {
     discarded_tracker_temp(true) + discarded_zero_tracker_temp(false)
         + discarded_named_tracker_temp(false)
@@ -2316,7 +2329,8 @@ fn main() -> int {
   auto trackerFn = lookupFuncBySuffix(module, "discarded_tracker_temp");
   auto zeroTrackerFn = lookupFuncBySuffix(module, "discarded_zero_tracker_temp");
   auto namedTrackerFn = lookupFuncBySuffix(module, "discarded_named_tracker_temp");
-  if (!trackerFn || !zeroTrackerFn || !namedTrackerFn) {
+  auto namedLoopFn = lookupFuncBySuffix(module, "discarded_named_tracker_loop");
+  if (!trackerFn || !zeroTrackerFn || !namedTrackerFn || !namedLoopFn) {
     FAIL("discarded tracker temporary test functions not found");
     module.getOperation()->destroy();
     return;
@@ -2348,6 +2362,12 @@ fn main() -> int {
 
   if (countDropOpsByDropFn(namedTrackerFn, "hew_string_drop", false) == 0) {
     FAIL("discarded if-expression should drop owned fields for user-drop branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(namedLoopFn, "hew_string_drop", false) < 3) {
+    FAIL("discarded if-expression loops should drop overwritten owned-field temporaries");
     module.getOperation()->destroy();
     return;
   }

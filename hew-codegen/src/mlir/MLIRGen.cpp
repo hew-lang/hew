@@ -6546,10 +6546,26 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
   builder.restoreInsertionPoint(savedIP);
 
   // In loops, the alloca may already hold a value from a previous
-  // iteration.  Drop it before storing the new value to prevent leaks
+  // iteration. Drop it before storing the new value to prevent leaks
   // from overwritten temporaries.
-  if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
-    auto loc = builder.getUnknownLoc();
+  auto loc = builder.getUnknownLoc();
+  if (initFlag) {
+    auto oldVal =
+        mlir::memref::LoadOp::create(builder, loc, alloca, mlir::ValueRange{}).getResult();
+    if (storageType != semanticType)
+      oldVal = coerceType(oldVal, semanticType, loc);
+    auto isInitialized =
+        mlir::memref::LoadOp::create(builder, loc, initFlag, mlir::ValueRange{}).getResult();
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isInitialized,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, oldVal, info.dropFunc, info.isUserDrop);
+    emitFieldDropsForUserStruct(oldVal, loc);
+    auto falseValue = createIntConstant(builder, loc, builder.getI1Type(), 0);
+    mlir::memref::StoreOp::create(builder, loc, falseValue, initFlag);
+    builder.setInsertionPointAfter(guard);
+  } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) ||
+             isPointerLikeType(semanticType)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     auto oldVal =
         mlir::memref::LoadOp::create(builder, loc, alloca, mlir::ValueRange{}).getResult();

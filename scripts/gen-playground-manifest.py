@@ -143,8 +143,8 @@ def build_manifest_entries() -> list[dict[str, str]]:
                 "category": category,
                 "name": metadata["name"],
                 "description": metadata["description"],
-                "source_path": source_path.relative_to(ROOT).as_posix(),
-                "expected_path": expected_path.relative_to(ROOT).as_posix(),
+                "source_path": source_path.relative_to(PLAYGROUND_DIR).as_posix(),
+                "expected_path": expected_path.relative_to(PLAYGROUND_DIR).as_posix(),
             }
         )
 

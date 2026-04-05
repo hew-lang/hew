@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::method_resolution::lookup_method_sig as shared_lookup_method_sig;
 
 impl Checker {
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
@@ -387,7 +388,6 @@ impl Checker {
             name: type_name.clone(),
             args: vec![],
         };
-        let type_name_owned = type_name.clone();
 
         for method_name in &required {
             // Resolve the trait method's expected signature.
@@ -396,10 +396,10 @@ impl Checker {
                 return false;
             };
 
-            // Look up the concrete type's method (receiver already stripped in type_defs).
-            // Primary: type_defs[type_name].methods[method_name]
-            // Fallback: fn_sigs["TypeName::method_name"]
-            let Some(type_sig) = self.lookup_named_method_sig(&type_name_owned, &[], method_name)
+            // Look up the concrete type's method using the shared builtin-aware
+            // resolver so imported stdlib stubs cannot shadow intrinsic surfaces.
+            let Some(type_sig) =
+                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
             else {
                 return false;
             };

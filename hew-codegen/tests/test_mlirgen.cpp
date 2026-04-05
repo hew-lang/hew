@@ -1023,6 +1023,61 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Discarded block-like expressions must keep tail if lowering in
+//       statement mode
+// ============================================================================
+static void test_discarded_block_like_expr_tail_if_no_results() {
+  TEST(discarded_block_like_expr_tail_if_no_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn demo(flag: bool) -> int {
+    {
+        if flag {
+            println(1);
+        } else {
+            println(2);
+        }
+    };
+    unsafe {
+        if flag {
+            println(3);
+        } else {
+            println(4);
+        }
+    };
+    0
+}
+
+fn main() -> int {
+    demo(true)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto demoFn = lookupFuncBySuffix(module, "F4demo");
+  if (!demoFn) {
+    FAIL("demo function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(demoFn) > 1) {
+    FAIL("discarded block-like expressions should not introduce extra resultful scf.if ops");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -3586,6 +3641,7 @@ int main() {
   test_statement_position_if_and_match_lower_without_results();
   test_unannotated_early_return_tail_if_match_lower_without_results();
   test_non_void_nested_stmt_if_no_results();
+  test_discarded_block_like_expr_tail_if_no_results();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

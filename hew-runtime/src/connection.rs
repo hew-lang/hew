@@ -378,7 +378,8 @@ fn publish_connection_established(
                 mgr.cluster,
                 peer_node_id,
                 publication_token,
-                Arc::as_ptr(publication_removed),
+                publication_sync.as_ref(),
+                publication_removed.as_ref(),
             ) == 1
         }
     };
@@ -402,18 +403,19 @@ fn retire_connection_publication(
     conn_id: c_int,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
-    publication_removed: &Arc<AtomicBool>,
 ) {
     if peer_node_id == 0 {
         return;
     }
 
-    publication_removed.store(true, Ordering::Release);
-    if !mgr.routing_table.is_null() {
+    {
         let _publication = publication_sync.lock_or_recover();
-        // SAFETY: pointer validity is checked by the callee.
-        let _ =
-            unsafe { hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id) };
+        if !mgr.routing_table.is_null() {
+            // SAFETY: pointer validity is checked by the callee.
+            let _ = unsafe {
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id)
+            };
+        }
     }
     if !mgr.cluster.is_null() {
         // SAFETY: pointer validity is checked by the callee.
@@ -1514,7 +1516,10 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // Release the registry lock before waking the reader. The reader cleanup
     // path can re-enter hew_connmgr_remove on an unexpected drop.
     //
-    publication_removed.store(true, Ordering::Release);
+    {
+        let _publication = publication_sync.lock_or_recover();
+        publication_removed.store(true, Ordering::Release);
+    }
     // Mark the reader as explicitly stopped before closing the transport so an
     // awakened reader does not treat this teardown as an unexpected drop.
     conn.reader_stop.store(1, Ordering::Release);
@@ -1530,7 +1535,6 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         conn_id,
         publication_token,
         &publication_sync,
-        &publication_removed,
     );
 
     0

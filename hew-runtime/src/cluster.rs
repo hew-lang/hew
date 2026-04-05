@@ -967,23 +967,23 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
     cluster: *mut HewCluster,
     node_id: u16,
     publication_token: u64,
-    publication_removed: *const AtomicBool,
+    publication_sync: &Mutex<()>,
+    publication_removed: &AtomicBool,
 ) -> c_int {
-    if cluster.is_null() || publication_removed.is_null() {
+    if cluster.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    // SAFETY: caller guarantees `publication_removed` points at the live
-    // connection-local removal flag for this publication attempt.
-    let publication_removed = unsafe { &*publication_removed };
     let mut tokens = cluster.connection_tokens.lock_or_recover();
+    let _publication = publication_sync.lock_or_recover();
     if publication_removed.load(Ordering::Acquire) {
         return 0;
     }
     tokens.insert(node_id, publication_token);
-    // Keep the token guard until the membership state update completes so a
-    // concurrent remove cannot retire the connection before it is published.
+    // Keep both guards until the membership state update completes so a
+    // concurrent remove cannot flip the removal flag after this check but
+    // before the establish transition becomes visible.
     cluster.notify_connection_established(node_id);
     1
 }
@@ -1495,6 +1495,114 @@ mod tests {
 
             hew_cluster_free(cluster);
             drop(Box::from_raw(callback_state));
+        }
+    }
+
+    #[test]
+    fn tokenized_connection_established_observes_sync_cancellation() {
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until the worker joins.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+        let publication_sync = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let publication_removed = std::sync::Arc::new(AtomicBool::new(false));
+
+        // SAFETY: test context with explicit cleanup before return.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+
+            let publication_guard = publication_sync
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let members_guard = (&*cluster)
+                .members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let publish_cluster = SendCluster(cluster);
+            let publication_sync_for_thread = std::sync::Arc::clone(&publication_sync);
+            let publication_removed_for_thread = std::sync::Arc::clone(&publication_removed);
+            let publish_handle = std::thread::spawn(move || {
+                let cluster = publish_cluster;
+                // SAFETY: test keeps the cluster alive until the worker joins.
+                let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster.0,
+                    2,
+                    2,
+                    publication_sync_for_thread.as_ref(),
+                    publication_removed_for_thread.as_ref(),
+                );
+                publish_done_tx
+                    .send(rc)
+                    .expect("publish thread should report completion");
+            });
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            loop {
+                match (&*cluster).connection_tokens.try_lock() {
+                    Err(std::sync::TryLockError::WouldBlock) => break,
+                    Ok(tokens) => drop(tokens),
+                    Err(std::sync::TryLockError::Poisoned(err)) => {
+                        drop(err.into_inner());
+                        panic!("connection token mutex should not be poisoned");
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "publish should reach the tokenized establish critical section"
+                );
+                std::thread::yield_now();
+            }
+
+            publication_removed.store(true, Ordering::Release);
+            drop(publication_guard);
+            drop(members_guard);
+
+            assert_eq!(
+                publish_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("publish thread should complete once cancellation is visible"),
+                0
+            );
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a cancelled delayed publish must not emit a stale JOINED event"
+            );
+            assert!(
+                !(&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(&2),
+                "a cancelled publish must not install a live token"
+            );
+
+            hew_cluster_free(cluster);
         }
     }
 

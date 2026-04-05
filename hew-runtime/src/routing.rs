@@ -90,6 +90,33 @@ pub unsafe extern "C" fn hew_routing_remove_route(table: *mut HewRoutingTable, n
     routes.remove(&node_id);
 }
 
+/// Remove the route for `node_id` only when it still points at `conn`.
+///
+/// Returns `true` when the route was removed and `false` when the route was
+/// missing or had already been replaced.
+///
+/// # Safety
+///
+/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
+pub(crate) unsafe fn hew_routing_remove_route_if_conn(
+    table: *mut HewRoutingTable,
+    node_id: u16,
+    conn: c_int,
+) -> bool {
+    if table.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `table` is valid.
+    let table = unsafe { &*table };
+    let mut routes = table.routes.write_or_recover();
+    if matches!(routes.get(&node_id), Some(current) if *current == conn) {
+        routes.remove(&node_id);
+        true
+    } else {
+        false
+    }
+}
+
 /// Resolve a destination PID to a transport connection handle.
 ///
 /// Returns:

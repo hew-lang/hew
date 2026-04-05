@@ -42,9 +42,10 @@
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
 use crate::util::MutexExt;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ── Member states ──────────────────────────────────────────────────────
 
@@ -135,6 +136,66 @@ pub struct RegistryEvent {
     dissemination_count: u32,
 }
 
+#[derive(Debug, Default)]
+struct ConnectionTokens {
+    current: HashMap<u16, u64>,
+    visible: HashMap<u16, u64>,
+}
+
+#[derive(Debug)]
+enum PublicationTransition {
+    Plain,
+    TokenEstablished(u64),
+    GuardedTokenEstablished {
+        publication_token: u64,
+        publication_sync: Arc<Mutex<()>>,
+        publication_removed: Arc<AtomicBool>,
+    },
+    TokenLost(u64),
+}
+
+#[derive(Debug)]
+struct MemberTransition {
+    node_id: u16,
+    state: i32,
+    incarnation: u64,
+    is_new_member: bool,
+    old_state: Option<i32>,
+    old_incarnation: Option<u64>,
+    publication: PublicationTransition,
+}
+
+impl MemberTransition {
+    fn membership_event(&self) -> Option<u8> {
+        match self.state {
+            MEMBER_ALIVE => {
+                if self.is_new_member
+                    || matches!(self.old_state, Some(prev) if prev != MEMBER_ALIVE)
+                {
+                    Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)
+                } else {
+                    None
+                }
+            }
+            MEMBER_SUSPECT => Some(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+            MEMBER_DEAD => Some(HEW_MEMBERSHIP_EVENT_NODE_DEAD),
+            MEMBER_LEFT => Some(HEW_MEMBERSHIP_EVENT_NODE_LEFT),
+            _ => None,
+        }
+    }
+
+    fn with_publication(mut self, publication: PublicationTransition) -> Self {
+        self.publication = publication;
+        self
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingMemberTransitions {
+    queue: VecDeque<MemberTransition>,
+    draining: bool,
+}
+
 /// Callback for registry gossip notifications.
 ///
 /// Signature: `fn(name: *const c_char, actor_pid: u64, is_add: bool, user_data: *mut c_void)`.
@@ -188,6 +249,10 @@ pub struct HewCluster {
     config: ClusterConfig,
     /// Current membership list (protected by mutex for thread safety).
     members: Mutex<Vec<ClusterMember>>,
+    /// Current connection publication token per peer.
+    connection_tokens: Mutex<ConnectionTokens>,
+    /// Deferred membership transitions waiting to notify callbacks.
+    pending_member_transitions: Mutex<PendingMemberTransitions>,
     /// Recent membership events for gossip dissemination.
     events: Mutex<VecDeque<MemberEvent>>,
     /// Recent registry events for gossip dissemination.
@@ -221,6 +286,8 @@ impl HewCluster {
         Self {
             config,
             members: Mutex::new(Vec::with_capacity(16)),
+            connection_tokens: Mutex::new(ConnectionTokens::default()),
+            pending_member_transitions: Mutex::new(PendingMemberTransitions::default()),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: 1,
@@ -235,19 +302,23 @@ impl HewCluster {
     }
 
     /// Add or update a member in the membership list.
-    fn upsert_member(&self, node_id: u16, state: i32, incarnation: u64, addr: &[u8]) {
-        let mut members = self.members.lock_or_recover();
-
+    fn stage_member_transition_locked(
+        members: &mut Vec<ClusterMember>,
+        node_id: u16,
+        state: i32,
+        incarnation: u64,
+        addr: &[u8],
+    ) -> Option<MemberTransition> {
         if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
             if existing.state == MEMBER_DEAD && state == MEMBER_ALIVE {
                 eprintln!("[cluster] ignoring ALIVE for dead node {node_id}");
-                return;
+                return None;
             }
-            // Only update if the new incarnation is higher.
             if incarnation > existing.incarnation
                 || (incarnation == existing.incarnation && state > existing.state)
             {
                 let old_state = existing.state;
+                let old_incarnation = existing.incarnation;
                 existing.state = state;
                 existing.incarnation = incarnation;
                 if !addr.is_empty() {
@@ -255,24 +326,186 @@ impl HewCluster {
                     existing.addr[..len].copy_from_slice(&addr[..len]);
                     existing.addr[len] = 0;
                 }
-                self.emit_event(node_id, state, incarnation);
-                self.notify_callback(node_id, state, incarnation);
-                self.notify_membership_callback(node_id, state, false, Some(old_state));
+                return Some(MemberTransition {
+                    node_id,
+                    state,
+                    incarnation,
+                    is_new_member: false,
+                    old_state: Some(old_state),
+                    old_incarnation: Some(old_incarnation),
+                    publication: PublicationTransition::Plain,
+                });
             }
-        } else {
-            let mut member = ClusterMember {
+            return None;
+        }
+
+        let mut member = ClusterMember {
+            node_id,
+            state,
+            incarnation,
+            addr: [0u8; 128],
+            last_seen_ms: 0,
+        };
+        let len = addr.len().min(127);
+        member.addr[..len].copy_from_slice(&addr[..len]);
+        members.push(member);
+        Some(MemberTransition {
+            node_id,
+            state,
+            incarnation,
+            is_new_member: true,
+            old_state: None,
+            old_incarnation: None,
+            publication: PublicationTransition::Plain,
+        })
+    }
+
+    fn queue_member_transition(&self, transition: MemberTransition) -> bool {
+        let mut pending = self.pending_member_transitions.lock_or_recover();
+        pending.queue.push_back(transition);
+        if pending.draining {
+            return false;
+        }
+        pending.draining = true;
+        true
+    }
+
+    fn drain_member_transitions(&self) {
+        loop {
+            let transition = {
+                let mut pending = self.pending_member_transitions.lock_or_recover();
+                if let Some(transition) = pending.queue.pop_front() {
+                    transition
+                } else {
+                    pending.draining = false;
+                    return;
+                }
+            };
+            self.deliver_member_transition(&transition);
+        }
+    }
+
+    fn deliver_member_transition(&self, transition: &MemberTransition) {
+        let membership_event = transition.membership_event();
+        let deliver = match &transition.publication {
+            PublicationTransition::Plain => {
+                if matches!(membership_event, Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)) {
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    if let Some(publication_token) =
+                        tokens.current.get(&transition.node_id).copied()
+                    {
+                        tokens.visible.insert(transition.node_id, publication_token);
+                    }
+                }
+                true
+            }
+            PublicationTransition::TokenEstablished(publication_token) => {
+                let mut tokens = self.connection_tokens.lock_or_recover();
+                match tokens.current.get(&transition.node_id) {
+                    Some(current) if *current == *publication_token => {
+                        tokens
+                            .visible
+                            .insert(transition.node_id, *publication_token);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            PublicationTransition::GuardedTokenEstablished {
+                publication_token,
+                publication_sync,
+                publication_removed,
+            } => {
+                let _publication = publication_sync.lock_or_recover();
+                if publication_removed.load(Ordering::Acquire) {
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    if matches!(
+                        tokens.current.get(&transition.node_id),
+                        Some(current) if *current == *publication_token
+                    ) {
+                        tokens.current.remove(&transition.node_id);
+                    }
+                    if matches!(
+                        tokens.visible.get(&transition.node_id),
+                        Some(current) if *current == *publication_token
+                    ) {
+                        tokens.visible.remove(&transition.node_id);
+                    }
+                    false
+                } else {
+                    let Some(old_state) = transition.old_state else {
+                        return;
+                    };
+                    let Some(old_incarnation) = transition.old_incarnation else {
+                        return;
+                    };
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    match tokens.current.get(&transition.node_id) {
+                        Some(current) if *current == *publication_token => {
+                            let mut members = self.members.lock_or_recover();
+                            match members.iter_mut().find(|m| m.node_id == transition.node_id) {
+                                Some(member)
+                                    if member.state == old_state
+                                        && member.incarnation == old_incarnation =>
+                                {
+                                    member.state = transition.state;
+                                    member.incarnation = transition.incarnation;
+                                    // SAFETY: hew_now_ms has no preconditions.
+                                    member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                                    tokens
+                                        .visible
+                                        .insert(transition.node_id, *publication_token);
+                                    true
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    }
+                }
+            }
+            PublicationTransition::TokenLost(publication_token) => {
+                let mut tokens = self.connection_tokens.lock_or_recover();
+                match tokens.visible.get(&transition.node_id) {
+                    Some(current) if *current == *publication_token => {
+                        tokens.visible.remove(&transition.node_id);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        };
+        if !deliver {
+            return;
+        }
+
+        self.emit_event(transition.node_id, transition.state, transition.incarnation);
+        self.notify_callback(transition.node_id, transition.state, transition.incarnation);
+        if let (Some(cb), Some(event)) = (self.membership_callback, membership_event) {
+            cb(
+                transition.node_id,
+                event,
+                self.membership_callback_user_data,
+            );
+        }
+    }
+
+    fn upsert_member(&self, node_id: u16, state: i32, incarnation: u64, addr: &[u8]) {
+        let mut should_drain = false;
+        {
+            let mut members = self.members.lock_or_recover();
+            if let Some(transition) = Self::stage_member_transition_locked(
+                &mut members,
                 node_id,
                 state,
                 incarnation,
-                addr: [0u8; 128],
-                last_seen_ms: 0,
-            };
-            let len = addr.len().min(127);
-            member.addr[..len].copy_from_slice(&addr[..len]);
-            members.push(member);
-            self.emit_event(node_id, state, incarnation);
-            self.notify_callback(node_id, state, incarnation);
-            self.notify_membership_callback(node_id, state, true, None);
+                addr,
+            ) {
+                should_drain = self.queue_member_transition(transition);
+            }
+        }
+        if should_drain {
+            self.drain_member_transitions();
         }
     }
 
@@ -441,49 +674,200 @@ impl HewCluster {
 
     /// Notify SWIM state machine that a connection dropped.
     fn notify_connection_lost(&self, node_id: u16) {
-        let member = {
-            let members = self.members.lock_or_recover();
-            members
+        let mut should_drain = false;
+        let known_member = {
+            let mut members = self.members.lock_or_recover();
+            let member = members
                 .iter()
                 .find(|m| m.node_id == node_id)
-                .map(|m| (m.state, m.incarnation))
+                .map(|m| (m.state, m.incarnation));
+            if let Some((state, incarnation)) = member {
+                if state == MEMBER_ALIVE {
+                    if let Some(transition) = Self::stage_member_transition_locked(
+                        &mut members,
+                        node_id,
+                        MEMBER_SUSPECT,
+                        incarnation,
+                        &[],
+                    ) {
+                        should_drain = self.queue_member_transition(transition);
+                    }
+                }
+                true
+            } else {
+                false
+            }
         };
 
-        let Some((state, incarnation)) = member else {
+        if !known_member {
             eprintln!(
                 "hew-runtime cluster warning: ignoring connection_lost for unknown node_id={node_id}"
             );
             return;
-        };
+        }
+        if should_drain {
+            self.drain_member_transitions();
+        }
+    }
 
-        if state == MEMBER_ALIVE {
-            self.upsert_member(node_id, MEMBER_SUSPECT, incarnation, &[]);
+    fn notify_connection_lost_if_current(&self, node_id: u16, publication_token: u64) {
+        let mut should_drain = false;
+        let known_member = {
+            let mut tokens = self.connection_tokens.lock_or_recover();
+            match tokens.current.get(&node_id) {
+                Some(current) if *current == publication_token => {
+                    tokens.current.remove(&node_id);
+                }
+                _ => return,
+            }
+
+            let mut clear_visible_now = false;
+            let known_member = {
+                let mut members = self.members.lock_or_recover();
+                let member = members
+                    .iter()
+                    .find(|m| m.node_id == node_id)
+                    .map(|m| (m.state, m.incarnation));
+                if let Some((state, incarnation)) = member {
+                    if state == MEMBER_ALIVE {
+                        if let Some(transition) = Self::stage_member_transition_locked(
+                            &mut members,
+                            node_id,
+                            MEMBER_SUSPECT,
+                            incarnation,
+                            &[],
+                        ) {
+                            should_drain =
+                                self.queue_member_transition(transition.with_publication(
+                                    PublicationTransition::TokenLost(publication_token),
+                                ));
+                        }
+                    } else {
+                        clear_visible_now = true;
+                    }
+                    true
+                } else {
+                    clear_visible_now = true;
+                    false
+                }
+            };
+
+            if clear_visible_now
+                && matches!(
+                    tokens.visible.get(&node_id),
+                    Some(current) if *current == publication_token
+                )
+            {
+                tokens.visible.remove(&node_id);
+            }
+            known_member
+        };
+        if !known_member {
+            eprintln!(
+                "hew-runtime cluster warning: ignoring connection_lost for unknown node_id={node_id}"
+            );
+            return;
+        }
+        if should_drain {
+            self.drain_member_transitions();
         }
     }
 
     /// Notify SWIM state machine that a connection was established.
     fn notify_connection_established(&self, node_id: u16) {
-        let member = {
-            let members = self.members.lock_or_recover();
-            members
+        let mut should_drain = false;
+        let known_member = {
+            let mut members = self.members.lock_or_recover();
+            let member = members
                 .iter()
                 .find(|m| m.node_id == node_id)
-                .map(|m| (m.state, m.incarnation))
+                .map(|m| (m.state, m.incarnation));
+            if let Some((state, incarnation)) = member {
+                if state == MEMBER_ALIVE {
+                    if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
+                        // SAFETY: hew_now_ms has no preconditions.
+                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                    }
+                } else {
+                    let incarnation = incarnation.saturating_add(1);
+                    if let Some(transition) = Self::stage_member_transition_locked(
+                        &mut members,
+                        node_id,
+                        MEMBER_ALIVE,
+                        incarnation,
+                        &[],
+                    ) {
+                        if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
+                            // SAFETY: hew_now_ms has no preconditions.
+                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        }
+                        should_drain = self.queue_member_transition(transition);
+                    }
+                }
+                true
+            } else {
+                false
+            }
         };
 
-        if member.is_none() {
+        if !known_member {
             eprintln!("[cluster] unknown node {node_id} connected, waiting for join");
             return;
         }
+        if should_drain {
+            self.drain_member_transitions();
+        }
+    }
 
-        if matches!(member, Some((MEMBER_ALIVE, _))) {
-            self.update_last_seen(node_id);
+    fn notify_connection_established_for_token(&self, node_id: u16, publication_token: u64) {
+        let mut should_drain = false;
+        let known_member = {
+            let mut tokens = self.connection_tokens.lock_or_recover();
+            tokens.current.insert(node_id, publication_token);
+
+            let mut members = self.members.lock_or_recover();
+            let member = members
+                .iter()
+                .find(|m| m.node_id == node_id)
+                .map(|m| (m.state, m.incarnation));
+            if let Some((state, incarnation)) = member {
+                if state == MEMBER_ALIVE {
+                    if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
+                        // SAFETY: hew_now_ms has no preconditions.
+                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                    }
+                    tokens.visible.insert(node_id, publication_token);
+                } else {
+                    let incarnation = incarnation.saturating_add(1);
+                    if let Some(transition) = Self::stage_member_transition_locked(
+                        &mut members,
+                        node_id,
+                        MEMBER_ALIVE,
+                        incarnation,
+                        &[],
+                    ) {
+                        if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
+                            // SAFETY: hew_now_ms has no preconditions.
+                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        }
+                        should_drain = self.queue_member_transition(transition.with_publication(
+                            PublicationTransition::TokenEstablished(publication_token),
+                        ));
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        };
+
+        if !known_member {
+            eprintln!("[cluster] unknown node {node_id} connected, waiting for join");
             return;
         }
-
-        let incarnation = member.map_or(1, |(_, inc)| inc.saturating_add(1));
-        self.upsert_member(node_id, MEMBER_ALIVE, incarnation, &[]);
-        self.update_last_seen(node_id);
+        if should_drain {
+            self.drain_member_transitions();
+        }
     }
 
     /// Get the next ping target (round-robin through members).
@@ -883,6 +1267,20 @@ pub unsafe extern "C" fn hew_cluster_notify_connection_lost(
     0
 }
 
+pub(crate) unsafe fn hew_cluster_notify_connection_lost_if_current(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    publication_token: u64,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_lost_if_current(node_id, publication_token);
+    0
+}
+
 /// Notify SWIM membership that a connection to `node_id` has been established.
 ///
 /// Returns 0 on success, -1 on invalid cluster pointer.
@@ -902,6 +1300,87 @@ pub unsafe extern "C" fn hew_cluster_notify_connection_established(
     let cluster = unsafe { &*cluster };
     cluster.notify_connection_established(node_id);
     0
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "token-only helper is exercised by focused tests")
+)]
+pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    publication_token: u64,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_established_for_token(node_id, publication_token);
+    0
+}
+
+pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_removed(
+    cluster: *mut HewCluster,
+    node_id: u16,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    let mut should_drain = false;
+    let known_member = {
+        let _publication = publication_sync.lock_or_recover();
+        if publication_removed.load(Ordering::Acquire) {
+            return 0;
+        }
+        let mut tokens = cluster.connection_tokens.lock_or_recover();
+        tokens.current.insert(node_id, publication_token);
+
+        let mut members = cluster.members.lock_or_recover();
+        let member = members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map(|m| (m.state, m.incarnation));
+        if let Some((state, old_incarnation)) = member {
+            if state == MEMBER_ALIVE {
+                if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
+                    // SAFETY: hew_now_ms has no preconditions.
+                    member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                }
+                tokens.visible.insert(node_id, publication_token);
+            } else {
+                let incarnation = old_incarnation.saturating_add(1);
+                let transition = MemberTransition {
+                    node_id,
+                    state: MEMBER_ALIVE,
+                    incarnation,
+                    is_new_member: false,
+                    old_state: Some(state),
+                    old_incarnation: Some(old_incarnation),
+                    publication: PublicationTransition::GuardedTokenEstablished {
+                        publication_token,
+                        publication_sync: Arc::clone(publication_sync),
+                        publication_removed: Arc::clone(publication_removed),
+                    },
+                };
+                should_drain = cluster.queue_member_transition(transition);
+            }
+            true
+        } else {
+            false
+        }
+    };
+    if !known_member {
+        eprintln!("[cluster] unknown node {node_id} connected, waiting for join");
+    } else if should_drain {
+        cluster.drain_member_transitions();
+    }
+    1
 }
 
 /// Get the number of alive members.
@@ -1279,6 +1758,489 @@ mod tests {
                 (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
             ]
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test coordinates the stale lost-vs-established race in one place"
+    )]
+    fn tokenized_connection_lost_serializes_replacement_publish() {
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+        }
+
+        extern "C" fn block_on_suspect(node_id: u16, event: u8, user_data: *mut c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == HEW_MEMBERSHIP_EVENT_NODE_SUSPECT {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until both worker threads join.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+        }));
+
+        // SAFETY: test-owned cluster and callback state remain valid until the
+        // explicit free/drop calls after both worker threads complete.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(cluster, block_on_suspect, callback_state.cast());
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (established_done_tx, established_done_rx) = std::sync::mpsc::channel::<()>();
+            let established_cluster = SendCluster(cluster);
+            let established_handle = std::thread::spawn(move || {
+                let cluster = established_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_established_for_token(cluster.0, 2, 2);
+                assert_eq!(rc, 0);
+                established_done_tx
+                    .send(())
+                    .expect("established thread should report completion");
+            });
+
+            assert_eq!(
+                (&*callback_state)
+                    .events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "replacement publish must not emit JOINED before the lost callback is released"
+            );
+
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish after the callback is released");
+            established_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("replacement publish should complete after lost finishes");
+
+            lost_handle.join().expect("lost thread should not panic");
+            established_handle
+                .join()
+                .expect("established thread should not panic");
+
+            let cluster_ref = &*cluster;
+            {
+                let members = cluster_ref
+                    .members
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(member.state, MEMBER_ALIVE);
+            }
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                ],
+                "replacement publish must not slip in between token retirement and the lost update"
+            );
+
+            hew_cluster_free(cluster);
+            drop(Box::from_raw(callback_state));
+        }
+    }
+
+    #[test]
+    fn tokenized_connection_established_observes_sync_cancellation() {
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until the worker joins.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+        let publication_sync = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let publication_removed = std::sync::Arc::new(AtomicBool::new(false));
+
+        // SAFETY: test context with explicit cleanup before return.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+
+            let publication_guard = publication_sync
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let members_guard = (&*cluster)
+                .members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let publish_cluster = SendCluster(cluster);
+            let publication_sync_for_thread = std::sync::Arc::clone(&publication_sync);
+            let publication_removed_for_thread = std::sync::Arc::clone(&publication_removed);
+            let publish_handle = std::thread::spawn(move || {
+                let cluster = publish_cluster;
+                // SAFETY: test keeps the cluster alive until the worker joins.
+                let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster.0,
+                    2,
+                    2,
+                    &publication_sync_for_thread,
+                    &publication_removed_for_thread,
+                );
+                publish_done_tx
+                    .send(rc)
+                    .expect("publish thread should report completion");
+            });
+
+            assert!(
+                matches!(
+                    publish_done_rx.recv_timeout(std::time::Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "publish should remain blocked while the publication lock is held"
+            );
+
+            publication_removed.store(true, Ordering::Release);
+            drop(publication_guard);
+            drop(members_guard);
+
+            assert_eq!(
+                publish_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("publish thread should complete once cancellation is visible"),
+                0
+            );
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a cancelled delayed publish must not emit a stale JOINED event"
+            );
+            assert!(
+                !(&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .current
+                    .contains_key(&2),
+                "a cancelled publish must not install a live token"
+            );
+
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test coordinates delayed guarded publish cancellation end-to-end"
+    )]
+    fn tokenized_connection_established_skips_removed_delivery_after_queueing() {
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+            blocked_first_suspect: AtomicBool,
+        }
+
+        extern "C" fn block_on_first_suspect(node_id: u16, event: u8, user_data: *mut c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+                && !state.blocked_first_suspect.swap(true, Ordering::AcqRel)
+            {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut HewCluster);
+        // SAFETY: the test keeps the cluster alive until all worker threads join.
+        unsafe impl Send for SendCluster {}
+
+        let config = make_config(1);
+        let publication_sync = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let publication_removed = std::sync::Arc::new(AtomicBool::new(false));
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+            blocked_first_suspect: AtomicBool::new(false),
+        }));
+
+        // SAFETY: test-owned cluster and callback state remain valid until the
+        // explicit free/drop calls after all worker threads complete.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                block_on_first_suspect,
+                callback_state.cast(),
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let publish_cluster = SendCluster(cluster);
+            let publication_sync_for_thread = std::sync::Arc::clone(&publication_sync);
+            let publication_removed_for_thread = std::sync::Arc::clone(&publication_removed);
+            let publish_handle = std::thread::spawn(move || {
+                let cluster = publish_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster.0,
+                    2,
+                    2,
+                    &publication_sync_for_thread,
+                    &publication_removed_for_thread,
+                );
+                publish_done_tx
+                    .send(rc)
+                    .expect("publish thread should report completion");
+            });
+
+            assert_eq!(
+                publish_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("guarded publish should queue while the lost callback is blocked"),
+                1
+            );
+
+            {
+                let _publication = publication_sync
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                publication_removed.store(true, Ordering::Release);
+            }
+
+            let (retire_done_tx, retire_done_rx) = std::sync::mpsc::channel::<()>();
+            let retire_cluster = SendCluster(cluster);
+            let retire_handle = std::thread::spawn(move || {
+                let cluster = retire_cluster;
+                // SAFETY: cluster stays alive until this thread joins.
+                let rc = hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 2);
+                assert_eq!(rc, 0);
+                retire_done_tx
+                    .send(())
+                    .expect("retire thread should report completion");
+            });
+
+            retire_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("removal should retire the hidden token before lost drains");
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish after the callback is released");
+
+            lost_handle.join().expect("lost thread should not panic");
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+            retire_handle
+                .join()
+                .expect("retire thread should not panic");
+
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "removing a hidden delayed publish must not emit stale JOINED or duplicate SUSPECT events"
+            );
+            let cluster_ref = &*cluster;
+            {
+                let tokens = cluster_ref
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    !tokens.current.contains_key(&2),
+                    "removing a hidden delayed publish must clear the staged token"
+                );
+                assert!(
+                    !tokens.visible.contains_key(&2),
+                    "removing a hidden delayed publish must not leak visibility"
+                );
+            }
+            {
+                let members = cluster_ref
+                    .members
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(
+                    member.state, MEMBER_SUSPECT,
+                    "removing a hidden delayed publish must leave the node suspect"
+                );
+            }
+
+            hew_cluster_free(cluster);
+            drop(Box::from_raw(callback_state));
+        }
+    }
+
+    #[test]
+    fn tokenized_connection_establish_before_join_promotes_visible_lost() {
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                (&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .visible
+                    .get(&2),
+                Some(&1),
+                "join should publish the pre-join connection token as externally visible"
+            );
+
+            assert_eq!(
+                hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a pre-join tokenized establish should still allow the later tokenized lost"
+            );
+            {
+                let tokens = (&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    !tokens.current.contains_key(&2) && !tokens.visible.contains_key(&2),
+                    "lost should retire both current and visible token state"
+                );
+            }
+
+            hew_cluster_free(cluster);
+        }
     }
 
     #[test]

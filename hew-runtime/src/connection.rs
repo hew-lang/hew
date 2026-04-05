@@ -40,10 +40,8 @@ use std::time::Duration;
 use rand::rng;
 use rand::RngExt;
 
-use crate::cluster::{
-    hew_cluster_notify_connection_established, hew_cluster_notify_connection_lost, HewCluster,
-};
-use crate::routing::{hew_routing_add_route, hew_routing_remove_route, HewRoutingTable};
+use crate::cluster::HewCluster;
+use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::util::MutexExt;
@@ -142,6 +140,12 @@ impl HewHandshake {
 struct ConnectionActor {
     /// Transport connection ID (index into transport's internal array).
     conn_id: c_int,
+    /// Monotonic token used to suppress stale connection-lifecycle callbacks.
+    publication_token: u64,
+    /// Serializes establish/remove publication for this specific connection.
+    publication_sync: Arc<Mutex<()>>,
+    /// Set once removal begins so delayed establish publication can abort.
+    publication_removed: Arc<AtomicBool>,
     /// Remote node identity from handshake.
     peer_node_id: u16,
     /// Remote capability bitfield from handshake.
@@ -189,6 +193,8 @@ pub struct HewConnMgr {
     reconnect_shutdown: Arc<AtomicBool>,
     /// Background reconnect worker handles.
     reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
+    /// Monotonic token generator for connection-lifecycle publications.
+    next_publication_token: AtomicU64,
     /// The node ID advertised in the handshake for this manager's node.
     /// Stored explicitly so multi-node tests (two nodes in one process) get the
     /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
@@ -250,6 +256,9 @@ impl ConnectionActor {
     fn new(conn_id: c_int) -> Self {
         Self {
             conn_id,
+            publication_token: 0,
+            publication_sync: Arc::new(Mutex::new(())),
+            publication_removed: Arc::new(AtomicBool::new(false)),
             peer_node_id: 0,
             peer_feature_flags: 0,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
@@ -337,6 +346,86 @@ fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
         } else {
             idx += 1;
         }
+    }
+}
+
+fn next_publication_token(mgr: &HewConnMgr) -> u64 {
+    mgr.next_publication_token.fetch_add(1, Ordering::Relaxed)
+}
+
+fn publish_connection_established(
+    mgr: &HewConnMgr,
+    peer_node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
+) {
+    if peer_node_id == 0 {
+        return;
+    }
+
+    if publication_removed.load(Ordering::Acquire) {
+        return;
+    }
+
+    let published = if mgr.cluster.is_null() {
+        true
+    } else {
+        // SAFETY: pointer validity is checked by the callee.
+        unsafe {
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                mgr.cluster,
+                peer_node_id,
+                publication_token,
+                publication_sync,
+                publication_removed,
+            ) == 1
+        }
+    };
+    if !published {
+        return;
+    }
+
+    if !mgr.routing_table.is_null() {
+        let _publication = publication_sync.lock_or_recover();
+        if publication_removed.load(Ordering::Acquire) {
+            return;
+        }
+        // SAFETY: pointer validity is checked by the callee.
+        unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
+    }
+}
+
+fn retire_connection_publication(
+    mgr: &HewConnMgr,
+    peer_node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+) {
+    if peer_node_id == 0 {
+        return;
+    }
+
+    {
+        let _publication = publication_sync.lock_or_recover();
+        if !mgr.routing_table.is_null() {
+            // SAFETY: pointer validity is checked by the callee.
+            let _ = unsafe {
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id)
+            };
+        }
+    }
+    if !mgr.cluster.is_null() {
+        // SAFETY: pointer validity is checked by the callee.
+        let _ = unsafe {
+            crate::cluster::hew_cluster_notify_connection_lost_if_current(
+                mgr.cluster,
+                peer_node_id,
+                publication_token,
+            )
+        };
     }
 }
 
@@ -993,6 +1082,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         reconnect_workers: Mutex::new(Vec::new()),
+        next_publication_token: AtomicU64::new(1),
         local_node_id,
     });
     Box::into_raw(mgr)
@@ -1288,6 +1378,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     let mut actor = ConnectionActor::new(conn_id);
+    actor.publication_token = next_publication_token(mgr);
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
     #[cfg(feature = "encryption")]
@@ -1357,15 +1448,20 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         ));
         return -1;
     }
+    let publication_token = actor.publication_token;
+    let publication_sync = Arc::clone(&actor.publication_sync);
+    let publication_removed = Arc::clone(&actor.publication_removed);
     conns.push(actor);
     drop(conns);
 
-    if peer_hs.node_id != 0 {
-        // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_add_route(mgr.routing_table, peer_hs.node_id, conn_id) };
-        // SAFETY: pointer validity is checked by the callee.
-        let _ = unsafe { hew_cluster_notify_connection_established(mgr.cluster, peer_hs.node_id) };
-    }
+    publish_connection_established(
+        mgr,
+        peer_hs.node_id,
+        conn_id,
+        publication_token,
+        &publication_sync,
+        &publication_removed,
+    );
 
     0
 }
@@ -1386,37 +1482,60 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let Ok(mut conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
-        return -1;
+    let (conn, peer_node_id, publication_token, publication_sync, publication_removed) = {
+        let Ok(mut conns) = mgr.connections.lock() else {
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
+            return -1;
+        };
+
+        let idx = conns.iter().position(|c| c.conn_id == conn_id);
+        let Some(idx) = idx else {
+            set_last_error(format!(
+                "hew_connmgr_remove: connection {conn_id} not found"
+            ));
+            return -1;
+        };
+
+        let conn = conns.swap_remove(idx);
+        let peer_node_id = conn.peer_node_id;
+        let publication_token = conn.publication_token;
+        let publication_sync = Arc::clone(&conn.publication_sync);
+        let publication_removed = Arc::clone(&conn.publication_removed);
+        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        (
+            conn,
+            peer_node_id,
+            publication_token,
+            publication_sync,
+            publication_removed,
+        )
     };
 
-    let idx = conns.iter().position(|c| c.conn_id == conn_id);
-    let Some(idx) = idx else {
-        set_last_error(format!(
-            "hew_connmgr_remove: connection {conn_id} not found"
-        ));
-        return -1;
-    };
-
-    let conn = conns.swap_remove(idx);
-    let peer_node_id = conn.peer_node_id;
-    conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-
+    // Release the registry lock before waking the reader. The reader cleanup
+    // path can re-enter hew_connmgr_remove on an unexpected drop.
+    //
+    {
+        let _publication = publication_sync.lock_or_recover();
+        publication_removed.store(true, Ordering::Release);
+    }
+    // Mark the reader as explicitly stopped before closing the transport so an
+    // awakened reader does not treat this teardown as an unexpected drop.
+    conn.reader_stop.store(1, Ordering::Release);
+    //
     // Close the transport connection first so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
     // Now drop/join the reader thread after transport close.
     drop(conn);
-
-    if peer_node_id != 0 {
-        // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_remove_route(mgr.routing_table, peer_node_id) };
-        // SAFETY: pointer validity is checked by the callee.
-        let _ = unsafe { hew_cluster_notify_connection_lost(mgr.cluster, peer_node_id) };
-    }
+    retire_connection_publication(
+        mgr,
+        peer_node_id,
+        conn_id,
+        publication_token,
+        &publication_sync,
+    );
 
     0
 }
@@ -1866,6 +1985,7 @@ mod tests {
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
             reconnect_workers: Mutex::new(Vec::new()),
+            next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
         };
 
@@ -1894,6 +2014,728 @@ mod tests {
         assert_eq!(stop.load(Ordering::Relaxed), 0);
         stop.store(1, Ordering::Relaxed);
         assert_eq!(actor.reader_stop.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn connmgr_remove_releases_connections_lock_before_reader_wake() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
+            // SAFETY: test installs a Sender<()> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<()>>()) };
+            tx.send(()).expect("close signal send should succeed");
+        }
+
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
+        let (lock_result_tx, lock_result_rx) = std::sync::mpsc::channel::<bool>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager in this test.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        let mut actor = ConnectionActor::new(41);
+        actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        let mgr_send = SendConnMgr(mgr);
+        actor.reader_handle = Some(std::thread::spawn(move || {
+            let mgr = mgr_send;
+            close_rx.recv().expect("reader should observe close");
+            // SAFETY: mgr points at the live manager under test until the outer
+            // remove call drops and joins this thread.
+            let could_lock = unsafe { (&*mgr.0).connections.try_lock().is_ok() };
+            lock_result_tx
+                .send(could_lock)
+                .expect("reader should report lock availability");
+        }));
+
+        // SAFETY: mgr is a live manager allocated by hew_connmgr_new above.
+        unsafe {
+            let mut conns = (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            conns.push(actor);
+        }
+
+        // SAFETY: mgr is still valid and owns the test connection above.
+        assert_eq!(unsafe { hew_connmgr_remove(mgr, 41) }, 0);
+        assert!(
+            lock_result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("reader should report whether the lock was released"),
+            "hew_connmgr_remove should release the connections lock before closing the transport"
+        );
+        // SAFETY: mgr remains valid until the free call below.
+        assert_eq!(unsafe { hew_connmgr_count(mgr) }, 0);
+
+        // SAFETY: mgr was allocated by hew_connmgr_new and is no longer used after this.
+        unsafe { hew_connmgr_free(mgr) };
+        // SAFETY: transport_ptr and close_impl were allocated in this test and outlive the manager.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<()>>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the full remove-vs-replacement ordering in one place"
+    )]
+    fn connmgr_remove_skips_stale_route_cleanup_after_replacement() {
+        extern "C" fn collect_membership_events(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: user_data points at the Vec<(u16, u8)> owned by this test.
+            let events = unsafe { &mut *user_data.cast::<Vec<(u16, u8)>>() };
+            events.push((node_id, event));
+        }
+
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
+        let mut membership_events: Vec<(u16, u8)> = Vec::new();
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let (reader_release_tx, reader_release_rx) = std::sync::mpsc::channel::<()>();
+        let (remove_result_tx, remove_result_rx) = std::sync::mpsc::channel::<c_int>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+
+        // SAFETY: all raw pointers are allocated in this test and remain valid
+        // until the matching free calls below.
+        unsafe {
+            let routing_table = crate::routing::hew_routing_table_new(1);
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!routing_table.is_null() && !cluster.is_null());
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut membership_events).cast(),
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.2:9000".as_ptr()),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut old_actor = ConnectionActor::new(11);
+            let old_token = next_publication_token(&*mgr);
+            old_actor.publication_token = old_token;
+            old_actor.peer_node_id = 2;
+            old_actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            old_actor.reader_handle = Some(std::thread::spawn(move || {
+                reader_release_rx
+                    .recv()
+                    .expect("reader should be released after replacement install");
+            }));
+            let old_publication_sync = Arc::clone(&old_actor.publication_sync);
+            let old_publication_removed = Arc::clone(&old_actor.publication_removed);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(old_actor);
+            publish_connection_established(
+                &*mgr,
+                2,
+                11,
+                old_token,
+                &old_publication_sync,
+                &old_publication_removed,
+            );
+
+            let mgr_send = SendConnMgr(mgr);
+            let remove_handle = std::thread::spawn(move || {
+                let mgr = mgr_send;
+                // SAFETY: mgr points at the live manager under test.
+                let result = hew_connmgr_remove(mgr.0, 11);
+                remove_result_tx
+                    .send(result)
+                    .expect("remove thread should report its result");
+            });
+
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should close the old transport before cleanup"),
+                11
+            );
+
+            let mut replacement_actor = Some({
+                let mut actor = ConnectionActor::new(22);
+                actor.publication_token = next_publication_token(&*mgr);
+                actor.peer_node_id = 2;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                actor
+            });
+            let replacement_token = replacement_actor
+                .as_ref()
+                .map(|actor| actor.publication_token)
+                .expect("replacement token should be set before install");
+            let replacement_publication_sync = replacement_actor
+                .as_ref()
+                .map(|actor| Arc::clone(&actor.publication_sync))
+                .expect("replacement sync should be set before install");
+            let replacement_publication_removed = replacement_actor
+                .as_ref()
+                .map(|actor| Arc::clone(&actor.publication_removed))
+                .expect("replacement removed flag should be set before install");
+            let replacement_installed = (0..50).any(|_| match (&*mgr).connections.try_lock() {
+                Ok(mut conns) => {
+                    conns.push(
+                        replacement_actor
+                            .take()
+                            .expect("replacement should install once"),
+                    );
+                    true
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    false
+                }
+                Err(std::sync::TryLockError::Poisoned(err)) => {
+                    err.into_inner().push(
+                        replacement_actor
+                            .take()
+                            .expect("replacement should install once"),
+                    );
+                    true
+                }
+            });
+            assert!(
+                replacement_installed,
+                "replacement connection should install while old remove waits on reader shutdown"
+            );
+            publish_connection_established(
+                &*mgr,
+                2,
+                22,
+                replacement_token,
+                &replacement_publication_sync,
+                &replacement_publication_removed,
+            );
+
+            reader_release_tx
+                .send(())
+                .expect("reader release should succeed");
+            assert_eq!(
+                remove_result_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should complete once the old reader exits"),
+                0
+            );
+            remove_handle
+                .join()
+                .expect("remove thread should not panic");
+
+            assert_eq!(
+                crate::routing::hew_routing_lookup(routing_table, crate::pid::hew_pid_make(2, 0)),
+                22,
+                "stale remove should not delete the replacement route"
+            );
+            assert_eq!(
+                membership_events,
+                vec![(2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED)],
+                "stale remove should not emit a lost event after the replacement is established"
+            );
+            assert_eq!(hew_connmgr_count(mgr), 1);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            crate::routing::hew_routing_table_free(routing_table);
+        }
+
+        // SAFETY: transport_ptr and close_impl were allocated above and are no
+        // longer referenced after manager teardown.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    fn connmgr_remove_notifies_cluster_without_routing_table() {
+        extern "C" fn collect_membership_events(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: user_data points at the Vec<(u16, u8)> owned by this test.
+            let events = unsafe { &mut *user_data.cast::<Vec<(u16, u8)>>() };
+            events.push((node_id, event));
+        }
+
+        let mut membership_events: Vec<(u16, u8)> = Vec::new();
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+
+        // SAFETY: test-owned pointers remain valid until the matching free calls below.
+        unsafe {
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!cluster.is_null());
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut membership_events).cast(),
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.2:9000".as_ptr()),
+                0
+            );
+
+            let mgr = hew_connmgr_new(
+                Box::into_raw(Box::new(HewTransport {
+                    ops: std::ptr::null(),
+                    r#impl: std::ptr::null_mut(),
+                })),
+                None,
+                std::ptr::null_mut(),
+                cluster,
+                1,
+            );
+            assert!(!mgr.is_null());
+
+            let mut actor = ConnectionActor::new(31);
+            let publication_token = next_publication_token(&*mgr);
+            actor.publication_token = publication_token;
+            actor.peer_node_id = 2;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(actor);
+            publish_connection_established(
+                &*mgr,
+                2,
+                31,
+                publication_token,
+                &publication_sync,
+                &publication_removed,
+            );
+
+            assert_eq!(hew_connmgr_remove(mgr, 31), 0);
+            assert_eq!(
+                membership_events,
+                vec![
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "cluster-only managers should still emit connection_lost"
+            );
+
+            let transport_ptr = (*mgr).transport;
+            hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            crate::cluster::hew_cluster_free(cluster);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the delayed establish-publish teardown race end-to-end"
+    )]
+    fn run_connmgr_publish_skips_removed_connection_test(with_routing_table: bool) {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
+        struct BlockingMembershipState {
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            suspect_seen: std::sync::mpsc::Sender<()>,
+            release: std::sync::Arc<std::sync::Barrier>,
+            blocked_first_suspect: std::sync::atomic::AtomicBool,
+        }
+
+        extern "C" fn block_on_suspect(node_id: u16, event: u8, user_data: *mut std::ffi::c_void) {
+            // SAFETY: user_data points at the BlockingMembershipState allocated in this test.
+            let state = unsafe { &*user_data.cast::<BlockingMembershipState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+                && !state.blocked_first_suspect.swap(true, Ordering::AcqRel)
+            {
+                state
+                    .suspect_seen
+                    .send(())
+                    .expect("suspect callback should notify the test");
+                state.release.wait();
+            }
+        }
+
+        struct SendCluster(*mut crate::cluster::HewCluster);
+        // SAFETY: the test keeps the cluster alive until both worker threads complete.
+        unsafe impl Send for SendCluster {}
+
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let (suspect_tx, suspect_rx) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let callback_state = Box::into_raw(Box::new(BlockingMembershipState {
+            events: std::sync::Mutex::new(Vec::new()),
+            suspect_seen: suspect_tx,
+            release: std::sync::Arc::clone(&release),
+            blocked_first_suspect: std::sync::atomic::AtomicBool::new(false),
+        }));
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let transport_ptr = Box::into_raw(Box::new(HewTransport {
+                ops: &raw const *ops,
+                r#impl: close_impl,
+            }));
+            let routing_table = if with_routing_table {
+                crate::routing::hew_routing_table_new(1)
+            } else {
+                std::ptr::null_mut()
+            };
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!cluster.is_null());
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                block_on_suspect,
+                callback_state.cast(),
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut actor = ConnectionActor::new(22);
+            actor.publication_token = 2;
+            actor.peer_node_id = 2;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(actor);
+
+            let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
+            let lost_cluster = SendCluster(cluster);
+            let lost_handle = std::thread::spawn(move || {
+                let cluster = lost_cluster;
+                let rc =
+                    crate::cluster::hew_cluster_notify_connection_lost_if_current(cluster.0, 2, 1);
+                assert_eq!(rc, 0);
+                lost_done_tx
+                    .send(())
+                    .expect("lost thread should report completion");
+            });
+
+            suspect_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost path should reach the membership callback");
+
+            let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<()>();
+            let mgr_send = SendConnMgr(mgr);
+            let publish_handle = std::thread::spawn(move || {
+                let mgr = mgr_send;
+                // SAFETY: mgr stays alive until the worker joins.
+                publish_connection_established(
+                    &*mgr.0,
+                    2,
+                    22,
+                    2,
+                    &publication_sync,
+                    &publication_removed,
+                );
+                publish_done_tx
+                    .send(())
+                    .expect("publish thread should report completion");
+            });
+
+            let (remove_done_tx, remove_done_rx) = std::sync::mpsc::channel::<c_int>();
+            let remove_mgr = SendConnMgr(mgr);
+            let remove_handle = std::thread::spawn(move || {
+                let mgr = remove_mgr;
+                // SAFETY: mgr stays alive until the worker joins.
+                let rc = hew_connmgr_remove(mgr.0, 22);
+                remove_done_tx
+                    .send(rc)
+                    .expect("remove thread should report completion");
+            });
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should close the test connection before publish resumes"),
+                22
+            );
+            release.wait();
+
+            lost_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("lost thread should finish once released");
+            publish_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("publish thread should finish after the old lost transition");
+            assert_eq!(
+                remove_done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("remove should finish after publication cleanup"),
+                0
+            );
+
+            lost_handle.join().expect("lost thread should not panic");
+            publish_handle
+                .join()
+                .expect("publish thread should not panic");
+            remove_handle
+                .join()
+                .expect("remove thread should not panic");
+
+            let events = (&*callback_state)
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(
+                events,
+                vec![
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a removed connection must not publish a delayed ALIVE/JOINED transition"
+            );
+            if with_routing_table {
+                assert_eq!(
+                    crate::routing::hew_routing_lookup(
+                        routing_table,
+                        crate::pid::hew_pid_make(2, 0),
+                    ),
+                    -1,
+                    "a removed connection must not publish a delayed route"
+                );
+            }
+            assert_eq!(hew_connmgr_count(mgr), 0);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            if !routing_table.is_null() {
+                crate::routing::hew_routing_table_free(routing_table);
+            }
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
+            drop(Box::from_raw(callback_state));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    fn connmgr_publish_skips_removed_connection_while_establish_blocks() {
+        run_connmgr_publish_skips_removed_connection_test(true);
+    }
+
+    #[test]
+    fn connmgr_publish_skips_removed_connection_without_routing_table() {
+        run_connmgr_publish_skips_removed_connection_test(false);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages a full publish-callback-remove cycle in one place"
+    )]
+    fn connmgr_publish_allows_reentrant_remove_from_membership_callback() {
+        struct ReentrantRemoveState {
+            mgr: std::sync::atomic::AtomicPtr<HewConnMgr>,
+            conn_id: c_int,
+            events: std::sync::Mutex<Vec<(u16, u8)>>,
+            remove_result_tx: std::sync::mpsc::Sender<c_int>,
+        }
+
+        extern "C" fn remove_on_joined(node_id: u16, event: u8, user_data: *mut std::ffi::c_void) {
+            // SAFETY: user_data points at the ReentrantRemoveState allocated in this test.
+            let state = unsafe { &*user_data.cast::<ReentrantRemoveState>() };
+            state
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node_id, event));
+            if event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED {
+                let mgr = state.mgr.load(Ordering::Acquire);
+                assert!(!mgr.is_null(), "callback manager should be initialized");
+                // SAFETY: the manager remains valid until the test explicitly frees it.
+                let rc = unsafe { hew_connmgr_remove(mgr, state.conn_id) };
+                state
+                    .remove_result_tx
+                    .send(rc)
+                    .expect("reentrant remove should report completion");
+            }
+        }
+
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        let (remove_result_tx, remove_result_rx) = std::sync::mpsc::channel::<c_int>();
+        let callback_state = Box::into_raw(Box::new(ReentrantRemoveState {
+            mgr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            conn_id: 44,
+            events: std::sync::Mutex::new(Vec::new()),
+            remove_result_tx,
+        }));
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let transport_ptr = Box::into_raw(Box::new(HewTransport {
+                ops: std::ptr::null(),
+                r#impl: std::ptr::null_mut(),
+            }));
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!cluster.is_null());
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+            (&*callback_state).mgr.store(mgr, Ordering::Release);
+            crate::cluster::hew_cluster_set_membership_callback(
+                cluster,
+                remove_on_joined,
+                callback_state.cast(),
+            );
+
+            let mut actor = ConnectionActor::new(44);
+            let publication_token = next_publication_token(&*mgr);
+            actor.publication_token = publication_token;
+            actor.peer_node_id = 2;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
+            (&*mgr)
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(actor);
+
+            publish_connection_established(
+                &*mgr,
+                2,
+                44,
+                publication_token,
+                &publication_sync,
+                &publication_removed,
+            );
+
+            assert_eq!(
+                remove_result_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("reentrant remove should finish without deadlocking"),
+                0
+            );
+            assert_eq!(
+                (&*callback_state)
+                    .events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                vec![
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "reentrant remove should observe ordered JOINED/SUSPECT delivery"
+            );
+            assert_eq!(hew_connmgr_count(mgr), 0);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(callback_state));
+        }
     }
 
     #[test]

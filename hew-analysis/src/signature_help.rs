@@ -3,7 +3,14 @@
 use hew_types::check::FnSig;
 use hew_types::TypeCheckOutput;
 
+use crate::method_lookup::{find_receiver_type, lookup_method_sig as lookup_receiver_method_sig};
 use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
+
+struct CallContext {
+    callee: String,
+    receiver_end: Option<usize>,
+    active_param: usize,
+}
 
 /// Build signature help at the given byte offset within `source`.
 ///
@@ -19,9 +26,9 @@ pub fn build_signature_help(
     tc: &TypeCheckOutput,
     offset: usize,
 ) -> Option<SignatureHelpResult> {
-    let (fn_name, active_param) = find_call_context(source, offset)?;
-    let sig = find_fn_sig(&fn_name, tc)?;
-    let label = format_sig_label(&fn_name, sig);
+    let context = find_call_context(source, offset)?;
+    let sig = find_call_sig(&context, tc)?;
+    let label = format_sig_label(&context.callee, &sig);
 
     // Build parameter infos with byte-offset ranges within the label string.
     let mut params = Vec::new();
@@ -41,12 +48,25 @@ pub fn build_signature_help(
             parameters: params,
         }],
         active_signature: Some(0),
-        active_parameter: Some(active_param as u32),
+        active_parameter: Some(context.active_param as u32),
     })
 }
 
+fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
+    if let Some(receiver_end) = context.receiver_end {
+        let method = context.callee.rsplit('.').next()?;
+        if let Some(receiver_ty) = find_receiver_type(tc, receiver_end) {
+            if let Some(sig) = lookup_receiver_method_sig(tc, receiver_ty, method) {
+                return Some(sig);
+            }
+        }
+    }
+
+    find_fn_sig(&context.callee, tc)
+}
+
 /// Find the function name and active parameter index at the cursor offset.
-fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
+fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
     let bytes = &source.as_bytes()[..offset];
     let mut depth: i32 = 0;
     let mut comma_count: usize = 0;
@@ -58,8 +78,12 @@ fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
             b')' | b']' | b'}' => depth += 1,
             b'(' => {
                 if depth == 0 {
-                    let fn_name = extract_fn_name_before(source, i)?;
-                    return Some((fn_name, comma_count));
+                    let (callee, receiver_end) = extract_fn_name_before(source, i)?;
+                    return Some(CallContext {
+                        callee,
+                        receiver_end,
+                        active_param: comma_count,
+                    });
                 }
                 depth -= 1;
             }
@@ -77,7 +101,7 @@ fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
 }
 
 /// Extract the function/method name immediately before the `(` at `paren_pos`.
-fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<String> {
+fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Option<usize>)> {
     let before = source[..paren_pos].trim_end();
     if before.is_empty() {
         return None;
@@ -99,36 +123,28 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<String> {
         return None;
     }
 
-    Some(before[start..end].to_string())
+    let callee = before[start..end].to_string();
+    let receiver_end = callee.rfind('.').map(|dot_pos| start + dot_pos);
+
+    Some((callee, receiver_end))
 }
 
-/// Find a function signature by name, checking `fn_sigs`, `type_defs` methods, and qualified names.
-fn find_fn_sig<'a>(name: &str, tc: &'a TypeCheckOutput) -> Option<&'a FnSig> {
+/// Find a function signature by name, checking `fn_sigs` and qualified-name fallbacks.
+fn find_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(sig) = tc.fn_sigs.get(name) {
-        return Some(sig);
-    }
-
-    // For method calls like `receiver.method`, try the method part.
-    if let Some(method) = name.rsplit('.').next() {
-        if method != name {
-            for type_def in tc.type_defs.values() {
-                if let Some(sig) = type_def.methods.get(method) {
-                    return Some(sig);
-                }
-            }
-            for (sig_name, sig) in &tc.fn_sigs {
-                if sig_name.ends_with(&format!("::{method}")) {
-                    return Some(sig);
-                }
-            }
-        }
+        return Some(sig.clone());
     }
 
     // Try just the last component as a plain function name.
     let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
     if last != name {
         if let Some(sig) = tc.fn_sigs.get(last) {
-            return Some(sig);
+            return Some(sig.clone());
+        }
+        for (sig_name, sig) in &tc.fn_sigs {
+            if sig_name.ends_with(&format!("::{last}")) {
+                return Some(sig.clone());
+            }
         }
     }
 

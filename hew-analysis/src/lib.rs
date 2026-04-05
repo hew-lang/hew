@@ -10,6 +10,7 @@ pub mod definition;
 pub mod folding;
 pub mod hover;
 pub mod inlay_hints;
+mod method_lookup;
 pub mod references;
 pub mod rename;
 pub mod semantic_tokens;

@@ -14,7 +14,7 @@
 //! hew fmt file.hew                 # Format source file in-place
 //! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
-//! hew init [name]                  # Scaffold a new project
+//! hew init [name]                  # Scaffold a project with main.hew
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! ```
@@ -530,7 +530,7 @@ hew build main.hew -o {project_name}
         std::process::exit(1);
     }
 
-    println!("Created project \"{project_name}\" with main.hew");
+    println!("Created project \"{project_name}\" with main.hew entry file");
 }
 
 fn cmd_completions(a: &args::CompletionsArgs) {

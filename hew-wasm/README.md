@@ -2,7 +2,12 @@
 
 WebAssembly bindings for the Hew compiler frontend.
 
-Compiles the lexer, parser, and type checker to WebAssembly using `wasm-bindgen`, enabling browser-based tooling such as:
+Compiles the lexer, parser, and type checker to WebAssembly using
+`wasm-bindgen`. This browser-facing surface is analysis tooling only: it
+provides diagnostics and editor/playground feedback, but it does not include
+native codegen, linking, or full Hew program execution in the browser.
+
+It powers browser-based tooling such as:
 
 - Online playground with real-time diagnostics
 - In-browser syntax highlighting
@@ -16,14 +21,18 @@ From the repo root:
 make wasm
 ```
 
-To validate the repo-local browser/playground slice without building the downstream browser app:
+To validate the repo-local browser/playground analysis slice without building
+the downstream browser app:
 
 ```sh
 make playground-manifest-check  # cheap manifest freshness check
 make playground-check           # same check + build hew-wasm
 ```
 
-`examples/playground/manifest.json` is the curated source of truth for the downstream browser catalog. Use `make playground-manifest-check` when you only need to confirm that manifest is current, or `make playground-check` when you also want the repo-local `hew-wasm` build.
+`examples/playground/manifest.json` is the curated source of truth for the
+downstream browser catalog. Use `make playground-manifest-check` when you only
+need to confirm that manifest is current, or `make playground-check` when you
+also want the repo-local `hew-wasm` build that backs browser-side analysis.
 
 ## Part of the Hew compiler
 

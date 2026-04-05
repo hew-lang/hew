@@ -21,7 +21,7 @@ hew run hello.hew
 
 # Start a new project
 hew init my_project
-# hew init creates main.hew in the project root
+# hew init creates main.hew, the entry file for check/build/run
 cd my_project
 hew run main.hew
 
@@ -69,6 +69,12 @@ fn main() {
 ```
 
 See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib modules.
+
+All CLI commands take one entry `.hew` file. Imports and directory-form
+modules pull in the rest, so pass `main.hew`, not every file in the tree. If a
+wildcard import is only used through type references, current builds may emit a
+false-positive `unused import` warning; prefer bare or selective imports while
+you reorganize modules.
 
 For directory-form modules and Hew's multi-file import resolution rules, see [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md).
 
@@ -144,7 +150,7 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 - **adze-cli/** — Package manager (`adze` binary) — init, install, publish, search
 - **hew-lsp/** — Language server (tower-lsp)
 - **hew-observe/** — Runtime observability TUI (`hew-observe`)
-- **hew-wasm/** — Frontend compiled to WASM for in-browser diagnostics
+- **hew-wasm/** — Frontend compiled to WASM for in-browser analysis and diagnostics (not full Hew execution)
 
 ### Standard Library & Build Support
 
@@ -218,7 +224,11 @@ See the [Makefile](Makefile) header for all targets.
 
 ### Browser / Playground Validation
 
-This repo does not build the downstream browser app, but it does keep the browser/playground inputs fresh locally. [`examples/playground/manifest.json`](examples/playground/manifest.json) is the curated source of truth consumed by downstream browser tooling.
+This repo does not build the downstream browser app or a full in-browser Hew
+runtime. The repo-local browser/playground slice here is analysis tooling
+inputs: `hew-wasm` plus the curated
+[`examples/playground/manifest.json`](examples/playground/manifest.json)
+consumed by downstream browser tooling.
 
 ```bash
 make playground-manifest        # regenerate examples/playground/manifest.json
@@ -226,7 +236,7 @@ make playground-manifest-check  # cheap freshness check for manifest.json only
 make playground-check           # repo-local preflight: manifest check + build hew-wasm
 ```
 
-Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the repo-local `hew-wasm` build (`make wasm`).
+Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling.
 
 ### Optional Dependencies
 
@@ -236,7 +246,7 @@ These are only needed for specific workflows:
 | -------------------- | --------------------------------------------------- | ---------------------------------------------- |
 | wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run WASM tests (`make test-wasm`)              |
 | wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
-| wasm-pack            | `cargo install wasm-pack`                           | Build browser bindings (`make wasm`, `make playground-check`) |
+| wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`) |
 | Python 3             | system package manager                              | Playground manifest + other scripts (`scripts/`) |
 | Java 21 + ANTLR4     | system package manager                              | Grammar validation (`make grammar`)            |
 | cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |

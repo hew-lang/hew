@@ -11,8 +11,8 @@ hew run path/to/main.hew
 ```
 
 All `hew` commands operate on a single entry-point file and resolve imports
-recursively from there. For multi-file projects, pass `main.hew`, not every
-file in the tree.
+recursively from there. For multi-file projects, pass `main.hew` (or your real
+top-level entry file), not every file in the tree.
 
 ## Build & linking
 
@@ -85,9 +85,10 @@ What to check:
   undeclared in project metadata, add it with `adze add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew
   actually looked.
-- `import mod::*;` works, but bare (`import mod;`) or selective
-  (`import mod::{Name}`) imports avoid the current unused-import noise in some
-  type-only cases.
+- `import mod::*;` works, but wildcard imports currently can emit a
+  false-positive `unused import` warning when the module is only used through
+  type references. Prefer bare (`import mod;`) or selective
+  (`import mod::{Name}`) imports while reorganizing modules.
 
 See also:
 [`../examples/directory_module_demo/README.md`](../examples/directory_module_demo/README.md),

@@ -53,16 +53,19 @@ pub fn build_signature_help(
 }
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
-    if let Some(receiver_end) = context.receiver_end {
-        if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
-            return Some(sig);
-        }
-        let method = context.callee.rsplit('.').next()?;
-        return find_receiver_type(tc, receiver_end)
-            .and_then(|receiver_ty| lookup_receiver_method_sig(tc, receiver_ty, method));
+    if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
+        return Some(sig);
     }
 
-    find_fn_sig(&context.callee, tc)
+    if let Some(sig) = find_receiver_method_sig(context, tc) {
+        return Some(sig);
+    }
+
+    if context.receiver_end.is_none() {
+        return find_fallback_fn_sig(&context.callee, tc);
+    }
+
+    None
 }
 
 /// Find the function name and active parameter index at the cursor offset.
@@ -129,12 +132,15 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Opt
     Some((callee, receiver_end))
 }
 
-/// Find a function signature by name, checking `fn_sigs` and qualified-name fallbacks.
-fn find_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    if let Some(sig) = tc.fn_sigs.get(name) {
-        return Some(sig.clone());
-    }
+fn find_receiver_method_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
+    let receiver_end = context.receiver_end?;
+    let method = context.callee.rsplit('.').next()?;
+    let receiver_ty = find_receiver_type(tc, receiver_end)?;
+    lookup_receiver_method_sig(tc, receiver_ty, method)
+}
 
+/// Find a function signature by name via qualified-name fallbacks.
+fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     // Try just the last component as a plain function name.
     let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
     if last != name {
@@ -280,9 +286,62 @@ mod tests {
     }
 
     #[test]
-    fn module_qualified_function_sig_help_uses_exact_dotted_name() {
+    fn module_qualified_function_sig_help_prefers_exact_dotted_name_over_receiver_method_fallback()
+    {
         let source = "channel.new(";
-        let tc = make_tc_with_fn("channel.new", vec!["capacity"], vec![Ty::I64], Ty::Unit);
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(
+            "channel.new".to_string(),
+            FnSig {
+                param_names: vec!["capacity".to_string()],
+                params: vec![Ty::I64],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+        );
+
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "ChannelModule".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "ChannelModule".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::from([(
+                    "new".to_string(),
+                    FnSig {
+                        param_names: vec!["count".to_string()],
+                        params: vec![Ty::I32],
+                        return_type: Ty::Unit,
+                        ..FnSig::default()
+                    },
+                )]),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey { start: 0, end: 7 },
+            Ty::Named {
+                name: "ChannelModule".to_string(),
+                args: vec![],
+            },
+        );
+
+        let tc = TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs,
+            fn_sigs,
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
 
         let result = build_signature_help(source, &tc, source.len());
         assert!(

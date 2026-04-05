@@ -2543,7 +2543,8 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     }
 
     if !untrack_actor(actor) {
-        return 0;
+        crate::set_last_error("hew_actor_free: actor already freed or not tracked");
+        return -1;
     }
 
     if state != HewActorState::Crashed as i32 {
@@ -2890,6 +2891,29 @@ mod tests {
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             assert_eq!(actor_free_wasm_impl(actor), 0);
         }
+    }
+
+    #[test]
+    fn wasm_free_reports_untracked_actor_failure_like_native_free() {
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
+        assert!(
+            untrack_actor(actor),
+            "test precondition: actor should start tracked"
+        );
+        crate::hew_clear_error();
+
+        // SAFETY: actor remains allocated and owned by this test.
+        let rc = unsafe { actor_free_wasm_impl(actor) };
+
+        assert_eq!(rc, -1, "WASM free should mirror native untrack failure");
+        let err = crate::hew_last_error();
+        assert!(!err.is_null(), "WASM free should populate hew_last_error");
+        // SAFETY: hew_last_error returned a non-null C string.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
+        assert_eq!(msg, "hew_actor_free: actor already freed or not tracked");
+
+        // SAFETY: untrack failure must not free the actor; the test still owns it.
+        unsafe { drop(Box::from_raw(actor)) };
     }
 
     #[test]

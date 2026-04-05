@@ -545,26 +545,38 @@ impl App {
         let mut traces = None;
         let mut next_active_node = None;
         let cluster_status;
+        let preferred_active_node = self.active_node_label().to_owned();
 
         {
             let Some(cluster) = &mut self.cluster else {
                 return;
             };
 
-            let mut primary_idx = None;
+            let mut node_metrics = vec![None; cluster.nodes.len()];
             for (idx, node) in cluster.nodes.iter_mut().enumerate() {
-                if let Some(node_metrics) = node.client.fetch_metrics() {
-                    if metrics.is_none() {
-                        metrics = Some(node_metrics);
-                        next_active_node = Some(node.addr.clone());
-                        primary_idx = Some(idx);
-                    }
-                }
+                node_metrics[idx] = node.client.fetch_metrics();
             }
 
             cluster_status = cluster.status();
+            // Keep the current healthy node sticky so the core panes do not
+            // snap back to an earlier configured node when it recovers.
+            let primary_idx = cluster
+                .nodes
+                .iter()
+                .position(|node| {
+                    node.client.status == ConnectionStatus::Connected
+                        && node.addr == preferred_active_node
+                })
+                .or_else(|| {
+                    cluster
+                        .nodes
+                        .iter()
+                        .position(|node| node.client.status == ConnectionStatus::Connected)
+                });
 
             if let Some(primary_idx) = primary_idx {
+                metrics = node_metrics[primary_idx].take();
+                next_active_node = Some(cluster.nodes[primary_idx].addr.clone());
                 {
                     let primary = &mut cluster.nodes[primary_idx].client;
                     actors = if fetch_actors {
@@ -1084,13 +1096,31 @@ mod tests {
     }
 
     struct TestTraceState {
+        metrics_timestamp: f64,
         trace_requests: usize,
         trace_responses: VecDeque<String>,
     }
 
     impl TestTraceServer {
         fn new(trace_responses: Vec<String>) -> Self {
+            Self::with_metrics(trace_responses, 1.0)
+        }
+
+        fn with_metrics(trace_responses: Vec<String>, metrics_timestamp: f64) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind trace test server");
+            Self::from_listener(listener, trace_responses, metrics_timestamp)
+        }
+
+        fn bind_at(addr: &str, trace_responses: Vec<String>, metrics_timestamp: f64) -> Self {
+            let listener = TcpListener::bind(addr).expect("bind trace test server");
+            Self::from_listener(listener, trace_responses, metrics_timestamp)
+        }
+
+        fn from_listener(
+            listener: TcpListener,
+            trace_responses: Vec<String>,
+            metrics_timestamp: f64,
+        ) -> Self {
             listener
                 .set_nonblocking(true)
                 .expect("set nonblocking trace test server");
@@ -1099,6 +1129,7 @@ mod tests {
                 .expect("read trace server addr")
                 .to_string();
             let state = Arc::new(Mutex::new(TestTraceState {
+                metrics_timestamp,
                 trace_requests: 0,
                 trace_responses: trace_responses.into(),
             }));
@@ -1191,7 +1222,13 @@ mod tests {
 
     fn trace_response_body(path: &str, state: &Arc<Mutex<TestTraceState>>) -> String {
         match path {
-            "/api/metrics" => r#"{"timestamp_secs":1.0}"#.to_owned(),
+            "/api/metrics" => {
+                let metrics_timestamp = state
+                    .lock()
+                    .expect("lock trace server state")
+                    .metrics_timestamp;
+                format!(r#"{{"timestamp_secs":{metrics_timestamp}}}"#)
+            }
             "/api/actors" | "/api/metrics/history" | "/api/supervisors" | "/api/crashes" => {
                 "[]".to_owned()
             }
@@ -1389,5 +1426,30 @@ mod tests {
         assert!(app.msg_rate.abs() < f64::EPSILON);
         assert_eq!(app.prev_messages_sent, 0);
         assert!(app.prev_timestamp.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn refresh_does_not_snap_back_to_recovered_first_node() {
+        let fallback = TestTraceServer::with_metrics(Vec::new(), 2.0);
+        let recovering_addr = unused_tcp_addr();
+        let fallback_addr = fallback.addr();
+        let mut app = App::new_tcp(&[recovering_addr.clone(), fallback_addr.clone()]);
+
+        app.refresh();
+        assert_eq!(app.active_node_label(), fallback_addr);
+        assert!((app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON);
+
+        let _recovered = TestTraceServer::bind_at(&recovering_addr, Vec::new(), 1.0);
+        app.refresh();
+
+        assert_eq!(
+            app.active_node_label(),
+            fallback_addr,
+            "recovering earlier node must not steal the active pane source"
+        );
+        assert!(
+            (app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON,
+            "core panes must stay pinned to the current healthy node"
+        );
     }
 }

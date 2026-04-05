@@ -1,0 +1,391 @@
+use crate::env::TypeEnv;
+use crate::error::TypeError;
+use crate::module_registry::ModuleRegistry;
+use crate::traits::TraitRegistry;
+use crate::ty::{Substitution, Ty, TypeVar};
+use hew_parser::ast::{Span, Spanned, TraitMethod, TypeExpr};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+
+/// Result of type-checking a program.
+#[derive(Debug, Clone)]
+pub struct TypeCheckOutput {
+    pub expr_types: HashMap<SpanKey, Ty>,
+    pub errors: Vec<TypeError>,
+    pub warnings: Vec<TypeError>,
+    pub type_defs: HashMap<String, TypeDef>,
+    pub fn_sigs: HashMap<String, FnSig>,
+    /// Actor type names that participate in reference cycles.
+    pub cycle_capable_actors: HashSet<String>,
+    /// Module short names for user (non-stdlib) imports that have resolved items.
+    pub user_modules: HashSet<String>,
+    /// Inferred type arguments for generic function calls that lack explicit
+    /// type annotations.  Keyed by the call expression's span.
+    pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+}
+
+/// Span used as map key (byte offsets).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SpanKey {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl From<&Span> for SpanKey {
+    fn from(s: &Span) -> Self {
+        Self {
+            start: s.start,
+            end: s.end,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum WasmUnsupportedFeature {
+    SupervisionTrees,
+    LinkMonitor,
+    StructuredConcurrency,
+    Tasks,
+    Select,
+}
+
+impl WasmUnsupportedFeature {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::SupervisionTrees => "Supervision tree operations",
+            Self::LinkMonitor => "Link/monitor operations",
+            Self::StructuredConcurrency => "Structured concurrency scopes",
+            Self::Tasks => "Task handles spawned from scopes",
+            Self::Select => "Select expressions",
+        }
+    }
+
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::SupervisionTrees => {
+                "they require OS threads for restart strategies and child supervision"
+            }
+            Self::LinkMonitor => {
+                "they rely on OS threads to watch linked actors and propagate exits"
+            }
+            Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
+            Self::Tasks => "they need OS threads to drive scope completions",
+            Self::Select => "they wait on multiple mailboxes using OS thread blocking",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeDef {
+    pub kind: TypeDefKind,
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub fields: HashMap<String, Ty>,
+    pub variants: HashMap<String, VariantDef>,
+    pub methods: HashMap<String, FnSig>,
+    pub doc_comment: Option<String>,
+    pub is_indirect: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TraitInfo {
+    pub(super) methods: Vec<TraitMethod>,
+    pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
+    pub(super) type_params: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TraitAssociatedTypeInfo {
+    pub(super) name: String,
+    pub(super) default: Option<Spanned<TypeExpr>>,
+}
+
+#[derive(Debug)]
+pub(super) struct ImplAliasScope {
+    pub(super) span: Span,
+    pub(super) entries: HashMap<String, ImplAliasEntry>,
+    pub(super) missing_reported: HashSet<String>,
+    pub(super) report_missing: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ImplAliasEntry {
+    pub(super) expr: Spanned<TypeExpr>,
+    pub(super) resolved: Option<Ty>,
+    pub(super) resolving: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum VariantDef {
+    Unit,
+    Tuple(Vec<Ty>),
+    Struct(Vec<(String, Ty)>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeDefKind {
+    Struct,
+    Enum,
+    Actor,
+    Machine,
+}
+
+#[derive(Debug, Clone)]
+pub struct FnSig {
+    pub type_params: Vec<String>,
+    pub type_param_bounds: HashMap<String, Vec<String>>,
+    pub param_names: Vec<String>,
+    pub params: Vec<Ty>,
+    pub return_type: Ty,
+    pub is_async: bool,
+    pub is_pure: bool,
+    pub accepts_kwargs: bool,
+    pub doc_comment: Option<String>,
+}
+
+impl Default for FnSig {
+    fn default() -> Self {
+        Self {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names: vec![],
+            params: vec![],
+            return_type: Ty::Unit,
+            is_async: false,
+            is_pure: false,
+            accepts_kwargs: false,
+            doc_comment: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DeferredInferenceHole {
+    pub(super) span: Span,
+    pub(super) context: String,
+    pub(super) hole_vars: Vec<TypeVar>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DeferredCastCheck {
+    pub(super) span: Span,
+    pub(super) actual: Ty,
+    pub(super) target: Ty,
+    pub(super) target_hole_vars: Vec<TypeVar>,
+}
+
+/// The main type checker.
+#[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "checker state flags are independent booleans"
+)]
+pub struct Checker {
+    pub(super) env: TypeEnv,
+    pub(super) subst: Substitution,
+    pub(super) registry: TraitRegistry,
+    pub(super) module_registry: ModuleRegistry,
+    pub(super) errors: Vec<TypeError>,
+    pub(super) warnings: Vec<TypeError>,
+    pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) type_defs: HashMap<String, TypeDef>,
+    pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
+    pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
+    pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
+    pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    /// Tracks the span where each function was first defined (for duplicate detection).
+    pub(super) fn_def_spans: HashMap<String, Span>,
+    /// Tracks the span where each top-level type/trait namespace name was first defined.
+    pub(super) type_def_spans: HashMap<String, Span>,
+    /// Tracks public top-level names introduced by prior flat file imports so later
+    /// flat imports can reject collisions instead of silently overwriting them.
+    pub(super) flat_file_import_pub_spans: HashMap<String, Span>,
+    pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
+    pub(super) current_return_type: Option<Ty>,
+    pub(super) in_generator: bool,
+    pub(super) loop_depth: u32,
+    /// Labels of enclosing loops, for validating `break @label` / `continue @label`.
+    pub(super) loop_labels: Vec<String>,
+    pub(super) modules: HashSet<String>,
+    pub(super) known_types: HashSet<String>,
+    pub(super) type_aliases: HashMap<String, Ty>,
+    pub(super) trait_defs: HashMap<String, TraitInfo>,
+    /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
+    pub(super) trait_super: HashMap<String, Vec<String>>,
+    /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
+    pub(super) trait_impls_set: HashSet<(String, String)>,
+    /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
+    pub(super) supervisor_children: HashMap<String, Vec<(String, String)>>,
+    /// When set, records the scope depth at which a lambda was entered.
+    /// Variable lookups from scopes below this depth are captures.
+    pub(super) lambda_capture_depth: Option<usize>,
+    /// Captured variable types accumulated during lambda body checking.
+    pub(super) lambda_captures: Vec<Ty>,
+    /// Tracks imported module paths with their source spans for unused-import detection.
+    /// Key: module short name (e.g., "json"), Value: import span.
+    pub(super) import_spans: HashMap<String, Span>,
+    /// Module short names that have actually been referenced in code.
+    pub(super) used_modules: RefCell<HashSet<String>>,
+    /// Module short names for user (non-stdlib) imports.
+    pub(super) user_modules: HashSet<String>,
+    /// Maps unqualified function names to module short names (for glob/named imports).
+    /// Used to mark the module as used when the function is called.
+    pub(super) unqualified_to_module: HashMap<String, String>,
+    /// Call graph: maps caller function name → set of callee function names.
+    pub(super) call_graph: HashMap<String, HashSet<String>>,
+    /// Name of the function currently being checked (for call graph tracking).
+    pub(super) current_function: Option<String>,
+    /// Whether we are currently inside a for-loop binding (suppress shadowing for loop vars).
+    pub(super) in_for_binding: bool,
+    /// Whether we are currently inside a `pure` function body.
+    pub(super) in_pure_function: bool,
+    /// Whether we are currently inside an actor receive function body.
+    /// Used to warn about blocking calls that can starve the scheduler.
+    pub(super) in_receive_fn: bool,
+    /// Whether we are currently inside an unsafe block.
+    pub(super) in_unsafe: bool,
+    /// The module currently being processed (enables per-module scoping in future).
+    pub(super) current_module: Option<String>,
+    /// Tracks which types are defined locally (in the current compilation unit).
+    pub(super) local_type_defs: HashSet<String>,
+    /// Tracks which traits are defined locally (in the current compilation unit).
+    pub(super) local_trait_defs: HashSet<String>,
+    /// The type name and args of the current impl block target (for resolving `Self`).
+    pub(super) current_self_type: Option<(String, Vec<Ty>)>,
+    /// The actor type currently being checked (for `this` keyword resolution).
+    pub(super) current_actor_type: Option<Ty>,
+    /// Field names of the current actor (for purity checks on bare field assignment).
+    pub(super) current_actor_fields: Vec<String>,
+    pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
+    /// Names of functions that require an unsafe block to call.
+    pub(super) unsafe_functions: HashSet<String>,
+    /// Whether warnings for WASM-only builds should be emitted.
+    pub(super) wasm_target: bool,
+    /// Tracks (span, feature) pairs we've already warned about for WASM limits.
+    pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
+    /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
+    pub(super) current_machine_transition: Option<(String, String, String)>,
+    /// Compile-time known values for untyped constants (for literal coercion).
+    pub(super) const_values: HashMap<String, ConstValue>,
+    /// Inferred type arguments for generic function calls that omit explicit
+    /// type annotations.  Populated in `check_call` after argument unification.
+    pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Maps a let-bound name to the (`TypeParam` name, `TypeVar`) pairs created
+    /// when that name was bound to a generic lambda expression.  Used to
+    /// populate `call_type_args` when the lambda is called later.
+    pub(super) lambda_poly_type_var_map: HashMap<String, Vec<(String, TypeVar)>>,
+    /// Scratch field: set by `check_lambda` when it processes a generic lambda
+    /// (one with non-empty `type_params`).  Consumed immediately in the
+    /// enclosing `Stmt::Let` handler to populate `lambda_poly_type_var_map`.
+    pub(super) last_lambda_generic_vars: Option<Vec<(String, TypeVar)>>,
+    /// Range bounds that were recorded with a coercible default (i64) during
+    /// synthesis but whose actual element type may be narrowed by body
+    /// inference.  Each entry is (span, element-TypeVar, literal-value-if-any).
+    /// Processed in `apply_deferred_range_bound_types` after all inference and
+    /// type defaulting is complete.
+    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IntegerTypeInfo {
+    pub(super) width: u8,
+    pub(super) signed: bool,
+}
+
+/// Known compile-time constant value (for untyped const coercion).
+#[derive(Debug, Clone)]
+pub(super) enum ConstValue {
+    Integer(i64),
+    Float(f64),
+}
+
+impl Checker {
+    #[must_use]
+    pub fn new(module_registry: ModuleRegistry) -> Self {
+        Self {
+            env: TypeEnv::new(),
+            subst: Substitution::new(),
+            registry: TraitRegistry::new(),
+            module_registry,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            expr_types: HashMap::new(),
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            type_def_inference_holes: HashMap::new(),
+            fn_sig_inference_holes: HashMap::new(),
+            deferred_inference_holes: Vec::new(),
+            deferred_cast_checks: Vec::new(),
+            fn_def_spans: HashMap::new(),
+            type_def_spans: HashMap::new(),
+            flat_file_import_pub_spans: HashMap::new(),
+            generic_ctx: Vec::new(),
+            current_return_type: None,
+            in_generator: false,
+            loop_depth: 0,
+            loop_labels: Vec::new(),
+            modules: HashSet::new(),
+            known_types: HashSet::new(),
+            type_aliases: HashMap::new(),
+            trait_defs: HashMap::new(),
+            trait_super: HashMap::new(),
+            trait_impls_set: HashSet::new(),
+            supervisor_children: HashMap::new(),
+            lambda_capture_depth: None,
+            lambda_captures: Vec::new(),
+            import_spans: HashMap::new(),
+            used_modules: RefCell::new(HashSet::new()),
+            user_modules: HashSet::new(),
+            unqualified_to_module: HashMap::new(),
+            call_graph: HashMap::new(),
+            current_function: None,
+            in_for_binding: false,
+            in_pure_function: false,
+            in_receive_fn: false,
+            in_unsafe: false,
+            current_module: None,
+            local_type_defs: HashSet::new(),
+            local_trait_defs: HashSet::new(),
+            current_self_type: None,
+            current_actor_type: None,
+            current_actor_fields: Vec::new(),
+            impl_alias_scopes: Vec::new(),
+            unsafe_functions: HashSet::new(),
+            wasm_target: false,
+            wasm_warning_spans: HashSet::new(),
+            current_machine_transition: None,
+            const_values: HashMap::new(),
+            call_type_args: HashMap::new(),
+            lambda_poly_type_var_map: HashMap::new(),
+            last_lambda_generic_vars: None,
+            deferred_range_bounds: Vec::new(),
+        }
+    }
+
+    /// Enable WASM32-specific validation and warnings.
+    pub fn enable_wasm_target(&mut self) {
+        self.wasm_target = true;
+    }
+
+    /// Extract the module registry after type checking is done.
+    ///
+    /// This transfers ownership of the registry (with its cached module data)
+    /// so it can be passed to the enricher.
+    #[must_use]
+    pub fn into_module_registry(self) -> ModuleRegistry {
+        self.module_registry
+    }
+
+    /// Borrow the module registry (for read-only access after checking).
+    #[must_use]
+    pub fn module_registry(&self) -> &ModuleRegistry {
+        &self.module_registry
+    }
+}
+
+impl Default for Checker {
+    fn default() -> Self {
+        Self::new(ModuleRegistry::new(vec![]))
+    }
+}

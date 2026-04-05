@@ -274,7 +274,7 @@ pub struct DocArgs {
 
 #[derive(Debug, Args)]
 pub struct EvalArgs {
-    /// Execute file in REPL context.
+    /// Execute file in REPL context (`-` reads from stdin).
     #[arg(short = 'f')]
     pub file: Option<PathBuf>,
     /// Per-evaluation timeout in seconds.

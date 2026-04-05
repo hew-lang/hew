@@ -723,8 +723,17 @@ pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, CliEvalError> {
 ///
 /// Returns an error string if evaluation fails.
 pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| CliEvalError::Message(format!("cannot read '{path}': {e}")))?;
+    let (source, input_name) = if path == "-" {
+        let mut source = String::new();
+        std::io::stdin()
+            .read_to_string(&mut source)
+            .map_err(|e| CliEvalError::Message(format!("cannot read stdin: {e}")))?;
+        (source, String::from("<stdin>"))
+    } else {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| CliEvalError::Message(format!("cannot read '{path}': {e}")))?;
+        (source, path.to_string())
+    };
 
     let mut session = ReplSession::with_timeout(timeout);
     let mut buffer = String::new();
@@ -751,7 +760,7 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
             continue;
         }
 
-        let output = session.eval_cli(input, path)?;
+        let output = session.eval_cli(input, &input_name)?;
         if !output.is_empty() {
             print!("{output}");
         }
@@ -761,7 +770,7 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
     // Evaluate any remaining buffered input.
     let input = buffer.trim();
     if !input.is_empty() {
-        let output = session.eval_cli(input, path)?;
+        let output = session.eval_cli(input, &input_name)?;
         if !output.is_empty() {
             print!("{output}");
         }

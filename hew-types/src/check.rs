@@ -1,7 +1,11 @@
 //! Bidirectional type checker for Hew programs.
 
+use crate::builtin_names::{builtin_named_type, BuiltinNamedType};
 use crate::env::TypeEnv;
 use crate::error::{TypeError, TypeErrorKind};
+use crate::method_resolution::{
+    lookup_builtin_method_sig, lookup_named_method_sig as shared_lookup_named_method_sig,
+};
 use crate::module_registry::{ModuleError, ModuleRegistry};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Substitution, Ty, TypeVar};
@@ -762,22 +766,6 @@ impl Checker {
             .cloned()
     }
 
-    /// Apply a concrete named type's arguments to a resolved method signature.
-    fn instantiate_named_method_sig(
-        &self,
-        mut sig: FnSig,
-        type_params: &[String],
-        type_args: &[Ty],
-    ) -> FnSig {
-        for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
-            for param_ty in &mut sig.params {
-                *param_ty = self.substitute_named_param(param_ty, type_param, type_arg);
-            }
-            sig.return_type = self.substitute_named_param(&sig.return_type, type_param, type_arg);
-        }
-        sig
-    }
-
     /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
     fn lookup_named_method_sig(
         &self,
@@ -785,18 +773,7 @@ impl Checker {
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
-        if let Some(td) = self.lookup_type_def(type_name) {
-            if let Some(sig) = td.methods.get(method).cloned() {
-                return Some(self.instantiate_named_method_sig(sig, &td.type_params, type_args));
-            }
-        }
-
-        let type_params = self
-            .lookup_type_def(type_name)
-            .map(|td| td.type_params.clone())
-            .unwrap_or_default();
-        self.lookup_fn_sig(&format!("{type_name}::{method}"))
-            .map(|sig| self.instantiate_named_method_sig(sig, &type_params, type_args))
+        shared_lookup_named_method_sig(&self.type_defs, &self.fn_sigs, type_name, type_args, method)
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -4772,7 +4749,8 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args }
-                        if (name == "Stream" || name == "stream.Stream") && args.len() == 1 =>
+                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
+                            && args.len() == 1 =>
                     {
                         args[0].clone()
                     }
@@ -4807,7 +4785,7 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args }
-                        if (name == "Receiver" || name == "channel.Receiver")
+                        if builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
                             && !args.is_empty() =>
                     {
                         let inner = args[0].clone();
@@ -7566,13 +7544,25 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let Some(inner) = self.validate_stream_sink_element_type(type_args, "Stream", method, span)
-        else {
+        let Some(inner) = self.validate_stream_sink_element_type(
+            type_args,
+            BuiltinNamedType::Stream.canonical_name(),
+            method,
+            span,
+        ) else {
+            return Ty::Error;
+        };
+        let receiver_ty = Ty::stream(inner.clone());
+        let Some(sig) = lookup_builtin_method_sig(&receiver_ty, method) else {
+            self.report_error(
+                TypeErrorKind::UndefinedMethod,
+                span,
+                format!("no method `{method}` on `Stream<{}>`", inner.user_facing()),
+            );
             return Ty::Error;
         };
         match method {
-            "next" => Ty::option(inner),
-            "close" => Ty::Unit,
+            "next" | "close" => sig.return_type,
             "lines" => {
                 if inner != Ty::String {
                     self.report_error(
@@ -7585,7 +7575,7 @@ impl Checker {
                         ),
                     );
                 }
-                Ty::stream(Ty::String)
+                sig.return_type
             }
             "collect" => {
                 if inner != Ty::String {
@@ -7599,46 +7589,20 @@ impl Checker {
                         ),
                     );
                 }
-                Ty::String
-            }
-            "chunks" | "take" => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &Ty::I64);
-                }
-                Ty::stream(inner)
+                sig.return_type
             }
             "decode" => {
                 // Returns Stream<T> where T is inferred; codec type arg not yet resolved
                 Ty::stream(Ty::Var(TypeVar::fresh()))
             }
-            // Functional operators — fn(T) -> T / bool, return Stream<T>
-            "map" => {
-                // Closure takes the stream's element type and returns
-                // the same type.  For String streams: fn(String) -> String;
-                // for bytes streams: fn(bytes) -> bytes.
-                let expected_fn = Ty::Function {
-                    params: vec![inner.clone()],
-                    ret: Box::new(inner.clone()),
-                };
+            "chunks" | "take" | "map" | "filter" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &expected_fn);
+                    if let Some(param_ty) = sig.params.first() {
+                        self.check_against(expr, sp, param_ty);
+                    }
                 }
-                Ty::stream(inner)
-            }
-            "filter" => {
-                // Predicate takes the stream's element type and
-                // returns bool.
-                let expected_fn = Ty::Function {
-                    params: vec![inner.clone()],
-                    ret: Box::new(Ty::Bool),
-                };
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &expected_fn);
-                }
-                Ty::stream(inner)
+                sig.return_type
             }
             _ => {
                 self.report_error(
@@ -8604,7 +8568,7 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Stream" || name == "stream.Stream" => {
+            ) if builtin_named_type(name) == Some(BuiltinNamedType::Stream) => {
                 self.check_stream_method(type_args, method, args, span)
             }
             // Sink<T> methods
@@ -8614,21 +8578,37 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Sink" || name == "stream.Sink" => {
-                let Some(inner) =
-                    self.validate_stream_sink_element_type(type_args, "Sink", method, span)
-                else {
+            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sink) => {
+                let Some(inner) = self.validate_stream_sink_element_type(
+                    type_args,
+                    BuiltinNamedType::Sink.canonical_name(),
+                    method,
+                    span,
+                ) else {
                     return Ty::Error;
                 };
+                let receiver_ty = Ty::sink(inner.clone());
                 match method {
                     "write" => {
+                        let sig =
+                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
+                                unreachable!("builtin Sink::write signature missing")
+                            });
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &inner);
+                            if let Some(param_ty) = sig.params.first() {
+                                self.check_against(expr, sp, param_ty);
+                            }
                         }
-                        Ty::Unit
+                        sig.return_type
                     }
-                    "close" | "flush" => Ty::Unit,
+                    "close" | "flush" => {
+                        lookup_builtin_method_sig(&receiver_ty, method)
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Sink::{method} signature missing")
+                            })
+                            .return_type
+                    }
                     "encode" => {
                         // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
                         Ty::sink(Ty::Var(TypeVar::fresh()))
@@ -8650,16 +8630,23 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Sender" || name == "channel.Sender" => {
+            ) if builtin_named_type(name) == Some(BuiltinNamedType::Sender) => {
                 let inner = type_args
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
+                let receiver_ty = Ty::sender(inner.clone());
                 match method {
                     "send" => {
+                        let sig =
+                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
+                                unreachable!("builtin Sender::send signature missing")
+                            });
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &inner);
+                            if let Some(param_ty) = sig.params.first() {
+                                self.check_against(expr, sp, param_ty);
+                            }
                         }
                         // Validate after unification so the concrete type is known.
                         let resolved_inner = self.subst.resolve(&inner);
@@ -8676,10 +8663,15 @@ impl Checker {
                             );
                             return Ty::Error;
                         }
-                        Ty::Unit
+                        sig.return_type
                     }
-                    "clone" => Ty::sender(inner),
-                    "close" => Ty::Unit,
+                    "clone" | "close" => {
+                        lookup_builtin_method_sig(&receiver_ty, method)
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Sender::{method} signature missing")
+                            })
+                            .return_type
+                    }
                     _ => {
                         self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
                     }
@@ -8692,11 +8684,12 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Receiver" || name == "channel.Receiver" => {
+            ) if builtin_named_type(name) == Some(BuiltinNamedType::Receiver) => {
                 let inner = type_args
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
+                let receiver_ty = Ty::receiver(inner.clone());
                 let resolved_inner = self.subst.resolve(&inner);
                 if !matches!(resolved_inner, Ty::Var(_) | Ty::String)
                     && !resolved_inner.is_integer()
@@ -8713,11 +8706,20 @@ impl Checker {
                 }
                 match method {
                     "recv" => {
+                        let sig =
+                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
+                                unreachable!("builtin Receiver::recv signature missing")
+                            });
                         self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
-                        Ty::option(inner)
+                        sig.return_type
                     }
-                    "try_recv" => Ty::option(inner),
-                    "close" => Ty::Unit,
+                    "try_recv" | "close" => {
+                        lookup_builtin_method_sig(&receiver_ty, method)
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Receiver::{method} signature missing")
+                            })
+                            .return_type
+                    }
                     _ => self.check_named_method_fallback(
                         &resolved,
                         method,
@@ -10322,9 +10324,12 @@ impl Checker {
                                     .type_defs
                                     .get(resolved_name.as_str())
                                     .is_some_and(|td| td.type_params.is_empty());
-                        let args = match resolved_name.as_str() {
-                            "Sender" | "channel.Sender" | "Receiver" | "channel.Receiver"
-                                if args.is_empty() && !locally_non_generic =>
+                        let builtin_type = builtin_named_type(resolved_name.as_str());
+                        let args = match builtin_type {
+                            Some(kind)
+                                if kind.is_channel_handle()
+                                    && args.is_empty()
+                                    && !locally_non_generic =>
                             {
                                 vec![Ty::Var(TypeVar::fresh())]
                             }

@@ -555,7 +555,10 @@ pub unsafe extern "C" fn hew_http_get_string(url: *const c_char) -> *mut c_char 
 /// body string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on error.
+/// it with `libc::free`. Returns null only on transport/network errors
+/// (reported with a negative status code). Non-2xx HTTP responses still
+/// produce a valid body string; callers that need the status code should use
+/// [`hew_http_post`] directly.
 ///
 /// # Safety
 ///

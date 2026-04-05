@@ -314,6 +314,34 @@ impl App {
         }
     }
 
+    fn active_node_candidates(&self) -> Vec<String> {
+        let Some(cluster) = &self.cluster else {
+            return Vec::new();
+        };
+
+        let connected: Vec<String> = cluster
+            .nodes
+            .iter()
+            .filter(|node| node.client.status == ConnectionStatus::Connected)
+            .map(|node| node.addr.clone())
+            .collect();
+        if !connected.is_empty() {
+            return connected;
+        }
+
+        let reachable: Vec<String> = cluster
+            .nodes
+            .iter()
+            .filter(|node| node.client.status != ConnectionStatus::Disconnected)
+            .map(|node| node.addr.clone())
+            .collect();
+        if !reachable.is_empty() {
+            return reachable;
+        }
+
+        cluster.nodes.iter().map(|node| node.addr.clone()).collect()
+    }
+
     fn set_active_node(&mut self, label: &str) {
         if self.active_node_label == label {
             return;
@@ -323,6 +351,53 @@ impl App {
         self.msg_rate = 0.0;
         self.prev_messages_sent = 0;
         self.prev_timestamp = 0.0;
+    }
+
+    fn cycle_active_node(&mut self, reverse: bool) -> bool {
+        let candidates = self.active_node_candidates();
+        if candidates.len() <= 1 {
+            return false;
+        }
+
+        let next_idx = match candidates
+            .iter()
+            .position(|label| label == self.active_node_label())
+        {
+            Some(current_idx) => {
+                if reverse {
+                    (current_idx + candidates.len() - 1) % candidates.len()
+                } else {
+                    (current_idx + 1) % candidates.len()
+                }
+            }
+            None if reverse => candidates.len() - 1,
+            None => 0,
+        };
+        let next_label = &candidates[next_idx];
+        if next_label == self.active_node_label() {
+            return false;
+        }
+
+        self.set_active_node(next_label);
+        true
+    }
+
+    pub fn switch_active_node_prev(&mut self) -> bool {
+        let switched = self.cycle_active_node(true);
+        if switched {
+            self.refresh();
+            self.clamp_selections();
+        }
+        switched
+    }
+
+    pub fn switch_active_node_next(&mut self) -> bool {
+        let switched = self.cycle_active_node(false);
+        if switched {
+            self.refresh();
+            self.clamp_selections();
+        }
+        switched
     }
 
     /// Clamp all selection indices to valid ranges so they never exceed
@@ -1426,6 +1501,43 @@ mod tests {
         assert!(app.msg_rate.abs() < f64::EPSILON);
         assert_eq!(app.prev_messages_sent, 0);
         assert!(app.prev_timestamp.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cycle_active_node_uses_configured_order_before_first_refresh() {
+        let mut app = App::new_tcp(&[
+            "alpha:6060".to_owned(),
+            "beta:6061".to_owned(),
+            "gamma:6062".to_owned(),
+        ]);
+
+        assert!(app.cycle_active_node(false));
+        assert_eq!(app.active_node_label(), "beta:6061");
+
+        assert!(app.cycle_active_node(true));
+        assert_eq!(app.active_node_label(), "alpha:6060");
+    }
+
+    #[test]
+    fn switch_active_node_skips_disconnected_nodes_and_refreshes() {
+        let alpha = TestTraceServer::with_metrics(Vec::new(), 1.0);
+        let beta = TestTraceServer::with_metrics(Vec::new(), 2.0);
+        let dead_addr = unused_tcp_addr();
+        let alpha_addr = alpha.addr();
+        let beta_addr = beta.addr();
+        let mut app = App::new_tcp(&[alpha_addr.clone(), dead_addr, beta_addr.clone()]);
+
+        app.refresh();
+        assert_eq!(app.active_node_label(), alpha_addr);
+        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
+
+        assert!(app.switch_active_node_next());
+        assert_eq!(app.active_node_label(), beta_addr);
+        assert!((app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON);
+
+        assert!(app.switch_active_node_next());
+        assert_eq!(app.active_node_label(), alpha_addr);
+        assert!((app.metrics.timestamp_secs - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

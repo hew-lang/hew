@@ -988,6 +988,12 @@ fn typecheck_guarded_wildcard_not_exhaustive() {
             .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
         "expected non-exhaustive match error, got: {errors:?}"
     );
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("expected NonExhaustiveMatch error");
+    assert_eq!(err.severity, crate::error::Severity::Error);
+    assert_eq!(err.message, "non-exhaustive match: missing true, false");
 }
 
 /// Scalar types (int, float, string, …) have no closed variant set, so a

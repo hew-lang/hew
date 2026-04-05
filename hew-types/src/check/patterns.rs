@@ -153,9 +153,11 @@ impl Checker {
         enum_ty: &Ty,
         fallback_arity: usize,
     ) -> Option<Vec<Ty>> {
+        // Strip enum prefix from qualified names (e.g., "Option::Some" -> "Some")
+        let short_name = variant_name.rsplit("::").next().unwrap_or(variant_name);
         // Handle Option<T> variants
         if let Some(inner) = enum_ty.as_option() {
-            return match variant_name {
+            return match short_name {
                 "Some" => Some(vec![inner.clone()]),
                 "None" => Some(vec![]),
                 _ => None,
@@ -163,14 +165,12 @@ impl Checker {
         }
         // Handle Result<T, E> variants
         if let Some((ok, err)) = enum_ty.as_result() {
-            return match variant_name {
+            return match short_name {
                 "Ok" => Some(vec![ok.clone()]),
                 "Err" => Some(vec![err.clone()]),
                 _ => None,
             };
         }
-        // Strip enum prefix from qualified names (e.g., "Colour::Custom" -> "Custom")
-        let short_name = variant_name.rsplit("::").next().unwrap_or(variant_name);
         // Extract the type name from Named or Machine types
         let type_name_opt = match enum_ty {
             Ty::Named {

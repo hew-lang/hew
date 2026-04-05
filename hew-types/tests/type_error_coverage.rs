@@ -1,4 +1,4 @@
-use hew_types::error::TypeErrorKind;
+use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::Checker;
 
 fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
@@ -84,13 +84,30 @@ fn test_exhaustive_or_option_match() {
         r"
         fn check(opt: Option<int>) -> int {
             match opt {
-                Some(x) | None => 1,
+                Option::Some(x) => x,
+                Option::None => 1,
             }
         }
         fn main() {
             check(Some(1));
         }
     ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "qualified Option match must not produce an exhaustiveness error: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
+        "qualified Option payload must bind correctly: {:?}",
+        output.errors
     );
     assert!(!output
         .warnings
@@ -128,6 +145,13 @@ fn test_non_exhaustive_option_match() {
             .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
         "NonExhaustiveMatch for Option must not appear as a warning"
     );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::NonExhaustiveMatch)
+        .expect("expected NonExhaustiveMatch error for Option");
+    assert_eq!(err.severity, Severity::Error);
+    assert_eq!(err.message, "non-exhaustive match: missing None");
 }
 
 #[test]
@@ -136,7 +160,8 @@ fn test_exhaustive_or_result_match() {
         r"
         fn check(res: Result<int, int>) -> int {
             match res {
-                Ok(x) | Err(e) => 1,
+                Result::Ok(x) => x,
+                Result::Err(e) => e,
             }
         }
         fn main() {
@@ -150,6 +175,14 @@ fn test_exhaustive_or_result_match() {
             .iter()
             .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
         "exhaustive Result match must not produce an error"
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
+        "qualified Result payloads must bind correctly: {:?}",
+        output.errors
     );
     assert!(!output
         .warnings
@@ -217,6 +250,16 @@ fn test_scalar_missing_catchall_is_warning() {
             .all(|e| e.kind != TypeErrorKind::NonExhaustiveMatch),
         "scalar missing catch-all must not be an error, got errors: {:?}",
         output.errors
+    );
+    let warning = output
+        .warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::NonExhaustiveMatch)
+        .expect("expected NonExhaustiveMatch warning for scalar catch-all");
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "non-exhaustive match: consider adding a wildcard `_` arm"
     );
 }
 

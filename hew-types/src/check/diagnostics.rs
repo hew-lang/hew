@@ -273,13 +273,15 @@ impl Checker {
 
         match scrutinee_ty {
             Ty::Named { name, .. } if name == "Option" => {
-                if !Self::has_both_constructor_variants(arms, "Some", "None") {
-                    self.error_non_exhaustive(span, "Option requires Some and None arms");
+                let missing = Self::missing_constructor_variants(arms, "Some", "None");
+                if !missing.is_empty() {
+                    self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
                 }
             }
             Ty::Named { name, .. } if name == "Result" => {
-                if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
-                    self.error_non_exhaustive(span, "Result requires Ok and Err arms");
+                let missing = Self::missing_constructor_variants(arms, "Ok", "Err");
+                if !missing.is_empty() {
+                    self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
                 }
             }
             Ty::Named { name, .. } => {
@@ -392,8 +394,17 @@ impl Checker {
                         _ => {}
                     });
                 }
-                if !has_binding_identifier && (!has_true || !has_false) {
-                    self.error_non_exhaustive(span, "missing bool variant");
+                if !has_binding_identifier {
+                    let mut missing = Vec::new();
+                    if !has_true {
+                        missing.push("true");
+                    }
+                    if !has_false {
+                        missing.push("false");
+                    }
+                    if !missing.is_empty() {
+                        self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
+                    }
                 }
             }
             _ => {
@@ -423,37 +434,31 @@ impl Checker {
     /// user enums, machines, bool).  These are fail-closed: missing variants are a
     /// correctness issue, not just a style suggestion.
     pub(super) fn error_non_exhaustive(&mut self, span: &Span, detail: &str) {
-        self.errors.push(TypeError {
-            severity: crate::error::Severity::Error,
-            kind: TypeErrorKind::NonExhaustiveMatch,
-            span: span.clone(),
-            message: format!("non-exhaustive match: {detail}"),
-            notes: vec![],
-            suggestions: vec![],
-        });
+        self.errors.push(TypeError::non_exhaustive_match_detail(
+            span.clone(),
+            crate::error::Severity::Error,
+            detail,
+        ));
     }
 
     /// Emit a soft warning for scalar / open-ended types where adding a wildcard `_`
     /// arm is a style suggestion rather than a correctness requirement.
     pub(super) fn warn_non_exhaustive(&mut self, span: &Span, detail: &str) {
-        self.warnings.push(TypeError {
-            severity: crate::error::Severity::Warning,
-            kind: TypeErrorKind::NonExhaustiveMatch,
-            span: span.clone(),
-            message: format!("non-exhaustive match: {detail}"),
-            notes: vec![],
-            suggestions: vec![],
-        });
+        self.warnings.push(TypeError::non_exhaustive_match_detail(
+            span.clone(),
+            crate::error::Severity::Warning,
+            detail,
+        ));
     }
 
-    /// Check if match arms cover both constructor variants (e.g., Some/None, Ok/Err).
-    /// Returns true if exhaustive (either a binding wildcard or both variants present).
-    pub(super) fn has_both_constructor_variants(
+    /// Return the missing constructor variants for two-variant enum-like matches
+    /// (e.g., Some/None, Ok/Err). An identifier binding counts as exhaustive.
+    pub(super) fn missing_constructor_variants<'a>(
         arms: &[MatchArm],
-        variant_a: &str,
-        variant_b: &str,
-    ) -> bool {
-        fn visit_or<'a>(pattern: &'a Pattern, f: &mut impl FnMut(&'a Pattern)) {
+        variant_a: &'a str,
+        variant_b: &'a str,
+    ) -> Vec<&'a str> {
+        fn visit_or<'pattern>(pattern: &'pattern Pattern, f: &mut impl FnMut(&'pattern Pattern)) {
             match pattern {
                 Pattern::Or(left, right) => {
                     visit_or(&left.0, f);
@@ -471,28 +476,38 @@ impl Checker {
                 continue;
             }
             visit_or(&arm.pattern.0, &mut |pattern| match pattern {
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                    if name == variant_a =>
-                {
-                    has_a = true;
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_a {
+                        has_a = true;
+                    }
+                    if short == variant_b {
+                        has_b = true;
+                    }
                 }
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                    if name == variant_b =>
-                {
-                    has_b = true;
-                }
-                Pattern::Identifier(name) if name == variant_a => {
-                    has_a = true;
-                }
-                Pattern::Identifier(name) if name == variant_b => {
-                    has_b = true;
-                }
-                Pattern::Identifier(_) => {
-                    has_binding_identifier = true;
+                Pattern::Identifier(name) => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_a {
+                        has_a = true;
+                    } else if short == variant_b {
+                        has_b = true;
+                    } else {
+                        has_binding_identifier = true;
+                    }
                 }
                 _ => {}
             });
         }
-        has_binding_identifier || (has_a && has_b)
+        if has_binding_identifier {
+            return Vec::new();
+        }
+        let mut missing = Vec::new();
+        if !has_a {
+            missing.push(variant_a);
+        }
+        if !has_b {
+            missing.push(variant_b);
+        }
+        missing
     }
 }

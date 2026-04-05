@@ -8,14 +8,15 @@
 //! Messages are deep-copied on send to ensure actor isolation. Bounded
 //! mailboxes apply an overflow policy when capacity is exceeded.
 //!
-//! The user queue uses a lock-free Michael-Scott MPSC algorithm for the
-//! fast path (unbounded, `DropNew`, `Fail`). Complex overflow policies
-//! (`Block`, `DropOld`, `Coalesce`) fall back to a `Mutex`-protected
-//! `VecDeque` since they require queue traversal or blocking.
+//! The user queue uses a lock-free stable-stub MPSC algorithm for the fast
+//! path (unbounded, `DropNew`, `Fail`). Complex overflow policies (`Block`,
+//! `DropOld`, `Coalesce`) fall back to a `Mutex`-protected `VecDeque` since
+//! they require queue traversal or blocking.
 //!
 //! System messages use a separate lock-free MPSC queue.
 
 use crate::util::{CondvarExt, MutexExt};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
@@ -153,27 +154,61 @@ fn alloc_sentinel() -> *mut HewMsgNode {
     node
 }
 
-/// Lock-free MPSC queue using the Michael-Scott algorithm.
+/// Lock-free MPSC queue using a stable-stub Vyukov-style algorithm.
 ///
-/// Multiple producers can enqueue concurrently via CAS on `tail`.
-/// A single consumer dequeues from `head`. The queue always contains
-/// at least a sentinel node, so `head` and `tail` are never null.
-#[derive(Debug)]
+/// Multiple producers enqueue via an atomic swap on `head`. A single
+/// consumer dequeues from `tail`. A heap-allocated stub sentinel remains
+/// live for the queue's full lifetime so producers never race a freed
+/// former sentinel.
 struct MpscQueue {
     head: AtomicPtr<HewMsgNode>,
-    tail: AtomicPtr<HewMsgNode>,
+    tail: UnsafeCell<*mut HewMsgNode>,
+    stub: *mut HewMsgNode,
+}
+
+impl std::fmt::Debug for MpscQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: Debug output only snapshots the consumer tail pointer; the
+        // queue itself remains responsible for single-consumer access.
+        let tail = unsafe { *self.tail.get() };
+        f.debug_struct("MpscQueue")
+            .field("head", &self.head.load(Ordering::Relaxed))
+            .field("tail", &tail)
+            .field("stub", &self.stub)
+            .finish()
+    }
+}
+
+// SAFETY: Producers only touch the atomic `head` plus their own node's `next`.
+// The single consumer owns `tail` through the queue's API contract.
+unsafe impl Sync for MpscQueue {}
+// SAFETY: The queue may move between threads; ownership invariants are the same
+// as for `Sync`.
+unsafe impl Send for MpscQueue {}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DequeueState {
+    Success(*mut HewMsgNode),
+    Empty,
+    Inconsistent,
 }
 
 impl MpscQueue {
     fn new() -> Option<Self> {
-        let sentinel = alloc_sentinel();
-        if sentinel.is_null() {
+        let stub = alloc_sentinel();
+        if stub.is_null() {
             return None;
         }
         Some(Self {
-            head: AtomicPtr::new(sentinel),
-            tail: AtomicPtr::new(sentinel),
+            head: AtomicPtr::new(stub),
+            tail: UnsafeCell::new(stub),
+            stub,
         })
+    }
+
+    #[inline]
+    fn stub_ptr(&self) -> *mut HewMsgNode {
+        self.stub
     }
 
     /// Enqueue a node. Safe for concurrent producers.
@@ -186,102 +221,120 @@ impl MpscQueue {
         // SAFETY: `node` is valid and exclusively owned. Set next to null
         // before publishing.
         unsafe { (*node).next.store(ptr::null_mut(), Ordering::Relaxed) };
-        loop {
-            let old_tail = self.tail.load(Ordering::Acquire);
-            // SAFETY: `old_tail` is always a valid node (sentinel or previously
-            // enqueued node) because we never free the tail without advancing it.
-            let next = unsafe { (*old_tail).next.load(Ordering::Acquire) };
-            if next.is_null() {
-                // SAFETY: `old_tail` is valid; CAS its next from null to `node`.
-                if unsafe {
-                    (*old_tail).next.compare_exchange(
-                        ptr::null_mut(),
-                        node,
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                    )
-                }
-                .is_ok()
-                {
-                    // Try to advance tail. Failure is fine — a concurrent
-                    // enqueue or the next enqueue will advance it.
-                    let _ = self.tail.compare_exchange(
-                        old_tail,
-                        node,
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                    );
-                    return;
-                }
-            } else {
-                // Tail is lagging — help advance it.
-                let _ = self.tail.compare_exchange(
-                    old_tail,
-                    next,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                );
-            }
+
+        let prev = self.head.swap(node, Ordering::AcqRel);
+        // SAFETY: `prev` is either the stable stub or a previously-enqueued
+        // live node. Linking with Release publishes `node` to the consumer.
+        unsafe {
+            (*prev).next.store(node, Ordering::Release);
         }
+    }
+
+    /// Single-consumer dequeue step. Returns [`DequeueState::Inconsistent`]
+    /// when a producer has exchanged `head` but not yet linked `prev.next`.
+    unsafe fn try_dequeue_once(&self) -> DequeueState {
+        // SAFETY: Single-consumer invariant grants exclusive access to `tail`.
+        let tail = unsafe { *self.tail.get() };
+        // SAFETY: `tail` is always the stub or a live queued node.
+        let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+        let stub = self.stub_ptr();
+
+        if tail == stub {
+            if next.is_null() {
+                return DequeueState::Empty;
+            }
+            // SAFETY: `next` is the first real node after the stub sentinel.
+            unsafe { *self.tail.get() = next };
+            // SAFETY: `next` became the consumer tail, so pop_inner sees a
+            // valid live node under the same single-consumer invariant.
+            return unsafe { self.pop_inner(next) };
+        }
+
+        if !next.is_null() {
+            // SAFETY: advance consumer tail to the successor before returning
+            // the current tail node to the caller for freeing.
+            unsafe { *self.tail.get() = next };
+            return DequeueState::Success(tail);
+        }
+
+        let head = self.head.load(Ordering::Acquire);
+        if tail != head {
+            return DequeueState::Inconsistent;
+        }
+
+        // Queue holds a single real node. Re-inject the stable stub so the
+        // consumer can pop the last node without ever freeing the sentinel
+        // seen by producers.
+        // SAFETY: the stable stub stays live for the queue lifetime and may be
+        // re-enqueued by the single consumer.
+        unsafe { self.enqueue(stub) };
+        // SAFETY: `tail` is still live here; either stub linking completed or
+        // we observe an in-flight producer and retry.
+        let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+        if !next.is_null() {
+            // SAFETY: `next` is the successor just observed from the current
+            // consumer tail, so updating the tail preserves the invariant.
+            unsafe { *self.tail.get() = next };
+            return DequeueState::Success(tail);
+        }
+
+        DequeueState::Inconsistent
+    }
+
+    /// Helper after advancing past the stub sentinel.
+    unsafe fn pop_inner(&self, tail: *mut HewMsgNode) -> DequeueState {
+        // SAFETY: `tail` is the first real node after the stub sentinel.
+        let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+
+        if !next.is_null() {
+            // SAFETY: `next` is the successor just observed from the current
+            // consumer tail, so updating the tail preserves the invariant.
+            unsafe { *self.tail.get() = next };
+            return DequeueState::Success(tail);
+        }
+
+        let head = self.head.load(Ordering::Acquire);
+        if tail != head {
+            return DequeueState::Inconsistent;
+        }
+
+        let stub = self.stub_ptr();
+        // SAFETY: the stable stub stays live for the queue lifetime and may be
+        // re-enqueued by the single consumer.
+        unsafe { self.enqueue(stub) };
+        // SAFETY: `tail` remains live until the caller frees the returned node.
+        let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+        if !next.is_null() {
+            // SAFETY: `next` is the successor just observed from the current
+            // consumer tail, so updating the tail preserves the invariant.
+            unsafe { *self.tail.get() = next };
+            return DequeueState::Success(tail);
+        }
+
+        DequeueState::Inconsistent
     }
 
     /// Try to dequeue a node. **Single-consumer only.**
     ///
-    /// Returns a node containing the dequeued message's payload, or null
-    /// if the queue is empty. The returned node is exclusively owned by
-    /// the caller and must be freed with [`hew_msg_node_free`].
-    ///
-    /// Internally, the old sentinel is repurposed to carry the payload,
-    /// while the first real node becomes the new sentinel.
+    /// Returns a dequeued message node, or null if the queue appears empty.
+    /// If a producer is briefly mid-enqueue, spin a few times to avoid
+    /// reporting a false empty to the caller.
     ///
     /// # Safety
     ///
     /// Only one thread may call this at a time (single-consumer invariant).
     unsafe fn try_dequeue(&self) -> *mut HewMsgNode {
-        let dummy = self.head.load(Ordering::Acquire);
-        // SAFETY: `dummy` (the sentinel) is always a valid node.
-        let first = unsafe { (*dummy).next.load(Ordering::Acquire) };
-        if first.is_null() {
-            return ptr::null_mut();
+        const SPIN_LIMIT: usize = 64;
+        for _ in 0..SPIN_LIMIT {
+            // SAFETY: try_dequeue owns the single-consumer contract for the
+            // duration of this call and delegates one dequeue step.
+            match unsafe { self.try_dequeue_once() } {
+                DequeueState::Success(node) => return node,
+                DequeueState::Empty => return ptr::null_mut(),
+                DequeueState::Inconsistent => std::hint::spin_loop(),
+            }
         }
-        // `first` is the actual message node. Make it the new sentinel
-        // by promoting it to head.
-        self.head.store(first, Ordering::Release);
-        // Ensure tail doesn't point to the freed dummy.
-        let _ = self
-            .tail
-            .compare_exchange(dummy, first, Ordering::Release, Ordering::Relaxed);
-        // Transfer `first`'s payload into `dummy` so we can return `dummy`
-        // to the caller. `first` stays as the new (empty) sentinel.
-        // SAFETY: `dummy` and `first` are valid, non-aliased nodes.
-        // `first` is now the head sentinel and won't be read by producers
-        // (they only touch tail→next). The single-consumer invariant
-        // ensures no concurrent dequeue.
-        unsafe {
-            (*dummy).msg_type = (*first).msg_type;
-            (*dummy).data = (*first).data;
-            (*dummy).data_size = (*first).data_size;
-            (*dummy).reply_channel = (*first).reply_channel;
-            (*dummy).trace_context = (*first).trace_context;
-            (*dummy).next.store(ptr::null_mut(), Ordering::Relaxed);
-
-            // Clear `first`'s payload so it's a clean sentinel.
-            (*first).msg_type = -1;
-            (*first).data = ptr::null_mut();
-            (*first).data_size = 0;
-            (*first).reply_channel = ptr::null_mut();
-            (*first).trace_context = HewTraceContext::default();
-        }
-        // Return `dummy` with the message payload. Caller frees it.
-        dummy
-    }
-
-    /// Returns `true` if the queue has at least one real message.
-    fn has_messages(&self) -> bool {
-        let dummy = self.head.load(Ordering::Acquire);
-        // SAFETY: `dummy` is always a valid sentinel node.
-        let first = unsafe { (*dummy).next.load(Ordering::Acquire) };
-        !first.is_null()
+        ptr::null_mut()
     }
 
     /// Drain and free all remaining nodes (including the sentinel).
@@ -291,20 +344,23 @@ impl MpscQueue {
     /// No concurrent access may occur. All nodes must have been allocated
     /// by `msg_node_alloc` (or `alloc_sentinel`).
     unsafe fn drain_and_free(&self) {
-        let mut cur = self.head.load(Ordering::Acquire);
-        while !cur.is_null() {
-            // SAFETY: `cur` is a valid node in the queue.
-            let next = unsafe { (*cur).next.load(Ordering::Relaxed) };
+        loop {
+            // SAFETY: caller guarantees exclusive teardown access, so dequeue
+            // may consume until the queue is empty.
+            let node = unsafe { self.try_dequeue() };
+            if node.is_null() {
+                break;
+            }
             // Route every node through hew_msg_node_free so that any queued
             // ask/reply channels are retired and their waiters unblocked with
-            // an empty reply before the memory is freed. The sentinel has
-            // null reply_channel and null data, so this is a safe no-op for
-            // it beyond freeing the sentinel node itself.
-            // SAFETY: each node was malloc'd; hew_msg_node_free handles null
-            // data and null reply_channel gracefully.
-            unsafe { hew_msg_node_free(cur) };
-            cur = next;
+            // an empty reply before the memory is freed.
+            // SAFETY: dequeue transferred exclusive ownership of `node`.
+            unsafe { hew_msg_node_free(node) };
         }
+        // Free the stable stub sentinel last.
+        // SAFETY: the stub was heap-allocated at queue creation and is still
+        // exclusively owned during teardown.
+        unsafe { hew_msg_node_free(self.stub_ptr()) };
     }
 }
 
@@ -1194,7 +1250,7 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
 
-    if mb.sys_queue.has_messages() {
+    if mb.sys_count.load(Ordering::Acquire) > 0 {
         return 1;
     }
 
@@ -1202,7 +1258,7 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
         let q = mb.slow_path.lock_or_recover();
         i32::from(!q.user_queue.is_empty())
     } else {
-        i32::from(mb.user_fast.has_messages())
+        i32::from(mb.count.load(Ordering::Acquire) > 0)
     }
 }
 
@@ -1857,6 +1913,75 @@ mod tests {
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
             assert!((*mb).use_slow_path, "DropOld mailbox should use slow path");
             assert_mailbox_free_unblocks_reply_waiter(mb);
+        }
+    }
+
+    #[test]
+    fn fast_path_queue_tolerates_concurrent_producers_and_immediate_frees() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const PRODUCERS: usize = 8;
+        const PER_PRODUCER: usize = 4_000;
+        const TOTAL: usize = PRODUCERS * PER_PRODUCER;
+
+        for _round in 0..4 {
+            let q = Arc::new(MpscQueue::new().expect("queue allocation should succeed"));
+            let start = Arc::new(Barrier::new(PRODUCERS + 1));
+            let mut handles = Vec::new();
+
+            for producer_id in 0..PRODUCERS {
+                let q = Arc::clone(&q);
+                let start = Arc::clone(&start);
+                handles.push(thread::spawn(move || {
+                    start.wait();
+                    for seq in 0..PER_PRODUCER {
+                        let msg_type = i32::try_from(producer_id * PER_PRODUCER + seq)
+                            .expect("test payload id fits in i32");
+                        // SAFETY: null payload + zero size is a valid message.
+                        let node =
+                            unsafe { msg_node_alloc(msg_type, ptr::null(), 0, ptr::null_mut()) };
+                        assert!(!node.is_null(), "message allocation must succeed");
+                        // SAFETY: each node is freshly allocated and exclusively
+                        // owned by this producer until publish.
+                        unsafe { q.enqueue(node) };
+                        if seq % 64 == 0 {
+                            thread::yield_now();
+                        }
+                    }
+                }));
+            }
+
+            start.wait();
+
+            let mut consumed = 0;
+            while consumed < TOTAL {
+                // SAFETY: single-consumer loop owns dequeue access.
+                let node = unsafe { q.try_dequeue() };
+                if node.is_null() {
+                    thread::yield_now();
+                    continue;
+                }
+                consumed += 1;
+                // SAFETY: the queue handed ownership of `node` to the consumer.
+                unsafe { hew_msg_node_free(node) };
+                if consumed % 1024 == 0 {
+                    thread::yield_now();
+                }
+            }
+
+            for handle in handles {
+                handle.join().expect("producer thread panicked");
+            }
+
+            assert_eq!(
+                consumed, TOTAL,
+                "consumer must observe every published node"
+            );
+
+            let q = Arc::try_unwrap(q).expect("queue still shared after producers joined");
+            // SAFETY: queue is exclusively owned and should contain only the stub.
+            unsafe { q.drain_and_free() };
         }
     }
 

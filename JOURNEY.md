@@ -218,7 +218,7 @@ without changing either the MessagePack or JSON schema.
 
 ### Goal
 
-Remove the repeated actor-field binding loop in `hew-types/src/check.rs`
+Remove the repeated actor-field binding loop in `hew-types/src/check/items.rs`
 without changing actor scope behaviour.
 
 ### Decision

@@ -15,6 +15,12 @@ operate on a single entry-point file and resolve imports recursively from
 there. Pass `main.hew` (or your real top-level entry file), not every file in
 the tree.
 
+For the standard bootstrap flow, start with `adze init <name>` so you get
+`hew.toml`, `main.hew`, and `.gitignore`, then begin with
+`hew check main.hew` / `hew run main.hew`. `hew init` remains the lighter
+source-only scaffold: it writes `main.hew` plus `README.md`, but no
+`hew.toml`.
+
 ## Build & linking
 
 Common signs:

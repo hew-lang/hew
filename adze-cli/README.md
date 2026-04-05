@@ -13,25 +13,26 @@ cargo install --path adze-cli
 ## Quick Start
 
 ```bash
-# Create a new project
+# Create a manifest-first project
 adze init myproject
 cd myproject
+
+# adze init creates hew.toml, main.hew, and .gitignore
+hew check main.hew
+hew run main.hew
 
 # Add a dependency
 adze add std::net::http --version "^1.0"
 
 # Install dependencies
 adze install
-
-# Build your project
-hew build main.hew
 ```
 
 ## Commands
 
 ### Project Setup
 
-- `adze init [NAME]` — Create a new Hew project
+- `adze init [NAME]` — Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
   - `--lib` — Library project template
   - `--actor` — Actor project template
 - `adze check` — Validate your manifest
@@ -53,6 +54,8 @@ hew build main.hew
 - `adze tree` — Show dependency tree
 
 ## Manifest Format (hew.toml)
+
+`adze init` writes a starter manifest like:
 
 ```toml
 [package]

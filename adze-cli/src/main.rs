@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create a new hew.toml in the current directory
+    /// Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
     Init {
         /// Project name (defaults to directory name)
         name: Option<String>,
@@ -158,6 +158,16 @@ enum Command {
         /// Shell to generate completions for.
         shell: ShellChoice,
     },
+}
+
+fn init_follow_up_hint(template: manifest::ManifestTemplate) -> String {
+    let source = template.scaffold_source();
+    match template {
+        manifest::ManifestTemplate::Lib => format!("Next: `hew check {source}`"),
+        manifest::ManifestTemplate::Bin | manifest::ManifestTemplate::Actor => {
+            format!("Next: `hew check {source}` then `hew run {source}`")
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -389,6 +399,8 @@ fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &conf
 
             // Write .gitignore with target/ and .adze/.
             write_init_gitignore(&cwd);
+            let source = template.scaffold_source();
+            let follow_up = init_follow_up_hint(template);
 
             // Parse back to verify and display the confirmed package name.
             match manifest::parse_manifest(&manifest_path) {
@@ -398,6 +410,8 @@ fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &conf
                     println!("Created hew.toml for project `{name}`");
                 }
             }
+            println!("Scaffolded {source} and .gitignore");
+            println!("{follow_up}");
         }
         Err(e) => {
             eprintln!("adze init: {e}");
@@ -2346,6 +2360,22 @@ mod tests {
         write_template_source(dir.path(), "proj", manifest::ManifestTemplate::Bin);
         let src = std::fs::read_to_string(dir.path().join("main.hew")).unwrap();
         assert_eq!(src, "// existing", "should not overwrite existing file");
+    }
+
+    #[test]
+    fn init_follow_up_hint_matches_template() {
+        assert_eq!(
+            init_follow_up_hint(manifest::ManifestTemplate::Bin),
+            "Next: `hew check main.hew` then `hew run main.hew`"
+        );
+        assert_eq!(
+            init_follow_up_hint(manifest::ManifestTemplate::Lib),
+            "Next: `hew check lib.hew`"
+        );
+        assert_eq!(
+            init_follow_up_hint(manifest::ManifestTemplate::Actor),
+            "Next: `hew check main.hew` then `hew run main.hew`"
+        );
     }
 
     #[test]

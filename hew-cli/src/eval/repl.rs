@@ -183,7 +183,7 @@ impl ReplSession {
                 }
 
                 if let Some(ty) = best_ty {
-                    return Ok(format!("{ty}"));
+                    return Ok(ty.user_facing().to_string());
                 }
             }
 

@@ -37,6 +37,56 @@ fn timeout_zero_is_rejected() {
 }
 
 #[test]
+fn eval_inline_expression_succeeds() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+#[test]
+fn eval_file_in_repl_context_succeeds() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("positive_eval.hew");
+    std::fs::write(
+        &path,
+        "fn identity<T>(x: T) -> T {\n    x\n}\n\nidentity(42)\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
 fn eval_timeout_exit_code_is_non_zero() {
     if !require_codegen() {
         return;

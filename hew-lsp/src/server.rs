@@ -643,13 +643,12 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
-        let Some(span) =
-            hew_analysis::rename::prepare_rename(&doc.source, &doc.parse_result, offset)
-        else {
-            return Ok(None);
-        };
-        let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-        Ok(Some(PrepareRenameResponse::Range(range)))
+        Ok(build_prepare_rename_response(
+            uri,
+            &doc,
+            offset,
+            &self.documents,
+        ))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -1648,6 +1647,27 @@ fn collect_local_reference_locations(
     locations
 }
 
+fn build_prepare_rename_response(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<PrepareRenameResponse> {
+    let span = if let Some((name, span)) =
+        hew_analysis::util::simple_word_at_offset(&doc.source, offset)
+    {
+        if find_resolved_named_import_match(uri, doc, offset, &name, documents).is_some() {
+            span
+        } else {
+            hew_analysis::rename::prepare_rename(&doc.source, &doc.parse_result, offset)?
+        }
+    } else {
+        hew_analysis::rename::prepare_rename(&doc.source, &doc.parse_result, offset)?
+    };
+    let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
+    Some(PrepareRenameResponse::Range(range))
+}
+
 fn sort_and_dedup_locations(locations: &mut Vec<Location>) {
     locations.sort_by(|left, right| {
         left.uri
@@ -1779,6 +1799,37 @@ fn build_reference_locations(
             }
         }
 
+        for importer in find_open_named_importers(
+            &import_match.imported_uri,
+            &import_match.imported_name,
+            documents,
+        ) {
+            if importer.importer_uri == import_match.importer_uri {
+                continue;
+            }
+            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                push_location_for_span(
+                    &mut locations,
+                    &importer.importer_uri,
+                    &importer_doc.source,
+                    &importer_doc.line_offsets,
+                    importer.import_name_span,
+                );
+                for span in hew_analysis::references::find_import_binding_references(
+                    &importer_doc.parse_result,
+                    &importer.visible_name,
+                ) {
+                    push_location_for_span(
+                        &mut locations,
+                        &importer.importer_uri,
+                        &importer_doc.source,
+                        &importer_doc.line_offsets,
+                        span,
+                    );
+                }
+            }
+        }
+
         sort_and_dedup_locations(&mut locations);
         return locations;
     }
@@ -1815,6 +1866,10 @@ fn build_reference_locations(
     locations
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "cross-file rename handles local, imported-definition, and importer fanout paths"
+)]
 fn build_workspace_edit(
     uri: &Url,
     doc: &DocumentState,
@@ -1855,6 +1910,47 @@ fn build_workspace_edit(
                             .entry(import_match.imported_uri.clone())
                             .or_default()
                             .extend(target_edits);
+                    }
+                }
+            }
+
+            for importer in find_open_named_importers(
+                &import_match.imported_uri,
+                &import_match.imported_name,
+                documents,
+            ) {
+                if importer.importer_uri == *uri {
+                    continue;
+                }
+                changes
+                    .entry(importer.importer_uri.clone())
+                    .or_default()
+                    .push(hew_analysis::RenameEdit {
+                        span: importer.import_name_span,
+                        new_text: new_name.to_string(),
+                    });
+
+                if importer.is_aliased() {
+                    continue;
+                }
+
+                if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                    let importer_edits: Vec<_> =
+                        hew_analysis::references::find_import_binding_references(
+                            &importer_doc.parse_result,
+                            &importer.visible_name,
+                        )
+                        .into_iter()
+                        .map(|span| hew_analysis::RenameEdit {
+                            span,
+                            new_text: new_name.to_string(),
+                        })
+                        .collect();
+                    if !importer_edits.is_empty() {
+                        changes
+                            .entry(importer.importer_uri.clone())
+                            .or_default()
+                            .extend(importer_edits);
                     }
                 }
             }
@@ -4785,6 +4881,72 @@ impl Worker {
     }
 
     #[test]
+    fn cross_file_prepare_rename_on_named_import_binding_returns_import_range() {
+        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let util_source = "pub fn greet() -> i32 { 1 }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri, make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.find("greet").unwrap();
+
+        assert!(
+            hew_analysis::rename::prepare_rename(&main_doc.source, &main_doc.parse_result, offset)
+                .is_none(),
+            "analysis-layer prepare_rename stays local-only for named imports"
+        );
+
+        let response = build_prepare_rename_response(&main_uri, &main_doc, offset, &documents)
+            .expect("prepareRename should succeed on a named import binding");
+        let PrepareRenameResponse::Range(range) = response else {
+            panic!("expected prepareRename to return a range");
+        };
+
+        let expected_range = offset_range_to_lsp(
+            main_source,
+            &main_doc.line_offsets,
+            offset,
+            offset + "greet".len(),
+        );
+        assert_eq!(range, expected_range);
+    }
+
+    #[test]
+    fn cross_file_prepare_rename_on_named_import_usage_returns_usage_range() {
+        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let util_source = "pub fn greet() -> i32 { 1 }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(util_uri, make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+
+        let response = build_prepare_rename_response(&main_uri, &main_doc, offset, &documents)
+            .expect("prepareRename should succeed on a named import usage");
+        let PrepareRenameResponse::Range(range) = response else {
+            panic!("expected prepareRename to return a range");
+        };
+
+        let expected_range = offset_range_to_lsp(
+            main_source,
+            &main_doc.line_offsets,
+            offset,
+            offset + "greet".len(),
+        );
+        assert_eq!(range, expected_range);
+    }
+
+    #[test]
     fn cross_file_references_include_named_importer_and_imported_open_document() {
         let main_source =
             "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
@@ -4865,6 +5027,56 @@ impl Worker {
     }
 
     #[test]
+    fn cross_file_references_from_named_import_usage_include_other_open_importers() {
+        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let helper_source = "import util::{ greet };\nfn helper() -> i32 { greet() }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let helper_uri = make_test_uri("/project/helper.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(helper_uri.clone(), make_doc(helper_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+        let locations = build_reference_locations(&main_uri, &main_doc, offset, true, &documents);
+
+        assert_eq!(
+            locations.len(),
+            6,
+            "expected both importers plus imported references"
+        );
+        assert_eq!(
+            locations
+                .iter()
+                .filter(|location| location.uri == main_uri)
+                .count(),
+            2,
+            "expected import site plus usage in main.hew"
+        );
+        assert_eq!(
+            locations
+                .iter()
+                .filter(|location| location.uri == helper_uri)
+                .count(),
+            2,
+            "expected import site plus usage in helper.hew"
+        );
+        assert_eq!(
+            locations
+                .iter()
+                .filter(|location| location.uri == util_uri)
+                .count(),
+            2,
+            "expected definition plus wrapper() call in util.hew"
+        );
+    }
+
+    #[test]
     fn cross_file_rename_updates_named_importer_and_imported_open_document() {
         let main_source =
             "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
@@ -4891,6 +5103,61 @@ impl Worker {
             .expect("rename should include main.hew edits");
         assert_eq!(main_edits.len(), 3, "expected import + two call-site edits");
         assert!(main_edits.iter().all(|edit| edit.new_text == "welcome"));
+
+        let util_edits = changes
+            .get(&util_uri)
+            .expect("rename should include util.hew edits");
+        assert_eq!(
+            util_edits.len(),
+            2,
+            "expected definition + wrapper call edits"
+        );
+        assert!(util_edits.iter().all(|edit| edit.new_text == "welcome"));
+    }
+
+    #[test]
+    fn cross_file_rename_from_named_import_usage_updates_other_open_importers() {
+        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let helper_source = "import util::{ greet };\nfn helper() -> i32 { greet() }";
+        let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let helper_uri = make_test_uri("/project/helper.hew");
+        let util_uri = make_test_uri("/project/util.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(helper_uri.clone(), make_doc(helper_source));
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.rfind("greet").unwrap();
+        let workspace_edit =
+            build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should produce a cross-file workspace edit");
+        let changes = workspace_edit
+            .changes
+            .expect("workspace edit should contain per-document text edits");
+
+        let main_edits = changes
+            .get(&main_uri)
+            .expect("rename should include main.hew edits");
+        assert_eq!(
+            main_edits.len(),
+            2,
+            "expected import + usage edits in main.hew"
+        );
+        assert!(main_edits.iter().all(|edit| edit.new_text == "welcome"));
+
+        let helper_edits = changes
+            .get(&helper_uri)
+            .expect("rename should include helper.hew edits");
+        assert_eq!(
+            helper_edits.len(),
+            2,
+            "expected import + usage edits in helper.hew"
+        );
+        assert!(helper_edits.iter().all(|edit| edit.new_text == "welcome"));
 
         let util_edits = changes
             .get(&util_uri)

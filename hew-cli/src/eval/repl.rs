@@ -3,7 +3,11 @@
 use super::classify::{self, InputKind, ReplCommand};
 use super::session::Session;
 use std::fmt;
-use std::time::Duration;
+use std::io::Read;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -464,7 +468,7 @@ fn run_inprocess_compiled(
         &crate::compile::CompileOptions::default(),
     )?;
 
-    match crate::process::run_binary_with_timeout(&bin_path, timeout) {
+    match run_eval_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
             // Normalize Windows \r\n line endings to \n for consistent output.
             Ok(stdout.replace("\r\n", "\n"))
@@ -480,6 +484,171 @@ fn run_inprocess_compiled(
         )),
         Err(e) => Err(format!("cannot execute compiled program: {e}")),
     }
+}
+
+/// Execute an eval binary with bounded wall-clock time while draining both
+/// output pipes. Phase-1 keeps this local to eval so `hew test` behavior stays
+/// unchanged in this lane.
+fn run_eval_binary_with_timeout(
+    binary: &Path,
+    timeout: Duration,
+) -> Result<crate::process::BinaryRunOutcome, String> {
+    let mut command = Command::new(binary);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = spawn_eval_child(&mut command)?;
+    let output = EvalChildOutput::spawn(&mut child)?;
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr) = output.finish()?;
+                if status.success() {
+                    return Ok(crate::process::BinaryRunOutcome::Success { stdout });
+                }
+                return Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr });
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    terminate_timed_out_eval_child(&mut child)?;
+                    let _ = output.finish()?;
+                    return Ok(crate::process::BinaryRunOutcome::Timeout);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("cannot poll child process: {e}")),
+        }
+    }
+}
+
+struct EvalChildOutput {
+    stdout: EvalPipeReader,
+    stderr: EvalPipeReader,
+}
+
+impl EvalChildOutput {
+    fn spawn(child: &mut Child) -> Result<Self, String> {
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "child stdout pipe missing".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "child stderr pipe missing".to_string())?;
+
+        Ok(Self {
+            stdout: EvalPipeReader::spawn(stdout, "stdout"),
+            stderr: EvalPipeReader::spawn(stderr, "stderr"),
+        })
+    }
+
+    fn finish(self) -> Result<(String, String), String> {
+        Ok((self.stdout.finish()?, self.stderr.finish()?))
+    }
+}
+
+struct EvalPipeReader {
+    name: &'static str,
+    handle: JoinHandle<Result<String, String>>,
+}
+
+impl EvalPipeReader {
+    fn spawn<T>(stream: T, name: &'static str) -> Self
+    where
+        T: Read + Send + 'static,
+    {
+        Self {
+            name,
+            handle: std::thread::spawn(move || read_eval_pipe(stream, name)),
+        }
+    }
+
+    fn finish(self) -> Result<String, String> {
+        self.handle
+            .join()
+            .map_err(|_| format!("child {} reader panicked", self.name))?
+    }
+}
+
+fn read_eval_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read child {name}: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn terminate_timed_out_eval_child(child: &mut Child) -> Result<(), String> {
+    kill_timed_out_eval_child(child)?;
+    child
+        .wait()
+        .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn spawn_eval_child(command: &mut Command) -> Result<Child, String> {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: `pre_exec` runs in the child process after `fork` and before
+    // `exec`. `setpgid(0, 0)` only mutates the child's own process-group
+    // membership so timed-out executions can be terminated as a group.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+
+    command
+        .spawn()
+        .map_err(|e| format!("cannot spawn child process: {e}"))
+}
+
+#[cfg(not(unix))]
+fn spawn_eval_child(command: &mut Command) -> Result<Child, String> {
+    command
+        .spawn()
+        .map_err(|e| format!("cannot spawn child process: {e}"))
+}
+
+#[cfg(unix)]
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "PIDs fit in i32 on all supported Unix platforms"
+)]
+fn kill_timed_out_eval_child(child: &mut Child) -> Result<(), String> {
+    let process_group = child.id() as i32;
+    // SAFETY: `killpg` targets the child-created process group. If the group is
+    // already gone, `ESRCH` is treated as success and `wait()` reaps the child.
+    let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let group_error = std::io::Error::last_os_error();
+    if group_error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+
+    child.kill().map_err(|kill_error| {
+        format!(
+            "cannot kill timed-out child process group: {group_error}; \
+             fallback child kill failed: {kill_error}"
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn kill_timed_out_eval_child(child: &mut Child) -> Result<(), String> {
+    child
+        .kill()
+        .map_err(|e| format!("cannot kill timed-out child process: {e}"))
 }
 
 /// Run the interactive REPL with a custom execution timeout.

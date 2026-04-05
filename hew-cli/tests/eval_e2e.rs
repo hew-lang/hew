@@ -120,6 +120,74 @@ fn eval_timeout_exit_code_is_non_zero() {
 }
 
 #[test]
+fn eval_large_stdout_completes_before_timeout() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large_stdout_eval.hew");
+    std::fs::write(
+        &path,
+        "scope {\n    var i = 0;\n    while i < 20000 {\n        println(\"line\");\n        i = i + 1;\n    }\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("--timeout")
+        .arg("5")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().count(), 20_000);
+    assert!(stdout.starts_with("line\n"), "stdout: {stdout}");
+    assert!(stdout.ends_with("line\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn eval_large_stderr_completes_before_timeout() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large_stderr_eval.hew");
+    std::fs::write(
+        &path,
+        "import std::io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("--timeout")
+        .arg("5")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
 fn eval_inline_parse_errors_render_cli_diagnostics() {
     let output = Command::new(hew_binary())
         .args(["eval", "1 +"])

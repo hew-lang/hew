@@ -6,6 +6,7 @@ use crate::ty::{Substitution, Ty, TypeVar};
 use hew_parser::ast::{Span, Spanned, TraitMethod, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
@@ -201,6 +202,9 @@ pub struct Checker {
     /// Tracks public top-level names introduced by prior flat file imports so later
     /// flat imports can reject collisions instead of silently overwriting them.
     pub(super) flat_file_import_pub_spans: HashMap<String, Span>,
+    /// Canonical source paths for flat file imports already registered in the
+    /// current checker run so repeated imports stay idempotent.
+    pub(super) registered_flat_file_import_sources: HashSet<PathBuf>,
     pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
@@ -320,6 +324,7 @@ impl Checker {
             fn_def_spans: HashMap::new(),
             type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
+            registered_flat_file_import_sources: HashSet::new(),
             generic_ctx: Vec::new(),
             current_return_type: None,
             in_generator: false,

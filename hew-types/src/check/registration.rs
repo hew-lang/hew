@@ -1913,15 +1913,11 @@ impl Checker {
         // `self.module_registry` borrow is released here.
 
         // --- User module path ---
-        if decl.path.is_empty() && self.current_module.is_some() {
-            // Nested file imports are internal dependencies of another imported
-            // module. `resolve_file_imports` already validated them; re-registering
-            // them here would incorrectly leak their flat names into the root scope.
-            return;
-        }
-
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.is_empty() {
+                if self.flat_file_import_already_registered(decl) {
+                    return;
+                }
                 // File imports register top-level names without a module namespace.
                 self.register_file_import_items(resolved_items);
             } else {
@@ -2235,6 +2231,20 @@ impl Checker {
     ) -> bool {
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
             && self.register_type_namespace_name(name, span)
+    }
+
+    fn flat_file_import_already_registered(&mut self, decl: &ImportDecl) -> bool {
+        let import_source = decl
+            .resolved_source_paths
+            .first()
+            .cloned()
+            .or_else(|| decl.file_path.as_ref().map(std::path::PathBuf::from));
+        let Some(import_source) = import_source else {
+            return false;
+        };
+        !self
+            .registered_flat_file_import_sources
+            .insert(import_source)
     }
 
     /// Register items from a user module under the module's namespace.

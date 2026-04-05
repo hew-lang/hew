@@ -2018,4 +2018,60 @@ fn main() {
             output.errors
         );
     }
+
+    #[test]
+    fn build_module_graph_keeps_transitive_file_imports_visible() {
+        let fixture = TestFixtureDir::new(
+            "transitive-file-import-cache",
+            &[
+                (
+                    "module_transitive.hew",
+                    r#"import "trans_mid.hew";
+
+fn main() {
+    let x = mid_fn();
+    println(x);
+    let y = base_fn();
+    println(y);
+}
+"#,
+                ),
+                (
+                    "trans_mid.hew",
+                    "import \"trans_base.hew\";\npub fn mid_fn() -> int { base_fn() + 1 }\n",
+                ),
+                ("trans_base.hew", "pub fn base_fn() -> int { 42 }\n"),
+            ],
+        );
+        let root_path = fixture.join("module_transitive.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
+        let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let mut ctx = ImportResolutionContext {
+            imported: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("transitive fixture should build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(
+            output.errors.is_empty(),
+            "transitive fixture should fully type-check: {:?}",
+            output.errors
+        );
+    }
 }

@@ -1,0 +1,10 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
+    tx.close();
+
+    for await _ in rx {
+        break;
+    }
+}

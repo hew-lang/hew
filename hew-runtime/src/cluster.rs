@@ -377,8 +377,19 @@ impl HewCluster {
     }
 
     fn deliver_member_transition(&self, transition: &MemberTransition) {
+        let membership_event = transition.membership_event();
         let deliver = match &transition.publication {
-            PublicationTransition::Plain => true,
+            PublicationTransition::Plain => {
+                if matches!(membership_event, Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)) {
+                    let mut tokens = self.connection_tokens.lock_or_recover();
+                    if let Some(publication_token) =
+                        tokens.current.get(&transition.node_id).copied()
+                    {
+                        tokens.visible.insert(transition.node_id, publication_token);
+                    }
+                }
+                true
+            }
             PublicationTransition::TokenEstablished(publication_token) => {
                 let mut tokens = self.connection_tokens.lock_or_recover();
                 match tokens.current.get(&transition.node_id) {
@@ -408,7 +419,7 @@ impl HewCluster {
 
         self.emit_event(transition.node_id, transition.state, transition.incarnation);
         self.notify_callback(transition.node_id, transition.state, transition.incarnation);
-        if let (Some(cb), Some(event)) = (self.membership_callback, transition.membership_event()) {
+        if let (Some(cb), Some(event)) = (self.membership_callback, membership_event) {
             cb(
                 transition.node_id,
                 event,
@@ -1921,6 +1932,64 @@ mod tests {
                     .contains_key(&2),
                 "a cancelled publish must not install a live token"
             );
+
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    fn tokenized_connection_establish_before_join_promotes_visible_lost() {
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert!(!cluster.is_null());
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+
+            assert_eq!(
+                hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
+                0
+            );
+            assert_eq!(hew_cluster_join(cluster, 2, c"10.0.0.1:9000".as_ptr()), 0);
+            assert_eq!(
+                (&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .visible
+                    .get(&2),
+                Some(&1),
+                "join should publish the pre-join connection token as externally visible"
+            );
+
+            assert_eq!(
+                hew_cluster_notify_connection_lost_if_current(cluster, 2, 1),
+                0
+            );
+            assert_eq!(
+                events,
+                vec![
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                    (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                ],
+                "a pre-join tokenized establish should still allow the later tokenized lost"
+            );
+            {
+                let tokens = (&*cluster)
+                    .connection_tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    !tokens.current.contains_key(&2) && !tokens.visible.contains_key(&2),
+                    "lost should retire both current and visible token state"
+                );
+            }
 
             hew_cluster_free(cluster);
         }

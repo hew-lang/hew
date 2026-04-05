@@ -101,7 +101,11 @@ unsafe fn release_sender_ref_if_cancelled(ch: *mut HewReplyChannel) -> bool {
     false
 }
 
-unsafe fn publish_reply(ch: *mut HewReplyChannel, value: *mut c_void, value_size: usize) {
+unsafe fn publish_reply_from_sender_ref(
+    ch: *mut HewReplyChannel,
+    value: *mut c_void,
+    value_size: usize,
+) {
     // SAFETY: caller guarantees `ch` is valid, not cancelled, and single-writer.
     unsafe {
         debug_assert!(
@@ -121,18 +125,18 @@ unsafe fn publish_reply(ch: *mut HewReplyChannel, value: *mut c_void, value_size
     }
 }
 
-/// Retire a queued ask whose mailbox ownership ends before dispatch.
+/// Retire an ask sender reference whose mailbox ownership ends before dispatch.
 ///
 /// This is the explicit mailbox-teardown path for orphaned ask waiters
 /// (mailbox free, queue eviction, coalesce replacement). It consumes the
-/// sender-side reference held by the queued node, publishing the same empty
-/// reply that older fallback paths emitted to avoid hanging waiters.
-pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask(ch: *mut HewReplyChannel) {
+/// sender-side reference held by the mailbox, publishing the same empty reply
+/// that older fallback paths emitted to avoid hanging waiters.
+pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
 
-    // SAFETY: caller guarantees `ch` is the queued node's sender-side reference.
+    // SAFETY: caller guarantees `ch` is the mailbox-owned sender-side reference.
     unsafe {
         if release_sender_ref_if_cancelled(ch) {
             return;
@@ -142,7 +146,7 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask(ch: *mut HewReplyChan
             (*ch).value.is_null() && (*ch).value_size == 0,
             "orphaned ask teardown must not overwrite an existing reply"
         );
-        publish_reply(ch, ptr::null_mut(), 0);
+        publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
     }
 }
 
@@ -181,7 +185,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
                 copied_size = size;
             }
         }
-        publish_reply(ch, copied_value, copied_size);
+        publish_reply_from_sender_ref(ch, copied_value, copied_size);
     }
 }
 

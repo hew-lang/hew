@@ -103,24 +103,17 @@ unsafe fn msg_node_alloc(
     node
 }
 
-unsafe fn take_msg_node_reply_channel(node: *mut HewMsgNode) -> *mut c_void {
-    // SAFETY: caller guarantees exclusive access to `node`.
-    unsafe {
-        let reply_channel = (*node).reply_channel;
-        (*node).reply_channel = ptr::null_mut();
-        reply_channel
-    }
-}
-
-unsafe fn retire_orphaned_ask_reply_channel(reply_channel: *mut c_void) {
+unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) {
     if reply_channel.is_null() {
         return;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    // SAFETY: native mailboxes own one sender-side reply reference per queued ask node.
+    // SAFETY: native mailboxes own one sender-side reply reference per ask they still own.
     unsafe {
-        crate::reply_channel::hew_reply_channel_retire_orphaned_ask(reply_channel.cast());
+        crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(
+            reply_channel.cast(),
+        );
     }
     #[cfg(target_arch = "wasm32")]
     // SAFETY: WASM keeps the existing empty-reply teardown behaviour for parity.
@@ -129,11 +122,15 @@ unsafe fn retire_orphaned_ask_reply_channel(reply_channel: *mut c_void) {
     }
 }
 
-unsafe fn retire_orphaned_msg_node_reply(node: *mut HewMsgNode) {
+unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
     // SAFETY: caller guarantees exclusive ownership of `node`.
-    let reply_channel = unsafe { take_msg_node_reply_channel(node) };
+    let reply_channel = unsafe { (*node).reply_channel };
+    // SAFETY: caller guarantees exclusive ownership of `node`.
+    unsafe {
+        (*node).reply_channel = ptr::null_mut();
+    }
     // SAFETY: the detached reply channel (if any) belonged to this queued ask node.
-    unsafe { retire_orphaned_ask_reply_channel(reply_channel) };
+    unsafe { retire_orphaned_ask_sender_ref(reply_channel) };
 }
 
 /// Free a [`HewMsgNode`] and its payload.
@@ -150,7 +147,7 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     unsafe {
         // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
         // reply reference that must be retired before the node memory is freed.
-        retire_orphaned_msg_node_reply(node);
+        retire_msg_node_ask_sender_ref(node);
         libc::free((*node).data);
         libc::free(node.cast());
     }
@@ -676,7 +673,7 @@ unsafe fn replace_node_payload(
         if (*node).reply_channel != reply_channel {
             // Keep the queued node's reply channel stable, but retire the
             // superseded incoming waiter so ask callers never hang.
-            retire_orphaned_ask_reply_channel(reply_channel);
+            retire_orphaned_ask_sender_ref(reply_channel);
         }
     }
     true

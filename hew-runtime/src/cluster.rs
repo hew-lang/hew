@@ -261,6 +261,32 @@ impl MembershipCallbackBinding {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MembershipCallbackGeneration {
+    binding: MembershipCallbackBinding,
+    epoch: Arc<MembershipCallbackEpoch>,
+}
+
+impl MembershipCallbackGeneration {
+    fn new(binding: MembershipCallbackBinding, epoch: Arc<MembershipCallbackEpoch>) -> Self {
+        Self { binding, epoch }
+    }
+
+    pub(crate) fn binding(&self) -> MembershipCallbackBinding {
+        self.binding
+    }
+
+    pub(crate) fn in_flight(&self) -> usize {
+        self.epoch.in_flight()
+    }
+
+    pub(crate) fn invoke(&self, node_id: u16, event: u8) {
+        if let Some(callback) = self.binding.callback {
+            callback(node_id, event, self.binding.user_data());
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct MembershipCallbackEpoch {
     in_flight: AtomicUsize,
@@ -598,6 +624,13 @@ impl HewCluster {
 
     fn membership_callback_binding(&self) -> MembershipCallbackBinding {
         *self.membership_callback_binding.lock_or_recover()
+    }
+
+    fn membership_callback_generation(&self) -> MembershipCallbackGeneration {
+        MembershipCallbackGeneration::new(
+            self.membership_callback_binding(),
+            Arc::clone(&self.membership_callback_epoch),
+        )
     }
 
     /// Snapshot the current membership callback binding and enter the
@@ -1217,6 +1250,7 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
 /// # Safety
 ///
 /// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[cfg(test)]
 pub(crate) unsafe fn hew_cluster_membership_callback_binding(
     cluster: *mut HewCluster,
 ) -> MembershipCallbackBinding {
@@ -1228,20 +1262,20 @@ pub(crate) unsafe fn hew_cluster_membership_callback_binding(
     cluster.membership_callback_binding()
 }
 
-/// Clone the membership callback dispatch epoch for `cluster`.
+/// Snapshot the current membership callback generation for `cluster`.
 ///
 /// # Safety
 ///
 /// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-pub(crate) unsafe fn hew_cluster_membership_callback_epoch(
+pub(crate) unsafe fn hew_cluster_membership_callback_generation(
     cluster: *mut HewCluster,
-) -> Arc<MembershipCallbackEpoch> {
+) -> MembershipCallbackGeneration {
     if cluster.is_null() {
-        return Arc::new(MembershipCallbackEpoch::default());
+        return MembershipCallbackGeneration::default();
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    Arc::clone(&cluster.membership_callback_epoch)
+    cluster.membership_callback_generation()
 }
 
 /// Replace the current membership callback binding.

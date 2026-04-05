@@ -51,7 +51,7 @@ const IO_ERROR_NOT_FOUND: int = 2;
 const IO_ERROR_PERMISSION_DENIED: int = 13;
 const IO_ERROR_ALREADY_EXISTS: int = 17;
 
-fn io_error_from_message(message: String) -> IoError {
+pub fn io_error_from_message(message: String) -> IoError {
     if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
         IoError::NotFound(IO_ERROR_NOT_FOUND)
     } else if message.contains("os error 13")

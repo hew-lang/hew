@@ -99,26 +99,6 @@ pub fn from_file(path: String) -> Result<Stream<String>, String> {
     }
 }
 
-fn io_error_from_message(message: String) -> IoError {
-    if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
-        IoError::NotFound(2)
-    } else if message.contains("os error 13")
-        || message.contains("Permission denied")
-        || message.contains("permission denied")
-    {
-        IoError::PermissionDenied(13)
-    } else if message.contains("os error 17")
-        || message.contains("Already exists")
-        || message.contains("already exists")
-        || message.contains("File exists")
-        || message.contains("file exists")
-    {
-        IoError::AlreadyExists(17)
-    } else {
-        IoError::Other(1)
-    }
-}
-
 /// Open a file as a readable `Stream<String>`.
 ///
 /// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
@@ -128,7 +108,7 @@ fn io_error_from_message(message: String) -> IoError {
 pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
     match from_file(path) {
         Ok(stream) => Ok(stream),
-        Err(message) => Err(io_error_from_message(message)),
+        Err(message) => Err(fs.io_error_from_message(message)),
     }
 }
 
@@ -165,7 +145,7 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
 pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
     match to_file(path) {
         Ok(sink) => Ok(sink),
-        Err(message) => Err(io_error_from_message(message)),
+        Err(message) => Err(fs.io_error_from_message(message)),
     }
 }
 

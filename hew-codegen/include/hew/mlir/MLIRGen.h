@@ -213,7 +213,8 @@ private:
       bool isMutable, mlir::Location location);
   void generateAssignStmt(const ast::StmtAssign &stmt);
   void generateIfStmt(const ast::StmtIf &stmt);
-  mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt);
+  mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt,
+                                   bool statementPosition = false);
   void generateWhileStmt(const ast::StmtWhile &stmt);
   void generateWhileLetStmt(const ast::StmtWhileLet &stmt);
   bool isExprLoopInvariant(const ast::Expr &expr);
@@ -262,7 +263,8 @@ private:
   mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan);
   mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
-  mlir::Value generateScopeExpr(const ast::ExprScope &expr);
+  mlir::Value generateScopeExpr(const ast::ExprScope &expr,
+                                bool statementPosition = false);
   mlir::Value generateScopeLaunchExpr(const ast::ExprScopeLaunch &expr);
   mlir::Value generateScopeSpawnExpr(const ast::ExprScopeSpawn &expr);
   mlir::Value generateScopeLaunchImpl(const ast::Block &block);

@@ -271,6 +271,17 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
   bool useReturnGuards = isFunctionBodyBlock && returnFlag && returnSlot;
 
   const auto &stmts = block.stmts;
+  auto generateTailExpr = [&](const ast::Expr &expr) -> mlir::Value {
+    if (statementPosition) {
+      if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+        return generateBlock(blockExpr->block, /*statementPosition=*/true);
+      if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+        return generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
+      if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return generateBlock(unsafeExpr->block, /*statementPosition=*/true);
+    }
+    return generateExpression(expr);
+  };
 
   // Generate trailing expression if present (parser may store it in expression)
   if (block.trailing_expr) {
@@ -286,7 +297,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
         return nullptr;
       }
     }
-    auto result = generateExpression(block.trailing_expr->value);
+    auto result = generateTailExpr(block.trailing_expr->value);
     // Null RAII close alloca for the tail expression variable so the
     // block's scope-exit drop doesn't close a handle being returned.
     if (auto *id = std::get_if<ast::ExprIdentifier>(
@@ -403,7 +414,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     if (std::holds_alternative<ast::StmtExpression>(lastStmt.kind)) {
       auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind);
       if (exprStmt) {
-        auto result = generateExpression(exprStmt->expr.value);
+        auto result = generateTailExpr(exprStmt->expr.value);
         if (auto *id = std::get_if<ast::ExprIdentifier>(
                 &exprStmt->expr.value.kind)) {
           nullOutRaiiAlloca(id->name);
@@ -1698,7 +1709,13 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
 // If statement as expression (value-producing if at end of block)
 // ============================================================================
 
-mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
+mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt,
+                                          bool statementPosition) {
+  if (statementPosition) {
+    generateIfStmt(stmt);
+    return nullptr;
+  }
+
   auto location = currentLoc;
 
   mlir::Value cond = generateExpression(stmt.condition.value);
@@ -1715,8 +1732,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
-    // Statement-position if-else: result is discarded, type is irrelevant.
-    // TODO: generate statement-position if-else without value-producing path.
+    // Expression-position callers without a single-result function sink still
+    // need a concrete result type for the value-producing scf.if.
     resultType = defaultIntType();
   }
 
@@ -3441,6 +3458,8 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
   mlir::Value val = nullptr;
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&stmt.expr.value.kind)) {
     val = generateBlock(blockExpr->block, /*statementPosition=*/true);
+  } else if (auto *scopeExpr = std::get_if<ast::ExprScope>(&stmt.expr.value.kind)) {
+    val = generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
   } else if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&stmt.expr.value.kind)) {
     val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);
   } else {

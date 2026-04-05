@@ -1083,6 +1083,36 @@ fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
 }
 
 #[test]
+fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    match missing {\n",
+        "        true => 1,\n",
+        "    }\n",
+        "    let _done = 0;\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable)),
+        "expected primary undefined variable error, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "Ty::Error scrutinee must not emit follow-on non-exhaustive errors: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "Ty::Error scrutinee must not emit follow-on non-exhaustive warnings: {warnings:?}"
+    );
+}
+
+#[test]
 fn typecheck_generic_enum_constructor_infers_type_args() {
     let (errors, _) = parse_and_check(concat!(
         "enum Option<T> { Some(T); None; }\n",

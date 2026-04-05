@@ -34,6 +34,17 @@ const _: () = assert!(
 /// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
 
+#[derive(Clone, Copy)]
+struct KnownNodePtr(*mut HewNode);
+
+// SAFETY: Node pointers are owned by the runtime and removed from KNOWN_NODES
+// before the node allocation is freed.
+unsafe impl Send for KnownNodePtr {}
+
+/// Tracks node allocations so actor teardown can unregister distributed names
+/// before the owning node is freed.
+static KNOWN_NODES: Mutex<Vec<KnownNodePtr>> = Mutex::new(Vec::new());
+
 // ---------------------------------------------------------------------------
 // Inbound ask worker bound
 // ---------------------------------------------------------------------------
@@ -472,6 +483,103 @@ impl std::fmt::Debug for HewNode {
     }
 }
 
+fn remember_node(node: *mut HewNode) {
+    let mut known = KNOWN_NODES.lock_or_recover();
+    if !known.iter().any(|entry| entry.0 == node) {
+        known.push(KnownNodePtr(node));
+    }
+}
+
+fn forget_node(node: *mut HewNode) {
+    let mut known = KNOWN_NODES.lock_or_recover();
+    known.retain(|entry| entry.0 != node);
+}
+
+fn take_registry_names_if<F>(registry: &HewRegistry, mut predicate: F) -> Vec<String>
+where
+    F: FnMut(u64) -> bool,
+{
+    let mut map = registry.remote_names.lock_or_recover();
+    let names: Vec<String> = map
+        .iter()
+        .filter(|(_, actor_pid)| predicate(**actor_pid))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in &names {
+        map.remove(name);
+    }
+    names
+}
+
+unsafe fn unregister_names_from_node(node: &HewNode, names: Vec<String>, emit_gossip_remove: bool) {
+    for name in names {
+        let Ok(c_name) = CString::new(name) else {
+            continue;
+        };
+        // SAFETY: `c_name` is a valid NUL-terminated string for the call.
+        unsafe { crate::registry::hew_registry_unregister(c_name.as_ptr()) };
+        if emit_gossip_remove && !node.cluster.is_null() {
+            // SAFETY: node teardown is serialized against actor-free cleanup by
+            // KNOWN_NODES, so the cluster pointer stays valid for this call.
+            unsafe { cluster::hew_cluster_registry_remove(node.cluster, c_name.as_ptr()) };
+        }
+    }
+}
+
+unsafe fn unregister_local_names_for_node(node: &HewNode) {
+    if node.registry.is_null() {
+        return;
+    }
+    // SAFETY: registry belongs to `node` for the node lifetime.
+    let registry = unsafe { &*node.registry };
+    let names = take_registry_names_if(registry, |actor_pid| {
+        crate::pid::hew_pid_node(actor_pid) == node.node_id
+    });
+    // Node shutdown is the decommission path; remote peers prune their cached
+    // names when they observe the corresponding left/dead membership event.
+    // SAFETY: `node` and its cluster/registry pointers remain valid for the
+    // duration of hew_node_stop.
+    unsafe { unregister_names_from_node(node, names, false) };
+
+    registry.remote_names.lock_or_recover().clear();
+}
+
+/// Remove all registered names that still point at `actor_id`.
+///
+/// Called from actor teardown so long-running runtimes do not retain stale
+/// local names after a named actor is freed or restarted.
+pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
+    let owner_node_id = crate::pid::hew_pid_node(actor_id);
+    let known = KNOWN_NODES.lock_or_recover();
+    for entry in known.iter().copied() {
+        if entry.0.is_null() {
+            continue;
+        }
+        // SAFETY: KNOWN_NODES holds node allocations live until `forget_node`.
+        let node = unsafe { &*entry.0 };
+        if owner_node_id != 0 && node.node_id != owner_node_id {
+            continue;
+        }
+        if node.registry.is_null() {
+            continue;
+        }
+
+        // SAFETY: registry belongs to `node` for the node lifetime.
+        let registry = unsafe { &*node.registry };
+        let names =
+            take_registry_names_if(registry, |registered_actor| registered_actor == actor_id);
+        if names.is_empty() {
+            continue;
+        }
+
+        let emit_gossip_remove =
+            node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
+        // SAFETY: KNOWN_NODES keeps `node` alive for the duration of this loop,
+        // and the node state check above excludes teardown in progress.
+        unsafe { unregister_names_from_node(node, names, emit_gossip_remove) };
+    }
+}
+
 // SAFETY: mutable shared fields are guarded by mutexes/atomics.
 unsafe impl Send for HewNode {}
 // SAFETY: concurrent access goes through mutexes/atomics.
@@ -901,6 +1009,25 @@ fn registry_ptr_to_actor_id(actor_ptr: *mut c_void) -> u64 {
     u64::try_from(actor_ptr as usize).expect("usize always fits in u64")
 }
 
+/// Callback invoked by the cluster when a peer leaves or is declared dead.
+/// Drops any cached remote names owned by that departed node.
+extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
+    if user_data.is_null() {
+        return;
+    }
+    if event != cluster::HEW_MEMBERSHIP_EVENT_NODE_LEFT
+        && event != cluster::HEW_MEMBERSHIP_EVENT_NODE_DEAD
+    {
+        return;
+    }
+
+    // SAFETY: user_data is a *mut HewRegistry installed during hew_node_start.
+    let registry = unsafe { &*(user_data.cast::<HewRegistry>()) };
+    let _ = take_registry_names_if(registry, |actor_pid| {
+        crate::pid::hew_pid_node(actor_pid) == node_id
+    });
+}
+
 /// Create a new unified distributed node runtime.
 ///
 /// # Safety
@@ -932,7 +1059,9 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         accept_thread: Mutex::new(None),
         next_peer_node: AtomicU16::new(1),
     });
-    Box::into_raw(node)
+    let raw = Box::into_raw(node);
+    remember_node(raw);
+    raw
 }
 
 /// Start the node runtime: transport listen, accept loop, and cluster init.
@@ -1079,6 +1208,11 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     if !node.registry.is_null() {
         // SAFETY: cluster and registry pointers are valid for the node lifetime.
         unsafe {
+            cluster::hew_cluster_set_membership_callback(
+                node.cluster,
+                node_membership_callback,
+                node.registry.cast::<c_void>(),
+            );
             cluster::hew_cluster_set_registry_callback(
                 node.cluster,
                 node_registry_gossip_callback,
@@ -1134,6 +1268,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     }
     // SAFETY: caller guarantees node pointer is valid.
     let node = unsafe { &mut *node };
+    // Hold the node registry list across teardown so actor-free cleanup cannot
+    // race with cluster deallocation.
+    let _known_nodes = KNOWN_NODES.lock_or_recover();
     if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
         return 0;
     }
@@ -1167,6 +1304,13 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
 
     // Shutdown profiler threads before freeing node resources they might access.
     crate::profiler::shutdown();
+
+    // Remove this node's published names from the local registry before the
+    // cluster state is torn down. Remote nodes drop cached names when the
+    // membership callback observes this node leaving or dying.
+    // SAFETY: `node` is valid for the duration of hew_node_stop, and KNOWN_NODES
+    // serialization above prevents concurrent actor cleanup from racing this teardown.
+    unsafe { unregister_local_names_for_node(node) };
 
     if !node.conn_mgr.is_null() {
         // SAFETY: valid manager pointer from hew_connmgr_new.
@@ -1219,6 +1363,7 @@ pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
 
     // SAFETY: same pointer validity contract as this function.
     let _ = unsafe { hew_node_stop(node) };
+    forget_node(node);
     // SAFETY: caller surrenders ownership of node pointer.
     let mut node = unsafe { Box::from_raw(node) };
 
@@ -1838,6 +1983,14 @@ mod tests {
         (port, listener)
     }
 
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
+
     #[test]
     fn node_lifecycle_start_stop() {
         let _guard = NODE_TEST_LOCK.lock_or_recover();
@@ -1894,6 +2047,99 @@ mod tests {
                 0
             );
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn actor_free_unregisters_named_actor_and_emits_gossip_remove() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node = unsafe { TestNode::new(103, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        let actor_name = CString::new("hew-node-actor-free-cleanup").expect("valid actor name");
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+            let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let actor_pid = (*actor).pid;
+            assert_eq!(crate::pid::hew_pid_node(actor_pid), 103);
+
+            assert_eq!(
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                0
+            );
+            assert_eq!(
+                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
+                actor_pid
+            );
+
+            let n = &*node.as_ptr();
+            assert!(!n.cluster.is_null());
+            let cluster = &*n.cluster;
+            let _ = cluster.take_registry_gossip(10);
+
+            assert_eq!(crate::actor::hew_actor_free(actor), 0);
+            assert_eq!(hew_node_lookup(node.as_ptr(), actor_name.as_ptr()), 0);
+            assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
+
+            let events = cluster.take_registry_gossip(10);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].name, "hew-node-actor-free-cleanup");
+            assert!(!events[0].is_add);
+
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn node_stop_unregisters_local_names() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node = unsafe { TestNode::new(104, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        let actor_name = CString::new("hew-node-stop-cleanup").expect("valid actor name");
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+            let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let actor_pid = (*actor).pid;
+            assert_eq!(crate::pid::hew_pid_node(actor_pid), 104);
+
+            assert_eq!(
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                0
+            );
+            assert_eq!(
+                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
+                actor_pid
+            );
+            assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
+
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            assert_eq!(hew_node_lookup(node.as_ptr(), actor_name.as_ptr()), 0);
+            assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
+
+            assert_eq!(crate::actor::hew_actor_free(actor), 0);
         }
 
         crate::registry::hew_registry_clear();
@@ -1961,6 +2207,33 @@ mod tests {
         }
 
         crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn membership_left_prunes_remote_names_for_departed_node() {
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
+
+        let registry = HewRegistry::default();
+        {
+            let mut map = registry.remote_names.lock_or_recover();
+            map.insert("remote-a".to_owned(), (u64::from(202u16) << 48) | 0x10);
+            map.insert("remote-b".to_owned(), (u64::from(202u16) << 48) | 0x11);
+            map.insert("other-node".to_owned(), (u64::from(303u16) << 48) | 0x20);
+        }
+
+        node_membership_callback(
+            202,
+            cluster::HEW_MEMBERSHIP_EVENT_NODE_LEFT,
+            (&raw const registry).cast_mut().cast::<c_void>(),
+        );
+
+        let map = registry.remote_names.lock_or_recover();
+        assert!(!map.contains_key("remote-a"));
+        assert!(!map.contains_key("remote-b"));
+        assert_eq!(
+            map.get("other-node").copied(),
+            Some((u64::from(303u16) << 48) | 0x20)
+        );
     }
 
     #[test]

@@ -4524,6 +4524,8 @@ Node::register("counter", counter);
 - Stores the name → PID mapping in the local registry
 - Queues a gossip event so remote nodes learn about the actor
 - The second parameter is generic (`T`) — any actor reference is accepted
+- The runtime automatically removes the name when that actor is freed or when
+  the owning node shuts down
 
 #### 10.2.4 `Node::lookup(name: string) -> T`
 
@@ -4551,6 +4553,8 @@ Node::shutdown();
 
 - Stops the accept loop and tears down transport connections
 - Leaves the SWIM cluster (notifies peers via a graceful `Left` event)
+- Unregisters this node's published actor names before tearing down the local
+  registry state
 - Frees all node-owned memory
 
 #### 10.2.6 `Node::set_transport(transport: string)`

@@ -18,6 +18,7 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
+use crate::set_last_error;
 
 /// Key extractor used by coalescing mailboxes.
 pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
@@ -60,28 +61,61 @@ fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
     MailboxAllocFailureGuard
 }
 
+#[cfg(test)]
+fn should_fail_mailbox_alloc() -> bool {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| {
+        let remaining = slot.get();
+        if remaining == usize::MAX {
+            return false;
+        }
+        if remaining == 0 {
+            slot.set(usize::MAX);
+            return true;
+        }
+        slot.set(remaining - 1);
+        false
+    })
+}
+
 fn mailbox_malloc(size: usize) -> *mut c_void {
     #[cfg(test)]
     {
-        let should_fail = FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| {
-            let remaining = slot.get();
-            if remaining == usize::MAX {
-                return false;
-            }
-            if remaining == 0 {
-                slot.set(usize::MAX);
-                return true;
-            }
-            slot.set(remaining - 1);
-            false
-        });
-        if should_fail {
+        if should_fail_mailbox_alloc() {
             return ptr::null_mut();
         }
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
     unsafe { libc::malloc(size) }
+}
+
+fn reserve_queue_capacity<T>(queue: &mut VecDeque<T>, additional: usize) -> bool {
+    if queue.capacity().saturating_sub(queue.len()) >= additional {
+        return true;
+    }
+
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return false;
+        }
+    }
+
+    queue.try_reserve(additional).is_ok()
+}
+
+fn report_sys_enqueue_failure(msg_type: i32, size: usize) {
+    let msg = format!(
+        "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
+    );
+    set_last_error(msg.clone());
+    eprintln!("{msg}");
+}
+
+fn report_stop_enqueue_failure() {
+    let msg = "hew_actor_stop: failed to enqueue shutdown system message";
+    set_last_error(msg);
+    eprintln!("{msg}");
 }
 
 // ── Message node ────────────────────────────────────────────────────────
@@ -425,6 +459,12 @@ unsafe fn send_user_message(
     if node.is_null() {
         return HewError::ErrOom as i32;
     }
+    if !reserve_queue_capacity(&mut mb.user_queue, 1) {
+        // SAFETY: `node` is still exclusively owned by this send path and has
+        // no reply channel attached yet.
+        unsafe { msg_node_free(node) };
+        return HewError::ErrOom as i32;
+    }
     // SAFETY: node was just allocated and is exclusively owned.
     unsafe { (*node).reply_channel = reply_channel };
     mb.user_queue.push_back(node);
@@ -628,6 +668,9 @@ wasm_no_mangle! {
     /// the native `hew_mailbox_send_sys` semantics, which has no closed check
     /// and is effectively void-returning.
     ///
+    /// On allocation failure, the message is dropped and the runtime records
+    /// the failure in `hew_last_error` and logs it to stderr.
+    ///
     /// # Safety
     ///
     /// Same requirements as [`hew_mailbox_send`].
@@ -643,6 +686,13 @@ wasm_no_mangle! {
         // SAFETY: `data` validity guaranteed by caller.
         let node = unsafe { msg_node_alloc(msg_type, data.cast_const(), size) };
         if node.is_null() {
+            report_sys_enqueue_failure(msg_type, size);
+            return;
+        }
+        if !reserve_queue_capacity(&mut mb.sys_queue, 1) {
+            // SAFETY: `node` is still owned by this send path and has no reply channel.
+            unsafe { msg_node_free(node) };
+            report_sys_enqueue_failure(msg_type, size);
             return;
         }
         mb.sys_queue.push_back(node);
@@ -666,6 +716,13 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool
     // SAFETY: stop signals carry no payload.
     let node = unsafe { msg_node_alloc(-1, ptr::null(), 0) };
     if node.is_null() {
+        report_stop_enqueue_failure();
+        return false;
+    }
+    if !reserve_queue_capacity(&mut mb.sys_queue, 1) {
+        // SAFETY: `node` is still owned by this helper and was never published.
+        unsafe { msg_node_free(node) };
+        report_stop_enqueue_failure();
         return false;
     }
     if mb.stop_signal_sent {
@@ -860,6 +917,7 @@ wasm_no_mangle! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -877,6 +935,19 @@ mod tests {
         // SAFETY: tests only call this with valid `PriceUpdate` payloads.
         let update = unsafe { &*data.cast::<PriceUpdate>() };
         u64::from(update.symbol)
+    }
+
+    fn last_error_message() -> Option<String> {
+        let err = crate::hew_last_error();
+        if err.is_null() {
+            return None;
+        }
+        // SAFETY: `hew_last_error` returned a non-null C string.
+        Some(
+            unsafe { CStr::from_ptr(err) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     #[test]
@@ -958,6 +1029,97 @@ mod tests {
 
             crate::reply_channel_wasm::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_returns_err_oom_when_user_queue_growth_fails() {
+        // SAFETY: test owns the mailbox exclusively; size=0 isolates queue growth.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let _oom = fail_mailbox_alloc_on_nth(1);
+
+            assert_eq!(
+                hew_mailbox_send(mb, 11, ptr::null_mut(), 0),
+                HewError::ErrOom as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert!(hew_mailbox_try_recv(mb).is_null());
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_with_reply_returns_err_oom_when_user_queue_growth_fails() {
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            let _oom = fail_mailbox_alloc_on_nth(1);
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(mb, 12, ptr::null_mut(), 0, reply.cast()),
+                HewError::ErrOom as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+            assert!(!crate::reply_channel_wasm::test_replied(reply));
+            assert!(crate::reply_channel_wasm::reply_take(reply).is_null());
+
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_sys_queue_growth_failure_sets_last_error() {
+        // SAFETY: test owns the mailbox exclusively; size=0 isolates queue growth.
+        unsafe {
+            crate::hew_clear_error();
+            let mb = hew_mailbox_new();
+            let _oom = fail_mailbox_alloc_on_nth(1);
+
+            hew_mailbox_send_sys(mb, 99, ptr::null_mut(), 0);
+
+            assert!(hew_mailbox_try_recv_sys(mb).is_null());
+            let err = last_error_message().expect("sys OOM should set hew_last_error");
+            assert!(
+                err.contains("hew_mailbox_send_sys: failed to deliver system message"),
+                "unexpected error message: {err}"
+            );
+
+            hew_mailbox_free(mb);
+            crate::hew_clear_error();
+        }
+    }
+
+    #[test]
+    fn stop_sys_queue_growth_failure_sets_last_error_and_allows_retry() {
+        // SAFETY: test owns the mailbox exclusively; size=0 isolates queue growth.
+        unsafe {
+            crate::hew_clear_error();
+            let mb = hew_mailbox_new();
+            let _oom = fail_mailbox_alloc_on_nth(1);
+
+            assert!(!mailbox_send_stop_sys_once(mb));
+            assert!(!(*mb).stop_signal_sent);
+            assert!(hew_mailbox_try_recv_sys(mb).is_null());
+
+            let err = last_error_message().expect("stop OOM should set hew_last_error");
+            assert!(
+                err.contains("hew_actor_stop: failed to enqueue shutdown system message"),
+                "unexpected error message: {err}"
+            );
+
+            assert!(mailbox_send_stop_sys_once(mb));
+            let node = hew_mailbox_try_recv_sys(mb);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, -1);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+            crate::hew_clear_error();
         }
     }
 

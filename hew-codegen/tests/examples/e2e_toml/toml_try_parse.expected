@@ -1,2 +1,7 @@
 Hew
-true
+typed parse error
+TOML parse error at line 1, column 18
+  |
+1 | not = [valid toml
+  |                  ^
+unclosed array, expected `]`

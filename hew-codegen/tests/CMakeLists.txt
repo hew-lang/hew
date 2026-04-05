@@ -627,15 +627,31 @@ if(TEST e2e_quic_quic_string_loopback)
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 
-# json_try_parse exercises the branch's std/encoding/json/json.hew typed
-# ParseError wrapper. Point HEW_STD at the worktree std so the focused
-# contract test compiles against the slice under review.
+# *_try_parse exercises the branch's std/encoding/{json,toml,yaml}/*.hew typed
+# ParseError wrappers. Point HEW_STD at the worktree std so the focused
+# contract tests compile against the slice under review.
 if(TEST e2e_json_json_try_parse)
   set_tests_properties(e2e_json_json_try_parse PROPERTIES
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 if(TEST wasm_e2e_json_json_try_parse)
   set_tests_properties(wasm_e2e_json_json_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+if(TEST e2e_toml_toml_try_parse)
+  set_tests_properties(e2e_toml_toml_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+if(TEST wasm_e2e_toml_toml_try_parse)
+  set_tests_properties(wasm_e2e_toml_toml_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+if(TEST e2e_yaml_yaml_try_parse)
+  set_tests_properties(e2e_yaml_yaml_try_parse PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+if(TEST wasm_e2e_yaml_yaml_try_parse)
+  set_tests_properties(wasm_e2e_yaml_yaml_try_parse PROPERTIES
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 

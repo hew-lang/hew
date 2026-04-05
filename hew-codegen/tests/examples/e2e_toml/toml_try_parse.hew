@@ -6,11 +6,20 @@ fn main() {
             let title = doc.get_field("title");
             println(title.get_string());
         },
-        Err(err) => println(f"unexpected error: {err}"),
+        Err(err) => match err {
+            ParseError::Invalid(message) => println(f"unexpected error: {message}"),
+        },
+    }
+
+    let manual: toml.ParseError = ParseError::Invalid("typed parse error");
+    match manual {
+        ParseError::Invalid(message) => println(message),
     }
 
     match toml.try_parse("not = [valid toml") {
         Ok(_) => println("unexpected ok"),
-        Err(_) => println(true),
+        Err(err) => match err {
+            ParseError::Invalid(message) => print(message),
+        },
     }
 }

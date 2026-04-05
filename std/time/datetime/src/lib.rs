@@ -19,6 +19,23 @@ fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms)
 }
 
+std::thread_local! {
+    static LAST_PARSE_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_parse_last_error(msg: impl Into<String>) {
+    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_parse_last_error() {
+    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_parse_last_error() -> String {
+    LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
 // ---------------------------------------------------------------------------
 // Current time
 // ---------------------------------------------------------------------------
@@ -59,7 +76,8 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 }
 
 /// Parse a datetime string with the given `strftime` format, returning epoch
-/// milliseconds. Returns -1 on parse error.
+/// milliseconds. Returns -1 on parse error; call [`hew_datetime_last_error`] to
+/// distinguish a parse failure from a valid pre-epoch `-1` timestamp.
 ///
 /// # Safety
 ///
@@ -68,16 +86,32 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char) -> i64 {
     // SAFETY: caller guarantees `s` is a valid NUL-terminated C string.
     let Some(s_str) = (unsafe { cstr_to_str(s) }) else {
+        set_parse_last_error("invalid datetime input: null pointer or invalid UTF-8");
         return -1;
     };
     // SAFETY: caller guarantees `fmt` is a valid NUL-terminated C string.
     let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
+        set_parse_last_error("invalid datetime format: null pointer or invalid UTF-8");
         return -1;
     };
-    let Ok(naive) = NaiveDateTime::parse_from_str(s_str, fmt_str) else {
-        return -1;
-    };
-    naive.and_utc().timestamp_millis()
+    match NaiveDateTime::parse_from_str(s_str, fmt_str) {
+        Ok(naive) => {
+            clear_parse_last_error();
+            naive.and_utc().timestamp_millis()
+        }
+        Err(err) => {
+            set_parse_last_error(err.to_string());
+            -1
+        }
+    }
+}
+
+/// Return the last datetime parse error recorded on the current thread.
+///
+/// Returns an empty string when no parse error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
+    str_to_malloc(&get_parse_last_error())
 }
 
 // ---------------------------------------------------------------------------
@@ -277,5 +311,31 @@ mod tests {
         // SAFETY: both pointers are valid NUL-terminated C strings.
         let result = unsafe { hew_datetime_parse(bad_input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, -1);
+
+        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free(hew_datetime_last_error()) };
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_valid_pre_epoch_negative_one_clears_last_error() {
+        let bad_input = CString::new("not-a-date").unwrap();
+        let bad_fmt = CString::new("%Y-%m-%d").unwrap();
+        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let bad_result = unsafe { hew_datetime_parse(bad_input.as_ptr(), bad_fmt.as_ptr()) };
+        assert_eq!(bad_result, -1);
+        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free(hew_datetime_last_error()) };
+        assert!(!err.is_empty());
+
+        let input = CString::new("1969-12-31 23:59:59.999").unwrap();
+        let fmt = CString::new("%Y-%m-%d %H:%M:%S%.3f").unwrap();
+        // SAFETY: both pointers are valid NUL-terminated C strings.
+        let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
+        assert_eq!(result, -1);
+        // SAFETY: hew_datetime_year has no preconditions for a valid epoch timestamp.
+        assert_eq!(unsafe { hew_datetime_year(result) }, 1969);
+        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
+        assert!(unsafe { read_and_free(hew_datetime_last_error()) }.is_empty());
     }
 }

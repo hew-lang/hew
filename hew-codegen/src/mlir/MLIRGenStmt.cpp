@@ -271,16 +271,10 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
   bool useReturnGuards = isFunctionBodyBlock && returnFlag && returnSlot;
 
   const auto &stmts = block.stmts;
-  auto generateTailExpr = [&](const ast::Expr &expr) -> mlir::Value {
-    if (statementPosition) {
-      if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
-        return generateBlock(blockExpr->block, /*statementPosition=*/true);
-      if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
-        return generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
-      if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
-        return generateBlock(unsafeExpr->block, /*statementPosition=*/true);
-    }
-    return generateExpression(expr);
+  auto generateTailExpr = [&](const ast::Spanned<ast::Expr> &expr) -> mlir::Value {
+    if (statementPosition)
+      return generateDiscardedExpr(expr);
+    return generateExpression(expr.value);
   };
 
   // Generate trailing expression if present (parser may store it in expression)
@@ -297,7 +291,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
         return nullptr;
       }
     }
-    auto result = generateTailExpr(block.trailing_expr->value);
+    auto result = generateTailExpr(*block.trailing_expr);
     // Null RAII close alloca for the tail expression variable so the
     // block's scope-exit drop doesn't close a handle being returned.
     if (auto *id = std::get_if<ast::ExprIdentifier>(&block.trailing_expr->value.kind)) {
@@ -413,7 +407,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     if (std::holds_alternative<ast::StmtExpression>(lastStmt.kind)) {
       auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind);
       if (exprStmt) {
-        auto result = generateTailExpr(exprStmt->expr.value);
+        auto result = generateTailExpr(exprStmt->expr);
         if (auto *id = std::get_if<ast::ExprIdentifier>(&exprStmt->expr.value.kind)) {
           nullOutRaiiAlloca(id->name);
         }
@@ -1675,6 +1669,18 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
 
 void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
   auto location = currentLoc;
+  auto materializeBlockTemporary = [&](const ast::Block &block, mlir::Value value) {
+    if (!value)
+      return;
+    if (block.trailing_expr) {
+      materializeTemporary(value, block.trailing_expr->value);
+      return;
+    }
+    if (!block.stmts.empty()) {
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind))
+        materializeTemporary(value, exprStmt->expr.value);
+    }
+  };
 
   mlir::Value cond = generateExpression(stmt.condition.value);
   if (!cond)
@@ -1692,7 +1698,8 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
       mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond, hasElse);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  generateBlock(stmt.then_block, /*statementPosition=*/true);
+  materializeBlockTemporary(stmt.then_block,
+                            generateBlock(stmt.then_block, /*statementPosition=*/true));
   ensureYieldTerminator(location);
 
   if (hasElse) {
@@ -1702,7 +1709,8 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
       if (auto *innerIf = std::get_if<ast::StmtIf>(&elseBlock.if_stmt->value.kind))
         generateIfStmt(*innerIf);
     } else if (elseBlock.block) {
-      generateBlock(*elseBlock.block, /*statementPosition=*/true);
+      materializeBlockTemporary(*elseBlock.block,
+                                generateBlock(*elseBlock.block, /*statementPosition=*/true));
     }
     ensureYieldTerminator(location);
   }
@@ -1808,6 +1816,18 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statemen
 
   builder.setInsertionPointAfter(ifOp);
   return ifOp.getResult(0);
+}
+
+mlir::Value MLIRGen::generateDiscardedExpr(const ast::Spanned<ast::Expr> &expr) {
+  if (auto *ifExpr = std::get_if<ast::ExprIf>(&expr.value.kind))
+    return generateIfExpr(*ifExpr, expr.span, /*statementPosition=*/true);
+  if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.value.kind))
+    return generateBlock(blockExpr->block, /*statementPosition=*/true);
+  if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.value.kind))
+    return generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
+  if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.value.kind))
+    return generateBlock(unsafeExpr->block, /*statementPosition=*/true);
+  return generateExpression(expr.value);
 }
 
 // ── Loop-invariant expression detection ──────────────────────────────────────

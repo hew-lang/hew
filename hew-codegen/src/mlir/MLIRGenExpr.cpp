@@ -420,8 +420,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                 }
                 // Wait up to 5 seconds for the child to be available
                 // (handles restart windows where children[idx] is temporarily null).
-                auto timeoutVal = mlir::arith::ConstantIntOp::create(
-                    builder, location, builder.getI32Type(), 5000);
+                auto timeoutVal = mlir::arith::ConstantIntOp::create(builder, location,
+                                                                     builder.getI32Type(), 5000);
                 return hew::RuntimeCallOp::create(
                            builder, location, mlir::TypeRange{ptrType},
                            mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child_wait"),
@@ -1448,8 +1448,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, stringType);
     auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto isNotNull =
-        mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                rawPtr, nullVal);
 
     return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
@@ -1490,7 +1490,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
             .getResult();
 
     // Load the validity flag.
-    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+    auto validFlag =
+        mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
 
     // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, i64Type);
@@ -1527,8 +1528,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, stringType);
     auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto isNotNull =
-        mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                rawPtr, nullVal);
 
     return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
@@ -1566,7 +1567,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                    mlir::ValueRange{rxArg, channelIntOutValidAlloca})
             .getResult();
 
-    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+    auto validFlag =
+        mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
 
     // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, i64Type);
@@ -1661,26 +1663,25 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     getOrCreateExternFunc("hew_stream_next_bytes", externFuncType);
 
     auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next_bytes");
-    auto rawPtr =
-        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
-                                   mlir::ValueRange{streamVal})
-            .getResult();
+    auto rawPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                             calleeAttr, mlir::ValueRange{streamVal})
+                      .getResult();
 
     // Build Option<bytes>: null → None (tag 0), non-null → Some (tag 1).
     auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location,
-                                                 mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                rawPtr, nullVal);
     auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
     auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
     auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
 
-    auto optLLVMType = mlir::LLVM::LLVMStructType::getLiteral(
-        &context, {builder.getI32Type(), ptrType});
+    auto optLLVMType =
+        mlir::LLVM::LLVMStructType::getLiteral(&context, {builder.getI32Type(), ptrType});
     auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-    auto withTag =
-        mlir::LLVM::InsertValueOp::create(builder, location, undef, tag, llvm::ArrayRef<int64_t>{0});
-    auto withPayload =
-        mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr, llvm::ArrayRef<int64_t>{1});
+    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
+                                                     llvm::ArrayRef<int64_t>{0});
+    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr,
+                                                         llvm::ArrayRef<int64_t>{1});
 
     return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
   }
@@ -2070,21 +2071,17 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       // requires move semantics in the type system. For now this is
       // the lesser evil vs double-frees from callee-consumed handles.
       static const std::unordered_set<std::string> nonConsumingFns = {
-          "hew_sink_write",        "hew_sink_write_string",
-          "hew_sink_write_bytes",  "hew_sink_flush",
-          "hew_stream_is_valid",   "hew_sink_is_valid",
-          "hew_stream_is_closed",  "hew_stream_next",
-          "hew_stream_next_sized", "hew_stream_next_bytes",
-          "hew_stream_pair_sink",  "hew_stream_pair_stream"};
+          "hew_sink_write",        "hew_sink_write_string", "hew_sink_write_bytes",
+          "hew_sink_flush",        "hew_stream_is_valid",   "hew_sink_is_valid",
+          "hew_stream_is_closed",  "hew_stream_next",       "hew_stream_next_sized",
+          "hew_stream_next_bytes", "hew_stream_pair_sink",  "hew_stream_pair_stream"};
       if (consumedArgIndices.empty() &&
-          (calleeName.substr(0, 4) != "hew_" ||
-           calleeName.find("stream") != std::string::npos ||
+          (calleeName.substr(0, 4) != "hew_" || calleeName.find("stream") != std::string::npos ||
            calleeName.find("sink") != std::string::npos) &&
           !nonConsumingFns.count(calleeName)) {
         // For non-runtime or unknown runtime calls, null all stream/sink args
         for (size_t i = 0; i < call.args.size(); ++i) {
-          auto *id = std::get_if<ast::ExprIdentifier>(
-              &ast::callArgExpr(call.args[i]).value.kind);
+          auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(call.args[i]).value.kind);
           if (!id)
             continue;
           if (streamHandleVarTypes.count(id->name))
@@ -2094,8 +2091,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       for (size_t argIdx : consumedArgIndices) {
         if (argIdx >= call.args.size())
           continue;
-        auto *id = std::get_if<ast::ExprIdentifier>(
-            &ast::callArgExpr(call.args[argIdx]).value.kind);
+        auto *id =
+            std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(call.args[argIdx]).value.kind);
         if (!id)
           continue;
         nullOutRaiiAlloca(id->name);
@@ -2218,7 +2215,8 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 // If expression generation (expression form that yields a value)
 // ============================================================================
 
-mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exprSpan) {
+mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exprSpan,
+                                    bool statementPosition) {
   auto location = currentLoc;
 
   auto cond = generateExpression(ifE.condition->value);
@@ -2232,6 +2230,30 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   }
 
   bool hasElse = ifE.else_block.has_value();
+
+  if (statementPosition) {
+    auto ifOp = mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond,
+                                        hasElse);
+
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    if (ifE.then_block) {
+      if (auto thenVal = generateDiscardedExpr(*ifE.then_block))
+        materializeTemporary(thenVal, ifE.then_block->value);
+    }
+    ensureYieldTerminator(location);
+
+    if (hasElse) {
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      if (ifE.else_block.has_value() && *ifE.else_block) {
+        if (auto elseVal = generateDiscardedExpr(*(*ifE.else_block)))
+          materializeTemporary(elseVal, (*ifE.else_block)->value);
+      }
+      ensureYieldTerminator(location);
+    }
+
+    builder.setInsertionPointAfter(ifOp);
+    return nullptr;
+  }
 
   if (!hasElse) {
     auto ifOp = mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond,
@@ -2412,8 +2434,7 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
 // Struct initialization
 // ============================================================================
 
-mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si,
-                                        const ast::Span &exprSpan) {
+mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast::Span &exprSpan) {
   auto location = currentLoc;
   const auto &structName = si.name;
 
@@ -2925,9 +2946,10 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto llvmElemType = toLLVMStorageType(elemType);
       auto llvmRetElemType = toLLVMStorageType(retElemType);
       llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
-      indirectParamTypes.push_back(ptrType);       // env pointer
-      indirectParamTypes.push_back(llvmElemType);  // element
-      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {llvmRetElemType});
+      indirectParamTypes.push_back(ptrType);      // env pointer
+      indirectParamTypes.push_back(llvmElemType); // element
+      auto indirectFuncType =
+          mlir::FunctionType::get(&context, indirectParamTypes, {llvmRetElemType});
       auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
 
       // Create result vec
@@ -3087,8 +3109,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       mlir::Value callAcc = accArg;
       if (accType != llvmAccType)
         callAcc = hew::BitcastOp::create(builder, location, llvmAccType, accArg);
-      auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
-                                                           mlir::ValueRange{envPtr, callAcc, callElem});
+      auto callResult = mlir::func::CallIndirectOp::create(
+          builder, location, fnRef, mlir::ValueRange{envPtr, callAcc, callElem});
       auto newAcc = callResult.getResult(0);
       if (accType != llvmAccType)
         newAcc = hew::BitcastOp::create(builder, location, accType, newAcc);
@@ -3398,9 +3420,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         countVal = coerceType(countVal, i64Type, location);
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_take");
         auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                                  calleeAttr,
-                                                  mlir::ValueRange{receiver, countVal})
-            .getResult();
+                                                 calleeAttr, mlir::ValueRange{receiver, countVal})
+                          .getResult();
         if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
           nullOutRaiiAlloca(recvId->name);
         return result;
@@ -3418,7 +3439,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     }
     if (!receiverIsRc) {
       return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
-                                         builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
+                                         builder.getStringAttr("clone"), receiver,
+                                         mlir::ValueRange{})
           .getResult();
     }
   }
@@ -3476,9 +3498,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!idx)
       return mlir::Value{};
     idx = coerceType(idx, i32Type, location);
-    return hew::StringMethodOp::create(builder, location, i32Type,
-                                       builder.getStringAttr("char_at"), receiver,
-                                       mlir::ValueRange{idx})
+    return hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("char_at"),
+                                       receiver, mlir::ValueRange{idx})
         .getResult();
   }
   if (method == "split") {
@@ -3742,9 +3763,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 /// Dispatch a module-qualified method call (math.exp, random.seed, etc.).
 /// Returns the result value if the call was handled, or std::nullopt if
 /// the receiver is not a known module/struct name.
-std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
-    const ast::ExprMethodCall &mc, const ast::ExprIdentifier &ident,
-    mlir::Location location) {
+std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMethodCall &mc,
+                                                             const ast::ExprIdentifier &ident,
+                                                             mlir::Location location) {
   const auto &methodName = mc.method;
 
   // Special handling for log (has custom emit logic).
@@ -3759,11 +3780,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
       // Constants: math.pi, math.e
       if (methodName == "pi")
         return mlir::arith::ConstantOp::create(builder, location,
-                                                builder.getF64FloatAttr(3.14159265358979323846))
+                                               builder.getF64FloatAttr(3.14159265358979323846))
             .getResult();
       if (methodName == "e")
         return mlir::arith::ConstantOp::create(builder, location,
-                                                builder.getF64FloatAttr(2.71828182845904523536))
+                                               builder.getF64FloatAttr(2.71828182845904523536))
             .getResult();
       emitError(location) << "unknown math constant: math." << methodName;
       return nullptr;
@@ -3851,16 +3872,16 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
       // If arg is f64, convert to i64 for integer sign
       if (arg.getType() == f64Type)
         arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
-      auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                    builder.getI64IntegerAttr(0));
+      auto zero =
+          mlir::arith::ConstantOp::create(builder, location, i64Type, builder.getI64IntegerAttr(0));
       auto negOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                      builder.getI64IntegerAttr(-1));
-      auto posOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                      builder.getI64IntegerAttr(1));
-      auto isNeg = mlir::arith::CmpIOp::create(builder, location,
-                                                  mlir::arith::CmpIPredicate::slt, arg, zero);
-      auto isPos = mlir::arith::CmpIOp::create(builder, location,
-                                                  mlir::arith::CmpIPredicate::sgt, arg, zero);
+                                                    builder.getI64IntegerAttr(-1));
+      auto posOne =
+          mlir::arith::ConstantOp::create(builder, location, i64Type, builder.getI64IntegerAttr(1));
+      auto isNeg = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+                                               arg, zero);
+      auto isPos = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sgt,
+                                               arg, zero);
       auto selPos = mlir::arith::SelectOp::create(builder, location, isPos, posOne, zero);
       return mlir::arith::SelectOp::create(builder, location, isNeg, negOne, selPos).getResult();
     }
@@ -4050,9 +4071,9 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
 
 /// Dispatch a method call on a typed handle (http.Server, net.Connection, etc.)
 /// or an i32-typed handle. Returns the result if handled, std::nullopt otherwise.
-std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
-    const ast::ExprMethodCall &mc, mlir::Value receiver,
-    mlir::Location location) {
+std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMethodCall &mc,
+                                                             mlir::Value receiver,
+                                                             mlir::Location location) {
   const auto &methodName = mc.method;
 
   // Local wrapper around member emitRuntimeCall, capturing `location`.
@@ -4139,13 +4160,13 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
     if (handleType == "regex.Pattern") {
       if (method == "is_match")
         return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), argVals[0],
-                                            argVals[1]);
+                                           argVals[1]);
       if (method == "find")
         return hew::RegexFindOp::create(builder, location, hew::StringRefType::get(&context),
-                                         argVals[0], argVals[1]);
+                                        argVals[0], argVals[1]);
       if (method == "replace")
         return hew::RegexReplaceOp::create(builder, location, hew::StringRefType::get(&context),
-                                            argVals[0], argVals[1], argVals[2]);
+                                           argVals[0], argVals[1], argVals[2]);
       if (method == "free") {
         hew::RegexFreeOp::create(builder, location, argVals[0]);
         return nullptr;
@@ -4254,9 +4275,9 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
 
 /// Dispatch a method call on an actor reference or generator.
 /// Returns the result if handled, std::nullopt otherwise.
-std::optional<mlir::Value> MLIRGen::generateActorMethodCall(
-    const ast::ExprMethodCall &mc, mlir::Value receiver,
-    mlir::Location location) {
+std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMethodCall &mc,
+                                                            mlir::Value receiver,
+                                                            mlir::Location location) {
   const auto &methodName = mc.method;
   auto receiverType = receiver.getType();
 
@@ -4311,7 +4332,7 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(
           auto nextFuncOp = module.lookupSymbol<mlir::func::FuncOp>(nextFuncName);
           if (nextFuncOp) {
             auto callResult = mlir::func::CallOp::create(builder, location, nextFuncOp,
-                                                          mlir::ValueRange{receiver});
+                                                         mlir::ValueRange{receiver});
             return callResult.getResult(0);
           }
         }
@@ -4505,12 +4526,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     if (encodeEligibleStructs_.count(resolvedTypeName)) {
       static const std::unordered_map<std::string, std::pair<bool, std::string>>
           kStructSerialMethods = {
-            {"to_json",   {true,  "json"}},
-            {"from_json", {false, "json"}},
-            {"to_yaml",   {true,  "yaml"}},
-            {"from_yaml", {false, "yaml"}},
-            {"to_toml",   {true,  "toml"}},
-            {"from_toml", {false, "toml"}},
+              {"to_json", {true, "json"}}, {"from_json", {false, "json"}},
+              {"to_yaml", {true, "yaml"}}, {"from_yaml", {false, "yaml"}},
+              {"to_toml", {true, "toml"}}, {"from_toml", {false, "toml"}},
           };
       auto it = kStructSerialMethods.find(methodName);
       if (it != kStructSerialMethods.end()) {
@@ -4524,8 +4542,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
   if (!callee) {
-    emitError(location) << "undefined method '" << methodName << "' on type '"
-                        << resolvedTypeName << "'";
+    emitError(location) << "undefined method '" << methodName << "' on type '" << resolvedTypeName
+                        << "'";
     return nullptr;
   }
 
@@ -4602,8 +4620,8 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
         return nullptr;
       if (val.getType() != targetElemType) {
         ++errorCount_;
-        emitError(location) << "coerceType: no known conversion from " << val.getType()
-                            << " to " << targetElemType;
+        emitError(location) << "coerceType: no known conversion from " << val.getType() << " to "
+                            << targetElemType;
         break;
       }
       hew::VecPushOp::create(builder, location, vec, val);
@@ -5090,24 +5108,22 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
 /// Also handles inner closure captures whose env RC needs dropping.
 /// Returns a `FuncPtrOp` value pointing to the generated function, or a null
 /// zero pointer if the env has no RC-backed captures.
-mlir::Value MLIRGen::generateEnvDropFn(
-    const std::vector<CapturedVarInfo> &capturedVars,
-    mlir::LLVM::LLVMStructType envStructType, mlir::Location location) {
+mlir::Value MLIRGen::generateEnvDropFn(const std::vector<CapturedVarInfo> &capturedVars,
+                                       mlir::LLVM::LLVMStructType envStructType,
+                                       mlir::Location location) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
   // Collect indices of fields that need RC drops.
   llvm::SmallVector<size_t, 4> rcFieldIndices;
   for (size_t i = 0; i < capturedVars.size(); ++i) {
-    if (capturedVars[i].isMutable ||
-        mlir::isa<hew::ClosureType>(capturedVars[i].value.getType()))
+    if (capturedVars[i].isMutable || mlir::isa<hew::ClosureType>(capturedVars[i].value.getType()))
       rcFieldIndices.push_back(i);
   }
   if (rcFieldIndices.empty())
     return mlir::LLVM::ZeroOp::create(builder, location, ptrType);
 
   // Ensure hew_rc_drop is declared.
-  auto rcDropType =
-      builder.getFunctionType({ptrType}, {});
+  auto rcDropType = builder.getFunctionType({ptrType}, {});
   getOrCreateExternFunc("hew_rc_drop", rcDropType);
 
   // Generate the drop function.
@@ -5130,22 +5146,18 @@ mlir::Value MLIRGen::generateEnvDropFn(
   for (size_t idx : rcFieldIndices) {
     auto gep = mlir::LLVM::GEPOp::create(
         builder, location, ptrType, envStructType, envArg,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{
-            static_cast<int32_t>(0), static_cast<int32_t>(idx)});
-    auto fieldVal = mlir::LLVM::LoadOp::create(
-        builder, location, ptrType, gep);
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(idx)});
+    auto fieldVal = mlir::LLVM::LoadOp::create(builder, location, ptrType, gep);
     // Null-guard: the field may be zero if the lambda was only partially
     // initialised (shouldn't happen normally, but be safe).
     auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto isNotNull = mlir::LLVM::ICmpOp::create(
-        builder, location, builder.getI1Type(),
-        mlir::LLVM::ICmpPredicate::ne, fieldVal, nullPtr);
-    auto guard = mlir::scf::IfOp::create(
-        builder, location, mlir::TypeRange{}, isNotNull,
-        /*withElseRegion=*/false);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, builder.getI1Type(),
+                                                mlir::LLVM::ICmpPredicate::ne, fieldVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&guard.getThenRegion().front());
-    mlir::func::CallOp::create(builder, location, "hew_rc_drop",
-                                mlir::TypeRange{}, mlir::ValueRange{fieldVal});
+    mlir::func::CallOp::create(builder, location, "hew_rc_drop", mlir::TypeRange{},
+                               mlir::ValueRange{fieldVal});
     builder.setInsertionPointAfter(guard);
   }
   mlir::func::ReturnOp::create(builder, location);
@@ -5155,7 +5167,7 @@ mlir::Value MLIRGen::generateEnvDropFn(
   builder.restoreInsertionPoint(savedIP);
 
   return hew::FuncPtrOp::create(builder, location, ptrType,
-                                 mlir::SymbolRefAttr::get(&context, fnName))
+                                mlir::SymbolRefAttr::get(&context, fnName))
       .getResult();
 }
 
@@ -5288,8 +5300,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
   auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
   auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
-  auto savedEarlyReturnExcludeResolvedNames =
-      std::move(funcLevelEarlyReturnExcludeResolvedNames);
+  auto savedEarlyReturnExcludeResolvedNames = std::move(funcLevelEarlyReturnExcludeResolvedNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
@@ -5306,8 +5317,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectReturnVars;
     std::function<void(const ast::Block &, ExcludeSet &, size_t)> fromBlock;
     std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> fromStmtIf;
-    fromStmtIf = [&fromBlock, &fromStmtIf](
-        const ast::StmtIf &si, ExcludeSet &out, size_t depth) {
+    fromStmtIf = [&fromBlock, &fromStmtIf](const ast::StmtIf &si, ExcludeSet &out, size_t depth) {
       fromBlock(si.then_block, out, depth + 1);
       if (si.else_block) {
         if (si.else_block->block)
@@ -5319,8 +5329,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         }
       }
     };
-    fromBlock = [&collectReturnVars, &fromStmtIf](
-        const ast::Block &blk, ExcludeSet &out, size_t depth) {
+    fromBlock = [&collectReturnVars, &fromStmtIf](const ast::Block &blk, ExcludeSet &out,
+                                                  size_t depth) {
       if (blk.trailing_expr) {
         collectReturnVars(blk.trailing_expr->value, out, depth);
       } else if (!blk.stmts.empty()) {
@@ -5348,16 +5358,14 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         }
         if (!rhs)
           continue;
-        if (std::get_if<ast::ExprMatch>(&rhs->kind) ||
-            std::get_if<ast::ExprIf>(&rhs->kind) ||
-            std::get_if<ast::ExprIfLet>(&rhs->kind) ||
-            std::get_if<ast::ExprBlock>(&rhs->kind)) {
+        if (std::get_if<ast::ExprMatch>(&rhs->kind) || std::get_if<ast::ExprIf>(&rhs->kind) ||
+            std::get_if<ast::ExprIfLet>(&rhs->kind) || std::get_if<ast::ExprBlock>(&rhs->kind)) {
           collectReturnVars(*rhs, out, depth);
         }
       }
     };
-    collectReturnVars = [&collectReturnVars, &fromBlock](
-        const ast::Expr &expr, ExcludeSet &out, size_t depth) {
+    collectReturnVars = [&collectReturnVars, &fromBlock](const ast::Expr &expr, ExcludeSet &out,
+                                                         size_t depth) {
       if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
         out.insert({id->name, depth});
       } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
@@ -5425,8 +5433,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   funcLevelDropExcludeValues = std::move(savedExcludeValues);
   funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
   funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
-  funcLevelEarlyReturnExcludeResolvedNames =
-      std::move(savedEarlyReturnExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeResolvedNames = std::move(savedEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
@@ -5506,8 +5513,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 // Scope expression codegen
 // ============================================================================
 
-mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
-                                       bool statementPosition) {
+mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se, bool statementPosition) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
@@ -5541,16 +5547,10 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
   pushDropScope();
 
   const auto &stmts = se.block.stmts;
-  auto generateTailExpr = [&](const ast::Expr &expr) -> mlir::Value {
-    if (statementPosition) {
-      if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
-        return generateBlock(blockExpr->block, /*statementPosition=*/true);
-      if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
-        return generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
-      if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
-        return generateBlock(unsafeExpr->block, /*statementPosition=*/true);
-    }
-    return generateExpression(expr);
+  auto generateTailExpr = [&](const ast::Spanned<ast::Expr> &expr) -> mlir::Value {
+    if (statementPosition)
+      return generateDiscardedExpr(expr);
+    return generateExpression(expr.value);
   };
 
   mlir::Value bodyResult = nullptr;
@@ -5561,11 +5561,10 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
       if (hasRealTerminator(builder.getInsertionBlock()))
         break;
     }
-    bodyResult = generateTailExpr(se.block.trailing_expr->value);
+    bodyResult = generateTailExpr(*se.block.trailing_expr);
     // Null RAII close alloca so scope-exit drop doesn't close a
     // handle being returned out of the scope block.
-    if (auto *id = std::get_if<ast::ExprIdentifier>(
-            &se.block.trailing_expr->value.kind))
+    if (auto *id = std::get_if<ast::ExprIdentifier>(&se.block.trailing_expr->value.kind))
       nullOutRaiiAlloca(id->name);
   } else if (!stmts.empty()) {
     // No trailing_expr — generate all but the last statement, then handle
@@ -5579,13 +5578,12 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
     if (!hasRealTerminator(builder.getInsertionBlock())) {
       const auto &lastStmt = stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind)) {
-        bodyResult = generateTailExpr(exprStmt->expr.value);
-        if (auto *id = std::get_if<ast::ExprIdentifier>(
-                &exprStmt->expr.value.kind))
+        bodyResult = generateTailExpr(exprStmt->expr);
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&exprStmt->expr.value.kind))
           nullOutRaiiAlloca(id->name);
       } else if (!statementPosition) {
         if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
-          bodyResult = generateIfStmtAsExpr(*ifStmt);
+          bodyResult = generateIfStmtAsExpr(*ifStmt, statementPosition);
         } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
           auto loc_ = loc(lastStmt.span);
           auto scrutinee = generateExpression(matchNode->scrutinee.value);
@@ -5610,6 +5608,8 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se,
         } else {
           generateStatement(lastStmt);
         }
+      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+        bodyResult = generateIfStmtAsExpr(*ifStmt, statementPosition);
       } else {
         generateStatement(lastStmt);
       }
@@ -5729,8 +5729,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto savedExcludeValues = std::move(funcLevelDropExcludeValues);
   auto savedExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
   auto savedEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
-  auto savedEarlyReturnExcludeResolvedNames =
-      std::move(funcLevelEarlyReturnExcludeResolvedNames);
+  auto savedEarlyReturnExcludeResolvedNames = std::move(funcLevelEarlyReturnExcludeResolvedNames);
   funcLevelDropScopeBase = dropScopes.size();
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
@@ -5778,8 +5777,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   funcLevelDropExcludeValues = std::move(savedExcludeValues);
   funcLevelDropExcludeResolvedNames = std::move(savedExcludeResolvedNames);
   funcLevelEarlyReturnExcludeValues = std::move(savedEarlyReturnExcludeValues);
-  funcLevelEarlyReturnExcludeResolvedNames =
-      std::move(savedEarlyReturnExcludeResolvedNames);
+  funcLevelEarlyReturnExcludeResolvedNames = std::move(savedEarlyReturnExcludeResolvedNames);
 
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;
@@ -5980,8 +5978,7 @@ void MLIRGen::panicOnReplySendFailure(mlir::Value sendStatus,
   // Use RuntimeCallOp here because we are inside an scf.if then-region where
   // PanicOp (Terminator) cannot be the last op — scf.yield must be.
   hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                             mlir::SymbolRefAttr::get(&context, "hew_panic"),
-                             mlir::ValueRange{});
+                             mlir::SymbolRefAttr::get(&context, "hew_panic"), mlir::ValueRange{});
   builder.setInsertionPointAfter(failIf);
 }
 

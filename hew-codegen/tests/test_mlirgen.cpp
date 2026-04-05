@@ -103,6 +103,109 @@ static int countDropOpsByDropFn(mlir::Operation *op, llvm::StringRef dropFn, boo
   return count;
 }
 
+static int countUserDropOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](hew::DropOp drop) {
+    if (drop.getIsUserDrop())
+      count++;
+  });
+  return count;
+}
+
+static bool hasZeroInitializedUserDropSlot(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](hew::DropOp drop) {
+    if (found || !drop.getIsUserDrop())
+      return;
+
+    auto load = drop.getValue().getDefiningOp<mlir::memref::LoadOp>();
+    if (!load)
+      return;
+
+    auto slot = load.getMemref();
+    auto alloca = slot.getDefiningOp<mlir::memref::AllocaOp>();
+    if (!alloca)
+      return;
+
+    for (mlir::Operation &candidate : *alloca->getBlock()) {
+      auto store = llvm::dyn_cast<mlir::memref::StoreOp>(candidate);
+      if (!store || store.getMemref() != slot)
+        continue;
+      auto zero = store.getValue().getDefiningOp<mlir::LLVM::ZeroOp>();
+      if (zero && mlir::isa<mlir::LLVM::LLVMStructType>(zero.getType())) {
+        found = true;
+        break;
+      }
+    }
+  });
+  return found;
+}
+
+static bool isZeroLiteralValue(mlir::Value value) {
+  if (value.getDefiningOp<mlir::LLVM::ZeroOp>())
+    return true;
+
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    auto attr = constant.getValue();
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+      return intAttr.getValue().isZero();
+    if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+      return floatAttr.getValue().isZero();
+  }
+
+  return false;
+}
+
+static bool isIntegerLiteralValue(mlir::Value value, int64_t expected) {
+  if (expected == 0 && isZeroLiteralValue(value))
+    return true;
+
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
+      return intAttr.getValue().getLimitedValue() == static_cast<uint64_t>(expected);
+  }
+
+  return false;
+}
+
+static bool hasInitFlagGuardedUserDrop(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](mlir::scf::IfOp ifOp) {
+    if (found)
+      return;
+
+    bool guardedUserDrop = false;
+    ifOp.getThenRegion().walk([&](hew::DropOp drop) {
+      if (drop.getIsUserDrop())
+        guardedUserDrop = true;
+    });
+    if (!guardedUserDrop)
+      return;
+
+    auto load = ifOp.getCondition().getDefiningOp<mlir::memref::LoadOp>();
+    if (!load)
+      return;
+
+    auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(load.getMemref().getType());
+    if (!memrefTy)
+      return;
+    auto intTy = mlir::dyn_cast<mlir::IntegerType>(memrefTy.getElementType());
+    if (!intTy || intTy.getWidth() != 1)
+      return;
+
+    bool sawFalse = false;
+    bool sawTrue = false;
+    op->walk([&](mlir::memref::StoreOp store) {
+      if (store.getMemref() != load.getMemref())
+        return;
+      sawFalse |= isIntegerLiteralValue(store.getValue(), 0);
+      sawTrue |= isIntegerLiteralValue(store.getValue(), 1);
+    });
+    found = sawFalse && sawTrue;
+  });
+  return found;
+}
+
 static int countLLVMCallsByCallee(llvm::Function *function, llvm::StringRef callee) {
   if (!function)
     return 0;
@@ -2021,6 +2124,230 @@ fn main() -> int {
   if (countResultfulIfOps(stmtFn) != 1) {
     FAIL("nested discarded scope match statement should leave only the final return "
          "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded if-expressions materialize owned branch temporaries
+// ============================================================================
+static void test_if_expr_branch_temporaries_drop() {
+  TEST(if_expr_branch_temporaries_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn make_vec(n: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(n);
+    v
+}
+
+fn direct_vec_temp(flag: bool) -> int {
+    (if flag { make_vec(1) } else { make_vec(2) });
+    0
+}
+
+fn nested_scope_string_temp(flag: bool) -> int {
+    scope {
+        (if flag { "left" } else { "right" });
+    };
+    0
+}
+
+fn main() -> int {
+    direct_vec_temp(true) + nested_scope_string_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto directVecFn = lookupFuncBySuffix(module, "direct_vec_temp");
+  auto nestedScopeStringFn = lookupFuncBySuffix(module, "nested_scope_string_temp");
+  if (!directVecFn || !nestedScopeStringFn) {
+    FAIL("discarded if-expression temporary-drop test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(directVecFn, "hew_vec_free", false) < 2) {
+    FAIL("discarded if-expression should materialize and drop owned Vec branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(nestedScopeStringFn, "hew_string_drop", false) < 2) {
+    FAIL("nested discarded scope if-expression should materialize and drop selected String branch "
+         "temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-form if still materializes owned branch temporaries
+// ============================================================================
+static void test_if_stmt_branch_temporaries_drop() {
+  TEST(if_stmt_branch_temporaries_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn make_vec(n: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(n);
+    v
+}
+
+fn if_stmt_vec_temp(flag: bool) -> int {
+    if flag { make_vec(1) } else { make_vec(2) };
+    0
+}
+
+fn if_stmt_string_temp(flag: bool) -> int {
+    if flag { "left" } else { "right" };
+    0
+}
+
+fn main() -> int {
+    if_stmt_vec_temp(true) + if_stmt_string_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto vecFn = lookupFuncBySuffix(module, "if_stmt_vec_temp");
+  auto stringFn = lookupFuncBySuffix(module, "if_stmt_string_temp");
+  if (!vecFn || !stringFn) {
+    FAIL("statement-form if temporary-drop test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(vecFn, "hew_vec_free", false) < 2) {
+    FAIL("statement-form if should materialize and drop owned Vec branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(stringFn, "hew_string_drop", false) < 2) {
+    FAIL("statement-form if should materialize and drop selected String branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded if-expressions zero-init user-drop struct branch temporaries
+// ============================================================================
+static void test_discarded_if_expr_user_drop_branch_temp_zero_init() {
+  TEST(discarded_if_expr_user_drop_branch_temp_zero_init);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+type Tracker {
+    id: int;
+}
+
+impl Drop for Tracker {
+    fn drop(t: Tracker) {
+        println(t.id);
+    }
+}
+
+type NamedTracker {
+    name: String;
+    id: int;
+}
+
+impl Drop for NamedTracker {
+    fn drop(t: NamedTracker) {
+        println(t.id);
+    }
+}
+
+fn discarded_tracker_temp(flag: bool) -> int {
+    (if flag { Tracker { id: 1 } } else { Tracker { id: 2 } });
+    0
+}
+
+fn discarded_zero_tracker_temp(flag: bool) -> int {
+    (if flag { Tracker { id: 0 } } else { Tracker { id: 0 } });
+    0
+}
+
+fn discarded_named_tracker_temp(flag: bool) -> int {
+    (if flag {
+        NamedTracker { name: "left", id: 1 }
+    } else {
+        NamedTracker { name: "right", id: 2 }
+    });
+    0
+}
+
+fn main() -> int {
+    discarded_tracker_temp(true) + discarded_zero_tracker_temp(false)
+        + discarded_named_tracker_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto trackerFn = lookupFuncBySuffix(module, "discarded_tracker_temp");
+  auto zeroTrackerFn = lookupFuncBySuffix(module, "discarded_zero_tracker_temp");
+  auto namedTrackerFn = lookupFuncBySuffix(module, "discarded_named_tracker_temp");
+  if (!trackerFn || !zeroTrackerFn || !namedTrackerFn) {
+    FAIL("discarded tracker temporary test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countUserDropOps(trackerFn) == 0) {
+    FAIL("discarded if-expression should materialize user-drop branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasZeroInitializedUserDropSlot(trackerFn)) {
+    FAIL("discarded if-expression should zero-initialize user-drop temporary slots");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasInitFlagGuardedUserDrop(trackerFn)) {
+    FAIL("discarded if-expression should init-guard scalar-only user-drop temporary slots");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasInitFlagGuardedUserDrop(zeroTrackerFn)) {
+    FAIL("discarded if-expression should still drop zero-valued user-drop temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(namedTrackerFn, "hew_string_drop", false) == 0) {
+    FAIL("discarded if-expression should drop owned fields for user-drop branch temporaries");
     module.getOperation()->destroy();
     return;
   }
@@ -4787,6 +5114,9 @@ int main() {
   test_discarded_scope_wrapper_tail_if_no_extra_results();
   test_discarded_scope_expr_tail_match_no_extra_results();
   test_nested_discarded_scope_expr_tail_match_no_extra_results();
+  test_if_expr_branch_temporaries_drop();
+  test_if_stmt_branch_temporaries_drop();
+  test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

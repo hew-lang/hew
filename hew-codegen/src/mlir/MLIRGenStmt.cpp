@@ -3524,6 +3524,48 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
 
     return true;
   };
+  auto scopeBlockTailRequiresValue = [&](const ast::Block &block,
+                                         const auto &exprNeedsValue) -> bool {
+    if (block.trailing_expr)
+      return exprNeedsValue(block.trailing_expr->value, exprNeedsValue);
+
+    if (block.stmts.empty())
+      return false;
+
+    auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind);
+    if (!exprStmt)
+      return false;
+
+    return exprNeedsValue(exprStmt->expr.value, exprNeedsValue);
+  };
+  auto scopeExprRequiresValue = [&](const ast::Expr &expr, const auto &self) -> bool {
+    if (auto *resolvedType = resolvedTypeOf(expr.span))
+      if (auto *tupleType = std::get_if<ast::TypeTuple>(&resolvedType->kind);
+          tupleType && tupleType->elements.empty())
+        return false;
+
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+      return scopeBlockTailRequiresValue(blockExpr->block, self);
+    if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+      return scopeBlockTailRequiresValue(scopeExpr->block, self);
+    if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+      return scopeBlockTailRequiresValue(unsafeExpr->block, self);
+    if (std::holds_alternative<ast::ExprIf>(expr.kind))
+      return false;
+    if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprSend>(expr.kind) ||
+        std::holds_alternative<ast::ExprJoin>(expr.kind) ||
+        std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
+        std::holds_alternative<ast::ExprYield>(expr.kind) ||
+        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+      return false;
+
+    return true;
+  };
   auto failClosedDiscardedBlockLike = [&](llvm::StringRef exprKind, const ast::Block &block,
                                           mlir::Value value, size_t errorsBefore) -> bool {
     auto *insertBlock = builder.getInsertionBlock();
@@ -3544,7 +3586,17 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
     if (failClosedDiscardedBlockLike("block expression", blockExpr->block, val, errorsBefore))
       return;
   } else if (auto *scopeExpr = std::get_if<ast::ExprScope>(&stmt.expr.value.kind)) {
+    auto errorsBefore = errorCount_;
     val = generateScopeExpr(*scopeExpr, /*statementPosition=*/true);
+    auto *insertBlock = builder.getInsertionBlock();
+    if (!val && errorCount_ == errorsBefore && !(insertBlock && hasRealTerminator(insertBlock)) &&
+        scopeBlockTailRequiresValue(scopeExpr->block, scopeExprRequiresValue)) {
+      ++errorCount_;
+      emitError(location)
+          << "discarded scope expression in statement position failed to lower a nested value "
+             "expression";
+      return;
+    }
   } else if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&stmt.expr.value.kind)) {
     auto errorsBefore = errorCount_;
     val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);

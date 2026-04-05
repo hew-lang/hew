@@ -551,6 +551,76 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   return program;
 }
 
+static hew::ast::Program makeDiscardedScopeBadTailProgram() {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 910000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkPrintCall = [&]() {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(1)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall();
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  Block innerBlock;
+  innerBlock.trailing_expr = mkBadBinary();
+
+  auto outerSpan = mkSpan();
+  Expr outerExpr;
+  outerExpr.kind = ExprScope{std::nullopt, std::move(innerBlock)};
+  outerExpr.span = outerSpan;
+
+  StmtExpression exprStmt;
+  exprStmt.expr = Spanned<Expr>{std::move(outerExpr), outerSpan};
+
+  Stmt stmt;
+  stmt.kind = std::move(exprStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
 enum class StatementStyleMatchArmBadBodyKind {
   DirectExpr,
   BlockTailIf,
@@ -1577,6 +1647,37 @@ static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
   if (stderrText.find("discarded unsafe expression in statement position failed to lower") ==
       std::string::npos) {
     FAIL("expected discarded unsafe-expression fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded scope expression fail-closes when a nested tail expression
+//       lowers to null without its own diagnostic
+// ============================================================================
+static void test_discarded_scope_expr_bad_tail_fails_closed() {
+  TEST(discarded_scope_expr_bad_tail_fails_closed);
+
+  auto program = makeDiscardedScopeBadTailProgram();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded scope expression with bad tail");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded scope expression in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected discarded scope-expression fail-closed diagnostic");
     return;
   }
 
@@ -5124,6 +5225,7 @@ int main() {
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_block_expr_bad_tail_fails_closed();
   test_discarded_unsafe_expr_bad_tail_fails_closed();
+  test_discarded_scope_expr_bad_tail_fails_closed();
   test_statement_style_match_arm_bad_body_fails_closed();
   test_statement_style_match_arm_block_tail_if_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();

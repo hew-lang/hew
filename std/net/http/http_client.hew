@@ -7,6 +7,9 @@
 //! `request`, `request_string`, `set_timeout`, plus the legacy `get` / `post`
 //! helpers built on the same request path.
 //!
+//! Response accessors: `status()`, `body()`, `header(name)`, `content_type()`,
+//! `headers()` (all headers as `Vec<(String, String)>`), and `free()`.
+//!
 //! # Examples
 //!
 //! ```
@@ -53,6 +56,13 @@ trait ResponseMethods {
     /// Returns an empty string if not present.
     fn content_type(resp: Response) -> String;
 
+    /// Return all response headers as a list of `(name, value)` pairs.
+    ///
+    /// The returned vector is owned by the caller; Hew frees it automatically
+    /// when it goes out of scope. Returns an empty vector if no headers were
+    /// captured or the response is invalid.
+    fn headers(resp: Response) -> Vec<(String, String)>;
+
     /// Release the response resources.
     fn free(resp: Response);
 }
@@ -66,6 +76,8 @@ impl ResponseMethods for Response {
     fn header(resp: Response, name: String) -> String { unsafe { hew_http_response_header(resp, name) } }
     /// Return the `Content-Type` response header.
     fn content_type(resp: Response) -> String { unsafe { hew_http_response_content_type(resp) } }
+    /// Return all response headers as a list of `(name, value)` pairs.
+    fn headers(resp: Response) -> Vec<(String, String)> { unsafe { hew_http_response_headers(resp) } }
     /// Release the response resources.
     fn free(resp: Response) { unsafe { hew_http_response_free(resp) }; }
 }
@@ -196,4 +208,5 @@ extern "C" {
     fn hew_http_response_body(resp: Response) -> String;
     fn hew_http_response_header(resp: Response, name: String) -> String;
     fn hew_http_response_content_type(resp: Response) -> String;
+    fn hew_http_response_headers(resp: Response) -> Vec<(String, String)>;
 }

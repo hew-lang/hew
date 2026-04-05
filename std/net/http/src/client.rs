@@ -11,7 +11,7 @@ use hew_cabi::{
     cabi::{cstr_to_str, str_to_malloc},
     vec::{hew_vec_get_str, ElemKind, HewVec},
 };
-use std::ffi::CStr;
+use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
@@ -508,6 +508,63 @@ pub unsafe extern "C" fn hew_http_response_content_type(
     unsafe { hew_http_response_header(resp, c"content-type".as_ptr()) }
 }
 
+/// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
+///
+/// Both pointers are `malloc`-allocated and must be freed by the owner. Hew's
+/// compiled destructor handles this automatically; Rust callers must free them
+/// manually before calling `hew_vec_free`.
+#[repr(C)]
+struct HewStringPair {
+    name: *mut c_char,
+    value: *mut c_char,
+}
+
+/// Return a new `Vec<(String, String)>` containing all captured response headers.
+///
+/// Each element is a `(name, value)` pair of `malloc`-allocated C strings.
+/// The caller owns the returned vector and its element strings. Hew's compiled
+/// destructor frees the string fields when the `Vec<(String, String)>` goes
+/// out of scope. Returns an empty vector if `resp` is null or no headers were
+/// captured; never returns null.
+///
+/// # Safety
+///
+/// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
+///
+/// # Panics
+///
+/// In practice never panics. The internal conversion of
+/// `size_of::<*mut c_char>() * 2` to `i64` is infallible on any supported
+/// platform (pointer sizes are always a small fraction of `i64::MAX`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse) -> *mut HewVec {
+    let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
+        .expect("pointer-pair elem_size always fits i64");
+    // SAFETY: allocates a new HewVec with elem_size=16 (two pointers), Plain kind.
+    let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+    if resp.is_null() {
+        return vec;
+    }
+    // SAFETY: resp is a valid HewHttpResponse per caller contract.
+    let r = unsafe { &*resp };
+    if r.headers.is_null() {
+        return vec;
+    }
+    // SAFETY: headers was allocated with Box::into_raw in capture_headers.
+    let headers = unsafe { &*r.headers };
+    for (name, value) in headers {
+        let pair = HewStringPair {
+            name: str_to_malloc(name),
+            value: str_to_malloc(value),
+        };
+        // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+        unsafe {
+            hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+        }
+    }
+    vec
+}
+
 /// Extract a response body string and release the response handle.
 ///
 /// Returns null when the response pointer is null or represents a transport /
@@ -978,6 +1035,130 @@ mod tests {
         // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "100");
+    }
+
+    // -- Response headers() accessor ----------------------------------
+
+    #[test]
+    fn response_headers_null_resp_returns_empty_vec() {
+        // SAFETY: null is explicitly handled; returns a valid empty vec.
+        let vec = unsafe { hew_http_response_headers(ptr::null()) };
+        assert!(!vec.is_null());
+        // SAFETY: vec was just allocated by hew_http_response_headers.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(len, 0);
+        // SAFETY: vec is a valid HewVec; no string elements to free (ElemKind::Plain, len=0).
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    }
+
+    #[test]
+    fn response_headers_no_headers_field_returns_empty_vec() {
+        let resp = build_response(200, "", ptr::null_mut());
+        // SAFETY: resp is a valid HewHttpResponse with null headers.
+        let vec = unsafe { hew_http_response_headers(resp) };
+        assert!(!vec.is_null());
+        // SAFETY: vec was allocated by hew_http_response_headers.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(len, 0);
+        // SAFETY: vec is a valid HewVec; no elements to free.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    #[test]
+    fn response_headers_returns_all_pairs_in_order() {
+        let headers = Box::into_raw(Box::new(vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("x-request-id".to_string(), "abc-123".to_string()),
+        ]));
+        let resp = build_response(200, "", headers);
+        // SAFETY: resp is a valid HewHttpResponse.
+        let vec = unsafe { hew_http_response_headers(resp) };
+        assert!(!vec.is_null());
+        // SAFETY: vec is valid.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(len, 2);
+
+        // Read and verify each (name, value) pair.
+        // Elements must be freed manually: ElemKind::Plain means hew_vec_free
+        // only releases the backing buffer, not the embedded string pointers.
+        for i in 0..2i64 {
+            // SAFETY: vec is valid and i is in range.
+            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
+            assert!(!elem_ptr.is_null());
+            // SAFETY: elem_ptr points to a HewStringPair (two consecutive *mut c_char).
+            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            assert!(!pair.name.is_null());
+            assert!(!pair.value.is_null());
+            // SAFETY: name and value are valid malloc'd C strings from hew_http_response_headers.
+            let name = unsafe { CStr::from_ptr(pair.name) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            // SAFETY: pair.value is a valid malloc'd C string from hew_http_response_headers.
+            let value = unsafe { CStr::from_ptr(pair.value) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            if i == 0 {
+                assert_eq!(name, "content-type");
+                assert_eq!(value, "application/json");
+            } else {
+                assert_eq!(name, "x-request-id");
+                assert_eq!(value, "abc-123");
+            }
+            // Free the strings before freeing the backing buffer.
+            // SAFETY: pair.name was malloc'd by hew_http_response_headers.
+            unsafe { libc::free(pair.name.cast()) };
+            // SAFETY: pair.value was malloc'd by hew_http_response_headers.
+            unsafe { libc::free(pair.value.cast()) };
+        }
+
+        // SAFETY: string elements already freed above; just releases the buffer.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    #[test]
+    fn response_headers_single_pair_roundtrip() {
+        let headers = Box::into_raw(Box::new(vec![(
+            "x-custom".to_string(),
+            "my-value".to_string(),
+        )]));
+        let resp = build_response(200, "", headers);
+        // SAFETY: resp is a valid HewHttpResponse.
+        let vec = unsafe { hew_http_response_headers(resp) };
+        assert!(!vec.is_null());
+        // SAFETY: vec is valid.
+        assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 1);
+
+        // SAFETY: index 0 is in range.
+        let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, 0) };
+        // SAFETY: elem_ptr points to a HewStringPair.
+        let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+        // SAFETY: pointers are valid malloc'd C strings from hew_http_response_headers.
+        let name = unsafe { CStr::from_ptr(pair.name) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: pair.value is a valid malloc'd C string from hew_http_response_headers.
+        let value = unsafe { CStr::from_ptr(pair.value) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "x-custom");
+        assert_eq!(value, "my-value");
+        // SAFETY: pair.name was malloc'd by hew_http_response_headers.
+        unsafe { libc::free(pair.name.cast()) };
+        // SAFETY: pair.value was malloc'd by hew_http_response_headers.
+        unsafe { libc::free(pair.value.cast()) };
+
+        // SAFETY: elements freed; safe to release the buffer.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
     }
 
     // -- Timeout ------------------------------------------------------

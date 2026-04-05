@@ -1,7 +1,7 @@
 //! Find-all-references analysis: scope-aware identifier reference collection.
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Block, Expr, ImportSpec, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -33,10 +33,21 @@ pub fn find_all_references(
     Some((name, offset_spans))
 }
 
-/// Check if a name matches a top-level item definition (function, actor, type, etc.).
+/// Check if a name matches a module-scope binding (item definition or named import).
 #[must_use]
 pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
     parse_result.program.items.iter().any(|(item, _)| {
+        if let Item::Import(import) = item {
+            if let Some(ImportSpec::Names(names)) = &import.spec {
+                if names
+                    .iter()
+                    .any(|entry| entry.alias.as_deref().unwrap_or(entry.name.as_str()) == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
         // Check item-level names (functions, actors, types, etc.)
         let item_name = match item {
             Item::Function(f) => Some(f.name.as_str()),

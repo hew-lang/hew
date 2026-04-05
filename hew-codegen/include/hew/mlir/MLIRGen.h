@@ -17,8 +17,8 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
@@ -94,7 +94,8 @@ private:
   mlir::Type defaultFloatType();
 
   // ── Top-level items ──────────────────────────────────────────────
-  void generateItem(const ast::Item &item, std::optional<mlir::Location> fallbackLoc = std::nullopt);
+  void generateItem(const ast::Item &item,
+                    std::optional<mlir::Location> fallbackLoc = std::nullopt);
   void registerTypeDecl(const ast::TypeDecl &decl);
   void generateIndirectEnumDropFunc(const std::string &enumName);
   void registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride = "",
@@ -156,9 +157,9 @@ private:
   // ── Actor type registry (declared early for method signatures) ────
   struct ActorReceiveInfo {
     std::string name;
-    std::vector<std::string> paramNames;  // message parameter names
-    std::vector<mlir::Type> paramTypes;   // message parameter types
-    std::optional<mlir::Type> returnType; // return type (for await/ask)
+    std::vector<std::string> paramNames;       // message parameter names
+    std::vector<mlir::Type> paramTypes;        // message parameter types
+    std::optional<mlir::Type> returnType;      // return type (for await/ask)
     std::optional<int64_t> periodicIntervalNs; // periodic interval from #[every]
   };
   struct ActorInfo {
@@ -206,15 +207,13 @@ private:
   /// Shared drop registration for both let and var bindings.
   /// Registers Stream/Sink RAII close, collection/string drops,
   /// user-defined drops, wire struct field drops, and closure env cleanup.
-  void registerDropsForVariable(
-      const std::string &varName, mlir::Value value,
-      const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
-      const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
-      bool isMutable, mlir::Location location);
+  void registerDropsForVariable(const std::string &varName, mlir::Value value,
+                                const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
+                                const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
+                                bool isMutable, mlir::Location location);
   void generateAssignStmt(const ast::StmtAssign &stmt);
   void generateIfStmt(const ast::StmtIf &stmt);
-  mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt,
-                                   bool statementPosition = false);
+  mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statementPosition = false);
   void generateWhileStmt(const ast::StmtWhile &stmt);
   void generateWhileLetStmt(const ast::StmtWhileLet &stmt);
   bool isExprLoopInvariant(const ast::Expr &expr);
@@ -231,6 +230,7 @@ private:
   void generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName);
   void generateReturnStmt(const ast::StmtReturn &stmt);
   void generateExprStmt(const ast::StmtExpression &stmt);
+  mlir::Value generateDiscardedExpr(const ast::Spanned<ast::Expr> &expr);
 
   // ── Expressions ──────────────────────────────────────────────────
   mlir::Value generateExpression(const ast::Expr &expr);
@@ -238,11 +238,11 @@ private:
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
   mlir::Value generateCallExpr(const ast::ExprCall &expr);
-  mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan);
+  mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan,
+                             bool statementPosition = false);
   mlir::Value generateBlockExpr(const ast::Block &block);
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
-  mlir::Value generateStructInit(const ast::ExprStructInit &expr,
-                                 const ast::Span &exprSpan);
+  mlir::Value generateStructInit(const ast::ExprStructInit &expr, const ast::Span &exprSpan);
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
   std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::ExprIdentifier &ident,
@@ -251,8 +251,7 @@ private:
                                                       mlir::Value receiver,
                                                       mlir::Location location);
   std::optional<mlir::Value> generateActorMethodCall(const ast::ExprMethodCall &mc,
-                                                     mlir::Value receiver,
-                                                     mlir::Location location);
+                                                     mlir::Value receiver, mlir::Location location);
   std::optional<mlir::Value> generateBuiltinMethodCall(const ast::ExprMethodCall &expr,
                                                        mlir::Value receiver,
                                                        mlir::Location location);
@@ -263,8 +262,7 @@ private:
   mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan);
   mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
-  mlir::Value generateScopeExpr(const ast::ExprScope &expr,
-                                bool statementPosition = false);
+  mlir::Value generateScopeExpr(const ast::ExprScope &expr, bool statementPosition = false);
   mlir::Value generateScopeLaunchExpr(const ast::ExprScopeLaunch &expr);
   mlir::Value generateScopeSpawnExpr(const ast::ExprScopeSpawn &expr);
   mlir::Value generateScopeLaunchImpl(const ast::Block &block);
@@ -311,8 +309,7 @@ private:
                                   mlir::Location location);
   /// Recursively bind sub-patterns in let destructuring (struct fields,
   /// tuple elements, identifiers, wildcards).
-  void bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
-                         mlir::Location location);
+  void bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value, mlir::Location location);
   /// Emit a tag-equality comparison: extract tag, compare with variantIndex.
   mlir::Value emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
                                     mlir::Location location);
@@ -366,8 +363,8 @@ private:
                               mlir::Location location);
 
   /// Emit an Option<T> wrapping: builds an scf::IfOp with Some(payload)/None branches.
-  mlir::Value emitOptionWrap(mlir::Value condition, mlir::Value payload,
-                             mlir::Type optionType, mlir::Location location);
+  mlir::Value emitOptionWrap(mlir::Value condition, mlir::Value payload, mlir::Type optionType,
+                             mlir::Location location);
 
   /// Allocate the returnFlag and (if the return type is memref-compatible)
   /// the returnSlot for early-return support inside SCF regions.
@@ -452,8 +449,7 @@ private:
   /// incrementing errorCount_ so generation still fails closed.
   /// Preserves unsigned widening when the sink is the active function's
   /// declared unsigned integer return type.
-  mlir::Value coerceTypeForSink(mlir::Value value, mlir::Type targetType,
-                                mlir::Location location);
+  mlir::Value coerceTypeForSink(mlir::Value value, mlir::Type targetType, mlir::Location location);
   bool shouldUseUnsignedReturnSinkCoercion(mlir::Type targetType);
 
   /// Generate remaining statements with return guards (recursive).
@@ -533,6 +529,10 @@ private:
   // Memref-backed local slots whose element type is an LLVM storage type
   // rather than the original semantic Hew type. Loads/stores must bitcast.
   llvm::DenseMap<mlir::Value, mlir::Type> slotSemanticTypes;
+  // Materialized temporary slots that need an explicit initializedness bit
+  // (currently user-Drop structs in discarded-if lowering). Keyed by the
+  // promoted slot memref and storing a parallel memref<i1> flag.
+  llvm::DenseMap<mlir::Value, mlir::Value> tempSlotInitFlags;
 
   // ── Hoisted loop-invariant values ────────────────────────────────
   // Maps AST expression pointers to pre-computed MLIR values so that
@@ -762,9 +762,8 @@ private:
   /// Generate a per-closure env drop function that calls hew_rc_drop on each
   /// captured mutable RC cell.  Returns a FuncPtrOp value (or null zero if
   /// no mutable captures exist).
-  mlir::Value generateEnvDropFn(
-      const std::vector<CapturedVarInfo> &capturedVars,
-      mlir::LLVM::LLVMStructType envStructType, mlir::Location location);
+  mlir::Value generateEnvDropFn(const std::vector<CapturedVarInfo> &capturedVars,
+                                mlir::LLVM::LLVMStructType envStructType, mlir::Location location);
   unsigned envDropCounter = 0;
 
   /// Collect identifiers used in a block that are free (not locally defined).
@@ -859,8 +858,7 @@ private:
   /// keeping receive-path registration limited to the original narrow set
   /// (String, Vec, HashMap, Closure, Handle).  Callers that own a full type
   /// context (field-drop codegen, match bindings) pass the default \c true.
-  std::string dropFuncForMLIRType(mlir::Type type,
-                                   bool includeStructTypes = true) const;
+  std::string dropFuncForMLIRType(mlir::Type type, bool includeStructTypes = true) const;
   /// Returns true if the named struct has at least one owned field (String,
   /// Vec, HashMap, etc.) that requires drop at scope exit.
   bool structHasOwnedFields(const std::string &name) const;
@@ -918,8 +916,7 @@ private:
   /// Detect whether an expression result is a heap-allocated temporary and
   /// return the appropriate drop function + user-drop flag.
   /// Returns empty dropFunc if the value is not a droppable temporary.
-  DropInfo inferDropFuncForTemporary(mlir::Value val,
-                                     const ast::Expr &astExpr) const;
+  DropInfo inferDropFuncForTemporary(mlir::Value val, const ast::Expr &astExpr) const;
   /// If `val` is a heap-allocated temporary (not already bound to a variable),
   /// create an implicit `__tmp_N` let-binding and register it for scope-exit
   /// drop.  Returns true if a binding was created.
@@ -1046,10 +1043,8 @@ private:
 
   /// Choose between the base mangled impl-body name and a trait-qualified
   /// fallback, preserving the existing call-site-specific lookup behavior.
-  std::string resolveTraitImplBodyName(const std::string &typeName,
-                                       const std::string &traitName,
-                                       const std::string &methodName,
-                                       TraitImplBodyNameMode mode);
+  std::string resolveTraitImplBodyName(const std::string &typeName, const std::string &traitName,
+                                       const std::string &methodName, TraitImplBodyNameMode mode);
 
   /// Register an impl for trait dispatch and generate shim functions.
   void registerTraitImpl(const std::string &typeName, const std::string &traitName,
@@ -1109,14 +1104,12 @@ private:
   std::unordered_map<std::string, GenericImplInfo> genericImplMethods;
   // Map from monomorphized struct name → (base name, type arg names).
   // Populated during generic struct specialization in convertType.
-  std::unordered_map<std::string,
-                     std::pair<std::string, std::vector<std::string>>>
+  std::unordered_map<std::string, std::pair<std::string, std::vector<std::string>>>
       structTypeOrigin;
   // Specialize a generic impl method for the given concrete type args.
-  mlir::func::FuncOp specializeGenericImplMethod(
-      const std::string &baseTypeName,
-      const std::vector<std::string> &typeArgs,
-      const std::string &methodName);
+  mlir::func::FuncOp specializeGenericImplMethod(const std::string &baseTypeName,
+                                                 const std::vector<std::string> &typeArgs,
+                                                 const std::string &methodName);
 };
 
 } // namespace hew

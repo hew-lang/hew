@@ -103,6 +103,109 @@ static int countDropOpsByDropFn(mlir::Operation *op, llvm::StringRef dropFn, boo
   return count;
 }
 
+static int countUserDropOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](hew::DropOp drop) {
+    if (drop.getIsUserDrop())
+      count++;
+  });
+  return count;
+}
+
+static bool hasZeroInitializedUserDropSlot(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](hew::DropOp drop) {
+    if (found || !drop.getIsUserDrop())
+      return;
+
+    auto load = drop.getValue().getDefiningOp<mlir::memref::LoadOp>();
+    if (!load)
+      return;
+
+    auto slot = load.getMemref();
+    auto alloca = slot.getDefiningOp<mlir::memref::AllocaOp>();
+    if (!alloca)
+      return;
+
+    for (mlir::Operation &candidate : *alloca->getBlock()) {
+      auto store = llvm::dyn_cast<mlir::memref::StoreOp>(candidate);
+      if (!store || store.getMemref() != slot)
+        continue;
+      auto zero = store.getValue().getDefiningOp<mlir::LLVM::ZeroOp>();
+      if (zero && mlir::isa<mlir::LLVM::LLVMStructType>(zero.getType())) {
+        found = true;
+        break;
+      }
+    }
+  });
+  return found;
+}
+
+static bool isZeroLiteralValue(mlir::Value value) {
+  if (value.getDefiningOp<mlir::LLVM::ZeroOp>())
+    return true;
+
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    auto attr = constant.getValue();
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+      return intAttr.getValue().isZero();
+    if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+      return floatAttr.getValue().isZero();
+  }
+
+  return false;
+}
+
+static bool isIntegerLiteralValue(mlir::Value value, int64_t expected) {
+  if (expected == 0 && isZeroLiteralValue(value))
+    return true;
+
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
+      return intAttr.getValue().getLimitedValue() == static_cast<uint64_t>(expected);
+  }
+
+  return false;
+}
+
+static bool hasInitFlagGuardedUserDrop(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](mlir::scf::IfOp ifOp) {
+    if (found)
+      return;
+
+    bool guardedUserDrop = false;
+    ifOp.getThenRegion().walk([&](hew::DropOp drop) {
+      if (drop.getIsUserDrop())
+        guardedUserDrop = true;
+    });
+    if (!guardedUserDrop)
+      return;
+
+    auto load = ifOp.getCondition().getDefiningOp<mlir::memref::LoadOp>();
+    if (!load)
+      return;
+
+    auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(load.getMemref().getType());
+    if (!memrefTy)
+      return;
+    auto intTy = mlir::dyn_cast<mlir::IntegerType>(memrefTy.getElementType());
+    if (!intTy || intTy.getWidth() != 1)
+      return;
+
+    bool sawFalse = false;
+    bool sawTrue = false;
+    op->walk([&](mlir::memref::StoreOp store) {
+      if (store.getMemref() != load.getMemref())
+        return;
+      sawFalse |= isIntegerLiteralValue(store.getValue(), 0);
+      sawTrue |= isIntegerLiteralValue(store.getValue(), 1);
+    });
+    found = sawFalse && sawTrue;
+  });
+  return found;
+}
+
 static int countLLVMCallsByCallee(llvm::Function *function, llvm::StringRef callee) {
   if (!function)
     return 0;
@@ -429,6 +532,176 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
 
   StmtExpression exprStmt;
   exprStmt.expr = Spanned<Expr>{std::move(outerExpr), outerSpan};
+
+  Stmt stmt;
+  stmt.kind = std::move(exprStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
+static hew::ast::Program makeDiscardedScopeBadTailProgram() {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 910000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkPrintCall = [&]() {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(1)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall();
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  Block innerBlock;
+  innerBlock.trailing_expr = mkBadBinary();
+
+  auto outerSpan = mkSpan();
+  Expr outerExpr;
+  outerExpr.kind = ExprScope{std::nullopt, std::move(innerBlock)};
+  outerExpr.span = outerSpan;
+
+  StmtExpression exprStmt;
+  exprStmt.expr = Spanned<Expr>{std::move(outerExpr), outerSpan};
+
+  Stmt stmt;
+  stmt.kind = std::move(exprStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
+enum class DiscardedIfBadPart {
+  Condition,
+  ThenBranch,
+  SideEffectBranches,
+};
+
+static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPart) {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 920000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkBool = [&](bool value) {
+    ExprLiteral lit;
+    lit.lit = LitBool{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkPrintCall = [&]() {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(1)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall();
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  ExprIf ifExpr;
+  ifExpr.condition = badPart == DiscardedIfBadPart::Condition ? mkBadBinary() : mkBool(true);
+  if (badPart == DiscardedIfBadPart::ThenBranch) {
+    ifExpr.then_block = mkBadBinary();
+    ifExpr.else_block = mkInt(20);
+  } else if (badPart == DiscardedIfBadPart::SideEffectBranches) {
+    ifExpr.then_block = mkPrintCall();
+    ifExpr.else_block = mkPrintCall();
+  } else {
+    ifExpr.then_block = mkInt(10);
+    ifExpr.else_block = mkInt(20);
+  }
+
+  auto ifSpan = mkSpan();
+  Expr ifNode;
+  ifNode.kind = std::move(ifExpr);
+  ifNode.span = ifSpan;
+
+  Block scopeBlock;
+  scopeBlock.trailing_expr =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(ifNode), ifSpan});
+
+  auto scopeSpan = mkSpan();
+  Expr expr;
+  expr.kind = ExprScope{std::nullopt, std::move(scopeBlock)};
+  expr.span = scopeSpan;
+
+  StmtExpression exprStmt;
+  exprStmt.expr = Spanned<Expr>{std::move(expr), scopeSpan};
 
   Stmt stmt;
   stmt.kind = std::move(exprStmt);
@@ -1481,6 +1754,130 @@ static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
 }
 
 // ============================================================================
+// Test: Discarded scope expression fail-closes when a nested tail expression
+//       lowers to null without its own diagnostic
+// ============================================================================
+static void test_discarded_scope_expr_bad_tail_fails_closed() {
+  TEST(discarded_scope_expr_bad_tail_fails_closed);
+
+  auto program = makeDiscardedScopeBadTailProgram();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded scope expression with bad tail");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded scope expression in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected discarded scope-expression fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded scope-tail if fail-closes when its condition lowers to null
+//       without its own diagnostic
+// ============================================================================
+static void test_discarded_scope_tail_if_bad_condition_fails_closed() {
+  TEST(discarded_scope_tail_if_bad_condition_fails_closed);
+
+  auto program = makeDiscardedIfBadPartProgram(DiscardedIfBadPart::Condition);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded scope-tail if with bad condition");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded if expression in statement position failed to lower the "
+                      "condition") == std::string::npos) {
+    FAIL("expected discarded if-expression condition fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded scope-tail if fail-closes when a direct branch lowers to null
+//       without its own diagnostic
+// ============================================================================
+static void test_discarded_scope_tail_if_bad_branch_fails_closed() {
+  TEST(discarded_scope_tail_if_bad_branch_fails_closed);
+
+  auto program = makeDiscardedIfBadPartProgram(DiscardedIfBadPart::ThenBranch);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for discarded scope-tail if with bad branch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded if expression in statement position failed to lower the "
+                      "then-branch expression") == std::string::npos) {
+    FAIL("expected discarded if-expression branch fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded scope-tail if with side-effect-only branches lowers cleanly
+// ============================================================================
+static void test_discarded_scope_tail_if_side_effect_branches_lower() {
+  TEST(discarded_scope_tail_if_side_effect_branches_lower);
+
+  auto program = makeDiscardedIfBadPartProgram(DiscardedIfBadPart::SideEffectBranches);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected MLIR generation success for discarded scope-tail if with side-effect branches");
+    return;
+  }
+
+  if (stderrText.find("discarded if expression in statement position failed to lower") !=
+      std::string::npos) {
+    FAIL("unexpected discarded if-expression fail-closed diagnostic for side-effect branches");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Statement-style match arm bodies fail-close when expression lowering
 //       returns null without its own diagnostic
 // ============================================================================
@@ -2021,6 +2418,250 @@ fn main() -> int {
   if (countResultfulIfOps(stmtFn) != 1) {
     FAIL("nested discarded scope match statement should leave only the final return "
          "materialization scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded if-expressions materialize owned branch temporaries
+// ============================================================================
+static void test_if_expr_branch_temporaries_drop() {
+  TEST(if_expr_branch_temporaries_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn make_vec(n: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(n);
+    v
+}
+
+fn direct_vec_temp(flag: bool) -> int {
+    (if flag { make_vec(1) } else { make_vec(2) });
+    0
+}
+
+fn nested_scope_string_temp(flag: bool) -> int {
+    scope {
+        (if flag { "left" } else { "right" });
+    };
+    0
+}
+
+fn main() -> int {
+    direct_vec_temp(true) + nested_scope_string_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto directVecFn = lookupFuncBySuffix(module, "direct_vec_temp");
+  auto nestedScopeStringFn = lookupFuncBySuffix(module, "nested_scope_string_temp");
+  if (!directVecFn || !nestedScopeStringFn) {
+    FAIL("discarded if-expression temporary-drop test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(directVecFn, "hew_vec_free", false) < 2) {
+    FAIL("discarded if-expression should materialize and drop owned Vec branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(nestedScopeStringFn, "hew_string_drop", false) < 2) {
+    FAIL("nested discarded scope if-expression should materialize and drop selected String branch "
+         "temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-form if still materializes owned branch temporaries
+// ============================================================================
+static void test_if_stmt_branch_temporaries_drop() {
+  TEST(if_stmt_branch_temporaries_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn make_vec(n: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(n);
+    v
+}
+
+fn if_stmt_vec_temp(flag: bool) -> int {
+    if flag { make_vec(1) } else { make_vec(2) };
+    0
+}
+
+fn if_stmt_string_temp(flag: bool) -> int {
+    if flag { "left" } else { "right" };
+    0
+}
+
+fn main() -> int {
+    if_stmt_vec_temp(true) + if_stmt_string_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto vecFn = lookupFuncBySuffix(module, "if_stmt_vec_temp");
+  auto stringFn = lookupFuncBySuffix(module, "if_stmt_string_temp");
+  if (!vecFn || !stringFn) {
+    FAIL("statement-form if temporary-drop test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(vecFn, "hew_vec_free", false) < 2) {
+    FAIL("statement-form if should materialize and drop owned Vec branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(stringFn, "hew_string_drop", false) < 2) {
+    FAIL("statement-form if should materialize and drop selected String branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded if-expressions zero-init user-drop struct branch temporaries
+// ============================================================================
+static void test_discarded_if_expr_user_drop_branch_temp_zero_init() {
+  TEST(discarded_if_expr_user_drop_branch_temp_zero_init);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+type Tracker {
+    id: int;
+}
+
+impl Drop for Tracker {
+    fn drop(t: Tracker) {
+        println(t.id);
+    }
+}
+
+type NamedTracker {
+    name: String;
+    id: int;
+}
+
+impl Drop for NamedTracker {
+    fn drop(t: NamedTracker) {
+        println(t.id);
+    }
+}
+
+fn discarded_tracker_temp(flag: bool) -> int {
+    (if flag { Tracker { id: 1 } } else { Tracker { id: 2 } });
+    0
+}
+
+fn discarded_zero_tracker_temp(flag: bool) -> int {
+    (if flag { Tracker { id: 0 } } else { Tracker { id: 0 } });
+    0
+}
+
+fn discarded_named_tracker_temp(flag: bool) -> int {
+    (if flag {
+        NamedTracker { name: "left", id: 1 }
+    } else {
+        NamedTracker { name: "right", id: 2 }
+    });
+    0
+}
+
+fn discarded_named_tracker_loop(flag: bool) -> int {
+    var i = 0;
+    while i < 2 {
+        (if flag {
+            NamedTracker { name: "left", id: i }
+        } else {
+            NamedTracker { name: "right", id: i }
+        });
+        i = i + 1;
+    }
+    0
+}
+
+fn main() -> int {
+    discarded_tracker_temp(true) + discarded_zero_tracker_temp(false)
+        + discarded_named_tracker_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto trackerFn = lookupFuncBySuffix(module, "discarded_tracker_temp");
+  auto zeroTrackerFn = lookupFuncBySuffix(module, "discarded_zero_tracker_temp");
+  auto namedTrackerFn = lookupFuncBySuffix(module, "discarded_named_tracker_temp");
+  auto namedLoopFn = lookupFuncBySuffix(module, "discarded_named_tracker_loop");
+  if (!trackerFn || !zeroTrackerFn || !namedTrackerFn || !namedLoopFn) {
+    FAIL("discarded tracker temporary test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countUserDropOps(trackerFn) == 0) {
+    FAIL("discarded if-expression should materialize user-drop branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasZeroInitializedUserDropSlot(trackerFn)) {
+    FAIL("discarded if-expression should zero-initialize user-drop temporary slots");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasInitFlagGuardedUserDrop(trackerFn)) {
+    FAIL("discarded if-expression should init-guard scalar-only user-drop temporary slots");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasInitFlagGuardedUserDrop(zeroTrackerFn)) {
+    FAIL("discarded if-expression should still drop zero-valued user-drop temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(namedTrackerFn, "hew_string_drop", false) == 0) {
+    FAIL("discarded if-expression should drop owned fields for user-drop branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(namedLoopFn, "hew_string_drop", false) < 3) {
+    FAIL("discarded if-expression loops should drop overwritten owned-field temporaries");
     module.getOperation()->destroy();
     return;
   }
@@ -4777,6 +5418,10 @@ int main() {
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_block_expr_bad_tail_fails_closed();
   test_discarded_unsafe_expr_bad_tail_fails_closed();
+  test_discarded_scope_expr_bad_tail_fails_closed();
+  test_discarded_scope_tail_if_bad_condition_fails_closed();
+  test_discarded_scope_tail_if_bad_branch_fails_closed();
+  test_discarded_scope_tail_if_side_effect_branches_lower();
   test_statement_style_match_arm_bad_body_fails_closed();
   test_statement_style_match_arm_block_tail_if_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();
@@ -4787,6 +5432,9 @@ int main() {
   test_discarded_scope_wrapper_tail_if_no_extra_results();
   test_discarded_scope_expr_tail_match_no_extra_results();
   test_nested_discarded_scope_expr_tail_match_no_extra_results();
+  test_if_expr_branch_temporaries_drop();
+  test_if_stmt_branch_temporaries_drop();
+  test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

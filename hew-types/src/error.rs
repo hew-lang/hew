@@ -168,16 +168,29 @@ impl TypeError {
     /// Create a non-exhaustive match error.
     #[must_use]
     pub fn non_exhaustive_match(span: Span, missing_patterns: &[String]) -> Self {
-        let missing = if missing_patterns.is_empty() {
-            "some patterns".to_string()
+        let detail = if missing_patterns.is_empty() {
+            "missing some patterns".to_string()
         } else {
-            missing_patterns.join(", ")
+            format!("missing {}", missing_patterns.join(", "))
         };
-        Self::new(
-            TypeErrorKind::NonExhaustiveMatch,
+        Self::non_exhaustive_match_detail(span, Severity::Error, detail)
+    }
+
+    /// Create a non-exhaustive match diagnostic with an explicit severity.
+    #[must_use]
+    pub(crate) fn non_exhaustive_match_detail(
+        span: Span,
+        severity: Severity,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity,
+            kind: TypeErrorKind::NonExhaustiveMatch,
             span,
-            format!("non-exhaustive patterns: `{missing}` not covered"),
-        )
+            message: format!("non-exhaustive match: {}", detail.into()),
+            notes: Vec::new(),
+            suggestions: Vec::new(),
+        }
     }
 
     /// Create a duplicate definition error.
@@ -614,10 +627,7 @@ mod tests {
     #[test]
     fn test_non_exhaustive_match_display() {
         let err = TypeError::non_exhaustive_match(0..20, &["Red".to_string(), "Blue".to_string()]);
-        assert_eq!(
-            err.to_string(),
-            "non-exhaustive patterns: `Red, Blue` not covered"
-        );
+        assert_eq!(err.to_string(), "non-exhaustive match: missing Red, Blue");
         assert_eq!(err.kind, TypeErrorKind::NonExhaustiveMatch);
     }
 
@@ -626,8 +636,23 @@ mod tests {
         let err = TypeError::non_exhaustive_match(0..10, &[]);
         assert_eq!(
             err.to_string(),
-            "non-exhaustive patterns: `some patterns` not covered"
+            "non-exhaustive match: missing some patterns"
         );
+    }
+
+    #[test]
+    fn test_non_exhaustive_match_warning_detail() {
+        let err = TypeError::non_exhaustive_match_detail(
+            0..10,
+            Severity::Warning,
+            "consider adding a wildcard `_` arm",
+        );
+        assert_eq!(
+            err.to_string(),
+            "non-exhaustive match: consider adding a wildcard `_` arm"
+        );
+        assert_eq!(err.severity, Severity::Warning);
+        assert_eq!(err.kind, TypeErrorKind::NonExhaustiveMatch);
     }
 
     #[test]

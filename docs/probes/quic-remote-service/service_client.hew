@@ -9,11 +9,26 @@
 //
 // Run after server is listening:
 //   hew run service_client.hew
+//
+// Optional:
+//   HEW_QUIC_SERVICE_PORT=4545 hew run service_client.hew
 
 import std::net::quic;
+import std::os;
+
+fn service_port() -> String {
+    var port = "4433";
+    if os.has_env("HEW_QUIC_SERVICE_PORT") {
+        port = os.env("HEW_QUIC_SERVICE_PORT");
+    }
+    port
+}
 
 fn main() {
     println("[client] starting minimal QUIC service client...");
+
+    let port = service_port();
+    let server_addr = f"127.0.0.1:{port}";
     
     // Create a QUIC client endpoint (ephemeral local port).
     let ep = quic.new_client();
@@ -21,7 +36,7 @@ fn main() {
     
     // Connect to the remote QUIC server.
     // server_name is the TLS SNI field; localhost is used for permissive dev verification.
-    let conn = ep.connect("127.0.0.1:4433", "localhost");
+    let conn = ep.connect(server_addr, "localhost");
     let connected = ep.on_event();
     assert_eq(connected.kind(), 0);
     connected.free();

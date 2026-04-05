@@ -12,16 +12,31 @@
 //
 // Then in another:
 //   hew run service_client.hew
+//
+// Optional:
+//   HEW_QUIC_SERVICE_PORT=4545 hew run service_server.hew
 
 import std::net::quic;
+import std::os;
+
+fn service_port() -> String {
+    var port = "4433";
+    if os.has_env("HEW_QUIC_SERVICE_PORT") {
+        port = os.env("HEW_QUIC_SERVICE_PORT");
+    }
+    port
+}
 
 fn main() {
     println("[server] starting minimal QUIC service...");
+
+    let port = service_port();
+    let listen_addr = f":{port}";
     
     // Create a QUIC server endpoint on a fixed address.
     // Self-signed certificate is auto-generated for development.
-    let ep = quic.new_server(":4433");
-    println("[server] listening on :4433");
+    let ep = quic.new_server(listen_addr);
+    println(f"[server] listening on :{port}");
     
     // Accept one incoming connection.
     let conn = ep.accept();

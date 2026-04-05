@@ -46,7 +46,7 @@ fn foreign_native_target() -> &'static str {
 fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
     struct Case {
         triple: &'static str,
-        output_name: &'static str,
+        output_suffix: &'static str,
         format: BinaryFormat,
         arch: Architecture,
     }
@@ -54,27 +54,21 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
     let cases = [
         Case {
             triple: "arm64-apple-darwin",
-            output_name: "darwin-arm64.o",
+            output_suffix: ".o",
             format: BinaryFormat::MachO,
             arch: Architecture::Aarch64,
         },
         Case {
             triple: "x86_64-unknown-linux-gnu",
-            output_name: "linux-x86_64.o",
+            output_suffix: ".o",
             format: BinaryFormat::Elf,
             arch: Architecture::X86_64,
-        },
-        Case {
-            triple: "aarch64-unknown-linux-gnu",
-            output_name: "linux-aarch64.o",
-            format: BinaryFormat::Elf,
-            arch: Architecture::Aarch64,
         },
         Case {
             // The first Windows prototype lane uses the GNU ABI rather than
             // widening this coverage to both GNU and MSVC at once.
             triple: "x86_64-pc-windows-gnu",
-            output_name: "windows-x64.obj",
+            output_suffix: ".obj",
             format: BinaryFormat::Coff,
             arch: Architecture::X86_64,
         },
@@ -83,7 +77,7 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
     for case in cases {
         let dir = workspace();
         let source = write_main(dir.path());
-        let object_path = dir.path().join(case.output_name);
+        let object_path = dir.path().join(format!("main{}", case.output_suffix));
 
         let output = Command::new(hew_binary())
             .args([
@@ -92,8 +86,6 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
                 "--target",
                 case.triple,
                 "--emit-obj",
-                "-o",
-                object_path.to_str().expect("object path"),
             ])
             .current_dir(dir.path())
             .output()

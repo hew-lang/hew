@@ -598,17 +598,7 @@ fn compile_and_link(
         Some(&obj_path),
     )?;
 
-    let default_output = Path::new(input)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("a.out")
-        .to_string();
-    let suffix = target.executable_suffix();
-    let default_output = if !suffix.is_empty() && !default_output.ends_with(suffix) {
-        format!("{default_output}{suffix}")
-    } else {
-        default_output
-    };
+    let default_output = default_output_name(input, target.executable_suffix(), "a.out");
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
@@ -620,6 +610,19 @@ fn compile_and_link(
 
     // obj_temp (TempPath) auto-deletes on drop
     Ok(output_path.to_string())
+}
+
+fn default_output_name(input: &str, suffix: &str, fallback: &str) -> String {
+    let name = Path::new(input)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(fallback)
+        .to_string();
+    if !suffix.is_empty() && !name.ends_with(suffix) {
+        format!("{name}{suffix}")
+    } else {
+        name
+    }
 }
 
 /// Write binary output to a file or stdout.
@@ -726,15 +729,18 @@ pub fn compile(
     // Early exit: emit MLIR/LLVM/object without linking
     if let Some(mode) = options.codegen_mode.embedded_mode() {
         if options.codegen_mode == CodegenMode::EmitObj {
-            let output_path = output.ok_or_else(|| {
-                "Error: object emission requires an output path (pass -o <FILE>)".to_string()
-            })?;
+            let default_output = default_output_name(input, target.object_suffix(), "output");
+            let output_path = output.unwrap_or(&default_output);
             let _ = run_embedded_codegen(&ast_data, mode, &target, options, Some(output_path))?;
             return Ok(output_path.to_string());
         }
 
         let text_output = run_embedded_codegen(&ast_data, mode, &target, options, None)?;
         return write_output(output, &text_output);
+    }
+
+    if !target.can_link_with_host_tools() {
+        return Err(target.unsupported_native_link_error());
     }
 
     // 7. Codegen to object file and link executable
@@ -822,6 +828,10 @@ pub(crate) fn compile_from_source_checked(
         meta.abs_source_path.as_deref(),
         meta.line_map.as_deref(),
     );
+
+    if !target.can_link_with_host_tools() {
+        return Err(target.unsupported_native_link_error());
+    }
 
     // Stage 7 — codegen to object file and link executable.
     compile_and_link(&ast_data, source_label, Some(output_path), &target, options)?;
@@ -1794,6 +1804,28 @@ fn main() {
     fn test_line_map_empty() {
         let map = line_map_from_source("");
         assert_eq!(map, vec![0]);
+    }
+
+    #[test]
+    fn default_output_name_uses_target_specific_object_suffixes() {
+        let darwin = TargetSpec::from_requested(Some("arm64-apple-darwin")).expect("darwin target");
+        let linux =
+            TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("linux target");
+        let windows =
+            TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("windows target");
+
+        assert_eq!(
+            default_output_name("examples/main.hew", darwin.object_suffix(), "output"),
+            "main.o"
+        );
+        assert_eq!(
+            default_output_name("examples/main.hew", linux.object_suffix(), "output"),
+            "main.o"
+        );
+        assert_eq!(
+            default_output_name("examples/main.hew", windows.object_suffix(), "output"),
+            "main.obj"
+        );
     }
 
     #[test]

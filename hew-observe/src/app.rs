@@ -1072,6 +1072,11 @@ mod tests {
     }
 
     fn handle_trace_request(mut stream: TcpStream, state: &Arc<Mutex<TestTraceState>>) {
+        // Accepted sockets can inherit the listener's nonblocking mode on
+        // Windows, so force blocking reads before parsing the request.
+        stream
+            .set_nonblocking(false)
+            .expect("set blocking trace request stream");
         let mut reader = BufReader::new(stream.try_clone().expect("clone trace request stream"));
         let mut request_line = String::new();
         reader

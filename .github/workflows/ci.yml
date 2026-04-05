@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      playground: ${{ steps.filter.outputs.playground }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +47,14 @@ jobs:
               - 'examples/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+            playground:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'examples/playground/**'
+              - 'scripts/gen-playground-manifest.py'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)
@@ -57,9 +66,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check playground manifest freshness
-        run: python3 scripts/gen-playground-manifest.py --check
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -73,11 +79,6 @@ jobs:
             target/
           key: lint-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: lint-${{ runner.os }}-
-
-      - uses: taiki-e/install-action@wasm-pack
-
-      - name: Build playground browser artifact
-        run: make playground-check
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -110,13 +111,14 @@ jobs:
           wait-for-processing: true
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Browser/playground verification — check manifest freshness and ensure the
-  # browser-facing hew-wasm package still builds without pulling in downstream apps.
+  # Browser/playground smoke — the only CI lane that owns repo-local browser
+  # tooling coverage. It checks manifest drift and hew-wasm build breakage only;
+  # no downstream app build or browser/runtime execution is implied here.
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.playground == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -133,13 +135,12 @@ jobs:
           key: playground-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: playground-wasm-${{ runner.os }}-
 
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+      - uses: taiki-e/install-action@wasm-pack
 
       - name: Run hew-wasm library smoke tests
         run: cargo test -p hew-wasm --lib
 
-      - name: Check repo-local playground browser build inputs
+      - name: Check repo-local playground browser/tooling smoke
         run: make playground-check
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -244,12 +245,10 @@ jobs:
         run: cargo build -p hew-lib --release
 
       # Default features include "full" (encryption + profiler + quic),
-      # so all 33 QUIC transport tests run without an explicit flag.
+      # so all 33 QUIC transport tests run without an explicit flag. hew-wasm
+      # browser/tooling smoke stays isolated in playground-wasm-build.
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
-
-      - name: Run hew-wasm library smoke tests
-        run: cargo test -p hew-wasm --lib
 
       - name: Run codegen unit tests
         run: >

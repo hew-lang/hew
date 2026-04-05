@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify examples/playground/manifest.json."""
+"""Generate and verify the repo-local playground manifest used by browser tooling."""
 
 from __future__ import annotations
 
@@ -189,11 +189,19 @@ def check_manifest(rendered: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate or verify examples/playground/manifest.json for the "
+            "repo-local browser/playground smoke path."
+        )
+    )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify that examples/playground/manifest.json is up to date",
+        help=(
+            "Verify that examples/playground/manifest.json is up to date for "
+            "repo-local browser tooling"
+        ),
     )
     args = parser.parse_args()
 
@@ -205,7 +213,7 @@ def main() -> int:
 
     OUTPUT_FILE.write_text(rendered)
     print(
-        f"Generated {OUTPUT_FILE.relative_to(ROOT)} with {len(entries)} playground snippets."
+        f"Generated {OUTPUT_FILE.relative_to(ROOT)} with {len(entries)} curated browser/tooling playground snippets."
     )
     return 0
 

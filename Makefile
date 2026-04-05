@@ -27,7 +27,7 @@
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
-#   make playground-check          — verify playground manifest freshness + build hew-wasm
+#   make playground-check          — repo-local browser/tooling smoke: manifest freshness + build hew-wasm
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
@@ -152,7 +152,7 @@ playground-manifest:
 playground-manifest-check:
 	python3 scripts/gen-playground-manifest.py --check
 
-# Repo-local browser/playground validation path (no downstream app build).
+# Repo-local browser/tooling smoke path (manifest drift + hew-wasm build only).
 playground-check: playground-manifest-check
 	$(MAKE) wasm
 

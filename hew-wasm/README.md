@@ -34,6 +34,18 @@ downstream browser catalog. Use `make playground-manifest-check` when you only
 need to confirm that manifest is current, or `make playground-check` when you
 also want the repo-local `hew-wasm` build that backs browser-side analysis.
 
+CI protects this surface with the dedicated `playground-wasm-build` lane. That
+lane intentionally stays repo-local and runs only:
+
+```sh
+cargo test -p hew-wasm --lib
+make playground-check
+```
+
+It covers manifest drift and `hew-wasm` build breakage for browser tooling, but
+it does not build downstream browser apps or claim browser/runtime execution
+coverage.
+
 ## Part of the Hew compiler
 
 This crate is an internal component of the [Hew](https://github.com/hew-lang/hew) compiler toolchain.

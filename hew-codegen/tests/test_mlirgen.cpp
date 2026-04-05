@@ -1487,6 +1487,106 @@ static void test_statement_style_match_arm_block_tail_match_fails_closed() {
 }
 
 // ============================================================================
+// Test: Statement-style match arm discarded block tails with statement-only if
+//       still lower successfully
+// ============================================================================
+static void test_statement_style_match_arm_statement_only_if_tail_lowers() {
+  TEST(statement_style_match_arm_statement_only_if_tail_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn stmt_arm_tail_if(flag: bool) {
+    match flag {
+        true => {
+            if flag {
+                println(1);
+            } else {
+                println(2);
+            }
+        },
+        false => println(3),
+    }
+}
+
+fn main() {
+    stmt_arm_tail_if(true);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for statement-only match arm if tail");
+    return;
+  }
+
+  auto armFn = lookupFuncBySuffix(module, "stmt_arm_tail_if");
+  if (!armFn) {
+    FAIL("stmt_arm_tail_if function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(armFn) != 0) {
+    FAIL("statement-only if tail in discarded match arm body should not produce resultful scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm discarded block tails with statement-only
+//       match still lower successfully
+// ============================================================================
+static void test_statement_style_match_arm_statement_only_match_tail_lowers() {
+  TEST(statement_style_match_arm_statement_only_match_tail_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn stmt_arm_tail_match(flag: bool) {
+    match flag {
+        true => {
+            match flag {
+                true => println(4),
+                false => println(5),
+            }
+        },
+        false => println(6),
+    }
+}
+
+fn main() {
+    stmt_arm_tail_match(true);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for statement-only match arm match tail");
+    return;
+  }
+
+  auto armFn = lookupFuncBySuffix(module, "stmt_arm_tail_match");
+  if (!armFn) {
+    FAIL("stmt_arm_tail_match function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(armFn) != 0) {
+    FAIL("statement-only match tail in discarded match arm body should not produce resultful "
+         "scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Discarded scope expression must keep tail if lowering in statement mode
 // ============================================================================
 static void test_discarded_scope_expr_tail_if_no_extra_results() {
@@ -4291,6 +4391,8 @@ int main() {
   test_statement_style_match_arm_bad_body_fails_closed();
   test_statement_style_match_arm_block_tail_if_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();
+  test_statement_style_match_arm_statement_only_if_tail_lowers();
+  test_statement_style_match_arm_statement_only_match_tail_lowers();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();

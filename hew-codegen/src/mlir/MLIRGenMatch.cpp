@@ -410,10 +410,11 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind))
       return exprRequiresValue(exprStmt->expr.value, exprRequiresValue);
 
+    bool canProduceTailValue = currentFunction && currentFunction.getResultTypes().size() == 1;
     if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind))
-      return ifStmt->else_block.has_value();
+      return canProduceTailValue && ifStmt->else_block.has_value();
     if (std::holds_alternative<ast::StmtMatch>(lastStmt.kind))
-      return true;
+      return canProduceTailValue;
 
     return false;
   };

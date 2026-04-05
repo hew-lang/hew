@@ -307,8 +307,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     // Use RuntimeCallOp here because we may be inside an scf.if region
     // where PanicOp (Terminator) cannot be the last op (scf.yield must be).
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                               mlir::SymbolRefAttr::get(&context, "hew_panic"),
-                               mlir::ValueRange{});
+                               mlir::SymbolRefAttr::get(&context, "hew_panic"), mlir::ValueRange{});
     if (resultType)
       return createDefaultValue(builder, location, resultType);
     return nullptr;
@@ -399,6 +398,67 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     }
   };
 
+  auto blockTailRequiresValue = [&](const ast::Block &block,
+                                    const auto &exprRequiresValue) -> bool {
+    if (block.trailing_expr)
+      return exprRequiresValue(block.trailing_expr->value, exprRequiresValue);
+
+    if (block.stmts.empty())
+      return false;
+
+    const auto &lastStmt = block.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind))
+      return exprRequiresValue(exprStmt->expr.value, exprRequiresValue);
+
+    bool canProduceTailValue = currentFunction && currentFunction.getResultTypes().size() == 1;
+    if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind))
+      return canProduceTailValue && ifStmt->else_block.has_value();
+    if (std::holds_alternative<ast::StmtMatch>(lastStmt.kind))
+      return canProduceTailValue;
+
+    return false;
+  };
+  auto exprRequiresValue = [&](const ast::Expr &expr, const auto &self) -> bool {
+    if (auto *resolvedType = resolvedTypeOf(expr.span))
+      if (auto *tupleType = std::get_if<ast::TypeTuple>(&resolvedType->kind);
+          tupleType && tupleType->elements.empty())
+        return false;
+
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+      return blockTailRequiresValue(blockExpr->block, self);
+    if (auto *scopeExpr = std::get_if<ast::ExprScope>(&expr.kind))
+      return blockTailRequiresValue(scopeExpr->block, self);
+    if (auto *unsafeExpr = std::get_if<ast::ExprUnsafe>(&expr.kind))
+      return blockTailRequiresValue(unsafeExpr->block, self);
+    if (auto *ifExpr = std::get_if<ast::ExprIf>(&expr.kind))
+      return ifExpr->else_block.has_value();
+    if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
+        std::holds_alternative<ast::ExprSend>(expr.kind) ||
+        std::holds_alternative<ast::ExprJoin>(expr.kind) ||
+        std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
+        std::holds_alternative<ast::ExprYield>(expr.kind) ||
+        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
+        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+      return false;
+
+    return true;
+  };
+  auto failClosedDiscardedArmBody = [&](const ast::Expr &expr, mlir::Value value,
+                                        size_t errorsBefore) -> bool {
+    auto *insertBlock = builder.getInsertionBlock();
+    if (value || errorCount_ != errorsBefore || (insertBlock && hasRealTerminator(insertBlock)) ||
+        !exprRequiresValue(expr, exprRequiresValue))
+      return false;
+
+    ++errorCount_;
+    emitError(location) << "discarded match arm body in statement position failed to lower a "
+                           "nested value expression";
+    return true;
+  };
+
   // Helper to generate arm body value
   auto generateArmBody = [&](const ast::MatchArm &a) -> mlir::Value {
     SymbolTableScopeT scope(symbolTable);
@@ -431,7 +491,11 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     }
 
     if (a.body) {
-      return generateExpression(a.body->value);
+      auto errorsBefore = errorCount_;
+      auto bodyVal = generateExpression(a.body->value);
+      if (!resultType && failClosedDiscardedArmBody(a.body->value, bodyVal, errorsBefore))
+        return nullptr;
+      return bodyVal;
     }
     return nullptr;
   };
@@ -476,7 +540,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       // Without this, the last conditional arm in a statement-style match
       // silently falls through instead of trapping on a non-exhaustive match.
       auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond,
-                                           /*withElseRegion=*/true);
+                                          /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       generateArmBody(arm);

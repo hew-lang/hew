@@ -358,6 +358,143 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   return program;
 }
 
+enum class StatementStyleMatchArmBadBodyKind {
+  DirectExpr,
+  BlockTailIf,
+  BlockTailMatch,
+};
+
+static hew::ast::Program
+makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind) {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 900000001000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](const std::string &name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name, std::nullopt};
+    return {std::move(typeExpr), mkSpan()};
+  };
+  auto mkExpr = [&](auto node) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    expr.kind = std::move(node);
+    expr.span = mkSpan();
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), mkSpan()});
+  };
+  auto takeExpr = [&](std::unique_ptr<Spanned<Expr>> expr) -> Spanned<Expr> {
+    return std::move(*expr);
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()});
+  };
+  auto mkPattern = [&](bool value) -> Spanned<Pattern> {
+    Pattern pattern;
+    pattern.kind = PatLiteral{LitBool{value}};
+    return {std::move(pattern), mkSpan()};
+  };
+  auto mkInt = [&](int64_t value) {
+    ExprLiteral lit;
+    lit.lit = LitInteger{value};
+    return mkExpr(std::move(lit));
+  };
+  auto mkBool = [&](bool value) -> Spanned<Expr> {
+    Expr expr;
+    expr.kind = ExprLiteral{LitBool{value}};
+    expr.span = mkSpan();
+    return {std::move(expr), mkSpan()};
+  };
+  auto mkPrintCall = [&](int64_t value) {
+    ExprCall call;
+    call.function = mkExpr(ExprIdentifier{"println"});
+    call.type_args = std::nullopt;
+    call.args.push_back(CallArgPositional{mkInt(value)});
+    call.is_tail_call = false;
+    return mkExpr(std::move(call));
+  };
+  auto mkBadBinary = [&]() {
+    ExprBinary bin;
+    bin.left = mkPrintCall(1);
+    bin.op = BinaryOp::Add;
+    bin.right = mkInt(2);
+    return mkExpr(std::move(bin));
+  };
+
+  MatchArm trueArm;
+  trueArm.pattern = mkPattern(true);
+  switch (kind) {
+  case StatementStyleMatchArmBadBodyKind::DirectExpr:
+    trueArm.body = mkBadBinary();
+    break;
+  case StatementStyleMatchArmBadBodyKind::BlockTailIf: {
+    StmtIf ifStmt;
+    ifStmt.condition = takeExpr(mkBadBinary());
+    ifStmt.then_block.trailing_expr = mkInt(10);
+
+    ElseBlock elseBlock;
+    elseBlock.is_if = false;
+    elseBlock.block = Block{};
+    elseBlock.block->trailing_expr = mkInt(20);
+    ifStmt.else_block = std::move(elseBlock);
+
+    Block outerBlock;
+    outerBlock.stmts.push_back(mkStmt(std::move(ifStmt)));
+    trueArm.body = mkExpr(ExprBlock{std::move(outerBlock)});
+    break;
+  }
+  case StatementStyleMatchArmBadBodyKind::BlockTailMatch: {
+    MatchArm nestedTrueArm;
+    nestedTrueArm.pattern = mkPattern(true);
+    nestedTrueArm.body = mkInt(10);
+
+    MatchArm nestedFalseArm;
+    nestedFalseArm.pattern = mkPattern(false);
+    nestedFalseArm.body = mkInt(20);
+
+    StmtMatch nestedMatch;
+    nestedMatch.scrutinee = takeExpr(mkBadBinary());
+    nestedMatch.arms.push_back(std::move(nestedTrueArm));
+    nestedMatch.arms.push_back(std::move(nestedFalseArm));
+
+    Block outerBlock;
+    outerBlock.stmts.push_back(mkStmt(std::move(nestedMatch)));
+    trueArm.body = mkExpr(ExprBlock{std::move(outerBlock)});
+    break;
+  }
+  }
+
+  MatchArm falseArm;
+  falseArm.pattern = mkPattern(false);
+  falseArm.body = mkPrintCall(0);
+
+  StmtMatch matchStmt;
+  matchStmt.scrutinee = mkBool(true);
+  matchStmt.arms.push_back(std::move(trueArm));
+  matchStmt.arms.push_back(std::move(falseArm));
+
+  Stmt stmt;
+  stmt.kind = std::move(matchStmt);
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), mkSpan()}));
+  mainFn.body.trailing_expr = mkInt(0);
+
+  Item item;
+  item.kind = std::move(mainFn);
+
+  Program program;
+  program.items.push_back({std::move(item), mkSpan()});
+  return program;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: simulate the frontend's TypeDecl-based wire-enum path in MLIRGen.
 // ---------------------------------------------------------------------------
@@ -1250,6 +1387,202 @@ static void test_discarded_unsafe_expr_bad_tail_fails_closed() {
     return;
   }
 
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm bodies fail-close when expression lowering
+//       returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_bad_body_fails_closed() {
+  TEST(statement_style_match_arm_bad_body_fails_closed);
+
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::DirectExpr);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm bad body");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm block tails fail-close when a value-producing
+//       tail if returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_block_tail_if_fails_closed() {
+  TEST(statement_style_match_arm_block_tail_if_fails_closed);
+
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::BlockTailIf);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm block-tail if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm block-tail if fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm block tails fail-close when a value-producing
+//       tail match returns null without its own diagnostic
+// ============================================================================
+static void test_statement_style_match_arm_block_tail_match_fails_closed() {
+  TEST(statement_style_match_arm_block_tail_match_fails_closed);
+
+  auto program =
+      makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind::BlockTailMatch);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for statement-style match arm block-tail match");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("discarded match arm body in statement position failed to lower") ==
+      std::string::npos) {
+    FAIL("expected statement-style match arm block-tail match fail-closed diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm discarded block tails with statement-only if
+//       still lower successfully
+// ============================================================================
+static void test_statement_style_match_arm_statement_only_if_tail_lowers() {
+  TEST(statement_style_match_arm_statement_only_if_tail_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn stmt_arm_tail_if(flag: bool) {
+    match flag {
+        true => {
+            if flag {
+                println(1);
+            } else {
+                println(2);
+            }
+        },
+        false => println(3),
+    }
+}
+
+fn main() {
+    stmt_arm_tail_if(true);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for statement-only match arm if tail");
+    return;
+  }
+
+  auto armFn = lookupFuncBySuffix(module, "stmt_arm_tail_if");
+  if (!armFn) {
+    FAIL("stmt_arm_tail_if function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(armFn) != 0) {
+    FAIL("statement-only if tail in discarded match arm body should not produce resultful scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Statement-style match arm discarded block tails with statement-only
+//       match still lower successfully
+// ============================================================================
+static void test_statement_style_match_arm_statement_only_match_tail_lowers() {
+  TEST(statement_style_match_arm_statement_only_match_tail_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn stmt_arm_tail_match(flag: bool) {
+    match flag {
+        true => {
+            match flag {
+                true => println(4),
+                false => println(5),
+            }
+        },
+        false => println(6),
+    }
+}
+
+fn main() {
+    stmt_arm_tail_match(true);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for statement-only match arm match tail");
+    return;
+  }
+
+  auto armFn = lookupFuncBySuffix(module, "stmt_arm_tail_match");
+  if (!armFn) {
+    FAIL("stmt_arm_tail_match function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(armFn) != 0) {
+    FAIL("statement-only match tail in discarded match arm body should not produce resultful "
+         "scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
   PASS();
 }
 
@@ -4173,6 +4506,11 @@ int main() {
   test_discarded_unsafe_expr_tail_if_no_extra_results();
   test_discarded_block_expr_bad_tail_fails_closed();
   test_discarded_unsafe_expr_bad_tail_fails_closed();
+  test_statement_style_match_arm_bad_body_fails_closed();
+  test_statement_style_match_arm_block_tail_if_fails_closed();
+  test_statement_style_match_arm_block_tail_match_fails_closed();
+  test_statement_style_match_arm_statement_only_if_tail_lowers();
+  test_statement_style_match_arm_statement_only_match_tail_lowers();
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();

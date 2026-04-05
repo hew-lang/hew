@@ -1963,6 +1963,12 @@ mod tests {
         })
     }
 
+    // Keep the waiter timeout above actor_group's 10 ms polling quantum so a
+    // missed condvar wake still gets another state re-check before the test
+    // deadline. This narrows Darwin arm64 timing sensitivity without hiding
+    // real regressions in the self-stop / closed-mailbox wake paths.
+    const ACTOR_GROUP_WAITER_TEST_TIMEOUT_MS: i32 = 25;
+
     #[test]
     fn self_stop_closes_mailbox_and_wakes_actor_group_waiters() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -1987,7 +1993,11 @@ mod tests {
         );
 
         let waiter_ready = Arc::new(AtomicBool::new(false));
-        let waiter = spawn_actor_group_waiter(group, 8, Arc::clone(&waiter_ready));
+        let waiter = spawn_actor_group_waiter(
+            group,
+            ACTOR_GROUP_WAITER_TEST_TIMEOUT_MS,
+            Arc::clone(&waiter_ready),
+        );
         while !waiter_ready.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
@@ -2212,7 +2222,11 @@ mod tests {
         );
 
         let waiter_ready = Arc::new(AtomicBool::new(false));
-        let waiter = spawn_actor_group_waiter(group, 8, Arc::clone(&waiter_ready));
+        let waiter = spawn_actor_group_waiter(
+            group,
+            ACTOR_GROUP_WAITER_TEST_TIMEOUT_MS,
+            Arc::clone(&waiter_ready),
+        );
         while !waiter_ready.load(Ordering::Acquire) {
             std::thread::yield_now();
         }

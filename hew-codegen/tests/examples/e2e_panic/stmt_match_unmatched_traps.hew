@@ -1,0 +1,13 @@
+// Statement-position match must trap on an unmatched value instead of
+// silently falling through to the continuation below.
+
+fn main() {
+    let value = 2;
+
+    match value {
+        0 => println(0),
+        1 => println(1),
+    }
+
+    println(9);
+}

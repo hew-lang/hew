@@ -44,6 +44,9 @@ The [`examples/`](examples/) directory contains structured learning paths for ne
 - **[`examples/playground/`](examples/playground/)** — Topic-grouped snippets covering basics, concurrency, and types, with checked-in metadata in [`manifest.json`](examples/playground/manifest.json)
 
 See [`examples/README.md`](examples/README.md) for the complete directory guide.
+If you're looking specifically for multi-file/module layouts, start with
+[`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md)
+and then [`examples/multifile/README.md`](examples/multifile/README.md).
 
 When you move from language lessons to library APIs, use [`std/README.md`](std/README.md), the canonical index of shipped stdlib modules.
 
@@ -74,13 +77,27 @@ fn main() {
 
 See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib modules.
 
+### Multi-file programs & modules
+
 When you compile or typecheck a multi-file program with `hew check`,
 `hew build`, or `hew run`, pass one entry `.hew` file. Imports and
 directory-form modules pull in the rest, so pass `main.hew`, not every file in
-the tree. For the current wildcard-import warning caveat, see
-[`docs/troubleshooting.md`](docs/troubleshooting.md).
+the tree.
 
-For directory-form modules and Hew's multi-file import resolution rules, see [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md).
+- `import foo;` prefers the directory-form module at `foo/foo.hew`, then falls
+  back to `foo.hew` beside the importer.
+- Other top-level `.hew` files inside `foo/` merge into the same module
+  automatically.
+- Child directories stay separate submodules, so import them explicitly — for
+  example `import foo::bar;`.
+- Start with
+  [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md)
+  for the smallest working layout, then
+  [`examples/multifile/README.md`](examples/multifile/README.md) for selective
+  imports and nested module hierarchies.
+
+For the current wildcard-import warning caveat, see
+[`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ### Wire Types
 

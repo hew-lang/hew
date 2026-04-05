@@ -18,6 +18,25 @@ hew build examples/fibonacci.hew -o fibonacci
 If an example fails to import, typecheck, or link, start with
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
 
+## Multi-file / module roadmap
+
+If you're trying to move from single-file snippets to a real module tree, use
+this progression:
+
+1. [`directory_module_demo/`](directory_module_demo/README.md) — the smallest
+   directory-form module; `import greeting;` loads `greeting/greeting.hew` plus
+   its peer file automatically.
+2. [`multifile/README.md`](multifile/README.md) / `01_shapes/` — same
+   directory-module pattern, but with peer files contributing types and trait
+   impls.
+3. [`multifile/README.md`](multifile/README.md) / `02_geometry/` — selective
+   `import mod::{A, B}` from a shared module namespace.
+4. [`multifile/README.md`](multifile/README.md) / `03_text_stats/` — nested
+   modules where `import parent;` and `import parent::child;` are distinct.
+
+Whichever layout you use, point `hew check`, `hew build`, and `hew run` at the
+example's `main.hew` entry file; imports resolve the rest.
+
 ## Expected Output Files
 
 Many examples — especially those under `ux/` and `progressive/` — ship with a sibling `.expected` file containing the exact stdout the program should produce. These files are used by the automated test suite, and you can use them locally to verify your build is correct:

@@ -2747,6 +2747,88 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
 }
 
 #[test]
+fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
+    let shared_decl = make_pub_fn(
+        "shared",
+        vec![],
+        Some(TypeExpr::Named {
+            name: "i32".to_string(),
+            type_args: None,
+        }),
+    );
+    let import = ImportDecl {
+        path: vec![],
+        spec: None,
+        file_path: Some("pkg.hew".to_string()),
+        resolved_items: Some(vec![
+            (Item::Function(shared_decl.clone()), 0..5),
+            (Item::Function(shared_decl), 10..15),
+        ]),
+        resolved_item_source_paths: vec![
+            std::path::PathBuf::from("pkg/pkg.hew"),
+            std::path::PathBuf::from("pkg/helpers.hew"),
+        ],
+        resolved_source_paths: vec![
+            std::path::PathBuf::from("pkg/pkg.hew"),
+            std::path::PathBuf::from("pkg/helpers.hew"),
+        ],
+    };
+    let output = check_items(vec![(Item::Import(import), 0..20)]);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::DuplicateDefinition)
+        .expect("merged file import should fail closed on duplicate pub names");
+
+    assert!(
+        error.message.contains("shared"),
+        "duplicate pub name error should mention the colliding binding: {error:?}"
+    );
+    assert_eq!(
+        error.notes.first().map(|(span, _)| span.clone()),
+        Some(0..5),
+        "duplicate pub name should point back to the first merged definition"
+    );
+}
+
+#[test]
+fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items() {
+    let shared_source = std::path::PathBuf::from("pkg/pkg.hew");
+    let import = ImportDecl {
+        path: vec![],
+        spec: None,
+        file_path: Some("pkg.hew".to_string()),
+        resolved_items: Some(vec![(
+            Item::Function(make_pub_fn(
+                "shared",
+                vec![],
+                Some(TypeExpr::Named {
+                    name: "i32".to_string(),
+                    type_args: None,
+                }),
+            )),
+            0..5,
+        )]),
+        resolved_item_source_paths: vec![shared_source.clone()],
+        resolved_source_paths: vec![shared_source],
+    };
+    let output = check_items(vec![
+        (Item::Import(import.clone()), 0..5),
+        (Item::Import(import), 10..15),
+    ]);
+
+    assert!(
+        output.errors.is_empty(),
+        "same resolved flat file import should stay idempotent: {:?}",
+        output.errors
+    );
+    assert!(
+        output.fn_sigs.contains_key("shared"),
+        "flat file import should still register the imported function"
+    );
+}
+
+#[test]
 fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

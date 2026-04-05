@@ -2213,11 +2213,16 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
-        if let Some(prev_span) = self.flat_file_import_pub_spans.get(name) {
+        if let Some(prev_span) = self
+            .flat_file_import_pub_spans
+            .get(name)
+            .cloned()
+            .or_else(|| current_import_pub_spans.get(name).cloned())
+        {
             self.errors.push(TypeError::duplicate_definition(
                 span.clone(),
                 name,
-                prev_span.clone(),
+                prev_span,
             ));
             return false;
         }

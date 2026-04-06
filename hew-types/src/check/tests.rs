@@ -6027,3 +6027,267 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         "generic-method guard in super-trait must veto structural check for child trait"
     );
 }
+
+// ── Non-root module inference-hole fail-closed regression tests ───────────────
+//
+// These cover the `report_unresolved_inference_holes` path for non-root module
+// items in a `module_graph`.  Signature-level `_` holes are tracked by
+// `collect_functions` (which already walks non-root modules via `topo_order`)
+// and are detected by `report_unresolved_inference_in_items` via the
+// `lookup_scoped_item` scoped-name fallback.
+//
+// Body-level holes (expressions containing `_`) require non-root module body
+// checking from PR #756 before they propagate into the inference state.  That
+// path is deliberately out of scope here; only signature-level coverage is
+// proven in this slice.
+
+#[cfg(test)]
+mod non_root_module_inference_scope {
+    use super::*;
+    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+    fn make_non_root_module(
+        mod_id: &ModuleId,
+        fn_name: &str,
+        param_ty: TypeExpr,
+        return_ty: Option<TypeExpr>,
+    ) -> Module {
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: fn_name.to_string(),
+            type_params: None,
+            params: vec![Param {
+                name: "x".to_string(),
+                ty: (param_ty, 10..11),
+                is_mutable: false,
+            }],
+            return_type: return_ty.map(|ty| (ty, 15..16)),
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+        Module {
+            id: mod_id.clone(),
+            items: vec![(Item::Function(fn_decl), 0..30)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        }
+    }
+
+    fn make_program_with_non_root(module: Module) -> Program {
+        let root_id = ModuleId::root();
+        let mod_id = module.id.clone();
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module);
+        // Dependencies (non-root) come before the root in topo order.
+        mg.topo_order = vec![mod_id, root_id];
+        Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        }
+    }
+
+    // Helper: collect InferenceFailed errors from the output.
+    fn inference_failed_errors(output: &TypeCheckOutput) -> Vec<&TypeError> {
+        output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+            .collect()
+    }
+
+    /// A non-root module function whose parameter type is `_` must produce an
+    /// `InferenceFailed` error via `report_unresolved_inference_holes`.
+    #[test]
+    fn fn_param_infer_hole_fails_closed() {
+        let mod_id = ModuleId::new(vec!["utils".to_string()]);
+        let module = make_non_root_module(&mod_id, "helper", TypeExpr::Infer, None);
+        let program = make_program_with_non_root(module);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            !errs.is_empty(),
+            "expected InferenceFailed for unresolved `_` param in non-root module fn; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-root module function whose return type is `_` must produce an
+    /// `InferenceFailed` error.
+    #[test]
+    fn fn_return_infer_hole_fails_closed() {
+        let mod_id = ModuleId::new(vec!["helpers".to_string()]);
+        let concrete_param = TypeExpr::Named {
+            name: "i64".to_string(),
+            type_args: None,
+        };
+        let module =
+            make_non_root_module(&mod_id, "compute", concrete_param, Some(TypeExpr::Infer));
+        let program = make_program_with_non_root(module);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            !errs.is_empty(),
+            "expected InferenceFailed for unresolved `_` return type in non-root module fn; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-root module function with fully concrete types must not produce
+    /// any `InferenceFailed` errors (baseline / regression guard).
+    #[test]
+    fn fn_concrete_types_passes() {
+        let mod_id = ModuleId::new(vec!["math".to_string()]);
+        let concrete_param = TypeExpr::Named {
+            name: "i64".to_string(),
+            type_args: None,
+        };
+        let concrete_return = TypeExpr::Named {
+            name: "i64".to_string(),
+            type_args: None,
+        };
+        let module = make_non_root_module(&mod_id, "add", concrete_param, Some(concrete_return));
+        let program = make_program_with_non_root(module);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.is_empty(),
+            "concrete non-root module fn must not produce InferenceFailed; got: {errs:?}"
+        );
+    }
+
+    /// A non-root module function with `_` param must not prevent the root
+    /// module items from being checked — root errors remain independent.
+    #[test]
+    fn infer_hole_in_non_root_does_not_suppress_root_errors() {
+        use hew_parser::ast::{FnDecl, Item};
+
+        let mod_id = ModuleId::new(vec!["side".to_string()]);
+        let module = make_non_root_module(&mod_id, "side_fn", TypeExpr::Infer, None);
+
+        // Root module also has a function with `_` param — should also error.
+        let root_fn = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "root_fn".to_string(),
+            type_params: None,
+            params: vec![Param {
+                name: "v".to_string(),
+                ty: (TypeExpr::Infer, 50..51),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let root_id = ModuleId::root();
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module);
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![(Item::Function(root_fn), 40..80)],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.len() >= 2,
+            "expected InferenceFailed for both the non-root module fn and the root fn; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// Two non-root module functions both with `_` params must each produce
+    /// an `InferenceFailed` error — holes are not collapsed into a single error.
+    #[test]
+    fn multiple_infer_holes_in_non_root_all_fail_closed() {
+        use hew_parser::ast::{Block, FnDecl, Item, Param, TypeExpr};
+        let mod_id = ModuleId::new(vec!["util2".to_string()]);
+        let root_id = ModuleId::root();
+
+        let make_infer_fn = |name: &str, span_start: usize| -> Spanned<Item> {
+            let fd = FnDecl {
+                attributes: vec![],
+                is_async: false,
+                is_generator: false,
+                visibility: Visibility::Private,
+                is_pure: false,
+                name: name.to_string(),
+                type_params: None,
+                params: vec![Param {
+                    name: "a".to_string(),
+                    ty: (TypeExpr::Infer, span_start..span_start + 1),
+                    is_mutable: false,
+                }],
+                return_type: None,
+                where_clause: None,
+                body: Block {
+                    stmts: vec![],
+                    trailing_expr: None,
+                },
+                doc_comment: None,
+                decl_span: 0..0,
+            };
+            (Item::Function(fd), span_start..span_start + 30)
+        };
+
+        let non_root = Module {
+            id: mod_id.clone(),
+            items: vec![make_infer_fn("alpha", 0), make_infer_fn("beta", 40)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(non_root);
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.len() >= 2,
+            "expected at least 2 InferenceFailed errors for two `_`-param fns in non-root module; got: {:?}",
+            output.errors
+        );
+    }
+}

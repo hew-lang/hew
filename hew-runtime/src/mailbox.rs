@@ -956,6 +956,21 @@ unsafe fn send_with_overflow(
 /// `-2` ([`HewError::ErrActorStopped`]) if the mailbox is closed,
 /// or `-5` ([`HewError::ErrOom`]) if allocation fails.
 ///
+/// # Native / WASM divergence
+///
+/// On native targets this function returns [`HewError::ErrActorStopped`] (`-2`)
+/// when the mailbox is closed, matching the actor-layer semantics (the
+/// destination actor has stopped).  The non-blocking variant
+/// [`hew_mailbox_try_send`] returns [`HewError::ErrClosed`] (`-4`) instead —
+/// a deliberate difference that reflects the caller's intent (non-blocking
+/// callers get the raw mailbox state, blocking callers get the actor-level
+/// error).
+///
+/// The WASM counterpart (`mailbox_wasm::hew_mailbox_send`) returns
+/// [`HewError::ErrClosed`] (`-4`) for both the blocking and non-blocking
+/// variants because WASM has no blocking send; the two variants are identical
+/// on that target.
+///
 /// # Safety
 ///
 /// - `mb` must be a valid pointer returned by [`hew_mailbox_new`] or
@@ -1688,6 +1703,37 @@ mod tests {
                 hew_mailbox_try_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrClosed as i32,
                 "try_send on closed mailbox must return ErrClosed, not ErrActorStopped"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_closed_returns_err_actor_stopped() {
+        // hew_mailbox_send (blocking variant) on a closed native mailbox must
+        // return ErrActorStopped (-2), NOT ErrClosed (-4).
+        //
+        // Intentional native/WASM divergence:
+        //   native hew_mailbox_send      → ErrActorStopped (-2)
+        //   native hew_mailbox_try_send  → ErrClosed       (-4)
+        //   WASM   hew_mailbox_send      → ErrClosed       (-4)
+        //
+        // The blocking send surfaces the actor-layer error; the non-blocking
+        // variant surfaces the raw mailbox state.  WASM has no blocking send so
+        // both variants use ErrClosed there.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 1;
+            let p = (&raw const val).cast_mut().cast();
+
+            mailbox_close(mb);
+
+            assert_eq!(
+                hew_mailbox_send(mb, 0, p, size_of::<i32>()),
+                HewError::ErrActorStopped as i32,
+                "hew_mailbox_send on closed mailbox must return ErrActorStopped, not ErrClosed"
             );
 
             hew_mailbox_free(mb);

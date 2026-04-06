@@ -598,6 +598,15 @@ wasm_no_mangle! {
     /// block a single-threaded runtime. `Coalesce` still replaces matching
     /// queued messages and otherwise uses its configured fallback policy.
     ///
+    /// # Native / WASM divergence
+    ///
+    /// On native targets `hew_mailbox_send` (the blocking variant) returns
+    /// [`HewError::ErrActorStopped`] (`-2`) when the mailbox is closed,
+    /// reflecting the actor-layer semantics.  On WASM this function returns
+    /// [`HewError::ErrClosed`] (`-4`) instead, matching the native
+    /// `hew_mailbox_try_send` behaviour.  This divergence is intentional:
+    /// WASM has no blocking send, so both variants use `ErrClosed`.
+    ///
     /// # Safety
     ///
     /// - `mb` must be a valid pointer returned by [`hew_mailbox_new`] or

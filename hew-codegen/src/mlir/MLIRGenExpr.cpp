@@ -2906,6 +2906,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!val)
         return true;
       val = coerceType(val, elemType, location);
+      if (!val)
+        return true;
       hew::VecPushOp::create(builder, location, vecValue, val);
       resultOut = nullptr;
       return true;
@@ -2927,6 +2929,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (idx.getType() != i64Type)
         idx = mlir::arith::ExtSIOp::create(builder, location, i64Type, idx);
       val = coerceType(val, elemType, location);
+      if (!val)
+        return true;
       hew::VecSetOp::create(builder, location, vecValue, idx, val);
       resultOut = nullptr;
       return true;
@@ -2943,6 +2947,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         // Always use value-based removal (remove first occurrence of value).
         // For index-based removal, use remove_at().
         argVal = coerceType(argVal, elemType, location);
+        if (!argVal)
+          return true;
         hew::VecRemoveOp::create(builder, location, vecValue, argVal);
       }
       resultOut = nullptr;
@@ -3240,6 +3246,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key)
         return true;
       key = coerceType(key, keyType, location);
+      if (!key)
+        return true;
       // Wrap raw value in Option<V>: check contains_key, then get or None
       auto optionType = hew::OptionEnumType::get(&context, valueType);
       auto exists =
@@ -3268,6 +3276,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key)
         return true;
       key = coerceType(key, keyType, location);
+      if (!key)
+        return true;
       hew::HashMapRemoveOp::create(builder, location, mapValue, key);
       resultOut = nullptr;
       return true;
@@ -3277,6 +3287,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key)
         return true;
       key = coerceType(key, keyType, location);
+      if (!key)
+        return true;
       resultOut =
           hew::HashMapContainsKeyOp::create(builder, location, builder.getI1Type(), mapValue, key)
               .getResult();
@@ -3333,6 +3345,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return true;
       }
       auto val = coerceType(argValue, elemType, location);
+      if (!val)
+        return true;
       std::string funcName;
       if (elemType.isInteger(64)) {
         funcName = ("hew_hashset_" + opName + "_int").str();
@@ -3519,6 +3533,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         if (!countVal)
           return mlir::Value{};
         countVal = coerceType(countVal, i64Type, location);
+        if (!countVal)
+          return mlir::Value{};
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_take");
         auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                                  calleeAttr, mlir::ValueRange{receiver, countVal})
@@ -3568,7 +3584,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!start || !end)
       return mlir::Value{};
     start = coerceType(start, i32Type, location);
+    if (!start)
+      return mlir::Value{};
     end = coerceType(end, i32Type, location);
+    if (!end)
+      return mlir::Value{};
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("slice"), receiver,
                                        mlir::ValueRange{start, end})
@@ -3579,6 +3599,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!n)
       return mlir::Value{};
     n = coerceType(n, i32Type, location);
+    if (!n)
+      return mlir::Value{};
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("repeat"), receiver,
                                        mlir::ValueRange{n})
@@ -3589,6 +3611,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!idx)
       return mlir::Value{};
     idx = coerceType(idx, i32Type, location);
+    if (!idx)
+      return mlir::Value{};
     return hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("char_at"),
                                        receiver, mlir::ValueRange{idx})
         .getResult();
@@ -3885,8 +3909,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     if (!arg)
       return nullptr;
     auto f64Type = builder.getF64Type();
-    if (arg.getType() != f64Type)
+    if (arg.getType() != f64Type) {
       arg = coerceType(arg, f64Type, location);
+      if (!arg)
+        return nullptr;
+    }
 
     // Single-argument math functions → LLVM intrinsics
     if (methodName == "exp")
@@ -3927,8 +3954,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
       if (!arg2)
         return nullptr;
-      if (arg2.getType() != f64Type)
+      if (arg2.getType() != f64Type) {
         arg2 = coerceType(arg2, f64Type, location);
+        if (!arg2)
+          return nullptr;
+      }
       return mlir::math::PowFOp::create(builder, location, arg, arg2).getResult();
     }
     // math.max(a, b), math.min(a, b)
@@ -3940,8 +3970,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
       if (!arg2)
         return nullptr;
-      if (arg2.getType() != f64Type)
+      if (arg2.getType() != f64Type) {
         arg2 = coerceType(arg2, f64Type, location);
+        if (!arg2)
+          return nullptr;
+      }
       return mlir::arith::MaximumFOp::create(builder, location, arg, arg2).getResult();
     }
     if (methodName == "min") {
@@ -3952,8 +3985,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
       if (!arg2)
         return nullptr;
-      if (arg2.getType() != f64Type)
+      if (arg2.getType() != f64Type) {
         arg2 = coerceType(arg2, f64Type, location);
+        if (!arg2)
+          return nullptr;
+      }
       return mlir::arith::MinimumFOp::create(builder, location, arg, arg2).getResult();
     }
 
@@ -3994,12 +4030,21 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
         lo = mlir::arith::FPToSIOp::create(builder, location, i64Type, lo).getResult();
       if (hi.getType() == f64Type)
         hi = mlir::arith::FPToSIOp::create(builder, location, i64Type, hi).getResult();
-      if (lo.getType() != i64Type)
+      if (lo.getType() != i64Type) {
         lo = coerceType(lo, i64Type, location);
-      if (hi.getType() != i64Type)
+        if (!lo)
+          return nullptr;
+      }
+      if (hi.getType() != i64Type) {
         hi = coerceType(hi, i64Type, location);
-      if (arg.getType() != i64Type)
+        if (!hi)
+          return nullptr;
+      }
+      if (arg.getType() != i64Type) {
         arg = coerceType(arg, i64Type, location);
+        if (!arg)
+          return nullptr;
+      }
       // clamp = max(lo, min(x, hi))
       auto minXHi = mlir::arith::MinSIOp::create(builder, location, arg, hi);
       return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
@@ -4018,8 +4063,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
       if (!arg)
         return nullptr;
-      if (arg.getType() != i64Type)
+      if (arg.getType() != i64Type) {
         arg = coerceType(arg, i64Type, location);
+        if (!arg)
+          return nullptr;
+      }
       emitRuntimeCall("hew_random_seed", {}, {arg}, location);
       return nullptr;
     }
@@ -4031,10 +4079,16 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
       if (!mu || !sigma)
         return nullptr;
-      if (mu.getType() != f64Type)
+      if (mu.getType() != f64Type) {
         mu = coerceType(mu, f64Type, location);
-      if (sigma.getType() != f64Type)
+        if (!mu)
+          return nullptr;
+      }
+      if (sigma.getType() != f64Type) {
         sigma = coerceType(sigma, f64Type, location);
+        if (!sigma)
+          return nullptr;
+      }
       return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
     }
     if (methodName == "randint") {
@@ -4042,10 +4096,16 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
       if (!lo || !hi)
         return nullptr;
-      if (lo.getType() != i64Type)
+      if (lo.getType() != i64Type) {
         lo = coerceType(lo, i64Type, location);
-      if (hi.getType() != i64Type)
+        if (!lo)
+          return nullptr;
+      }
+      if (hi.getType() != i64Type) {
         hi = coerceType(hi, i64Type, location);
+        if (!hi)
+          return nullptr;
+      }
       return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
     }
     if (methodName == "shuffle") {
@@ -4148,8 +4208,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
         materializeTemporary(val, ast::callArgExpr(mc.args[i]).value);
         if (i < calleeFuncType.getNumInputs()) {
           auto expectedType = calleeFuncType.getInput(i);
-          if (val.getType() != expectedType)
+          if (val.getType() != expectedType) {
             val = coerceType(val, expectedType, location);
+            if (!val)
+              return nullptr;
+          }
         }
         args.push_back(val);
       }
@@ -4806,6 +4869,8 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
       return nullptr;
     key = coerceType(key, keyType, location);
     val = coerceType(val, valueType, location);
+    if (!key || !val)
+      return nullptr;
     hew::HashMapInsertOp::create(builder, location, mapValue, key, val);
   }
 

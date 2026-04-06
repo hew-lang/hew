@@ -36,6 +36,7 @@ $EDITOR CHANGELOG.md
 cargo check --workspace
 
 # Commit the version bump
+# Note: all crates use version.workspace = true, so only root Cargo.toml needs editing.
 git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "chore: bump version to v0.3.0"
 ```

@@ -155,17 +155,19 @@ impl Checker {
 
         self.report_unresolved_inference_in_items(&program.items, None);
 
-        let deferred_errors: Vec<_> = self
-            .deferred_inference_holes
-            .iter()
+        // Drain body-level deferred inference holes accumulated across ALL modules
+        // (root and every non-root module body checked earlier in check_program).
+        // Using `take` ensures each hole is reported exactly once even if
+        // `report_unresolved_inference_holes` were called again on the same Checker.
+        let deferred_errors: Vec<_> = std::mem::take(&mut self.deferred_inference_holes)
+            .into_iter()
             .filter(|hole| self.inference_holes_still_unresolved(&hole.hole_vars))
             .map(|hole| TypeError::inference_failed(hole.span.clone(), &hole.context))
             .collect();
         self.errors.extend(deferred_errors);
 
-        let deferred_cast_errors: Vec<_> = self
-            .deferred_cast_checks
-            .iter()
+        let deferred_cast_errors: Vec<_> = std::mem::take(&mut self.deferred_cast_checks)
+            .into_iter()
             .filter(|check| !self.inference_holes_still_unresolved(&check.target_hole_vars))
             .filter_map(|check| {
                 let actual = self.subst.resolve(&check.actual);

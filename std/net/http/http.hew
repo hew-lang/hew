@@ -66,6 +66,13 @@ trait RequestMethods {
     /// Return the value of the named header, or an empty string.
     fn header(req: Request, name: String) -> String;
 
+    /// Return all request headers as a list of `(name, value)` pairs.
+    ///
+    /// The returned vector is owned by the caller; Hew frees it automatically
+    /// when it goes out of scope. Returns an empty vector if no headers were
+    /// present or the request is invalid.
+    fn headers(req: Request) -> Vec<(String, String)>;
+
     /// Return the request body, decoded according to `encoding`.
     ///
     /// Pass `"utf-8"` for text bodies, or `"raw"` for binary.
@@ -113,6 +120,8 @@ impl RequestMethods for Request {
     fn path(req: Request) -> String { unsafe { hew_http_request_path(req) } }
     /// Return the value of the named header, or an empty string.
     fn header(req: Request, name: String) -> String { unsafe { hew_http_request_header(req, name) } }
+    /// Return all request headers as a list of `(name, value)` pairs.
+    fn headers(req: Request) -> Vec<(String, String)> { unsafe { hew_http_request_headers(req) } }
     /// Return the request body decoded according to `encoding`.
     fn body(req: Request, encoding: String) -> String { unsafe { hew_http_request_body_string(req, encoding) } }
     /// Send a full HTTP response with status, content-type, and body.
@@ -173,6 +182,7 @@ extern "C" {
     fn hew_http_request_path(req: Request) -> String;
     fn hew_http_request_body_string(req: Request, encoding: String) -> String;
     fn hew_http_request_header(req: Request, name: String) -> String;
+    fn hew_http_request_headers(req: Request) -> Vec<(String, String)>;
     fn hew_http_respond_bridge(req: Request, status: i32, content_type: String, body: String) -> i32;
     fn hew_http_respond_text(req: Request, status: i32, body: String) -> i32;
     fn hew_http_respond_json(req: Request, status: i32, json: String) -> i32;

@@ -2,12 +2,14 @@
 //! embedded MLIR/LLVM backend, and link the final executable.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{ImportDecl, Item, Spanned};
+
+#[cfg(hew_embedded_codegen)]
+use std::ffi::{CStr, CString};
 
 use crate::target::TargetSpec;
 
@@ -23,6 +25,7 @@ enum EmbeddedCodegenMode {
     EmitObject = 2,
 }
 
+#[cfg(hew_embedded_codegen)]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct EmbeddedCodegenOptions {
@@ -32,6 +35,7 @@ struct EmbeddedCodegenOptions {
     target_triple: *const std::ffi::c_char,
 }
 
+#[cfg(hew_embedded_codegen)]
 #[repr(C)]
 #[derive(Debug)]
 struct EmbeddedCodegenBuffer {
@@ -39,6 +43,7 @@ struct EmbeddedCodegenBuffer {
     len: usize,
 }
 
+#[cfg(hew_embedded_codegen)]
 unsafe extern "C" {
     fn hew_codegen_compile_msgpack(
         data: *const u8,
@@ -856,6 +861,19 @@ pub(crate) fn compile_from_source_checked(
 // Embedded backend bridge
 // ---------------------------------------------------------------------------
 
+#[cfg(not(hew_embedded_codegen))]
+fn run_embedded_codegen(
+    ast_data: &[u8],
+    mode: EmbeddedCodegenMode,
+    target: &TargetSpec,
+    options: &CompileOptions,
+    output_path: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let _ = (ast_data, mode, target, options, output_path);
+    Err(embedded_codegen_unavailable_error())
+}
+
+#[cfg(hew_embedded_codegen)]
 fn run_embedded_codegen(
     ast_data: &[u8],
     mode: EmbeddedCodegenMode,
@@ -920,6 +938,12 @@ fn run_embedded_codegen(
     Ok(bytes)
 }
 
+#[cfg(not(hew_embedded_codegen))]
+fn embedded_codegen_unavailable_error() -> String {
+    "embedded MLIR/LLVM codegen is unavailable in this build of hew; rebuild with LLVM/MLIR configured (set LLVM_PREFIX or LLVM_DIR/MLIR_DIR, and use HEW_EMBED_STATIC=1 when only static LLVM/MLIR libraries are available)".into()
+}
+
+#[cfg(hew_embedded_codegen)]
 fn last_embedded_codegen_error() -> String {
     // SAFETY: hew_codegen_last_error returns either null or a valid C string
     // that remains valid until the next codegen call.

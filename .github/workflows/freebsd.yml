@@ -97,6 +97,8 @@ jobs:
             export LLVM_PREFIX="${LLVM_PREFIX}"
             export CC=clang
             export CXX=clang++
+            # FreeBSD CI provisions LLVM/MLIR as static archives only.
+            export HEW_EMBED_STATIC=1
 
             # Build runtime (release + debug for E2E tests)
             cargo build -p hew-runtime --release

@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../hew-codegen/CMakeLists.txt");
     println!("cargo:rerun-if-changed=../hew-codegen/include");
     println!("cargo:rerun-if-changed=../hew-codegen/src");
+    println!("cargo:rustc-check-cfg=cfg(hew_embedded_codegen)");
     println!("cargo:rerun-if-env-changed=LLVM_DIR");
     println!("cargo:rerun-if-env-changed=MLIR_DIR");
     println!("cargo:rerun-if-env-changed=LLVM_PREFIX");
@@ -28,8 +29,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CXX_{target_env}");
 
     let embed_static = env_flag("HEW_EMBED_STATIC");
-    let llvm_prefix = env::var("LLVM_PREFIX")
-        .ok()
+    let llvm_prefix_env = env::var_os("LLVM_PREFIX");
+    let llvm_dir_env = env::var_os("LLVM_DIR");
+    let mlir_dir_env = env::var_os("MLIR_DIR");
+    let embedded_codegen_requested = embed_static
+        || llvm_prefix_env.is_some()
+        || llvm_dir_env.is_some()
+        || mlir_dir_env.is_some();
+    let llvm_prefix = llvm_prefix_env
         .map(PathBuf::from)
         .or_else(detect_llvm_prefix);
     let cc = target_tool_env("CC", &target_env)
@@ -54,13 +61,17 @@ fn main() {
         cc,
         cxx,
     ) {
-        // CMake configure failed — LLVM/MLIR not installed.  This is fine for
-        // `cargo clippy` / `cargo check` which only type-check; they don't
-        // link, so missing native symbols won't matter.  A real `cargo build`
-        // will fail at link time with clear missing-symbol errors.
-        println!("cargo:warning=LLVM/MLIR not found — skipping embedded codegen build");
+        assert!(
+            !embedded_codegen_requested,
+            "embedded codegen configure failed even though LLVM/MLIR was explicitly requested; \
+             see the cmake output above for the real error"
+        );
+        println!(
+            "cargo:warning=embedded codegen unavailable — building without the embedded MLIR/LLVM backend"
+        );
         return;
     }
+    println!("cargo:rustc-cfg=hew_embedded_codegen");
 
     let cargo_link_file = build_dir.join("hew_embedded_codegen.cargo");
     let cargo_link_lines = std::fs::read_to_string(&cargo_link_file)
@@ -74,7 +85,7 @@ fn main() {
 }
 
 /// Configure and build the embedded codegen library.
-/// Returns `true` on success, `false` if cmake configure failed (LLVM not found).
+/// Returns `true` on success, `false` if cmake configure failed.
 fn configure_and_build(
     source_dir: &Path,
     build_dir: &Path,
@@ -215,7 +226,7 @@ fn try_run(command: &mut Command, description: &str) -> bool {
     match command.status() {
         Ok(status) if status.success() => true,
         Ok(_) => {
-            println!("cargo:warning={description} failed (LLVM/MLIR may not be installed)");
+            println!("cargo:warning={description} failed");
             false
         }
         Err(error) => {

@@ -120,6 +120,7 @@ jobs:
         run: |
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -204,7 +205,22 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Cache Rust artifacts (Darwin)
+        if: startsWith(matrix.target, 'darwin')
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: release-${{ matrix.target }}-cargo-macos13-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-${{ matrix.target }}-cargo-macos13-
+
       - name: Cache Rust artifacts
+        if: ${{ !startsWith(matrix.target, 'darwin') }}
         uses: actions/cache@v4
         with:
           path: |

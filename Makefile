@@ -293,11 +293,22 @@ assemble: | hew adze runtime stdlib
 # ── Release build ───────────────────────────────────────────────────────────
 
 # Build everything in release mode and repoint the build/ symlinks.
+# On macOS, force a clean release-artifact rebuild so the pinned deployment
+# target does not reuse older release outputs built with the host-default
+# target while preserving debug/incremental work.
+RELEASE_PREP = @:
+RELEASE_ENV =
+ifeq ($(shell uname -s),Darwin)
+  RELEASE_PREP = cargo clean --profile release
+  RELEASE_ENV = MACOSX_DEPLOYMENT_TARGET=13.0
+endif
+
 release:
-	HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
-	cargo build -p adze-cli --release
-	cargo build -p hew-lib --release
-	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+	$(RELEASE_PREP)
+	$(RELEASE_ENV) HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
+	$(RELEASE_ENV) cargo build -p adze-cli --release
+	$(RELEASE_ENV) cargo build -p hew-lib --release
+	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 	$(MAKE) assemble-release
 
 # Validate release builds on all supported platforms before tagging.

@@ -428,10 +428,10 @@ jobs:
             target/
           # Include hew-codegen C++ sources in the cache key so that a stale cmake
           # build dir inside target/ is never reused when codegen source files change.
-          key: build-test-${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          key: build-test-${{ runner.os }}-arm64-macos13-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: |
-            build-test-${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock') }}
-            build-test-${{ runner.os }}-arm64-
+            build-test-${{ runner.os }}-arm64-macos13-${{ hashFiles('**/Cargo.lock') }}
+            build-test-${{ runner.os }}-arm64-macos13-
 
       - name: Install LLVM/MLIR
         run: |
@@ -440,6 +440,7 @@ jobs:
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
           # Record the concrete patch version so cache keys bust on Homebrew patch upgrades.
           LLVM_VERSION_FULL="$("${LLVM_PREFIX}/bin/llvm-config" --version)"
           echo "LLVM_VERSION_FULL=${LLVM_VERSION_FULL}" >> "$GITHUB_ENV"
@@ -448,8 +449,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION_FULL }}-
+          key: hew-codegen-build-${{ runner.os }}-arm64-macos13-llvm${{ env.LLVM_VERSION_FULL }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-macos13-llvm${{ env.LLVM_VERSION_FULL }}-
 
       # Build hew-codegen (C++ MLIR backend) before any Rust step that links
       # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a

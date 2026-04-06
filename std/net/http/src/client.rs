@@ -567,7 +567,7 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
 
 /// Extract a response body string and release the response handle.
 ///
-/// Returns null when the response pointer is null or represents a transport /
+/// Returns null when the response pointer is null or represents a transport or
 /// validation error (`status_code < 0`).
 unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
     if resp.is_null() {
@@ -595,7 +595,9 @@ unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
 /// string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on error.
+/// it with `libc::free`. Returns null on transport or network failure.
+/// Non-2xx HTTP responses still return a non-null string (the body may be
+/// empty); use [`hew_http_get`] to inspect the status code.
 ///
 /// # Safety
 ///
@@ -612,10 +614,10 @@ pub unsafe extern "C" fn hew_http_get_string(url: *const c_char) -> *mut c_char 
 /// body string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null only on transport/network errors
+/// it with `libc::free`. Returns null on transport or network failure
 /// (reported with a negative status code). Non-2xx HTTP responses still
-/// produce a valid body string; callers that need the status code should use
-/// [`hew_http_post`] directly.
+/// return a non-null string (the body may be empty); use [`hew_http_post`]
+/// to inspect the status code.
 ///
 /// # Safety
 ///
@@ -635,7 +637,9 @@ pub unsafe extern "C" fn hew_http_post_string(
 /// Convenience wrapper: make an HTTP request and return just the body string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on error.
+/// it with `libc::free`. Returns null on transport or network failure.
+/// Non-2xx HTTP responses still return a non-null string (the body may be
+/// empty); use [`hew_http_request`] to inspect the status code.
 ///
 /// # Safety
 ///

@@ -117,7 +117,9 @@ pub fn request(method: String, url: String, body: String, headers: Vec<String>) 
 /// Perform an HTTP request and return the response body as a string.
 ///
 /// Each header entry must use the form `"Header-Name: value"`.
-/// Returns an empty string on network or validation error.
+/// Returns `null` on transport or network failure. Non-2xx HTTP responses
+/// still return a non-null string (the body may be empty); use
+/// `http_client.request` to inspect the status code.
 ///
 /// # Examples
 ///
@@ -167,7 +169,9 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 /// This is a convenience function that combines the request and body
 /// extraction in a single call.
 ///
-/// Returns `null` on transport or network failure.
+/// Returns `null` on transport or network failure. Non-2xx HTTP responses
+/// still return a non-null string (the body may be empty); use
+/// `http_client.get` to inspect the status code.
 ///
 /// # Examples
 ///
@@ -181,7 +185,9 @@ pub fn get_string(url: String) -> String {
 
 /// Perform an HTTP POST request and return the response body as a string.
 ///
-/// Returns `null` on transport or network failure.
+/// Returns `null` on transport or network failure. Non-2xx HTTP responses
+/// still return a non-null string (the body may be empty); use
+/// `http_client.post` to inspect the status code.
 ///
 /// # Examples
 ///

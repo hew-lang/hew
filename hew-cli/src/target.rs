@@ -25,6 +25,7 @@ pub enum ObjectFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetSpec {
+    #[cfg(hew_embedded_codegen)]
     requested_triple: Option<String>,
     normalized_triple: String,
     arch: TargetArch,
@@ -42,6 +43,7 @@ impl TargetSpec {
         let parsed = ParsedTarget::parse(&normalized_triple)?;
 
         Ok(Self {
+            #[cfg(hew_embedded_codegen)]
             requested_triple: requested.map(str::to_owned),
             normalized_triple,
             arch: parsed.arch,
@@ -55,6 +57,7 @@ impl TargetSpec {
         &self.normalized_triple
     }
 
+    #[cfg(hew_embedded_codegen)]
     pub fn codegen_triple(&self) -> Option<&str> {
         self.requested_triple
             .as_ref()

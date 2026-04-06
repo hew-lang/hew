@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-target object emission (`--emit-obj`):** `hew build --target <triple> --emit-obj`
+  now emits correctly-formatted object files for arm64-apple-darwin, x86_64-unknown-linux-gnu,
+  and x86_64-pc-windows-gnu without requiring a separate `-o` flag (output name defaults to
+  `<stem><target-object-suffix>`). Foreign native executable linking is rejected early with a
+  clear error directing users to `--emit-obj`. Verified by e2e tests that inspect object-file
+  format and architecture via the `object` crate (#730, closes phase-1 of #254).
+
 ## [0.2.2] - 2026-03-29
 
 ### Added

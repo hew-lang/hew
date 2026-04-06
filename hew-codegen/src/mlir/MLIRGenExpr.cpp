@@ -688,8 +688,11 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         if (callee) {
           auto funcType = callee.getFunctionType();
           for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
-            if (args[i].getType() != funcType.getInput(i))
+            if (args[i].getType() != funcType.getInput(i)) {
               args[i] = coerceType(args[i], funcType.getInput(i), location);
+              if (!args[i])
+                return nullptr;
+            }
           }
           auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
           if (callOp.getNumResults() > 0)
@@ -1611,6 +1614,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         auto expectedType = funcType.getInput(i);
         if (args[i].getType() != expectedType) {
           args[i] = coerceType(args[i], expectedType, location);
+          if (!args[i])
+            return nullptr;
         }
       }
       auto callOp = mlir::func::CallOp::create(builder, location, specializedFunc, args);
@@ -1639,6 +1644,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         auto expectedType = funcType.getInput(i);
         if (args[i].getType() != expectedType) {
           args[i] = coerceType(args[i], expectedType, location);
+          if (!args[i])
+            return nullptr;
         }
       }
       auto callOp = mlir::func::CallOp::create(builder, location, specializedFunc, args);
@@ -2168,8 +2175,11 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       indirectArgs.push_back(envPtr);
       for (size_t i = 0; i < args.size() && i < closureType.getInputTypes().size(); ++i) {
         auto expectedTy = toLLVMStorageType(closureType.getInputTypes()[i]);
-        if (args[i].getType() != expectedTy)
+        if (args[i].getType() != expectedTy) {
           args[i] = coerceType(args[i], expectedTy, location);
+          if (!args[i])
+            return nullptr;
+        }
         indirectArgs.push_back(args[i]);
       }
 
@@ -4567,8 +4577,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         }
         auto ft = callee.getFunctionType();
         for (size_t i = 0; i < args.size() && i < ft.getNumInputs(); ++i) {
-          if (args[i].getType() != ft.getInput(i))
+          if (args[i].getType() != ft.getInput(i)) {
             args[i] = coerceType(args[i], ft.getInput(i), location);
+            if (!args[i])
+              return nullptr;
+          }
         }
         auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
         // Store result back into the receiver variable
@@ -4637,8 +4650,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
   auto funcType = callee.getFunctionType();
   for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
-    if (args[i].getType() != funcType.getInput(i))
+    if (args[i].getType() != funcType.getInput(i)) {
       args[i] = coerceType(args[i], funcType.getInput(i), location);
+      if (!args[i])
+        return nullptr;
+    }
   }
 
   auto callOp = mlir::func::CallOp::create(builder, location, callee, args);

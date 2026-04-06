@@ -385,8 +385,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
             // registration work with the canonical value type.
             if (recvIt != actorInfo.receiveFns.end() && pi < recvIt->paramTypes.size()) {
               auto semanticType = recvIt->paramTypes[pi];
-              if (argsFieldTypes[pi + 1] != semanticType)
+              if (argsFieldTypes[pi + 1] != semanticType) {
                 paramVal = coerceType(paramVal, semanticType, location);
+                if (!paramVal)
+                  return;
+              }
             }
             declareVariable(param.name, paramVal);
 
@@ -471,8 +474,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           // Coerce pointer-like Hew params (string, vec, …) to their LLVM
           // storage type (!llvm.ptr) before inserting into the args struct.
           auto storageType = argsFieldTypes[pi + 1];
-          if (storageType != arg.getType())
+          if (storageType != arg.getType()) {
             arg = coerceType(arg, storageType, location);
+            if (!arg)
+              return;
+          }
           argsStruct = mlir::LLVM::InsertValueOp::create(
               builder, location, argsStruct, arg,
               llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
@@ -705,8 +711,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           mlir::Value paramVal =
               mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
           // Coerce pointer storage types back to semantic types (e.g., string_ref).
-          if (storageType != fieldType)
+          if (storageType != fieldType) {
             paramVal = coerceType(paramVal, fieldType, location);
+            if (!paramVal)
+              return;
+          }
           declareVariable(param.name, paramVal);
         }
       }

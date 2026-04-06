@@ -263,8 +263,11 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
       return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                          eqResult.getResult(), zero);
     }
-    if (litVal.getType() != scrType)
+    if (litVal.getType() != scrType) {
       litVal = coerceType(litVal, scrType, location);
+      if (!litVal)
+        return nullptr;
+    }
     return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, scrutinee,
                                        litVal);
   }
@@ -666,8 +669,11 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                          eqResult.getResult(), zero);
     } else {
-      if (litVal.getType() != scrType)
+      if (litVal.getType() != scrType) {
         litVal = coerceType(litVal, scrType, location);
+        if (!litVal)
+          return nullptr;
+      }
       cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
                                          scrutinee, litVal);
     }

@@ -1329,6 +1329,8 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
             auto storageType = toSlotStorageType(value.getType());
             auto alloca = createHoistedAlloca(storageType, value.getType());
             auto storedValue = coerceType(value, storageType, builder.getUnknownLoc());
+            if (!storedValue)
+              return;
             mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
             if (storageType != value.getType())
               slotSemanticTypes[alloca] = value.getType();
@@ -1793,6 +1795,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statemen
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
       thenVal = coerceType(thenVal, resultType, location, thenIsUnsigned);
+      if (!thenVal)
+        return nullptr;
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
@@ -1814,6 +1818,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statemen
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
       elseVal = coerceType(elseVal, resultType, location, elseIsUnsigned);
+      if (!elseVal)
+        return nullptr;
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);

@@ -5,7 +5,8 @@
 
 use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
-use std::ffi::{c_char, CStr};
+use hew_cabi::vec::HewVec;
+use std::ffi::{c_char, c_void, CStr};
 use std::io::{Read, Write};
 use std::sync::mpsc;
 
@@ -618,6 +619,65 @@ pub unsafe extern "C" fn hew_http_request_free(req: *mut HewHttpRequest) {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk header accessor
+// ---------------------------------------------------------------------------
+
+/// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
+///
+/// Both pointers are `malloc`-allocated and must be freed by the owner. Hew's
+/// compiled destructor handles this automatically; Rust callers must free them
+/// manually before calling `hew_vec_free`.
+#[repr(C)]
+struct HewStringPair {
+    name: *mut c_char,
+    value: *mut c_char,
+}
+
+/// Return a new `Vec<(String, String)>` containing all headers from `req`.
+///
+/// Each element is a `(name, value)` pair of `malloc`-allocated C strings.
+/// The caller owns the returned vector and its element strings. Hew's compiled
+/// destructor frees the string fields when the `Vec<(String, String)>` goes
+/// out of scope. Returns an empty vector if `req` is null or has no inner
+/// request; never returns null.
+///
+/// # Safety
+///
+/// `req` must be a valid [`HewHttpRequest`] pointer, or null.
+///
+/// # Panics
+///
+/// In practice never panics. The internal conversion of
+/// `size_of::<*mut c_char>() * 2` to `i64` is infallible on any supported
+/// platform (pointer sizes are always a small fraction of `i64::MAX`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) -> *mut HewVec {
+    let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
+        .expect("pointer-pair elem_size always fits i64");
+    // SAFETY: allocates a new HewVec with elem_size=16 (two pointers), Plain kind.
+    let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+    if req.is_null() {
+        return vec;
+    }
+    // SAFETY: req is a valid HewHttpRequest per caller contract.
+    let request = unsafe { &*req };
+    let Some(inner) = request.inner.as_ref() else {
+        return vec;
+    };
+    for header in inner.headers() {
+        let pair = HewStringPair {
+            name: str_to_malloc(header.field.as_str().as_str()),
+            value: str_to_malloc(header.value.as_str()),
+        };
+        // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+        unsafe {
+            hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+        }
+    }
+    vec
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -843,6 +903,205 @@ mod tests {
         // SAFETY: out_len is null (tested scenario).
         let result = unsafe { hew_http_request_body(&raw mut req, std::ptr::null_mut()) };
         assert!(result.is_null());
+    }
+
+    // -- Request headers() accessor -----------------------------------
+
+    #[test]
+    fn request_headers_null_req_returns_empty_vec() {
+        // SAFETY: null is explicitly handled; returns a valid empty vec.
+        let vec = unsafe { hew_http_request_headers(std::ptr::null()) };
+        assert!(!vec.is_null());
+        // SAFETY: vec was just allocated by hew_http_request_headers.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(len, 0);
+        // SAFETY: vec is a valid HewVec; no string elements to free (ElemKind::Plain, len=0).
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    }
+
+    #[test]
+    fn request_headers_consumed_req_returns_empty_vec() {
+        let req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+        };
+        // SAFETY: req is a valid local struct with inner = None.
+        let vec = unsafe { hew_http_request_headers(&raw const req) };
+        assert!(!vec.is_null());
+        // SAFETY: vec was allocated by hew_http_request_headers.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(len, 0);
+        // SAFETY: vec is a valid HewVec; no elements to free.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    }
+
+    #[test]
+    fn loopback_request_headers_single_pair_roundtrip() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            ureq::get(&format!("{base}/headers-single"))
+                .header("X-Custom", "hello")
+                .call()
+                .unwrap()
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        // SAFETY: req is valid.
+        let vec = unsafe { hew_http_request_headers(req) };
+        assert!(!vec.is_null());
+        // SAFETY: vec is valid.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert!(len >= 1, "expected at least the X-Custom header");
+
+        // Find the X-Custom header among the returned pairs.
+        let mut found = false;
+        for i in 0..len {
+            // SAFETY: vec is valid; i is in bounds.
+            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
+            assert!(!elem_ptr.is_null());
+            // SAFETY: elem_ptr points to a HewStringPair (two consecutive *mut c_char).
+            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            assert!(!pair.name.is_null());
+            assert!(!pair.value.is_null());
+            // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
+            let name = unsafe { CStr::from_ptr(pair.name) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            // SAFETY: pair.value is a valid malloc'd C string from hew_http_request_headers.
+            let value = unsafe { CStr::from_ptr(pair.value) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            if name.eq_ignore_ascii_case("x-custom") {
+                assert_eq!(value, "hello");
+                found = true;
+            }
+            // SAFETY: pair.name was malloc'd by hew_http_request_headers.
+            unsafe { libc::free(pair.name.cast()) };
+            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { libc::free(pair.value.cast()) };
+        }
+        assert!(found, "X-Custom header not found in request headers");
+
+        // SAFETY: vec elements have been freed; vec itself is still valid.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+
+        let text = c"ok";
+        // SAFETY: req is valid; text is a valid C string.
+        let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+        assert_eq!(result, 0);
+        handle.join().unwrap();
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_request_headers_multiple_pairs_order_preserved() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let base = server_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            ureq::get(&format!("{base}/headers-multi"))
+                .header("X-First", "alpha")
+                .header("X-Second", "beta")
+                .call()
+                .unwrap()
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        // SAFETY: req is valid.
+        let vec = unsafe { hew_http_request_headers(req) };
+        assert!(!vec.is_null());
+        // SAFETY: vec is valid.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert!(len >= 2, "expected at least X-First and X-Second headers");
+
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for i in 0..len {
+            // SAFETY: vec is valid; i is in bounds.
+            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
+            assert!(!elem_ptr.is_null());
+            // SAFETY: elem_ptr points to a HewStringPair.
+            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            assert!(!pair.name.is_null());
+            assert!(!pair.value.is_null());
+            // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
+            let name = unsafe { CStr::from_ptr(pair.name) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            // SAFETY: pair.value is a valid malloc'd C string from hew_http_request_headers.
+            let value = unsafe { CStr::from_ptr(pair.value) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            pairs.push((name, value));
+            // SAFETY: pair.name was malloc'd by hew_http_request_headers.
+            unsafe { libc::free(pair.name.cast()) };
+            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { libc::free(pair.value.cast()) };
+        }
+
+        let first_pos = pairs
+            .iter()
+            .position(|(k, _)| k.eq_ignore_ascii_case("x-first"));
+        let second_pos = pairs
+            .iter()
+            .position(|(k, _)| k.eq_ignore_ascii_case("x-second"));
+        assert!(first_pos.is_some(), "X-First header not found");
+        assert!(second_pos.is_some(), "X-Second header not found");
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("x-first"))
+                .unwrap()
+                .1,
+            "alpha"
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("x-second"))
+                .unwrap()
+                .1,
+            "beta"
+        );
+        assert!(
+            first_pos.unwrap() < second_pos.unwrap(),
+            "X-First must appear before X-Second"
+        );
+
+        // SAFETY: vec elements have been freed; vec itself is still valid.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+
+        let text = c"ok";
+        // SAFETY: req is valid; text is a valid C string.
+        let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+        assert_eq!(result, 0);
+        handle.join().unwrap();
+
+        // SAFETY: req was already responded to.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
     }
 
     // -- respond_text and respond_json null text ----------------------

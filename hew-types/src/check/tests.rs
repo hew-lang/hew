@@ -6484,3 +6484,85 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         output.errors
     );
 }
+
+#[test]
+fn module_graph_body_private_local_type_is_available() {
+    let local_type = TypeDecl {
+        visibility: Visibility::Private,
+        name: "Local".to_string(),
+        type_params: None,
+        where_clause: None,
+        kind: TypeDeclKind::Struct,
+        body: vec![TypeBodyItem::Field {
+            name: "x".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                0..1,
+            ),
+            attributes: Vec::new(),
+        }],
+        is_indirect: false,
+        doc_comment: None,
+        wire: None,
+    };
+
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..3,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![(
+                Stmt::Let {
+                    pattern: (Pattern::Identifier("a".to_string()), 0..1),
+                    ty: None,
+                    value: Some((
+                        Expr::StructInit {
+                            name: "Local".to_string(),
+                            fields: vec![("x".to_string(), make_int_literal(1, 0..1))],
+                        },
+                        0..10,
+                    )),
+                },
+                0..10,
+            )],
+            trailing_expr: Some(Box::new((
+                Expr::FieldAccess {
+                    object: Box::new((Expr::Identifier("a".to_string()), 0..1)),
+                    field: "x".to_string(),
+                },
+                11..14,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![
+        (Item::TypeDecl(local_type), 0..10),
+        (Item::Function(ok_fn), 10..30),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "private non-root local types should resolve within the same module body; errors: {:?}",
+        output.errors
+    );
+}

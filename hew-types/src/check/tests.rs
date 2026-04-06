@@ -5181,6 +5181,193 @@ fn structural_e2_all_default_methods_still_requires_explicit_impl() {
     );
 }
 
+// -------------------------------------------------------------------------
+// Bound-diagnostic clarity tests (v0.3.0 slice: bound-diagnostic-clarity)
+//
+// These tests verify that BoundsNotSatisfied errors carry a diagnostic hint
+// (in `suggestions`) that distinguishes the concrete failure mode:
+//   • missing method(s)
+//   • arity mismatch
+//   • return-type / signature mismatch
+//   • E1 guard requiring an explicit `impl` declaration
+// -------------------------------------------------------------------------
+
+#[test]
+fn bound_diagnostic_missing_method_hint() {
+    // A type that has no method at all should produce a hint naming the missing method.
+    let source = r"
+        trait Ping {
+            fn ping(val: Self) -> int;
+        }
+
+        type Widget {}
+
+        fn use_ping<T: Ping>(t: T) -> int { 0 }
+
+        fn main() {
+            let w = Widget {};
+            let _ = use_ping(w);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .expect("expected BoundsNotSatisfied error");
+
+    assert!(
+        err.suggestions
+            .iter()
+            .any(|s| s.contains("ping") && s.contains("missing")),
+        "suggestion should mention missing method `ping`; got suggestions: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
+fn bound_diagnostic_arity_mismatch_hint() {
+    // A type whose method has the right name but the wrong number of parameters
+    // should produce a hint mentioning the arity mismatch.
+    let source = r"
+        trait Measure {
+            fn measure(val: Self) -> int;
+        }
+
+        type Ruler {}
+
+        impl Ruler {
+            fn measure(r: Ruler, scale: int) -> int { scale }
+        }
+
+        fn use_measure<T: Measure>(t: T) -> int { 0 }
+
+        fn main() {
+            let r = Ruler {};
+            let _ = use_measure(r);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .expect("expected BoundsNotSatisfied error");
+
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("arity")),
+        "suggestion should mention arity mismatch; got: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
+fn bound_diagnostic_return_type_mismatch_hint() {
+    // A type whose method has the right name and arity but returns the wrong type
+    // should produce a hint mentioning the return-type mismatch.
+    let source = r#"
+        trait Label {
+            fn label(val: Self) -> string;
+        }
+
+        type Tag {}
+
+        impl Tag {
+            fn label(t: Tag) -> int { 0 }
+        }
+
+        fn use_label<T: Label>(t: T) -> string { "" }
+
+        fn main() {
+            let tag = Tag {};
+            let _ = use_label(tag);
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .expect("expected BoundsNotSatisfied error");
+
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("return-type")),
+        "suggestion should mention return-type mismatch; got: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
+fn bound_diagnostic_e1_associated_type_requires_explicit_impl_hint() {
+    // A trait that declares an associated type triggers the E1 guard.
+    // The diagnostic hint should tell the user an explicit impl is needed.
+    let source = r"
+        trait Container {
+            type Item;
+            fn get(val: Self) -> int;
+        }
+
+        type Box {}
+
+        fn use_container<T: Container>(t: T) -> int { 0 }
+
+        fn main() {
+            let b = Box {};
+            let _ = use_container(b);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .expect("expected BoundsNotSatisfied error");
+
+    assert!(
+        err.suggestions
+            .iter()
+            .any(|s| s.contains("explicit") && s.contains("impl")),
+        "suggestion should mention explicit impl for E1 (associated type) guard; got: {:?}",
+        err.suggestions
+    );
+}
+
 #[test]
 fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));

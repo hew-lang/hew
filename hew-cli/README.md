@@ -62,14 +62,50 @@ correctly formatted produce no output. The process exits 1 if **any** file
 needs formatting (aggregate exit), and exits 0 only if all files pass. There
 is no final summary count line.
 
-`hew eval` phase-1 runs each inline expression or buffered `-f` chunk through
-the in-process native pipeline with a fresh bounded execution. Session
-definitions persist between evaluations, but `--timeout <seconds>` applies to
-each evaluation independently (30 seconds by default), not to the entire REPL
-session or file.
-
 For common import-resolution, type-checking, and build failures, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
+## Eval
+
+`hew eval` compiles and runs Hew code interactively via a compile-per-input
+session model. Each evaluation builds a complete synthetic Hew program from
+accumulated session state (prior top-level definitions and bindings) plus the
+new input, then runs the native compilation pipeline against it. No persistent
+JIT or interpreter state is maintained between evaluations — the output you
+see is always the result of a fresh compile-and-run.
+
+```sh
+hew eval "1 + 2"            # Evaluate an inline expression; exits when done
+hew eval -f script.hew      # Run a .hew file in REPL context
+hew eval                    # Start the interactive REPL
+hew eval --timeout 10       # Per-evaluation timeout of 10 seconds (default: 30)
+```
+
+### Session model
+
+In REPL mode (interactive or piped) top-level items (`fn`, `struct`, `enum`,
+`actor`, `trait`, `impl`) and bindings (`let`, `var`) accumulate across
+evaluations and are re-emitted into each subsequent compile. Bare expressions
+are wrapped in `println()` and auto-printed.
+
+`--timeout <seconds>` applies **per evaluation** — it is the wall-clock limit
+for a single compile-and-run, not for the whole session or file. The minimum
+accepted value is 1 second.
+
+### REPL commands
+
+| Command | Description |
+|---|---|
+| `:help`, `:h` | Show available commands |
+| `:quit`, `:q` | Exit the REPL |
+| `:clear` | Reset the session — drops all accumulated definitions and bindings |
+| `:type <expr>` | Show the inferred type of an expression without running it |
+| `:load <file>` | Load a `.hew` file's top-level items into the session |
+
+`:clear` is a hard session reset: every item and binding accumulated since
+the REPL started (or since the last `:clear`) is discarded. Names that were
+defined before `:clear` are no longer in scope and can be safely redefined
+after it. The REPL prints `Session cleared.` to confirm the reset.
 
 ## Watch mode
 

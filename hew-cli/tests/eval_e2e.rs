@@ -290,6 +290,52 @@ fn eval_repl_load_parse_errors_render_cli_diagnostics() {
     assert!(stderr.contains("1 | fn broken("), "stderr: {stderr}");
 }
 
+/// `:clear` must emit "Session cleared." to stdout regardless of whether the
+/// codegen backend is available — it is a pure session-state operation.
+#[test]
+fn eval_repl_clear_emits_confirmation() {
+    let output = run_eval_with_stdin(&["eval"], ":clear\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
+}
+
+/// `:clear` must drop all accumulated items and bindings so that previously
+/// defined names are no longer visible and can be safely redefined.
+#[test]
+fn eval_repl_clear_resets_session_state() {
+    if !require_codegen() {
+        return;
+    }
+
+    // Round 1: define a function, call it (get 42).
+    // Round 2: :clear, redefine the *same* function with 99, call it again.
+    // If :clear didn't reset the session the duplicate definition would cause
+    // a compile error or the old value would leak through.
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn answer() -> i64 { 42 }\nanswer()\n:clear\nfn answer() -> i64 { 99 }\nanswer()\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+    assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
+    assert!(stdout.contains("99\n"), "stdout: {stdout}");
+}
+
 #[test]
 fn eval_file_type_errors_render_cli_diagnostics() {
     let dir = tempfile::tempdir().unwrap();

@@ -19,8 +19,8 @@
 //!     let body = http_client.get_string("https://example.com");
 //!     println(body);
 //!
-//!     let headers: Vec<String> = Vec::new();
-//!     headers.push("Accept: application/json");
+//!     let headers: Vec<(String, String)> = Vec::new();
+//!     headers.push(("Accept", "application/json"));
 //!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
 //!     resp.free();
@@ -84,14 +84,14 @@ impl ResponseMethods for Response {
 
 // ── Module-level helpers ──────────────────────────────────────────────
 
-fn empty_headers() -> Vec<String> {
-    let headers: Vec<String> = Vec::new();
+fn empty_headers() -> Vec<(String, String)> {
+    let headers: Vec<(String, String)> = Vec::new();
     headers
 }
 
-fn content_type_headers(content_type: String) -> Vec<String> {
-    let headers: Vec<String> = Vec::new();
-    headers.push(f"Content-Type: {content_type}");
+fn content_type_headers(content_type: String) -> Vec<(String, String)> {
+    let headers: Vec<(String, String)> = Vec::new();
+    headers.push(("Content-Type", content_type));
     headers
 }
 
@@ -99,24 +99,24 @@ fn content_type_headers(content_type: String) -> Vec<String> {
 
 /// Perform an HTTP request and return a `Response` handle.
 ///
-/// Each header entry must use the form `"Header-Name: value"`.
+/// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
 ///
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<String> = Vec::new();
-/// headers.push("Accept: application/json");
+/// let headers: Vec<(String, String)> = Vec::new();
+/// headers.push(("Accept", "application/json"));
 /// let resp = http_client.request("GET", "https://example.com", "", headers);
 /// println(resp.status());
 /// resp.free();
 /// ```
-pub fn request(method: String, url: String, body: String, headers: Vec<String>) -> Response {
+pub fn request(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response {
     unsafe { hew_http_request_hew(method, url, body, headers) }
 }
 
 /// Perform an HTTP request and return the response body as a string.
 ///
-/// Each header entry must use the form `"Header-Name: value"`.
+/// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
 /// Returns `null` on transport or network failure. Non-2xx HTTP responses
 /// still return a non-null string (the body may be empty); use
 /// `http_client.request` to inspect the status code.
@@ -124,11 +124,11 @@ pub fn request(method: String, url: String, body: String, headers: Vec<String>) 
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<String> = Vec::new();
+/// let headers: Vec<(String, String)> = Vec::new();
 /// let body = http_client.request_string("GET", "https://example.com", "", headers);
 /// println(body);
 /// ```
-pub fn request_string(method: String, url: String, body: String, headers: Vec<String>) -> String {
+pub fn request_string(method: String, url: String, body: String, headers: Vec<(String, String)>) -> String {
     unsafe { hew_http_request_string_hew(method, url, body, headers) }
 }
 
@@ -206,8 +206,8 @@ pub fn post_string(url: String, content_type: String, body: String) -> String {
 // ── FFI bindings (implementation detail) ──────────────────────────────
 
 extern "C" {
-    fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<String>) -> Response;
-    fn hew_http_request_string_hew(method: String, url: String, body: String, headers: Vec<String>) -> String;
+    fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response;
+    fn hew_http_request_string_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> String;
     fn hew_http_set_timeout(timeout_ms: i32);
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;

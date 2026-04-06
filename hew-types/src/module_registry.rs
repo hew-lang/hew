@@ -263,6 +263,10 @@ impl ModuleRegistry {
     ///
     /// Searches all loaded modules' `handle_methods` for a match on
     /// `(handle_type, method)`.
+    ///
+    /// Accepts either the fully-qualified handle type name (`json.Value`) or
+    /// an unqualified short name (`Value`) that the loaded registry can
+    /// qualify with its existing short-name lookup.
     #[must_use]
     pub fn resolve_handle_method(&self, handle_type: &str, method: &str) -> Option<String> {
         for info in self.modules.values() {
@@ -272,7 +276,8 @@ impl ModuleRegistry {
                 }
             }
         }
-        None
+        self.qualify_handle_type(handle_type)
+            .and_then(|qualified| self.resolve_handle_method(&qualified, method))
     }
 }
 
@@ -411,6 +416,25 @@ mod tests {
             let ((ty, method), _) = &info.handle_methods[0];
             let c_sym = reg.resolve_handle_method(ty, method);
             assert!(c_sym.is_some(), "should resolve handle method");
+        }
+    }
+
+    #[test]
+    fn resolve_handle_method_accepts_short_handle_name() {
+        let mut reg = registry();
+        reg.load("std::encoding::json").unwrap();
+        let info = reg.get("std::encoding::json").unwrap();
+        if let Some(((qualified, method), expected)) = info.handle_methods.first() {
+            let short = qualified
+                .rsplit('.')
+                .next()
+                .expect("qualified handle type should have short name");
+            let c_sym = reg.resolve_handle_method(short, method);
+            assert_eq!(
+                c_sym.as_deref(),
+                Some(expected.as_str()),
+                "short handle name should resolve to the same C symbol"
+            );
         }
     }
 

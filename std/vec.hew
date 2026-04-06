@@ -136,7 +136,7 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> i32 {
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i;
+            return i as i32;
         }
         i = i + 1;
     }
@@ -159,7 +159,7 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> i32 {
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i;
+            return i as i32;
         }
         i = i + 1;
     }
@@ -183,7 +183,7 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> i32 {
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i;
+            return i as i32;
         }
         i = i + 1;
     }
@@ -206,7 +206,7 @@ pub fn index_of_str(v: Vec<String>, val: String) -> i32 {
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i;
+            return i as i32;
         }
         i = i + 1;
     }

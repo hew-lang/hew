@@ -1590,7 +1590,9 @@ impl Checker {
     }
 
     pub(super) fn require_unsafe(&mut self, name: &str, span: &Span) {
-        if !self.in_unsafe && self.unsafe_functions.contains(name) {
+        let scoped_unsafe = scoped_module_item_name(self.current_module.as_deref(), name)
+            .is_some_and(|qualified| self.unsafe_functions.contains(&qualified));
+        if !self.in_unsafe && (scoped_unsafe || self.unsafe_functions.contains(name)) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

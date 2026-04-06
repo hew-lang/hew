@@ -839,9 +839,12 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             auto elemVal = lookupVariable(elemIdent->name);
             if (elemVal) {
               auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+              mlir::Value closeValue = elemVal;
+              if (!mlir::isa<mlir::LLVM::LLVMPointerType>(closeValue.getType()))
+                closeValue = hew::BitcastOp::create(builder, location, ptrType, closeValue);
               auto allocaType = mlir::MemRefType::get({}, ptrType);
               auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
-              mlir::memref::StoreOp::create(builder, location, elemVal, closeAlloca,
+              mlir::memref::StoreOp::create(builder, location, closeValue, closeAlloca,
                                             mlir::ValueRange{});
               if (!dropScopes.empty()) {
                 DropEntry entry;
@@ -975,9 +978,13 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
         closeFn = "hew_stream_pair_free";
       if (!closeFn.empty()) {
         auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        mlir::Value closeValue = value;
+        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(closeValue.getType()))
+          closeValue = hew::BitcastOp::create(builder, location, ptrType, closeValue);
         auto allocaType = mlir::MemRefType::get({}, ptrType);
         auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
-        mlir::memref::StoreOp::create(builder, location, value, closeAlloca, mlir::ValueRange{});
+        mlir::memref::StoreOp::create(builder, location, closeValue, closeAlloca,
+                                      mlir::ValueRange{});
         if (!dropScopes.empty()) {
           DropEntry entry;
           entry.varName = varName;

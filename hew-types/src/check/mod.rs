@@ -39,7 +39,7 @@ use self::util::{
     extract_float_literal_value, extract_integer_literal_value, first_infer_span_in_extern_fn,
     first_infer_span_in_type_expr, float_fits_type, integer_fits_type, integer_type_info,
     integer_type_range, is_float_literal, is_integer_literal, lookup_scoped_item,
-    ty_contains_rc_deep, ty_has_unresolved_inference_var,
+    scoped_module_item_name, ty_contains_rc_deep, ty_has_unresolved_inference_var,
 };
 
 impl Checker {
@@ -60,6 +60,43 @@ impl Checker {
         self.register_builtins();
         self.collect_types(program);
         self.collect_functions(program);
+
+        // Check non-root module_graph bodies first (dependencies before dependents).
+        // Mirrors the traversal order in collect_functions so every registered
+        // signature has its body validated, not just the root module.
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    let module_name = mod_id.path.join(".");
+                    self.current_module = Some(module_name);
+                    // Temporarily scope local_type_defs / local_trait_defs to
+                    // this module so orphan-rule checks see module-local
+                    // definitions and locally_non_generic works correctly.
+                    let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_local_trait_defs = self.local_trait_defs.clone();
+                    for (item, _) in &module.items {
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                            }
+                            Item::Trait(tr) => {
+                                self.local_trait_defs.insert(tr.name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    for (item, span) in &module.items {
+                        self.check_item(item, span);
+                    }
+                    self.local_type_defs = saved_local_type_defs;
+                    self.local_trait_defs = saved_local_trait_defs;
+                }
+            }
+            self.current_module = None;
+        }
 
         for (item, span) in &program.items {
             self.check_item(item, span);

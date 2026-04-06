@@ -6,6 +6,7 @@ use super::*;
 use crate::module_registry::ModuleRegistry;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{ImportName, TraitMethod, Visibility};
+use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 /// Module registry with the repo root as a search path, so stdlib
 /// modules (e.g. `std::encoding::json`) can be loaded during tests.
@@ -2720,6 +2721,47 @@ fn import_with_resolved_items_no_error() {
         "unexpected UnresolvedImport error for user module with resolved_items"
     );
     assert!(output.user_modules.contains("util"));
+}
+
+#[test]
+fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
+    let stream_import = ImportDecl {
+        path: vec!["std".to_string(), "stream".to_string()],
+        spec: None,
+        file_path: None,
+        resolved_items: None,
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let fs_import = ImportDecl {
+        path: vec!["std".to_string(), "fs".to_string()],
+        spec: None,
+        file_path: None,
+        resolved_items: None,
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let program = Program {
+        module_graph: None,
+        items: vec![
+            (Item::Import(stream_import), 0..0),
+            (Item::Import(fs_import), 0..0),
+        ],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&program);
+    let stream_from_file = output
+        .fn_sigs
+        .get("stream.from_file")
+        .expect("expected std::stream import to register stream.from_file");
+
+    assert_eq!(
+        stream_from_file.return_type,
+        Ty::result(Ty::stream(Ty::String), Ty::String),
+        "std::stream import should keep from_file() typed as Result<Stream<String>, String>"
+    );
 }
 
 #[test]
@@ -6044,7 +6086,6 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[cfg(test)]
 mod non_root_module_inference_scope {
     use super::*;
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
     fn make_non_root_module(
         mod_id: &ModuleId,
@@ -6125,10 +6166,11 @@ mod non_root_module_inference_scope {
         );
     }
 
-    /// A non-root module function whose return type is `_` must produce an
-    /// `InferenceFailed` error.
+    /// A non-root module function whose return type is `_` now resolves from
+    /// body-checking just like a root-module function. An empty body therefore
+    /// resolves `_` to `unit` instead of leaving an unresolved inference hole.
     #[test]
-    fn fn_return_infer_hole_fails_closed() {
+    fn fn_return_infer_hole_resolves_from_body() {
         let mod_id = ModuleId::new(vec!["helpers".to_string()]);
         let concrete_param = TypeExpr::Named {
             name: "i64".to_string(),
@@ -6143,8 +6185,12 @@ mod non_root_module_inference_scope {
 
         let errs = inference_failed_errors(&output);
         assert!(
-            !errs.is_empty(),
-            "expected InferenceFailed for unresolved `_` return type in non-root module fn; got errors: {:?}",
+            errs.is_empty(),
+            "non-root `_` return type should resolve from body-checking; got InferenceFailed errors: {errs:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "non-root `_` return type should resolve cleanly; got errors: {:?}",
             output.errors
         );
     }
@@ -6290,4 +6336,576 @@ mod non_root_module_inference_scope {
             output.errors
         );
     }
+}
+
+// ── module_graph body typecheck parity (v0.3 blocker) ────────────────────────
+//
+// Non-root module_graph bodies must be typechecked, not just registered.
+// A type error in an imported module body must not be silently missed.
+
+/// Build a minimal two-module `Program`: a root module (empty) and a single
+/// non-root module `mymod` containing the supplied items.
+fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>) -> Program {
+    let root_id = ModuleId::root();
+    let non_root_id = ModuleId::new(vec!["mymod".to_string()]);
+
+    let root_module = Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let non_root_module = Module {
+        id: non_root_id.clone(),
+        items: non_root_items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(root_module);
+    mg.add_module(non_root_module);
+    // Dependency order: non-root first, then root (root depends on mymod).
+    mg.topo_order = vec![non_root_id, root_id];
+
+    Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    }
+}
+
+/// A type error (bool body in an i64 function) in a non-root `module_graph` body
+/// must be reported by `check_program`.  Before the parity fix this was silently
+/// missed because the body-check loop only visited `program.items`.
+#[test]
+fn module_graph_body_type_error_is_reported() {
+    // fn bad() -> i64 { true }  — body returns bool, declared i64
+    let bad_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "bad".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..3,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new(make_bool_literal(true, 0..4))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        !output.errors.is_empty(),
+        "expected a type error from non-root module body, but none were reported"
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if (expected.contains("i64") || expected.contains("int"))
+                    && actual.contains("bool")
+        )),
+        "expected a Mismatch(i64/int, bool) error; got: {:?}",
+        output.errors
+    );
+}
+
+/// A function with an inferred return type (`-> _`) in a non-root `module_graph`
+/// body must have its return type resolved by body checking.  Without the parity
+/// fix the type var is never unified and the checker emits a spurious
+/// `InferenceFailed` error.  With the fix the body resolves `_` to `i64` and no
+/// error is emitted.
+#[test]
+fn module_graph_body_infer_return_resolves_without_error() {
+    // fn inferred() -> _ { 42 }  — `_` must resolve to i64 from the body
+    let inferred_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "inferred".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((TypeExpr::Infer, 0..1)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new(make_int_literal(42, 0..2))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "inferred return type should resolve cleanly; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A local binding in a non-root module body must take precedence over a
+/// same-named module when typechecking method calls on identifier receivers.
+#[test]
+fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "math".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "String".to_string(),
+                    type_args: None,
+                },
+                0..6,
+            ),
+            is_mutable: false,
+        }],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "bool".to_string(),
+                type_args: None,
+            },
+            0..4,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new((
+                Expr::MethodCall {
+                    receiver: Box::new((Expr::Identifier("math".to_string()), 0..4)),
+                    method: "contains".to_string(),
+                    args: vec![CallArg::Positional((
+                        Expr::Literal(Literal::String("x".to_string())),
+                        5..8,
+                    ))],
+                },
+                0..18,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "local bindings should win over same-named modules in non-root method calls; errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn module_qualified_call_rejects_private_body_only_signature() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("mymod".to_string());
+    checker.fn_sigs.insert(
+        "mymod.secret".to_string(),
+        FnSig {
+            return_type: Ty::I64,
+            ..FnSig::default()
+        },
+    );
+
+    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let ty = checker.check_method_call(&receiver, "secret", &[], &(0..12));
+
+    assert_eq!(ty, Ty::Error);
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
+        "module-qualified calls must not resolve against non-exported private signatures: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn module_qualified_call_accepts_exported_signature() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("mymod".to_string());
+    checker
+        .module_fn_exports
+        .insert("mymod.visible".to_string());
+    checker.fn_sigs.insert(
+        "mymod.visible".to_string(),
+        FnSig {
+            return_type: Ty::I64,
+            ..FnSig::default()
+        },
+    );
+
+    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let ty = checker.check_method_call(&receiver, "visible", &[], &(0..13));
+
+    assert_eq!(ty, Ty::I64);
+    assert!(
+        checker.errors.is_empty(),
+        "exported module-qualified calls must keep working; errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn module_graph_body_private_local_type_is_available() {
+    let local_type = TypeDecl {
+        visibility: Visibility::Private,
+        name: "Local".to_string(),
+        type_params: None,
+        where_clause: None,
+        kind: TypeDeclKind::Struct,
+        body: vec![TypeBodyItem::Field {
+            name: "x".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                0..1,
+            ),
+            attributes: Vec::new(),
+        }],
+        is_indirect: false,
+        doc_comment: None,
+        wire: None,
+    };
+
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..3,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![(
+                Stmt::Let {
+                    pattern: (Pattern::Identifier("a".to_string()), 0..1),
+                    ty: None,
+                    value: Some((
+                        Expr::StructInit {
+                            name: "Local".to_string(),
+                            fields: vec![("x".to_string(), make_int_literal(1, 0..1))],
+                        },
+                        0..10,
+                    )),
+                },
+                0..10,
+            )],
+            trailing_expr: Some(Box::new((
+                Expr::FieldAccess {
+                    object: Box::new((Expr::Identifier("a".to_string()), 0..1)),
+                    field: "x".to_string(),
+                },
+                11..14,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![
+        (Item::TypeDecl(local_type), 0..10),
+        (Item::Function(ok_fn), 10..30),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "private non-root local types should resolve within the same module body; errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "constructs an explicit multi-module fixture for the parity regression"
+)]
+fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() {
+    let i64_ty = TypeExpr::Named {
+        name: "i64".to_string(),
+        type_args: None,
+    };
+    let string_ty = TypeExpr::Named {
+        name: "String".to_string(),
+        type_args: None,
+    };
+
+    let helper_i64 = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        is_pure: false,
+        name: "helper".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((i64_ty.clone(), 0..3)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new(make_int_literal(42, 0..2))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((i64_ty, 0..3)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new((
+                Expr::Call {
+                    function: Box::new((Expr::Identifier("helper".to_string()), 0..6)),
+                    type_args: None,
+                    args: vec![],
+                    is_tail_call: false,
+                },
+                0..8,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let helper_string = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        is_pure: false,
+        name: "helper".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((string_ty, 10..16)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new((
+                Expr::Literal(Literal::String("wrong".to_string())),
+                10..17,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let root_id = ModuleId::root();
+    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let root_module = Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let alpha_module = Module {
+        id: alpha_id.clone(),
+        items: vec![
+            (Item::Function(helper_i64), 0..20),
+            (Item::Function(ok_fn), 20..40),
+        ],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let beta_module = Module {
+        id: beta_id.clone(),
+        items: vec![(Item::Function(helper_string), 40..60)],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(root_module);
+    mg.add_module(alpha_module);
+    mg.add_module(beta_module);
+    mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "same-module private helper should win over another module's bare helper name; errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "constructs an explicit multi-module fixture for the parity regression"
+)]
+fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() {
+    let i64_ty = TypeExpr::Named {
+        name: "i64".to_string(),
+        type_args: None,
+    };
+    let string_ty = TypeExpr::Named {
+        name: "String".to_string(),
+        type_args: None,
+    };
+
+    let extern_i64 = ExternBlock {
+        abi: "C".to_string(),
+        functions: vec![ExternFnDecl {
+            name: "hew_test_raw".to_string(),
+            params: vec![],
+            return_type: Some((i64_ty.clone(), 0..3)),
+            is_variadic: false,
+        }],
+    };
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((i64_ty, 0..3)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new((
+                Expr::Unsafe(Block {
+                    stmts: vec![],
+                    trailing_expr: Some(Box::new((
+                        Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier("hew_test_raw".to_string()),
+                                0..12,
+                            )),
+                            type_args: None,
+                            args: vec![],
+                            is_tail_call: false,
+                        },
+                        0..14,
+                    ))),
+                }),
+                0..14,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+    let extern_string = ExternBlock {
+        abi: "C".to_string(),
+        functions: vec![ExternFnDecl {
+            name: "hew_test_raw".to_string(),
+            params: vec![],
+            return_type: Some((string_ty, 20..26)),
+            is_variadic: false,
+        }],
+    };
+
+    let root_id = ModuleId::root();
+    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let root_module = Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let alpha_module = Module {
+        id: alpha_id.clone(),
+        items: vec![
+            (Item::ExternBlock(extern_i64), 0..20),
+            (Item::Function(ok_fn), 20..40),
+        ],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let beta_module = Module {
+        id: beta_id.clone(),
+        items: vec![(Item::ExternBlock(extern_string), 40..60)],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(root_module);
+    mg.add_module(alpha_module);
+    mg.add_module(beta_module);
+    mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "same-module private extern should win over another module's bare extern name; errors: {:?}",
+        output.errors
+    );
 }

@@ -2360,6 +2360,8 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
       thenVal = coerceType(thenVal, resultType, location);
+      if (!thenVal)
+        return nullptr;
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
@@ -2377,6 +2379,8 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
       elseVal = coerceType(elseVal, resultType, location);
+      if (!elseVal)
+        return nullptr;
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
@@ -3222,7 +3226,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key || !val)
         return true;
       key = coerceType(key, keyType, location);
+      if (!key)
+        return true;
       val = coerceType(val, valueType, location);
+      if (!val)
+        return true;
       hew::HashMapInsertOp::create(builder, location, mapValue, key, val);
       resultOut = nullptr;
       return true;
@@ -4081,8 +4089,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       materializeTemporary(val, ast::callArgExpr(arg).value);
       if (i < calleeFuncType.getNumInputs()) {
         auto expectedType = calleeFuncType.getInput(i);
-        if (val.getType() != expectedType)
+        if (val.getType() != expectedType) {
           val = coerceType(val, expectedType, location);
+          if (!val)
+            return nullptr;
+        }
       }
       args.push_back(val);
     }
@@ -4744,6 +4755,8 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   auto elemType = values[0].getType();
   for (size_t i = 1; i < values.size(); ++i) {
     values[i] = coerceType(values[i], elemType, location);
+    if (!values[i])
+      return nullptr;
   }
 
   auto arrayType = hew::HewArrayType::get(&context, elemType, values.size());

@@ -100,6 +100,41 @@ to that file trigger a re-check.
 appear in the same format. Use `--run` to also execute the program, which
 is useful for quick feedback on output changes. Exit with `Ctrl-C`.
 
+## Documentation
+
+`hew doc` extracts doc comments from `.hew` source files and renders them as
+static HTML pages or Markdown files.
+
+```sh
+hew doc mylib.hew                           # document a single file → doc/
+hew doc src/                                # document all .hew files under src/
+hew doc src/ --output-dir site/docs         # custom output directory
+hew doc src/ --format markdown              # render Markdown instead of HTML
+hew doc src/ --open                         # open index.html in the browser after generation
+```
+
+**File input** generates docs for that single module. **Directory input**
+recursively collects every `.hew` file under the tree, derives fully-qualified
+module names (e.g. `std::encoding::json`), and writes one page per module plus
+an index.
+
+**Output directory** defaults to `./doc` and is created automatically if it
+does not exist. HTML output writes `index.html` and one `<module>.html` per
+module. Markdown output writes `README.md` and one `<module>.md` per module.
+
+**`--format html|markdown`** (default: `html`). `md` is accepted as a short
+alias for `markdown`. `--open` opens `index.html` in the default browser after
+HTML generation; it is a no-op when `--format markdown` is set.
+
+**Parse-error behaviour**: if one or more input files fail to parse, their
+errors are printed to stderr and those files are skipped. Documentation for
+the remaining valid files is still written, and `hew doc` exits 1 after
+generation completes. Fix parse errors (run `hew check <file.hew>` first) to
+ensure all modules appear in the output.
+
+For `hew doc` failure modes and troubleshooting steps, see
+[`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
 ## Scaffolding a new project
 
 `hew init` writes two files — `main.hew` and `README.md` — and nothing else.

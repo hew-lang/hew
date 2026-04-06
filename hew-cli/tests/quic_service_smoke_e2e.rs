@@ -1,9 +1,13 @@
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -59,6 +63,17 @@ fn pick_free_udp_port() -> u16 {
         .local_addr()
         .expect("discover local udp port")
         .port()
+}
+
+fn udp_port_is_bound(port: u16) -> Result<bool, String> {
+    match UdpSocket::bind(("127.0.0.1", port)) {
+        Ok(socket) => {
+            drop(socket);
+            Ok(false)
+        }
+        Err(error) if error.kind() == ErrorKind::AddrInUse => Ok(true),
+        Err(error) => Err(format!("cannot probe UDP port {port}: {error}")),
+    }
 }
 
 fn read_pipe<T: Read>(mut stream: T, name: &str) -> Result<Vec<u8>, String> {
@@ -119,7 +134,7 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<Output, String
                     );
                     return Err(format!("timed out after {timeout:?}\n{timed_out_output}"));
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(POLL_INTERVAL);
             }
             Err(e) => return Err(format!("cannot poll child process: {e}")),
         }
@@ -161,6 +176,24 @@ impl RunningChild {
         }
     }
 
+    fn wait_for_udp_bind(&mut self, port: u16, timeout: Duration) {
+        let start = Instant::now();
+        loop {
+            self.assert_still_running("server exited before binding the QUIC port");
+            match udp_port_is_bound(port) {
+                Ok(true) => return,
+                Ok(false) => {
+                    assert!(
+                        start.elapsed() < timeout,
+                        "server did not bind UDP port {port} within {timeout:?}"
+                    );
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }
+
     fn wait_with_timeout(&mut self, timeout: Duration) -> Output {
         let mut child = self.child.take().expect("child process missing");
         wait_for_child(&mut child, timeout).unwrap_or_else(|error| panic!("{error}"))
@@ -198,35 +231,35 @@ fn quic_remote_service_probe_round_trip_succeeds() {
     build_probe_binary(&probe_dir.join("service_server.hew"), &server_binary);
     build_probe_binary(&probe_dir.join("service_client.hew"), &client_binary);
 
-    let port = pick_free_udp_port().to_string();
+    let port = pick_free_udp_port();
+    let port_str = port.to_string();
 
     let mut server = RunningChild::spawn({
         let mut command = Command::new(&server_binary);
         command
-            .env("HEW_QUIC_SERVICE_PORT", &port)
+            .env("HEW_QUIC_SERVICE_PORT", &port_str)
             .current_dir(&probe_dir);
         command
     });
 
-    std::thread::sleep(Duration::from_secs(2));
-    server.assert_still_running("server exited before the client connected");
+    server.wait_for_udp_bind(port, SERVER_READY_TIMEOUT);
 
     let mut client = Command::new(&client_binary)
-        .env("HEW_QUIC_SERVICE_PORT", &port)
+        .env("HEW_QUIC_SERVICE_PORT", &port_str)
         .current_dir(&probe_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn client process");
-    let client_output = wait_for_child(&mut client, Duration::from_secs(15))
-        .unwrap_or_else(|error| panic!("{error}"));
+    let client_output =
+        wait_for_child(&mut client, PROBE_TIMEOUT).unwrap_or_else(|error| panic!("{error}"));
     assert!(
         client_output.status.success(),
         "client probe failed\n{}",
         describe_output(&client_output),
     );
 
-    let server_output = server.wait_with_timeout(Duration::from_secs(15));
+    let server_output = server.wait_with_timeout(PROBE_TIMEOUT);
     assert!(
         server_output.status.success(),
         "server probe failed\n{}",

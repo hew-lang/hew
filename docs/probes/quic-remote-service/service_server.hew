@@ -69,13 +69,15 @@ fn main() {
     stream.finish();
     stream.close();
 
-    // Wait for stream close and peer disconnect before tearing down the connection.
+    // Wait for both stream-close and peer-disconnect before tearing down the
+    // connection. Across separate processes the exact event order can vary.
     let ev1 = conn.on_event();
-    assert_eq(ev1.kind(), 3);
+    let kind1 = ev1.kind();
     ev1.free();
     let ev2 = conn.on_event();
-    assert_eq(ev2.kind(), 1);
+    let kind2 = ev2.kind();
     ev2.free();
+    assert((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1));
     
     // Clean shutdown of connection.
     conn.disconnect();

@@ -342,11 +342,11 @@ impl Checker {
     ///   - `TraitRegistry` registration — the import path (or C module
     ///     registry) handles trait derivation for exported types
     ///   - Wire-method registration — only relevant for the import surface
-    ///   - `fn_sigs` variant constructors — avoids conflicting with the
-    ///     import path's own constructor registration
     ///
-    /// The import path's `register_type_decl` call will overwrite this entry
-    /// for `pub` types with the fully side-effected version.
+    /// It still registers enum-constructor `fn_sigs` so non-root module body
+    /// checking can construct local values. The import path's later
+    /// `register_type_decl` call overwrites those signatures for `pub` types
+    /// with the fully side-effected version.
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
         if self.type_defs.contains_key(&td.name) {
             return;

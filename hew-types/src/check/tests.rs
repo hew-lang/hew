@@ -6045,7 +6045,6 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[cfg(test)]
 mod non_root_module_inference_scope {
     use super::*;
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
     fn make_non_root_module(
         mod_id: &ModuleId,
@@ -6126,10 +6125,11 @@ mod non_root_module_inference_scope {
         );
     }
 
-    /// A non-root module function whose return type is `_` must produce an
-    /// `InferenceFailed` error.
+    /// A non-root module function whose return type is `_` now resolves from
+    /// body-checking just like a root-module function. An empty body therefore
+    /// resolves `_` to `unit` instead of leaving an unresolved inference hole.
     #[test]
-    fn fn_return_infer_hole_fails_closed() {
+    fn fn_return_infer_hole_resolves_from_body() {
         let mod_id = ModuleId::new(vec!["helpers".to_string()]);
         let concrete_param = TypeExpr::Named {
             name: "i64".to_string(),
@@ -6144,8 +6144,12 @@ mod non_root_module_inference_scope {
 
         let errs = inference_failed_errors(&output);
         assert!(
-            !errs.is_empty(),
-            "expected InferenceFailed for unresolved `_` return type in non-root module fn; got errors: {:?}",
+            errs.is_empty(),
+            "non-root `_` return type should resolve from body-checking; got InferenceFailed errors: {errs:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "non-root `_` return type should resolve cleanly; got errors: {:?}",
             output.errors
         );
     }
@@ -6417,6 +6421,66 @@ fn module_graph_body_infer_return_resolves_without_error() {
     assert!(
         output.errors.is_empty(),
         "inferred return type should resolve cleanly; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A local binding in a non-root module body must take precedence over a
+/// same-named module when typechecking method calls on identifier receivers.
+#[test]
+fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
+    let ok_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "ok".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "math".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "String".to_string(),
+                    type_args: None,
+                },
+                0..6,
+            ),
+            is_mutable: false,
+        }],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "bool".to_string(),
+                type_args: None,
+            },
+            0..4,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new((
+                Expr::MethodCall {
+                    receiver: Box::new((Expr::Identifier("math".to_string()), 0..4)),
+                    method: "contains".to_string(),
+                    args: vec![CallArg::Positional((
+                        Expr::Literal(Literal::String("x".to_string())),
+                        5..8,
+                    ))],
+                },
+                0..18,
+            ))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "local bindings should win over same-named modules in non-root method calls; errors: {:?}",
         output.errors
     );
 }

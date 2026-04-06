@@ -675,7 +675,7 @@ impl Checker {
     ) -> Ty {
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
-            if self.modules.contains(name) {
+            if self.modules.contains(name) && self.env.lookup_ref(name).is_none() {
                 self.used_modules.borrow_mut().insert(name.clone());
                 let key = format!("{name}.{method}");
                 self.require_unsafe(&key, span);

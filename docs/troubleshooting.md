@@ -194,6 +194,32 @@ refactors. Exit with `Ctrl-C`.
 For the full flag reference, see the [Watch mode section of
 `../hew-cli/README.md`](../hew-cli/README.md#watch-mode).
 
+## Documentation generation
+
+Common signs:
+
+- `Error: <file>: <message>` on stderr and one or more modules missing from
+  the output directory
+- `No .hew files found` followed by exit 1
+- `No modules to document` followed by exit 1
+- `--open` has no visible effect
+
+What to check:
+
+- Files that fail to parse are **skipped**: their errors are printed to stderr,
+  but documentation for any valid files in the same run is still written.
+  `hew doc` exits 1 after generation if any file had parse errors. Run
+  `hew check <file.hew>` on each source file first to identify and fix parse
+  errors so all modules appear in the output.
+- If no output is written and there are no parse errors, confirm that the input
+  path exists and contains `.hew` files. `hew doc` does not fall back to the
+  current directory — pass at least one file or directory explicitly.
+- `--open` only opens `index.html` after HTML generation. It is silently
+  ignored when `--format markdown` is set.
+- The output directory (default `./doc`) is created automatically. If creation
+  fails (e.g. a permissions issue), the error is printed to stderr and
+  `hew doc` exits 1.
+
 ## Related docs
 
 - [`../hew-cli/README.md`](../hew-cli/README.md) — CLI command reference

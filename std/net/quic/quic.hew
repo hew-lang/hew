@@ -38,11 +38,12 @@
 //!     stream.finish();
 //!     stream.close();
 //!     // Drain connection events so the peer has received all in-flight data
-//!     // before the connection is torn down.  Calling conn.disconnect() before
-//!     // the stream-closed (kind=3) and peer-disconnected (kind=1) events
-//!     // arrive can race delivery on the wire.
-//!     let ev1 = conn.on_event(); ev1.free();   // stream closed
-//!     let ev2 = conn.on_event(); ev2.free();   // peer disconnected
+//!     // before the connection is torn down. Calling conn.disconnect() before
+//!     // both the stream-closed (kind=3) and peer-disconnected (kind=1)
+//!     // events arrive can race delivery on the wire. Across separate
+//!     // processes the exact order is not guaranteed.
+//!     let ev1 = conn.on_event(); ev1.free();
+//!     let ev2 = conn.on_event(); ev2.free();
 //!     conn.disconnect();
 //!     ep.close();
 //! }

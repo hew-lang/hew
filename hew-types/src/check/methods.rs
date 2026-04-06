@@ -676,8 +676,10 @@ impl Checker {
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
+            let receiver_is_known_type = self.type_defs.contains_key(name);
             let key = format!("{name}.{method}");
             let looks_like_module_call = !receiver_is_binding
+                && !receiver_is_known_type
                 && (self.modules.contains(name)
                     || self.module_fn_exports.contains(&key)
                     || self.fn_sigs.contains_key(&key));

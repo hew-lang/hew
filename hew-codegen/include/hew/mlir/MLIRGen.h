@@ -1092,7 +1092,11 @@ private:
   // Resolve a TypeExpr to a flat mangled name for generic substitutions.
   // Recursively handles nested generics: Pair<int> → "Pair_int".
   // Also triggers convertType to ensure nested generic structs are specialized.
-  std::string resolveTypeArgMangledName(const ast::TypeExpr &type);
+  // Returns std::nullopt for composite/non-plain-name type args (Option<T>,
+  // Result<T,E>, tuples, arrays, …) that cannot be monomorphized via the
+  // string-substitution path.  Callers must check and abort before installing
+  // any typeParamSubstitutions.
+  std::optional<std::string> resolveTypeArgMangledName(const ast::TypeExpr &type);
 
   // ── Generic impl monomorphization ─────────────────────────────
   /// Info for a deferred generic impl block (e.g. `impl<T> Box<T> { … }`).

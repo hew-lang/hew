@@ -553,8 +553,17 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
           genDecl->type_params->size() == named->type_args->size()) {
         // Explicit type args: Pair<int>, Box<Pair<int>> → resolve each recursively
         hasTypeArgs = true;
-        for (const auto &ta : *named->type_args)
-          typeArgNames.push_back(resolveTypeArgMangledName(ta.value));
+        for (const auto &ta : *named->type_args) {
+          auto resolved = resolveTypeArgMangledName(ta.value);
+          if (!resolved) {
+            emitError(builder.getUnknownLoc())
+                << "generic struct '" << name
+                << "': composite type arguments (Option<T>, Result<T,E>, "
+                   "tuples, slices, …) are not supported as type parameters";
+            return {};
+          }
+          typeArgNames.push_back(std::move(*resolved));
+        }
       } else if (!typeParamSubstitutions.empty() && genDecl->type_params) {
         // Implicit via substitutions: Pair<T> with T→int active
         hasTypeArgs = true;
@@ -5515,7 +5524,7 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseT
   return funcOp;
 }
 
-std::string MLIRGen::resolveTypeArgMangledName(const ast::TypeExpr &type) {
+std::optional<std::string> MLIRGen::resolveTypeArgMangledName(const ast::TypeExpr &type) {
   if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
     // Resolve through active substitutions first (e.g., T → int)
     std::string baseName = named->name;
@@ -5527,8 +5536,12 @@ std::string MLIRGen::resolveTypeArgMangledName(const ast::TypeExpr &type) {
     // recursively resolve each and build a compound mangled name.
     if (named->type_args && !named->type_args->empty()) {
       std::string mangled = baseName;
-      for (const auto &ta : *named->type_args)
-        mangled += "_" + resolveTypeArgMangledName(ta.value);
+      for (const auto &ta : *named->type_args) {
+        auto inner = resolveTypeArgMangledName(ta.value);
+        if (!inner)
+          return std::nullopt;
+        mangled += "_" + *inner;
+      }
       // Ensure the nested generic struct is actually specialized by
       // calling convertType, which triggers monomorphization.
       (void)convertType(type);
@@ -5536,7 +5549,11 @@ std::string MLIRGen::resolveTypeArgMangledName(const ast::TypeExpr &type) {
     }
     return baseName;
   }
-  return "unknown";
+  // Composite type args (Option<T>, Result<T,E>, tuples, slices, …) cannot be
+  // reduced to a plain mangled name that the string-substitution path can look
+  // up as a struct/enum/builtin.  Return nullopt so callers can abort
+  // specialization before installing poisoned typeParamSubstitutions.
+  return std::nullopt;
 }
 
 // ── Drop tracking (RAII) ─────────────────────────────────────────

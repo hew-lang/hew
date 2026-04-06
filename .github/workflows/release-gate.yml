@@ -1,4 +1,27 @@
+# Pre-Release Cross-Platform Gate
+#
+# Validates that the release candidate commit builds and passes tests on all
+# CI-supported platforms BEFORE tagging.  This workflow should be at least as
+# comprehensive as the main CI for the crates shipped in a release tarball.
+#
+# Trigger:
+#   - Push to a release/* or release-* branch
+#   - Manual dispatch (workflow_dispatch)
+#
+# Coverage vs. ci.yml:
+#   - Builds ALL release artifacts (hew-cli, adze-cli, hew-lsp, hew-lib)
+#   - Runs full Rust workspace tests (matching ci.yml scope)
+#   - Runs codegen E2E tests on Linux and macOS (where LLVM is available)
+#   - Smoke-tests the compile+run pipeline with a trivial .hew program
+#   - Windows: Rust workspace tests only (no codegen — LLVM not yet provisioned)
+#
+# NOT covered here (run separately before tagging):
+#   - FreeBSD (nightly via freebsd.yml or local `make pre-release PLATFORMS=freebsd`)
+#   - linux-aarch64 (covered by release.yml at tag time; add a runner if needed)
+#   - Sanitizers (nightly via nightly-sanitizers.yml)
+
 name: Pre-Release Cross-Platform Gate
+
 on:
   push:
     branches:
@@ -6,46 +29,243 @@ on:
       - 'release-*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "22"
+  CARGO_TERM_COLOR: always
+
 jobs:
-  validate-matrix:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            name: macOS arm64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            name: Linux x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: Windows x86_64
-
-    runs-on: ${{ matrix.os }}
-    name: Release Gate — ${{ matrix.name }}
-
+  # ─────────────────────────────────────────────────────────────────────────
+  # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-linux:
+    name: Release Gate — Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }} \
+            lld-${{ env.LLVM_VERSION }} \
+            libssl-dev pkg-config
+
+      - name: Configure toolchain
+        run: |
+          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v4
         with:
-          targets: ${{ matrix.target }}
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: release-gate-linux-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          restore-keys: release-gate-linux-
 
-      - name: Build CLI (release)
-        run: cargo build -p hew-cli --release --target ${{ matrix.target }}
+      - name: Configure hew-codegen
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
 
-      - name: Run unit tests
-        run: cargo test -p hew-types -p hew-parser -p hew-lexer --release --target ${{ matrix.target }}
+      - name: Build hew-codegen
+        run: cmake --build hew-codegen/build -j"$(nproc)"
 
-      - name: Verify binary exists and runs
+      - name: Build all release crates
+        run: |
+          cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+          cargo build -p hew-lib --release
+
+      - name: Build WASM runtime
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+      - name: Verify release binaries
+        run: |
+          target/release/hew --version
+          target/release/adze --version
+          target/release/hew-lsp --version
+          test -f target/release/libhew.a && echo "✅ libhew.a exists"
+
+      - name: Smoke test — compile and run a .hew program
+        run: |
+          echo 'fn main() { println("smoke-ok") }' > _smoke.hew
+          target/release/hew _smoke.hew -o _smoke_bin
+          chmod +x _smoke_bin
+          OUTPUT=$(./_smoke_bin)
+          rm -f _smoke.hew _smoke_bin
+          echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+
+      - name: Run Rust workspace tests
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
+
+      - name: Install wasmtime
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Run codegen unit tests
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure
+          -R "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (native)
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure
+          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (WASM)
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure
+          -j"$(nproc)" -L wasm
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # macOS arm64 — full build + codegen E2E (matches ci.yml)
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-macos:
+    name: Release Gate — macOS arm64
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: taiki-e/install-action@nextest
+
+      - name: Install LLVM/MLIR
+        run: |
+          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: release-gate-macos-arm64-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          restore-keys: release-gate-macos-arm64-
+
+      - name: Configure hew-codegen
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
+            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
+            -DHEW_STATIC_LINK=ON \
+            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+
+      - name: Build hew-codegen
+        run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Build all release crates
+        run: |
+          cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+          cargo build -p hew-lib --release
+
+      - name: Verify release binaries
+        run: |
+          target/release/hew --version
+          target/release/adze --version
+          target/release/hew-lsp --version
+          test -f target/release/libhew.a && echo "✅ libhew.a exists"
+
+      - name: Smoke test — compile and run a .hew program
+        run: |
+          echo 'fn main() { println("smoke-ok") }' > _smoke.hew
+          target/release/hew _smoke.hew -o _smoke_bin
+          chmod +x _smoke_bin
+          OUTPUT=$(./_smoke_bin)
+          rm -f _smoke.hew _smoke_bin
+          echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+
+      - name: Run Rust workspace tests
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
+
+      - name: Run codegen unit tests
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure
+          -R "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (native)
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure
+          -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Windows x86_64 — Rust workspace tests (no codegen — LLVM not provisioned)
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-windows:
+    name: Release Gate — Windows x86_64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry\
+            ~\.cargo\git\
+            target\
+          key: release-gate-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-gate-windows-
+
+      - name: Build release crates (no codegen)
+        run: |
+          cargo check -p hew-cli --release
+          cargo build -p adze-cli -p hew-lsp --release
+
+      - name: Verify binaries
         shell: bash
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            BINARY="target/${{ matrix.target }}/release/hew.exe"
-          else
-            BINARY="target/${{ matrix.target }}/release/hew"
-          fi
-          test -f "$BINARY" && echo "✅ Binary exists: $BINARY"
-          "$BINARY" --version && echo "✅ Binary runs"
+          target/release/adze.exe --version && echo "✅ adze runs"
+          target/release/hew-lsp.exe --version && echo "✅ hew-lsp runs"
+
+      - name: Run Rust workspace tests
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --exclude hew-cli
+          --profile ci

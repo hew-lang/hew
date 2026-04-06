@@ -64,6 +64,10 @@ impl Checker {
         // Check non-root module_graph bodies first (dependencies before dependents).
         // Mirrors the traversal order in collect_functions so every registered
         // signature has its body validated, not just the root module.
+        // Body-level deferred inference holes (e.g. `as _` cast targets, lambda
+        // parameter `_` types) produced here accumulate in
+        // `self.deferred_inference_holes` and are drained by
+        // `report_unresolved_inference_holes` at the end of check_program.
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {

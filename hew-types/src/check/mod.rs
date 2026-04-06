@@ -61,6 +61,25 @@ impl Checker {
         self.collect_types(program);
         self.collect_functions(program);
 
+        // Check non-root module_graph bodies first (dependencies before dependents).
+        // Mirrors the traversal order in collect_functions so every registered
+        // signature has its body validated, not just the root module.
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    let module_name = mod_id.path.join(".");
+                    self.current_module = Some(module_name);
+                    for (item, span) in &module.items {
+                        self.check_item(item, span);
+                    }
+                }
+            }
+            self.current_module = None;
+        }
+
         for (item, span) in &program.items {
             self.check_item(item, span);
         }

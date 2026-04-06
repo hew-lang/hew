@@ -6,6 +6,7 @@ use super::*;
 use crate::module_registry::ModuleRegistry;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{ImportName, TraitMethod, Visibility};
+use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 /// Module registry with the repo root as a search path, so stdlib
 /// modules (e.g. `std::encoding::json`) can be loaded during tests.
@@ -6290,4 +6291,132 @@ mod non_root_module_inference_scope {
             output.errors
         );
     }
+}
+
+// ── module_graph body typecheck parity (v0.3 blocker) ────────────────────────
+//
+// Non-root module_graph bodies must be typechecked, not just registered.
+// A type error in an imported module body must not be silently missed.
+
+/// Build a minimal two-module `Program`: a root module (empty) and a single
+/// non-root module `mymod` containing the supplied items.
+fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>) -> Program {
+    let root_id = ModuleId::root();
+    let non_root_id = ModuleId::new(vec!["mymod".to_string()]);
+
+    let root_module = Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let non_root_module = Module {
+        id: non_root_id.clone(),
+        items: non_root_items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(root_module);
+    mg.add_module(non_root_module);
+    // Dependency order: non-root first, then root (root depends on mymod).
+    mg.topo_order = vec![non_root_id, root_id];
+
+    Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    }
+}
+
+/// A type error (bool body in an i64 function) in a non-root `module_graph` body
+/// must be reported by `check_program`.  Before the parity fix this was silently
+/// missed because the body-check loop only visited `program.items`.
+#[test]
+fn module_graph_body_type_error_is_reported() {
+    // fn bad() -> i64 { true }  — body returns bool, declared i64
+    let bad_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "bad".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..3,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new(make_bool_literal(true, 0..4))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        !output.errors.is_empty(),
+        "expected a type error from non-root module body, but none were reported"
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if (expected.contains("i64") || expected.contains("int"))
+                    && actual.contains("bool")
+        )),
+        "expected a Mismatch(i64/int, bool) error; got: {:?}",
+        output.errors
+    );
+}
+
+/// A function with an inferred return type (`-> _`) in a non-root `module_graph`
+/// body must have its return type resolved by body checking.  Without the parity
+/// fix the type var is never unified and the checker emits a spurious
+/// `InferenceFailed` error.  With the fix the body resolves `_` to `i64` and no
+/// error is emitted.
+#[test]
+fn module_graph_body_infer_return_resolves_without_error() {
+    // fn inferred() -> _ { 42 }  — `_` must resolve to i64 from the body
+    let inferred_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        is_pure: false,
+        name: "inferred".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((TypeExpr::Infer, 0..1)),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: Some(Box::new(make_int_literal(42, 0..2))),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+    };
+
+    let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "inferred return type should resolve cleanly; errors: {:?}",
+        output.errors
+    );
 }

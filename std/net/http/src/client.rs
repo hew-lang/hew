@@ -140,7 +140,7 @@ unsafe fn parse_headers_from_hew_tuple_vec(
         };
         // SAFETY: index_i64 is a valid in-bounds index for this HewVec.
         let elem_ptr =
-            unsafe { hew_cabi::vec::hew_vec_get_generic(headers as *const HewVec, index_i64) };
+            unsafe { hew_cabi::vec::hew_vec_get_generic(headers.cast_const(), index_i64) };
         if elem_ptr.is_null() {
             return Err(format!(
                 "corrupt header Vec: null element pointer at in-bounds index {index_i64}"
@@ -385,7 +385,7 @@ pub unsafe extern "C" fn hew_http_request(
 ///
 /// `method`, `url`, and `body` follow the same string rules as
 /// [`hew_http_request`]. `headers` must be null or a valid `Vec<(String, String)>` handle
-/// (Plain-kind HewVec with element size matching two pointer-width fields).
+/// (Plain-kind `HewVec` with element size matching two pointer-width fields).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_hew(
     method: *const c_char,
@@ -731,14 +731,12 @@ mod tests {
             let pair = HewStringPair {
                 // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
                 name: unsafe { libc::strdup(name_c.as_ptr()) },
+                // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
                 value: unsafe { libc::strdup(value_c.as_ptr()) },
             };
             // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
             unsafe {
-                hew_cabi::vec::hew_vec_push_generic(
-                    vec,
-                    std::ptr::addr_of!(pair).cast::<c_void>(),
-                )
+                hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
             };
         }
         vec
@@ -1333,8 +1331,10 @@ mod tests {
         // SAFETY: resp is a valid error response and headers is still owned by the test.
         let (status, body) = unsafe { take_response(resp) };
         assert_eq!(status, -1);
-        assert!(body.contains("Vec<(String, String)>") || body.contains("mismatch"),
-            "expected type-mismatch error, got: {body}");
+        assert!(
+            body.contains("Vec<(String, String)>") || body.contains("mismatch"),
+            "expected type-mismatch error, got: {body}"
+        );
         // SAFETY: headers was allocated by hew_vec_new and has not been freed yet.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
     }

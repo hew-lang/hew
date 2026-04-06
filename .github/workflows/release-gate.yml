@@ -167,6 +167,7 @@ jobs:
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - uses: actions/cache@v4
         with:
@@ -174,8 +175,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: release-gate-macos-arm64-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
-          restore-keys: release-gate-macos-arm64-
+          key: release-gate-macos-arm64-macos13-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          restore-keys: release-gate-macos-arm64-macos13-
 
       - name: Configure hew-codegen
         run: |

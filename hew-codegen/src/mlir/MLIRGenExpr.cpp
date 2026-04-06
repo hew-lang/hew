@@ -785,6 +785,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     // Ensure types match
     if (startVal.getType() != endVal.getType()) {
       endVal = coerceType(endVal, startVal.getType(), currentLoc);
+      if (!endVal)
+        return nullptr;
     }
 
     if (range->inclusive) {
@@ -1063,11 +1065,15 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     if (auto *rt = resolvedTypeOf(expr.right->span))
       rhsUns = isUnsignedTypeExpr(*rt);
     rhs = coerceType(rhs, lhs.getType(), location, rhsUns);
+    if (!rhs)
+      return nullptr;
   } else if (rhsIsFloat && !lhsIsFloat) {
     bool lhsUns = false;
     if (auto *lt = resolvedTypeOf(expr.left->span))
       lhsUns = isUnsignedTypeExpr(*lt);
     lhs = coerceType(lhs, rhs.getType(), location, lhsUns);
+    if (!lhs)
+      return nullptr;
   }
 
   // Integer width promotion
@@ -4895,6 +4901,8 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
   if (auto *countType = resolvedTypeOf(repeat.count->span))
     countUnsigned = isUnsignedTypeExpr(*countType);
   countVal = coerceType(countVal, i64Type, location, countUnsigned);
+  if (!countVal)
+    return nullptr;
 
   auto valueVal = generateExpression(repeat.value->value);
   if (!valueVal)
@@ -4908,6 +4916,8 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
       vecType = resolvedVec;
       elementType = resolvedVec.getElementType();
       valueVal = coerceType(valueVal, elementType, location);
+      if (!valueVal)
+        return nullptr;
     } else {
       emitError(location) << "array repeat expression must produce a Vec";
       return nullptr;

@@ -472,12 +472,6 @@ jobs:
       - name: Build hew-codegen
         run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
 
-      - name: Run Rust workspace tests
-        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
-        run: >
-          cargo nextest run --workspace --exclude hew-wasm
-          --profile ci
-
       - name: Build libhew.a (runtime + stdlib)
         run: cargo build -p hew-lib --release
 
@@ -485,6 +479,14 @@ jobs:
         run: |
           cargo build -p hew-cli -p hew-serialize --release
           cargo build -p hew-cli
+
+      - name: Run Rust workspace tests
+        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
+        # libhew.a and the frontend debug binary are built first so that
+        # CLI e2e tests that invoke `hew run` can find target/debug/libhew.a.
+        run: >
+          cargo nextest run --workspace --exclude hew-wasm
+          --profile ci
 
       - name: Run codegen unit tests
         run: >

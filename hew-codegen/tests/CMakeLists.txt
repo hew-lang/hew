@@ -1106,6 +1106,7 @@ add_wasm_file_test(empty_vec_literal          e2e_collections      empty_vec_lit
 add_wasm_file_test(hashmap_keys               e2e_collections      hashmap_keys)
 add_wasm_file_test(hashmap_keys_method        e2e_collections      hashmap_keys_method)
 add_wasm_file_test(map_literal                e2e_collections      map_literal)
+add_wasm_file_test(collection_clone           e2e_collections      collection_clone)
 add_wasm_file_test(vec_filter                 e2e_collections      vec_filter)
 add_wasm_file_test(vec_fold                   e2e_collections      vec_fold)
 add_wasm_file_test(vec_join                   e2e_collections      vec_join)

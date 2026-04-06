@@ -331,6 +331,27 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
     }
 }
 
+fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
+    if method != "clone" {
+        return None;
+    }
+    match receiver_ty {
+        Ty::Named { name, args } if name == "Vec" && args.len() == 1 => Some(FnSig {
+            return_type: receiver_ty.clone(),
+            ..FnSig::default()
+        }),
+        Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => Some(FnSig {
+            return_type: receiver_ty.clone(),
+            ..FnSig::default()
+        }),
+        Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => Some(FnSig {
+            return_type: receiver_ty.clone(),
+            ..FnSig::default()
+        }),
+        _ => None,
+    }
+}
+
 /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
 #[must_use]
 pub fn lookup_named_method_sig(
@@ -382,6 +403,7 @@ pub fn lookup_method_sig(
 ) -> Option<FnSig> {
     let (type_name, type_args) = named_receiver_parts(receiver_ty)?;
     lookup_builtin_method_sig(receiver_ty, method)
+        .or_else(|| lookup_collection_clone_method_sig(receiver_ty, method))
         .or_else(|| lookup_named_method_sig(type_defs, fn_sigs, type_name, type_args, method))
 }
 
@@ -424,9 +446,18 @@ pub fn collect_method_sigs_for_named_type(
 ) -> Vec<(String, FnSig)> {
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
+    let receiver_ty = Ty::Named {
+        name: type_name.to_string(),
+        args: type_args.to_vec(),
+    };
     let receiver_type_params = lookup_user_type_def(type_defs, type_name)
         .map(|type_def| type_def.type_params.clone())
         .unwrap_or_default();
+
+    if let Some(sig) = lookup_collection_clone_method_sig(&receiver_ty, "clone") {
+        seen.insert("clone".to_string());
+        methods.push(("clone".to_string(), sig));
+    }
 
     if let Some(type_def) = lookup_type_def(type_defs, type_name) {
         for (method_name, sig) in type_def.methods {
@@ -635,6 +666,52 @@ mod tests {
                 name: "T".to_string(),
                 args: vec![],
             })
+        );
+    }
+
+    #[test]
+    fn lookup_method_sig_collection_clone_returns_receiver_type() {
+        let type_defs = HashMap::new();
+        let fn_sigs = HashMap::new();
+        for receiver_ty in [
+            Ty::Named {
+                name: "Vec".to_string(),
+                args: vec![Ty::String],
+            },
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![Ty::String, Ty::I64],
+            },
+            Ty::Named {
+                name: "HashSet".to_string(),
+                args: vec![Ty::String],
+            },
+        ] {
+            let sig = lookup_method_sig(&type_defs, &fn_sigs, &receiver_ty, "clone")
+                .expect("collection clone should resolve");
+            assert!(sig.params.is_empty());
+            assert_eq!(sig.return_type, receiver_ty);
+        }
+    }
+
+    #[test]
+    fn collect_method_sigs_includes_hashset_clone() {
+        let methods = collect_method_sigs_for_named_type(
+            &HashMap::new(),
+            &HashMap::new(),
+            "HashSet",
+            &[Ty::String],
+        );
+        let (_, sig) = methods
+            .into_iter()
+            .find(|(method_name, _)| method_name == "clone")
+            .expect("HashSet clone should be collected");
+        assert_eq!(
+            sig.return_type,
+            Ty::Named {
+                name: "HashSet".to_string(),
+                args: vec![Ty::String],
+            }
         );
     }
 }

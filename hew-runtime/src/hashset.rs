@@ -7,8 +7,9 @@ use core::ffi::c_char;
 use core::ptr;
 
 use crate::hashmap::{
-    hew_hashmap_clear, hew_hashmap_contains_key, hew_hashmap_free_impl, hew_hashmap_insert_i64,
-    hew_hashmap_insert_impl, hew_hashmap_len, hew_hashmap_new_impl, hew_hashmap_remove, HewHashMap,
+    hew_hashmap_clear, hew_hashmap_clone_impl, hew_hashmap_contains_key, hew_hashmap_free_impl,
+    hew_hashmap_insert_i64, hew_hashmap_insert_impl, hew_hashmap_len, hew_hashmap_new_impl,
+    hew_hashmap_remove, HewHashMap,
 };
 
 /// Hash set backed by a `HewHashMap` where values are unused.
@@ -226,6 +227,30 @@ pub unsafe extern "C" fn hew_hashset_clear(set: *mut HewHashSet) {
     }
 }
 
+/// Deep-clone the set and its underlying storage.
+///
+/// # Safety
+///
+/// `set` must be a valid `HewHashSet` pointer (or null, which returns null).
+/// The returned pointer must eventually be freed with [`hew_hashset_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_clone(set: *const HewHashSet) -> *mut HewHashSet {
+    cabi_guard!(set.is_null(), ptr::null_mut());
+    // SAFETY: caller guarantees `set` is valid.
+    unsafe {
+        let cloned: *mut HewHashSet = libc::malloc(core::mem::size_of::<HewHashSet>()).cast();
+        if cloned.is_null() {
+            libc::abort();
+        }
+        (*cloned).map = hew_hashmap_clone_impl((*set).map);
+        if (*cloned).map.is_null() {
+            libc::free(cloned.cast());
+            libc::abort();
+        }
+        cloned
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Free
 // ---------------------------------------------------------------------------
@@ -356,6 +381,46 @@ mod tests {
             assert_eq!(hew_hashset_len(s), 0);
             assert!(hew_hashset_is_empty(s));
             hew_hashset_free(s);
+        }
+    }
+
+    #[test]
+    fn test_hashset_clone_ints() {
+        // SAFETY: FFI calls use valid set pointers returned by Hew runtime constructors.
+        unsafe {
+            let s = hew_hashset_new();
+            hew_hashset_insert_int(s, 7);
+            hew_hashset_insert_int(s, 9);
+
+            let cloned = hew_hashset_clone(s);
+            assert!(!cloned.is_null());
+            hew_hashset_free(s);
+
+            assert_eq!(hew_hashset_len(cloned), 2);
+            assert!(hew_hashset_contains_int(cloned, 7));
+            assert!(hew_hashset_contains_int(cloned, 9));
+            hew_hashset_free(cloned);
+        }
+    }
+
+    #[test]
+    fn test_hashset_clone_strings() {
+        // SAFETY: FFI calls use valid set pointers and valid C strings.
+        unsafe {
+            let s = hew_hashset_new();
+            let hello = CString::new("hello").unwrap();
+            let world = CString::new("world").unwrap();
+            hew_hashset_insert_string(s, hello.as_ptr());
+            hew_hashset_insert_string(s, world.as_ptr());
+
+            let cloned = hew_hashset_clone(s);
+            assert!(!cloned.is_null());
+            hew_hashset_free(s);
+
+            assert_eq!(hew_hashset_len(cloned), 2);
+            assert!(hew_hashset_contains_string(cloned, hello.as_ptr()));
+            assert!(hew_hashset_contains_string(cloned, world.as_ptr()));
+            hew_hashset_free(cloned);
         }
     }
 

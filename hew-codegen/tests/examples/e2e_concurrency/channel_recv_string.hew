@@ -1,0 +1,27 @@
+import std::channel::channel;
+
+fn drain(rx: channel.Receiver<String>) -> Vec<String> {
+    var msgs: Vec<String> = Vec::new();
+    var done = false;
+    while !done {
+        match rx.recv() {
+            Some(msg) => { msgs.push(msg); },
+            None => { done = true; },
+        }
+    }
+    rx.close();
+    msgs
+}
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+
+    tx.send("hello");
+    tx.send("world");
+    tx.close();
+
+    let msgs = drain(rx);
+    for msg in msgs {
+        println(msg);
+    }
+}

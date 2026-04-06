@@ -59,9 +59,7 @@ jobs:
               git clone --depth 1 --branch llvmorg-22.1.0 \
                 --filter=blob:none --sparse \
                 https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              cd /tmp/llvm-src
-              git sparse-checkout set llvm mlir cmake third-party
-              cd /
+              (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
 
               cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \

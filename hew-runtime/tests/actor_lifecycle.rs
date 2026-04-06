@@ -181,6 +181,12 @@ fn actor_close_idle_transitions_to_stopped() {
 }
 
 /// After closing an actor, sends should be rejected (mailbox closed).
+///
+/// `hew_actor_try_send` delegates to `hew_mailbox_try_send` on native targets,
+/// which returns [`HewError::ErrClosed`] (`-4`) when the mailbox is closed.
+/// Note that `hew_mailbox_send` (the blocking variant) returns
+/// [`HewError::ErrActorStopped`] (`-2`) instead — see the native/WASM
+/// divergence note on that function.
 #[test]
 fn send_to_closed_actor_is_rejected() {
     unsafe {
@@ -189,7 +195,7 @@ fn send_to_closed_actor_is_rejected() {
 
         hew_actor_close(actor);
 
-        // try_send should return ErrActorStopped or ErrClosed.
+        // hew_actor_try_send → hew_mailbox_try_send → ErrClosed (-4).
         let val: i32 = 7;
         let rc = hew_runtime::actor::hew_actor_try_send(
             actor,
@@ -197,9 +203,10 @@ fn send_to_closed_actor_is_rejected() {
             (&raw const val).cast_mut().cast(),
             size_of::<i32>(),
         );
-        assert!(
-            rc == HewError::ErrActorStopped as i32 || rc == HewError::ErrClosed as i32,
-            "send to a closed actor should fail (got {rc})"
+        assert_eq!(
+            rc,
+            HewError::ErrClosed as i32,
+            "hew_actor_try_send to a closed actor must return ErrClosed (got {rc})"
         );
 
         hew_actor_free(actor);

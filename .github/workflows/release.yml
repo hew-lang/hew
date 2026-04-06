@@ -934,8 +934,12 @@ jobs:
             echo "::warning::hew-lang/playground repo not found — skipping playground trigger"
             exit 0
           fi
+          # Resolve the default branch via REST (avoids a GraphQL defaultBranchRef
+          # lookup that PATs without full repo scope cannot satisfy).
+          PLAYGROUND_REF=$(gh api repos/hew-lang/playground --jq '.default_branch' 2>/dev/null || echo "main")
           gh workflow run build.yml \
             -R hew-lang/playground \
+            --ref "${PLAYGROUND_REF}" \
             -f version="${VERSION}"
 
   # ─────────────────────────────────────────────────────────────────────────

@@ -230,6 +230,45 @@ impl Checker {
 
     /// Pass 1: Collect type definitions
     pub(super) fn collect_types(&mut self, program: &Program) {
+        // Pre-register TypeDecls from non-root module_graph modules into
+        // `type_defs` so that:
+        //   (a) `locally_non_generic` in `resolve_type_expr` can suppress
+        //       fresh-var injection for opaque handle types (Sender, Receiver)
+        //   (b) non-root module body-checking can access struct fields and
+        //       enum variants of types defined within those modules
+        //
+        // Uses `pre_register_type_decl` which populates `type_defs` with
+        // correct field/variant data but skips `type_def_spans` (so the
+        // import path's `register_type_namespace_name` succeeds) and skips
+        // trait-registry / wire-method side effects (those are handled by
+        // the import path's full `register_type_decl` for pub types, and
+        // are not needed for internal non-pub types).
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    // Temporarily scope local_type_defs so that resolve_type_expr
+                    // inside field type resolution does not inject fresh type vars
+                    // on handle types from this module.
+                    let saved_local_type_defs = self.local_type_defs.clone();
+                    for (item, _) in &module.items {
+                        if let Item::TypeDecl(td) = item {
+                            self.local_type_defs.insert(td.name.clone());
+                        }
+                    }
+                    for (item, _) in &module.items {
+                        if let Item::TypeDecl(td) = item {
+                            self.pre_register_type_decl(td);
+                        }
+                    }
+                    self.local_type_defs = saved_local_type_defs;
+                }
+            }
+        }
+
+        // Process root module items (full registration with namespace dedup).
         for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
@@ -293,6 +332,125 @@ impl Checker {
                 _ => {}
             }
         }
+    }
+
+    /// Populate `type_defs` with a full `TypeDef` for a non-root module's
+    /// `TypeDecl`, including resolved fields and variant constructors.
+    ///
+    /// Deliberately skips:
+    ///   - `type_def_spans` — the import path handles namespace dedup
+    ///   - `TraitRegistry` registration — the import path (or C module
+    ///     registry) handles trait derivation for exported types
+    ///   - Wire-method registration — only relevant for the import surface
+    ///   - `fn_sigs` variant constructors — avoids conflicting with the
+    ///     import path's own constructor registration
+    ///
+    /// The import path's `register_type_decl` call will overwrite this entry
+    /// for `pub` types with the fully side-effected version.
+    fn pre_register_type_decl(&mut self, td: &TypeDecl) {
+        if self.type_defs.contains_key(&td.name) {
+            return;
+        }
+        let kind = match td.kind {
+            TypeDeclKind::Struct => TypeDefKind::Struct,
+            TypeDeclKind::Enum => TypeDefKind::Enum,
+        };
+        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+
+        let mut fields = HashMap::new();
+        let mut variants = HashMap::new();
+        let mut hole_vars = Vec::new();
+        let enum_return_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+
+        for item in &td.body {
+            match item {
+                TypeBodyItem::Field { name, ty, .. } => {
+                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
+                    fields.insert(name.clone(), field_ty);
+                }
+                TypeBodyItem::Variant(variant) => {
+                    let return_type = Ty::Named {
+                        name: td.name.clone(),
+                        args: enum_return_args.clone(),
+                    };
+                    match &variant.kind {
+                        VariantKind::Unit => {
+                            variants.insert(variant.name.clone(), VariantDef::Unit);
+                            // Register variant constructor so body-checking can construct values
+                            self.fn_sigs.insert(
+                                variant.name.clone(),
+                                FnSig {
+                                    type_params: type_param_names.clone(),
+                                    return_type,
+                                    ..FnSig::default()
+                                },
+                            );
+                        }
+                        VariantKind::Tuple(tfields) => {
+                            let variant_tys: Vec<Ty> = tfields
+                                .iter()
+                                .map(|(te, _)| {
+                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                })
+                                .collect();
+                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+                            let constructor_params: Vec<Ty> = tfields
+                                .iter()
+                                .map(|(te, _)| {
+                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                })
+                                .collect();
+                            self.fn_sigs.insert(
+                                variant.name.clone(),
+                                FnSig {
+                                    type_params: type_param_names.clone(),
+                                    params: constructor_params,
+                                    return_type,
+                                    ..FnSig::default()
+                                },
+                            );
+                        }
+                        VariantKind::Struct(sfields) => {
+                            let variant_fields: Vec<(String, Ty)> = sfields
+                                .iter()
+                                .map(|(name, (te, _))| {
+                                    (
+                                        name.clone(),
+                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                    )
+                                })
+                                .collect();
+                            variants
+                                .insert(variant.name.clone(), VariantDef::Struct(variant_fields));
+                        }
+                    }
+                }
+                TypeBodyItem::Method(_) => {}
+            }
+        }
+
+        self.type_defs.insert(
+            td.name.clone(),
+            TypeDef {
+                kind,
+                name: td.name.clone(),
+                type_params: type_param_names,
+                fields,
+                variants,
+                methods: HashMap::new(),
+                doc_comment: td.doc_comment.clone(),
+                is_indirect: td.is_indirect,
+            },
+        );
+        self.record_type_def_inference_holes(&td.name, hole_vars);
     }
 
     pub(super) fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
@@ -1263,9 +1421,21 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name);
+                    // Temporarily scope local_type_defs to this module so
+                    // that register_channel_recv_builtins (called from
+                    // register_extern_block) can detect module-local types
+                    // like Receiver, and locally_non_generic suppresses
+                    // fresh-var injection for handle types like Sender.
+                    let saved_local_type_defs = self.local_type_defs.clone();
+                    for (item, _) in &module.items {
+                        if let Item::TypeDecl(td) = item {
+                            self.local_type_defs.insert(td.name.clone());
+                        }
+                    }
                     for (item, span) in &module.items {
                         self.collect_function_item(item, span);
                     }
+                    self.local_type_defs = saved_local_type_defs;
                 }
             }
         }
@@ -1993,11 +2163,29 @@ impl Checker {
     /// Register type declarations, trait declarations, and impl blocks from
     /// stdlib modules that have Hew source files. This makes trait methods
     /// (e.g. bench.Suite.add) visible to the type checker.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three-pass registration loop with local_type_defs scoping"
+    )]
     pub(super) fn register_stdlib_hew_items(
         &mut self,
         module_short: &str,
         items: &[Spanned<Item>],
     ) {
+        // Temporarily scope local_type_defs so that locally_non_generic in
+        // resolve_type_expr suppresses fresh-var injection for opaque handle
+        // types (e.g. Sender, Receiver) declared in this module.  Without
+        // this, impl-method signatures resolved here would get Sender<?T>
+        // while the same signatures registered during collect_functions
+        // (module_graph traversal) use bare Sender — causing a type mismatch
+        // when body-checking the non-root module.
+        let saved_local_type_defs = self.local_type_defs.clone();
+        for (item, _) in items {
+            if let Item::TypeDecl(td) = item {
+                self.local_type_defs.insert(td.name.clone());
+            }
+        }
+
         // Pass 1: Register types, traits, and functions first
         for (item, span) in items {
             match item {
@@ -2100,6 +2288,7 @@ impl Checker {
                 _ => {}
             }
         }
+        self.local_type_defs = saved_local_type_defs;
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -2283,6 +2472,16 @@ impl Checker {
         items: &[Spanned<Item>],
         spec: &Option<ImportSpec>,
     ) {
+        // Temporarily scope local_type_defs so that locally_non_generic
+        // suppresses fresh-var injection for handle types defined in this
+        // module, matching the resolution context used during collect_functions.
+        let saved_local_type_defs = self.local_type_defs.clone();
+        for (item, _) in items {
+            if let Item::TypeDecl(td) = item {
+                self.local_type_defs.insert(td.name.clone());
+            }
+        }
+
         for (item, span) in items {
             match item {
                 Item::Function(fd) => {
@@ -2421,6 +2620,7 @@ impl Checker {
                 _ => {}
             }
         }
+        self.local_type_defs = saved_local_type_defs;
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

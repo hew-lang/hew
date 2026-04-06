@@ -72,9 +72,27 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name);
+                    // Temporarily scope local_type_defs / local_trait_defs to
+                    // this module so orphan-rule checks see module-local
+                    // definitions and locally_non_generic works correctly.
+                    let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_local_trait_defs = self.local_trait_defs.clone();
+                    for (item, _) in &module.items {
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                            }
+                            Item::Trait(tr) => {
+                                self.local_trait_defs.insert(tr.name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
                     for (item, span) in &module.items {
                         self.check_item(item, span);
                     }
+                    self.local_type_defs = saved_local_type_defs;
+                    self.local_trait_defs = saved_local_trait_defs;
                 }
             }
             self.current_module = None;

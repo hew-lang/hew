@@ -478,6 +478,7 @@ add_e2e_reject_test(node_lookup_assign_reject e2e_negative node_lookup_assign_re
 add_e2e_reject_test(array_to_vec_actor_ref_reject e2e_negative array_to_vec_actor_ref_reject "coerceType: no known conversion")
 add_e2e_reject_test(let_vec_actor_ref_reject      e2e_negative let_vec_actor_ref_reject      "coerceType: no known conversion")
 add_e2e_reject_test(composite_typearg_reject      e2e_negative composite_typearg_reject      "composite type arguments")
+add_e2e_reject_test(composite_typearg_struct_init_reject e2e_negative composite_typearg_struct_init_reject "composite type arguments")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

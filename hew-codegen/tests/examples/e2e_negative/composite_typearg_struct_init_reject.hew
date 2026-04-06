@@ -1,0 +1,14 @@
+// Regression: generic struct literal inferred as Wrapper<Option<int>> in a
+// non-generic context. generateStructInit must reject composite type arguments
+// fail-closed before specialization/lookup can continue.
+type Wrapper<T> {
+    inner: T;
+}
+
+fn main() {
+    let w = Wrapper { inner: Some(42) };
+    match w.inner {
+        Some(v) => println(v),
+        None => println(-1),
+    }
+}

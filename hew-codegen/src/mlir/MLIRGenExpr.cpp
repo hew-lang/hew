@@ -2524,8 +2524,13 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
             // from the map after the call so the subsequent end() check uses
             // a valid iterator regardless of whether specialization succeeded.
             auto maybeMangled = resolveTypeArgMangledName(*resolvedTy);
-            if (maybeMangled)
-              it = structTypes.find(*maybeMangled);
+            if (!maybeMangled) {
+              emitError(location) << "generic struct '" << named->name
+                                  << "': composite type arguments (Option<T>, Result<T,E>, "
+                                     "tuples, slices, …) are not supported as type parameters";
+              return nullptr;
+            }
+            it = structTypes.find(*maybeMangled);
           }
         }
       }

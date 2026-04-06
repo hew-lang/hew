@@ -155,16 +155,165 @@ impl Checker {
                 if self.type_satisfies_trait_bound(&resolved_arg, bound) {
                     continue;
                 }
-                self.report_error(
+                let msg = format!(
+                    "type `{}` does not implement trait `{bound}` required by `{param_name}`",
+                    resolved_arg.user_facing()
+                );
+                let suggestions = self.diagnose_bound_failure_suggestions(&resolved_arg, bound);
+                self.report_error_with_suggestions(
                     TypeErrorKind::BoundsNotSatisfied,
                     span,
-                    format!(
-                        "type `{}` does not implement trait `{bound}` required by `{param_name}`",
-                        resolved_arg.user_facing()
-                    ),
+                    msg,
+                    suggestions,
                 );
             }
         }
+    }
+
+    /// Produces 0-or-1 suggestion strings explaining *why* a `BoundsNotSatisfied`
+    /// error was raised for a `Ty::Named` type.  Called only after
+    /// `type_satisfies_trait_bound` has already returned `false`.
+    ///
+    /// Returns an empty vec when no specific diagnosis is available (e.g. primitive
+    /// types, trait-objects, or unknown traits).  Returns a single-element vec with
+    /// an actionable hint when the failure mode can be identified:
+    ///
+    /// * **E1 guard** — trait has associated types or generic methods; explicit impl needed.
+    /// * **Missing methods** — type exists but is missing required trait methods.
+    /// * **Arity mismatch** — method exists with the wrong number of parameters.
+    /// * **Signature mismatch** — method exists with wrong return type or parameter types.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each branch is a distinct failure mode with its own message"
+    )]
+    fn diagnose_bound_failure_suggestions(&mut self, ty: &Ty, bound: &str) -> Vec<String> {
+        let Ty::Named { name, .. } = ty else {
+            return vec![];
+        };
+        // Normalize module-qualified names (mirrors type_structurally_satisfies).
+        let type_name: String = {
+            let uq = self.strip_module_qualifier(name);
+            match uq {
+                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                _ => name.clone(),
+            }
+        };
+        let trait_name: String = {
+            let uq = self.strip_module_qualifier(bound);
+            match uq {
+                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                _ => bound.to_string(),
+            }
+        };
+
+        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+            return vec![];
+        };
+
+        // E1 guard: associated types require an explicit impl alias scope.
+        if !trait_info.associated_types.is_empty() {
+            return vec![format!(
+                "trait `{trait_name}` requires an explicit `impl` declaration \
+                 (it declares associated types)"
+            )];
+        }
+        // E1 guard: generic methods require per-call substitution (later slice).
+        if trait_info
+            .methods
+            .iter()
+            .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
+        {
+            return vec![format!(
+                "trait `{trait_name}` requires an explicit `impl` declaration \
+                 (it has generic methods)"
+            )];
+        }
+
+        // Collect required methods; also catches E1 guards deep in the super-trait chain.
+        let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())
+        else {
+            return vec![format!(
+                "trait `{trait_name}` requires an explicit `impl` declaration \
+                 (a super-trait declares associated types or generic methods)"
+            )];
+        };
+
+        // A trait with no required methods (all defaults or empty) still needs an explicit impl.
+        if required.is_empty() {
+            return vec![format!(
+                "trait `{trait_name}` has no required methods — add an explicit \
+                 `impl {trait_name} for {type_name}` declaration"
+            )];
+        }
+
+        let concrete_ty = Ty::Named {
+            name: type_name.clone(),
+            args: vec![],
+        };
+        let mut missing: Vec<String> = Vec::new();
+
+        for method_name in &required {
+            let Some(trait_sig) = self.lookup_trait_method(&trait_name, method_name) else {
+                continue;
+            };
+
+            let Some(type_sig) =
+                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
+            else {
+                missing.push(format!("`{method_name}`"));
+                continue;
+            };
+
+            // Arity mismatch — return on first found.
+            if trait_sig.params.len() != type_sig.params.len() {
+                return vec![format!(
+                    "`{type_name}::{method_name}` has {} parameter(s) but trait \
+                     `{trait_name}` requires {} — arity mismatch",
+                    type_sig.params.len(),
+                    trait_sig.params.len(),
+                )];
+            }
+
+            // Return-type mismatch.
+            let expected_ret =
+                self.substitute_named_param(&trait_sig.return_type, "Self", &concrete_ty);
+            if expected_ret != type_sig.return_type {
+                return vec![format!(
+                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_name}` \
+                     requires `{}` — return-type mismatch",
+                    type_sig.return_type.user_facing(),
+                    expected_ret.user_facing(),
+                )];
+            }
+
+            // Per-parameter type mismatch.
+            for (i, (trait_param, type_param)) in trait_sig
+                .params
+                .iter()
+                .zip(type_sig.params.iter())
+                .enumerate()
+            {
+                let expected = self.substitute_named_param(trait_param, "Self", &concrete_ty);
+                if expected != *type_param {
+                    return vec![format!(
+                        "`{type_name}::{method_name}` parameter {} has type `{}` but \
+                         trait `{trait_name}` requires `{}` — type mismatch",
+                        i + 1,
+                        type_param.user_facing(),
+                        expected.user_facing(),
+                    )];
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            let list = missing.join(", ");
+            return vec![format!(
+                "`{type_name}` is missing method(s) required by trait `{trait_name}`: {list}"
+            )];
+        }
+
+        vec![]
     }
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {

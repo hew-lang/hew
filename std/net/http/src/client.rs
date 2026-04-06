@@ -9,7 +9,7 @@
 
 use hew_cabi::{
     cabi::{cstr_to_str, str_to_malloc},
-    vec::{hew_vec_get_str, ElemKind, HewVec},
+    vec::{ElemKind, HewVec},
 };
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
@@ -73,14 +73,6 @@ fn error_response(msg: &str) -> *mut HewHttpResponse {
     build_response(-1, msg, std::ptr::null_mut())
 }
 
-/// Free a C string allocated by `strdup`/`malloc` if present.
-unsafe fn free_c_string(ptr: *const c_char) {
-    if !ptr.is_null() {
-        // SAFETY: ptr was allocated by strdup/malloc and is owned by the caller.
-        unsafe { libc::free(ptr.cast_mut().cast()) };
-    }
-}
-
 /// Parse a `"Header-Name: value"` line into an owned `(name, value)` pair.
 fn parse_header_line(header: &str) -> Option<(String, String)> {
     let (name, value) = header.split_once(':')?;
@@ -116,8 +108,12 @@ unsafe fn parse_headers_from_c_array(
     parsed_headers
 }
 
-/// Parse a Hew `Vec<String>` of header lines into owned header pairs.
-unsafe fn parse_headers_from_hew_vec(
+/// Parse a Hew `Vec<(String, String)>` of header pairs into owned `(name, value)` pairs.
+///
+/// Fails closed: returns an error if `headers` is not a Plain-kind vector with the
+/// expected element size for a `(String, String)` pair, or if any name or value
+/// pointer is null or contains invalid UTF-8.
+unsafe fn parse_headers_from_hew_tuple_vec(
     headers: *mut HewVec,
 ) -> Result<Vec<(String, String)>, String> {
     if headers.is_null() {
@@ -126,8 +122,15 @@ unsafe fn parse_headers_from_hew_vec(
 
     // SAFETY: caller guarantees headers is a valid HewVec pointer.
     let headers_ref = unsafe { &*headers };
-    if headers_ref.elem_kind != ElemKind::String {
-        return Err("headers must be Vec<String>".to_string());
+    if headers_ref.elem_kind != ElemKind::Plain {
+        return Err("request headers must be Vec<(String, String)>".to_string());
+    }
+    let expected_elem_size = 2 * std::mem::size_of::<*mut c_char>();
+    if headers_ref.elem_size != expected_elem_size {
+        return Err(format!(
+            "request headers Vec element size mismatch: expected {expected_elem_size}, got {}",
+            headers_ref.elem_size
+        ));
     }
 
     let mut parsed_headers = Vec::with_capacity(headers_ref.len);
@@ -135,19 +138,29 @@ unsafe fn parse_headers_from_hew_vec(
         let Ok(index_i64) = i64::try_from(index) else {
             return Err("headers length exceeds Hew index range".to_string());
         };
-        // SAFETY: index_i64 was derived from an in-bounds usize index.
-        let raw_header = unsafe { hew_vec_get_str(headers, index_i64) };
-        // SAFETY: raw_header came from hew_vec_get_str and is either null or a
-        // valid duplicated C string for this element.
-        let header_text = unsafe { cstr_to_str(raw_header) }.map(str::to_owned);
-        // SAFETY: raw_header came from hew_vec_get_str and must be released here.
-        unsafe { free_c_string(raw_header) };
-        let Some(header_text) = header_text else {
-            continue;
-        };
-        if let Some((name, value)) = parse_header_line(&header_text) {
-            parsed_headers.push((name, value));
+        // SAFETY: index_i64 is a valid in-bounds index for this HewVec.
+        let elem_ptr =
+            unsafe { hew_cabi::vec::hew_vec_get_generic(headers.cast_const(), index_i64) };
+        if elem_ptr.is_null() {
+            return Err(format!(
+                "corrupt header Vec: null element pointer at in-bounds index {index_i64}"
+            ));
         }
+        // SAFETY: elem_ptr points to a HewStringPair within the vector's element buffer.
+        // The pair's string pointers are owned by the vector; we read but do not free them.
+        let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+        if pair.name.is_null() || pair.value.is_null() {
+            return Err("malformed header pair: null name or value pointer".to_string());
+        }
+        // SAFETY: pair.name is a valid NUL-terminated C string owned by the vector.
+        let name = unsafe { cstr_to_str(pair.name) }
+            .map(str::to_owned)
+            .ok_or_else(|| "malformed header pair: invalid UTF-8 in name".to_string())?;
+        // SAFETY: pair.value is a valid NUL-terminated C string owned by the vector.
+        let value = unsafe { cstr_to_str(pair.value) }
+            .map(str::to_owned)
+            .ok_or_else(|| "malformed header pair: invalid UTF-8 in value".to_string())?;
+        parsed_headers.push((name, value));
     }
 
     Ok(parsed_headers)
@@ -366,12 +379,13 @@ pub unsafe extern "C" fn hew_http_request(
     unsafe { request_from_c_parts(method, url, body, &parsed_headers) }
 }
 
-/// Hew-facing wrapper for [`hew_http_request`] that accepts `Vec<String>` headers.
+/// Hew-facing wrapper for [`hew_http_request`] that accepts `Vec<(String, String)>` headers.
 ///
 /// # Safety
 ///
 /// `method`, `url`, and `body` follow the same string rules as
-/// [`hew_http_request`]. `headers` must be null or a valid `Vec<String>` handle.
+/// [`hew_http_request`]. `headers` must be null or a valid `Vec<(String, String)>` handle
+/// (Plain-kind `HewVec` with element size matching two pointer-width fields).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_hew(
     method: *const c_char,
@@ -379,8 +393,8 @@ pub unsafe extern "C" fn hew_http_request_hew(
     body: *const c_char,
     headers: *mut HewVec,
 ) -> *mut HewHttpResponse {
-    // SAFETY: headers follows this function's documented Vec<String> ABI contract.
-    let parsed_headers = match unsafe { parse_headers_from_hew_vec(headers) } {
+    // SAFETY: headers follows this function's documented Vec<(String, String)> ABI contract.
+    let parsed_headers = match unsafe { parse_headers_from_hew_tuple_vec(headers) } {
         Ok(parsed_headers) => parsed_headers,
         Err(message) => return error_response(&message),
     };
@@ -658,7 +672,7 @@ pub unsafe extern "C" fn hew_http_request_string(
     unsafe { take_body_string(resp) }
 }
 
-/// Hew-facing wrapper for [`hew_http_request_string`] that accepts `Vec<String>`
+/// Hew-facing wrapper for [`hew_http_request_string`] that accepts `Vec<(String, String)>`
 /// headers.
 ///
 /// # Safety
@@ -702,14 +716,28 @@ mod tests {
         (status, body)
     }
 
-    /// Build a Hew `Vec<String>` populated with the provided header lines.
-    unsafe fn make_string_vec(values: &[&str]) -> *mut HewVec {
-        // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
-        let vec = unsafe { hew_cabi::vec::hew_vec_new_str() };
-        for value in values {
-            let value = CString::new(*value).unwrap();
-            // SAFETY: vec is a valid string vec and value is a valid C string.
-            unsafe { hew_cabi::vec::hew_vec_push_str(vec, value.as_ptr()) };
+    /// Build a Hew `Vec<(String, String)>` populated with the provided `(name, value)` pairs.
+    ///
+    /// Produces a Plain-kind `HewVec` of `HewStringPair` elements, matching the ABI expected
+    /// by `parse_headers_from_hew_tuple_vec` and the Hew compiler's `Vec<(String, String)>` layout.
+    unsafe fn make_tuple_vec(pairs: &[(&str, &str)]) -> *mut HewVec {
+        let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
+            .expect("pointer-pair elem_size always fits i64");
+        // SAFETY: hew_vec_new_generic allocates a valid Plain-kind HewVec.
+        let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+        for (name, value) in pairs {
+            let name_c = CString::new(*name).unwrap();
+            let value_c = CString::new(*value).unwrap();
+            let pair = HewStringPair {
+                // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
+                name: unsafe { libc::strdup(name_c.as_ptr()) },
+                // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
+                value: unsafe { libc::strdup(value_c.as_ptr()) },
+            };
+            // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+            unsafe {
+                hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+            };
         }
         vec
     }
@@ -1290,10 +1318,12 @@ mod tests {
     }
 
     #[test]
-    fn request_hew_rejects_non_string_header_vec() {
+    fn request_hew_rejects_wrong_elem_size_vec() {
         let method = CString::new("GET").unwrap();
         let url = CString::new("http://example.com").unwrap();
-        // SAFETY: hew_vec_new allocates a valid non-string HewVec for the tested failure path.
+        // hew_vec_new() produces a Plain-kind vec with elem_size=0, which is not a
+        // valid Vec<(String, String)> (expected elem_size = 2 * size_of::<*mut c_char>()).
+        // SAFETY: hew_vec_new allocates a valid HewVec handle for the tested failure path.
         let headers = unsafe { hew_cabi::vec::hew_vec_new() };
         // SAFETY: method/url are valid C strings and headers is a live HewVec handle.
         let resp =
@@ -1301,7 +1331,10 @@ mod tests {
         // SAFETY: resp is a valid error response and headers is still owned by the test.
         let (status, body) = unsafe { take_response(resp) };
         assert_eq!(status, -1);
-        assert!(body.contains("Vec<String>"));
+        assert!(
+            body.contains("Vec<(String, String)>") || body.contains("mismatch"),
+            "expected type-mismatch error, got: {body}"
+        );
         // SAFETY: headers was allocated by hew_vec_new and has not been freed yet.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
     }
@@ -1555,9 +1588,9 @@ mod tests {
 
         let method = CString::new("GET").unwrap();
         let url = CString::new(format!("{addr}/hew-surface")).unwrap();
-        // SAFETY: make_string_vec returns a live Vec<String> handle for this request.
-        let headers = unsafe { make_string_vec(&["X-Hew-Surface: client"]) };
-        // SAFETY: method/url are valid C strings and headers is a valid string vec.
+        // SAFETY: make_tuple_vec returns a live Vec<(String, String)> handle for this request.
+        let headers = unsafe { make_tuple_vec(&[("X-Hew-Surface", "client")]) };
+        // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
         let resp =
             unsafe { hew_http_request_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers) };
         assert!(!resp.is_null());
@@ -1565,7 +1598,7 @@ mod tests {
         let (status, body) = unsafe { take_response(resp) };
         assert_eq!(status, 200);
         assert_eq!(body, "ok");
-        // SAFETY: headers was allocated by make_string_vec and remains owned here.
+        // SAFETY: headers was allocated by make_tuple_vec and its string fields are freed by hew_vec_free.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
         handle.join().unwrap();
     }
@@ -1609,14 +1642,14 @@ mod tests {
         let (addr, handle) = start_echo_server(200, "hew request string");
         let method = CString::new("GET").unwrap();
         let url = CString::new(format!("{addr}/hew-string")).unwrap();
-        // SAFETY: make_string_vec returns a live, empty Vec<String> handle.
-        let headers = unsafe { make_string_vec(&[]) };
-        // SAFETY: method/url are valid C strings and headers is a valid string vec.
+        // SAFETY: make_tuple_vec returns a live, empty Vec<(String, String)> handle.
+        let headers = unsafe { make_tuple_vec(&[]) };
+        // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
         let result = unsafe {
             hew_http_request_string_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers)
         };
         assert!(!result.is_null());
-        // SAFETY: headers was allocated by make_string_vec and remains owned here.
+        // SAFETY: headers was allocated by make_tuple_vec and its string fields are freed by hew_vec_free.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
         // SAFETY: result is a valid malloc'd C string.
         let body = unsafe { CStr::from_ptr(result) }

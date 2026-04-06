@@ -5,7 +5,7 @@ import std::testing;
 
 #[test]
 fn test_request_surface_is_importable_from_http_client() {
-    let headers: Vec<String> = Vec::new();
+    let headers: Vec<(String, String)> = Vec::new();
     http_client.set_timeout(250);
 
     let resp = http_client.request("TRACE", "http://example.com", "", headers);
@@ -15,9 +15,23 @@ fn test_request_surface_is_importable_from_http_client() {
 
 #[test]
 fn test_request_string_surface_is_importable_from_http_client() {
-    let headers: Vec<String> = Vec::new();
+    let headers: Vec<(String, String)> = Vec::new();
     http_client.set_timeout(250);
 
     let _body = http_client.request_string("TRACE", "http://example.com", "", headers);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_request_with_header_pairs() {
+    let headers: Vec<(String, String)> = Vec::new();
+    headers.push(("Accept", "application/json"));
+    headers.push(("X-Custom-Header", "hew-test"));
+    http_client.set_timeout(250);
+
+    let resp = http_client.request("GET", "http://example.com", "", headers);
+    // Transport will fail (TRACE/unsupported method or network), status -1 is acceptable.
+    // The important property is that the call compiles and executes without panic.
+    resp.free();
     testing.assert_true(true);
 }

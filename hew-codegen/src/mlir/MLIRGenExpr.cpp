@@ -1582,8 +1582,16 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
     std::vector<std::string> typeArgNames;
-    for (const auto &ta : *call.type_args)
-      typeArgNames.push_back(resolveTypeArgMangledName(ta.value));
+    for (const auto &ta : *call.type_args) {
+      auto resolved = resolveTypeArgMangledName(ta.value);
+      if (!resolved) {
+        emitError(location) << "generic call '" << calleeName
+                            << "': composite type arguments (Option<T>, Result<T,E>, "
+                               "tuples, slices, …) are not supported as type parameters";
+        return nullptr;
+      }
+      typeArgNames.push_back(std::move(*resolved));
+    }
 
     // Named generic function (fn<T>(...) { ... }) path.
     auto genIt = genericFunctions.find(calleeName);
@@ -2515,8 +2523,9 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
             // any iterator obtained before this call.  Always re-fetch `it`
             // from the map after the call so the subsequent end() check uses
             // a valid iterator regardless of whether specialization succeeded.
-            std::string mangledName = resolveTypeArgMangledName(*resolvedTy);
-            it = structTypes.find(mangledName);
+            auto maybeMangled = resolveTypeArgMangledName(*resolvedTy);
+            if (maybeMangled)
+              it = structTypes.find(*maybeMangled);
           }
         }
       }

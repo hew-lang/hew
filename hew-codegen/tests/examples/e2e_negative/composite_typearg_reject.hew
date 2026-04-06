@@ -1,0 +1,12 @@
+// Regression: composite type arg (Option<int>) passed to a generic function.
+// After enrichment Option<int> becomes TypeExpr::Option(int) in the AST,
+// which the C++ msgpack reader maps to ast::TypeOption.
+// resolveTypeArgMangledName must return nullopt for this case and the
+// specialization must abort with a clear diagnostic before installing
+// any typeParamSubstitutions.
+fn identity<T>(x: T) -> T { x }
+
+fn main() {
+    let x = identity<Option<int>>(Some(42));
+    println(x);
+}

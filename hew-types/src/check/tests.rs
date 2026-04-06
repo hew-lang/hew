@@ -6079,9 +6079,12 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 // `lookup_scoped_item` scoped-name fallback.
 //
 // Body-level holes (expressions containing `_`) require non-root module body
-// checking from PR #756 before they propagate into the inference state.  That
-// path is deliberately out of scope here; only signature-level coverage is
-// proven in this slice.
+// checking from PR #756 to propagate into the inference state.  PR #756 added
+// the infrastructure; the tests below prove the deferred-hole drain path works
+// for non-root module bodies too:
+//   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
+//   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
+//   - `body_lambda_infer_param_hole_fails_closed`: unresolvable lambda `|x: _|`
 
 #[cfg(test)]
 mod non_root_module_inference_scope {
@@ -6333,6 +6336,231 @@ mod non_root_module_inference_scope {
         assert!(
             errs.len() >= 2,
             "expected at least 2 InferenceFailed errors for two `_`-param fns in non-root module; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-root module body containing `let y = x as _` must fail closed:
+    /// the unresolved `_` cast target must produce an `InferenceFailed` error.
+    ///
+    /// Regression test: deferred inference holes created during non-root module
+    /// body checking (via `synthesize_cast`) were not reported by
+    /// `report_unresolved_inference_holes` because the body-level deferred-hole
+    /// list was only flushed for the *root* module's item walk, not for
+    /// non-root module bodies.
+    #[test]
+    fn body_cast_infer_hole_fails_closed() {
+        // fn foo(x: i64) { let y = x as _; }  — `_` cast target is unresolved
+        let mod_id = ModuleId::new(vec!["castmod".to_string()]);
+        let root_id = ModuleId::root();
+
+        let cast_expr = Expr::Cast {
+            expr: Box::new((Expr::Identifier("x".to_string()), 20..21)),
+            ty: (TypeExpr::Infer, 25..26),
+        };
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            ty: None,
+            value: Some((cast_expr, 18..26)),
+        };
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "foo".to_string(),
+            type_params: None,
+            params: vec![Param {
+                name: "x".to_string(),
+                ty: (
+                    TypeExpr::Named {
+                        name: "i64".to_string(),
+                        type_args: None,
+                    },
+                    7..10,
+                ),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(let_stmt, 13..27)],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let non_root = Module {
+            id: mod_id.clone(),
+            items: vec![(Item::Function(fn_decl), 0..30)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(non_root);
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            !errs.is_empty(),
+            "expected InferenceFailed for unresolved `_` cast target in non-root module body; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-root module body with `let y: _ = 42` must resolve the `_`
+    /// annotation to `i64` from the value — no spurious `InferenceFailed`.
+    ///
+    /// This is the positive-path counterpart to `body_cast_infer_hole_fails_closed`:
+    /// a deferred annotation hole that IS constrained by body-checking must not
+    /// produce a false diagnostic.  Before PR #756 added non-root body checking,
+    /// this would have left the type-var unresolved and erroneously fired.
+    #[test]
+    fn body_let_annotation_infer_resolves_cleanly() {
+        // fn bar() { let y: _ = 42; }  — `_` must resolve to i64 from the value
+        let mod_id = ModuleId::new(vec!["letmod".to_string()]);
+        let root_id = ModuleId::root();
+
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            ty: Some((TypeExpr::Infer, 17..18)),
+            value: Some(make_int_literal(42, 21..23)),
+        };
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "bar".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(let_stmt, 13..24)],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let non_root = Module {
+            id: mod_id.clone(),
+            items: vec![(Item::Function(fn_decl), 0..30)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(non_root);
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.is_empty(),
+            "let `_` annotation must resolve from value — no InferenceFailed expected; got: {errs:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "let `_` annotation must resolve cleanly; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-root module body containing a lambda with an unresolved `_`
+    /// parameter type must fail closed: the deferred hole created during
+    /// body checking must produce an `InferenceFailed` error.
+    ///
+    /// Regression: the lambda-param deferred-hole path
+    /// (`expressions.rs::synthesize_lambda`) must also drain into
+    /// `report_unresolved_inference_holes` for non-root module bodies.
+    #[test]
+    fn body_lambda_infer_param_hole_fails_closed() {
+        // fn foo() { let f = |x: _| x; }  — lambda param `_` never constrained
+        let mod_id = ModuleId::new(vec!["lambdamod".to_string()]);
+        let root_id = ModuleId::root();
+
+        // |x: _| x  — lambda with infer-typed parameter, no call site to resolve it
+        let lambda_expr = Expr::Lambda {
+            is_move: false,
+            type_params: None,
+            params: vec![LambdaParam {
+                name: "x".to_string(),
+                ty: Some((TypeExpr::Infer, 15..16)),
+            }],
+            return_type: None,
+            body: Box::new((Expr::Identifier("x".to_string()), 19..20)),
+        };
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("f".to_string()), 10..11),
+            ty: None,
+            value: Some((lambda_expr, 14..21)),
+        };
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "foo".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(let_stmt, 9..22)],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let non_root = Module {
+            id: mod_id.clone(),
+            items: vec![(Item::Function(fn_decl), 0..30)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(non_root);
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            !errs.is_empty(),
+            "expected InferenceFailed for unresolved lambda `_` param in non-root module body; got errors: {:?}",
             output.errors
         );
     }

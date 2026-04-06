@@ -10,6 +10,8 @@ hew run file.hew [-- args...]     # Compile and run
 hew run file.hew --profile        # Compile, run, and enable the built-in profiler
 hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
 hew check file.hew                # Parse + typecheck only
+hew watch file.hew                # Watch for changes and re-check continuously
+hew watch --run file.hew          # Watch and re-run on successful check
 hew doc file.hew                  # Generate documentation
 hew eval "expr"                   # Evaluate an expression
 hew eval -f file.hew              # Evaluate a file in REPL context
@@ -68,6 +70,35 @@ session or file.
 
 For common import-resolution, type-checking, and build failures, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
+## Watch mode
+
+`hew watch` continuously monitors a `.hew` file (or directory) for changes
+and re-runs type-checking automatically. It is the fastest inner-loop
+workflow when iterating on types, signatures, or module structure.
+
+```sh
+hew watch myapp.hew               # Re-check on every save
+hew watch --run myapp.hew         # Re-check and re-run on each successful check
+hew watch --clear myapp.hew       # Clear terminal before each check
+hew watch --debounce 500 myapp.hew  # Wait 500 ms after last event before re-checking
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| _(none)_ | — | File or directory to watch (required) |
+| `--run` | off | Build and run the program after each successful check |
+| `--clear` | off | Clear the terminal before each re-check pass |
+| `--debounce <ms>` | `300` | Milliseconds to wait after the last file-system event before re-checking; increase on slow disks or large trees |
+
+When watching a **directory**, `hew watch` re-checks the directory's entry
+file (the `.hew` file whose stem matches the directory name) whenever any
+`.hew` file inside changes. When watching a **single file**, only changes
+to that file trigger a re-check.
+
+`hew watch` runs the same check pipeline as `hew check`, so diagnostics
+appear in the same format. Use `--run` to also execute the program, which
+is useful for quick feedback on output changes. Exit with `Ctrl-C`.
 
 ## Scaffolding a new project
 

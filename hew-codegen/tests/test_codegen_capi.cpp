@@ -558,6 +558,52 @@ static void test_collection_clone_methods_lower_to_runtime_calls() {
   PASS();
 }
 
+static void test_collection_clone_receiver_temporaries_drop() {
+  TEST(collection_clone_receiver_temporaries_drop);
+  auto ast =
+      hewToMsgpack("fn main() { "
+                   "  let v: Vec<int> = Vec::new(); println(v.clone().len()); "
+                   "  let m: HashMap<String, int> = HashMap::new(); println(m.clone().len()); "
+                   "  let s: HashSet<String> = HashSet::new(); println(s.clone().len()); "
+                   "}");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) {
+    FAIL(hew_codegen_last_error());
+    return;
+  }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  int vecDropCount = countOccurrences(mlir, "hew_vec_free");
+  if (vecDropCount < 3) {
+    FAIL(
+        ("Vec clone receiver temp: expected >= 3 hew_vec_free, got " + std::to_string(vecDropCount))
+            .c_str());
+    return;
+  }
+  int mapDropCount = countOccurrences(mlir, "hew_hashmap_free_impl");
+  if (mapDropCount < 3) {
+    FAIL(("HashMap clone receiver temp: expected >= 3 hew_hashmap_free_impl, got " +
+          std::to_string(mapDropCount))
+             .c_str());
+    return;
+  }
+  int setDropCount = countOccurrences(mlir, "hew_hashset_free");
+  if (setDropCount < 3) {
+    FAIL(("HashSet clone receiver temp: expected >= 3 hew_hashset_free, got " +
+          std::to_string(setDropCount))
+             .c_str());
+    return;
+  }
+  PASS();
+}
+
 static void test_rc_outlive_block_drop_registered() {
   TEST(rc_outlive_block_drop_registered);
   // Rc alias escaping a block as trailing expression must still get
@@ -916,6 +962,7 @@ int main() {
   test_rc_rebind_emits_clone_and_drop();
   test_rc_method_clone_emits_clone_and_drop();
   test_collection_clone_methods_lower_to_runtime_calls();
+  test_collection_clone_receiver_temporaries_drop();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
   test_rc_call_boundary_borrow_no_clone();

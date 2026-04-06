@@ -4439,6 +4439,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (!receiver)
     return nullptr;
 
+  // Chained clone() receivers produce owned temporaries (e.g. v.clone().len()).
+  // Materialize only this narrow shape so the temporary gets a scope-exit drop
+  // without widening into receiver paths that are explicitly callee-consuming.
+  if (auto *recvMethod = std::get_if<ast::ExprMethodCall>(&mc.receiver->value.kind))
+    if (recvMethod->method == "clone")
+      materializeTemporary(receiver, mc.receiver->value);
+
   // Handle type dispatch (http.Server, net.Connection, etc.)
   if (auto result = generateHandleMethodCall(mc, receiver, location))
     return *result;

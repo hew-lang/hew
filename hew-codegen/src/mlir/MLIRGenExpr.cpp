@@ -2880,6 +2880,13 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
   auto emitVecMethod = [&](mlir::Value vecValue, mlir::Type elemType,
                            mlir::Value &resultOut) -> bool {
+    if (method == "clone") {
+      resultOut = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{vecValue.getType()},
+                                             mlir::SymbolRefAttr::get(&context, "hew_vec_clone"),
+                                             mlir::ValueRange{vecValue})
+                      .getResult();
+      return true;
+    }
     if (method == "push") {
       auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
       if (!val)
@@ -3191,6 +3198,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
   auto emitHashMapMethod = [&](mlir::Value mapValue, mlir::Type keyType, mlir::Type valueType,
                                mlir::Value &resultOut) -> bool {
+    if (method == "clone") {
+      resultOut =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{mapValue.getType()},
+                                     mlir::SymbolRefAttr::get(&context, "hew_hashmap_clone_impl"),
+                                     mlir::ValueRange{mapValue})
+              .getResult();
+      return true;
+    }
     if (method == "insert" || method == "set") {
       auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
       auto val = generateExpression(ast::callArgExpr(mc.args[1]).value);
@@ -3285,6 +3300,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // HashSet<T> method dispatcher
   auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType, mlir::Value argValue,
                                mlir::Value &resultOut) -> bool {
+    if (method == "clone") {
+      resultOut =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{setValue.getType()},
+                                     mlir::SymbolRefAttr::get(&context, "hew_hashset_clone"),
+                                     mlir::ValueRange{setValue})
+              .getResult();
+      return true;
+    }
     // Helper for insert/contains/remove — identical structure, different runtime function.
     auto emitHashSetElemOp = [&](llvm::StringRef opName) -> bool {
       if (!argValue) {
@@ -3489,20 +3512,10 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     }
   }
 
-  if (method == "clone") {
-    // Rc<T>.clone() must route to RcCloneOp (handled later in the Rc
-    // methods section), not the String clone path.
-    bool receiverIsRc = false;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
-      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind))
-        receiverIsRc = (named->name == "Rc");
-    }
-    if (!receiverIsRc) {
-      return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
-                                         builder.getStringAttr("clone"), receiver,
-                                         mlir::ValueRange{})
-          .getResult();
-    }
+  if (method == "clone" && mlir::isa<hew::StringRefType>(receiverType)) {
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("clone"), receiver, mlir::ValueRange{})
+        .getResult();
   }
   if (method == "trim") {
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),

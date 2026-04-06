@@ -1,0 +1,30 @@
+fn main() {
+    let words: Vec<String> = Vec::new();
+    words.push("ant");
+    words.push("bee");
+    let cloned_words = words.clone();
+    words.push("cat");
+    println(cloned_words.len());
+    println(cloned_words.get(0));
+    println(cloned_words.get(1));
+
+    let map: HashMap<String, String> = HashMap::new();
+    map.insert("alpha", "one");
+    let cloned_map = map.clone();
+    map.insert("beta", "two");
+    println(cloned_map.len());
+    match cloned_map.get("alpha") {
+        Some(value) => println(value),
+        None => println("missing"),
+    }
+    println(cloned_map.contains_key("beta"));
+
+    let set: HashSet<String> = HashSet::new();
+    set.insert("red");
+    set.insert("blue");
+    let cloned_set = set.clone();
+    set.remove("blue");
+    println(cloned_set.len());
+    println(cloned_set.contains("red"));
+    println(cloned_set.contains("blue"));
+}

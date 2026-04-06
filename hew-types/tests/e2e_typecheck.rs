@@ -66,6 +66,15 @@ fn assert_typechecks(path: &Path, label: &str) {
     );
 }
 
+fn assert_inline_typechecks_cleanly(source: &str, context: &str) {
+    let output = typecheck_inline(source);
+    assert!(
+        output.errors.is_empty(),
+        "{context}: expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
 fn test_directory(dir: &Path, label: &str) {
     let mut parse_ok = 0;
     let mut parse_fail = 0;
@@ -1516,6 +1525,48 @@ fn hashset_int_insert_ok() {
             s.insert(42);
         }",
         "HashSet<int> insert should be fine",
+    );
+}
+
+#[test]
+fn vec_clone_method_typechecks_and_returns_vec() {
+    assert_inline_typechecks_cleanly(
+        r"
+        fn main() {
+            let v: Vec<int> = Vec::new();
+            let c = v.clone();
+            c.push(42);
+            println(c.len());
+        }",
+        "Vec.clone() should resolve and return a usable Vec",
+    );
+}
+
+#[test]
+fn hashmap_clone_method_typechecks_and_returns_hashmap() {
+    assert_inline_typechecks_cleanly(
+        r#"
+        fn main() {
+            let m: HashMap<String, int> = HashMap::new();
+            let c = m.clone();
+            c.insert("key", 7);
+            println(c.contains_key("key"));
+        }"#,
+        "HashMap.clone() should resolve and return a usable HashMap",
+    );
+}
+
+#[test]
+fn hashset_clone_method_typechecks_and_returns_hashset() {
+    assert_inline_typechecks_cleanly(
+        r#"
+        fn main() {
+            let s: HashSet<String> = HashSet::new();
+            let c = s.clone();
+            c.insert("value");
+            println(c.contains("value"));
+        }"#,
+        "HashSet.clone() should resolve and return a usable HashSet",
     );
 }
 

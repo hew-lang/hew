@@ -390,6 +390,13 @@ impl Checker {
                     args: vec![val_ty],
                 }
             }
+            "clone" => {
+                self.check_arity(args, 0, "`HashMap::clone`", span);
+                Ty::Named {
+                    name: "HashMap".to_string(),
+                    args: vec![key_ty.clone(), val_ty.clone()],
+                }
+            }
             "len" => Ty::I64,
             "is_empty" => Ty::Bool,
             _ => {
@@ -431,6 +438,13 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 Ty::Bool
+            }
+            "clone" => {
+                self.check_arity(args, 0, "`HashSet::clone`", span);
+                Ty::Named {
+                    name: "HashSet".to_string(),
+                    args: vec![elem_ty.clone()],
+                }
             }
             "len" => Ty::I64,
             "is_empty" => Ty::Bool,
@@ -547,6 +561,10 @@ impl Checker {
             "clear" => {
                 self.check_arity(args, 0, "`Vec::clear`", span);
                 Ty::Unit
+            }
+            "clone" => {
+                self.check_arity(args, 0, "`Vec::clone`", span);
+                resolved.clone()
             }
             "set" => {
                 if let Some(idx) = args.first() {

@@ -1773,8 +1773,10 @@ impl Checker {
             ..FnSig::default()
         };
 
-        self.fn_sigs.insert(name.to_string(), sig);
-        self.record_fn_sig_inference_holes(name, hole_vars);
+        let key = scoped_module_item_name(self.current_module.as_deref(), name)
+            .unwrap_or_else(|| name.to_string());
+        self.fn_sigs.insert(key.clone(), sig);
+        self.record_fn_sig_inference_holes(&key, hole_vars);
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -1924,9 +1926,11 @@ impl Checker {
                 return_type,
                 ..FnSig::default()
             };
-            self.record_fn_sig_inference_holes(&f.name, hole_vars);
-            self.fn_sigs.insert(f.name.clone(), sig);
-            self.unsafe_functions.insert(f.name.clone());
+            let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
+                .unwrap_or_else(|| f.name.clone());
+            self.record_fn_sig_inference_holes(&key, hole_vars);
+            self.fn_sigs.insert(key.clone(), sig);
+            self.unsafe_functions.insert(key);
         }
 
         // Register codegen-intercepted channel functions that use
@@ -1948,9 +1952,9 @@ impl Checker {
     /// local module must define `Receiver` AND the extern block must
     /// have already registered `hew_channel_send`.
     pub(super) fn register_channel_recv_builtins(&mut self) {
-        if !self.local_type_defs.contains("Receiver")
-            || !self.fn_sigs.contains_key("hew_channel_send")
-        {
+        let send_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send")
+            .unwrap_or_else(|| "hew_channel_send".to_string());
+        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&send_key) {
             return;
         }
 
@@ -1967,7 +1971,9 @@ impl Checker {
         ];
 
         for (name, ret_ty) in builtins {
-            if self.fn_sigs.contains_key(*name) {
+            let key = scoped_module_item_name(self.current_module.as_deref(), name)
+                .unwrap_or_else(|| (*name).to_string());
+            if self.fn_sigs.contains_key(&key) {
                 continue;
             }
             let sig = FnSig {
@@ -1976,8 +1982,8 @@ impl Checker {
                 return_type: ret_ty.clone(),
                 ..FnSig::default()
             };
-            self.fn_sigs.insert((*name).to_string(), sig);
-            self.unsafe_functions.insert((*name).to_string());
+            self.fn_sigs.insert(key.clone(), sig);
+            self.unsafe_functions.insert(key);
         }
     }
 

@@ -295,8 +295,12 @@ impl Checker {
             _ => {}
         }
 
-        // Look up function signature first
-        if let Some(sig) = self.fn_sigs.get(&func_name).cloned() {
+        // Look up function signature first, preferring the current module's
+        // private helper/extern over another module's same-named item.
+        let resolved_fn_name = scoped_module_item_name(self.current_module.as_deref(), &func_name)
+            .filter(|qualified| self.fn_sigs.contains_key(qualified))
+            .unwrap_or_else(|| func_name.clone());
+        if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
             // Purity check: pure functions can only call other pure functions
             if self.in_pure_function && !sig.is_pure {
                 self.report_error(
@@ -309,7 +313,7 @@ impl Checker {
                 self.call_graph
                     .entry(caller.clone())
                     .or_default()
-                    .insert(func_name.clone());
+                    .insert(resolved_fn_name.clone());
             }
             // Mark the originating module as used for unqualified imports
             if let Some(module) = self.unqualified_to_module.get(&func_name) {

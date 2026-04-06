@@ -460,6 +460,11 @@ fn enrich_program_ast(
     source: &str,
     input: &str,
 ) -> Result<Vec<hew_serialize::ExprTypeEntry>, String> {
+    let root_module_item_count = program
+        .module_graph
+        .as_ref()
+        .and_then(|mg| mg.modules.get(&mg.root).map(|module| module.items.len()));
+
     // Flatten resolved_items from module imports into top-level items.
     // Flattening must happen before enrichment so that normalize_all_types
     // and enrich_fn_decl process the imported functions too.
@@ -494,7 +499,15 @@ fn enrich_program_ast(
         // enriched (type-annotated) items rather than the pre-enrichment clone.
         if let Some(ref mut mg) = program.module_graph {
             if let Some(root_module) = mg.modules.get_mut(&mg.root) {
-                root_module.items.clone_from(&program.items);
+                // Imported module items are already present in their own
+                // module_graph nodes. Keep the root module scoped to its
+                // original items so codegen doesn't duplicate imported bodies
+                // under the root module path.
+                if let Some(root_len) = root_module_item_count {
+                    root_module.items = program.items.iter().take(root_len).cloned().collect();
+                } else {
+                    root_module.items.clone_from(&program.items);
+                }
             }
             // Normalize types and rewrite builtin calls in non-root modules
             // so that TypeExpr::Named("Option", ..) → TypeExpr::Option(..)
@@ -2117,6 +2130,137 @@ fn main() {
             output.errors.is_empty(),
             "transitive fixture should fully type-check: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fixture-based regression exercises the full import-enrichment sync path"
+    )]
+    fn enrich_program_ast_keeps_flattened_imports_out_of_root_module_graph_node() {
+        let fixture = TestFixtureDir::new(
+            "root-module-sync-skips-flattened-imports",
+            &[
+                (
+                    "main.hew",
+                    r#"import "dep.hew";
+
+fn main() {
+    println(dep_value());
+}
+"#,
+                ),
+                (
+                    "dep.hew",
+                    r"pub fn dep_value() -> int { helper() }
+
+fn helper() -> int { 41 }
+",
+                ),
+            ],
+        );
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
+        let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture should build a module graph");
+        let root_item_count = module_graph
+            .modules
+            .get(&module_graph.root)
+            .expect("root module should exist")
+            .items
+            .len();
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "fixture should type-check before enrichment: {:?}",
+            tco.errors
+        );
+        let module_registry = checker.into_module_registry();
+        enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &module_registry,
+            &root_source,
+            &root_label,
+        )
+        .expect("enrichment should succeed");
+
+        let module_graph = program
+            .module_graph
+            .as_ref()
+            .expect("program should keep module graph after enrichment");
+        let root_module = module_graph
+            .modules
+            .get(&module_graph.root)
+            .expect("root module should still exist");
+        assert_eq!(
+            root_module.items.len(),
+            root_item_count,
+            "root module graph node should keep only its original items"
+        );
+
+        let root_fn_names: Vec<_> = root_module
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Function(function) => Some(function.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            root_fn_names.contains(&"main"),
+            "root module should keep its own main function"
+        );
+        assert!(
+            !root_fn_names.contains(&"dep_value") && !root_fn_names.contains(&"helper"),
+            "flattened imported functions should not be synced back into the root module"
+        );
+
+        let dep_module = module_graph
+            .modules
+            .values()
+            .find(|module| {
+                module.items.iter().any(|(item, _)| {
+                    matches!(
+                        item,
+                        Item::Function(function)
+                            if function.name == "dep_value" || function.name == "helper"
+                    )
+                })
+            })
+            .expect("dependency module should keep its own functions");
+        let dep_fn_names: Vec<_> = dep_module
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Function(function) => Some(function.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            dep_fn_names.contains(&"dep_value") && dep_fn_names.contains(&"helper"),
+            "dependency module should still own its imported bodies"
         );
     }
 }

@@ -17,7 +17,9 @@ impl Checker {
     }
 
     pub(super) fn check_function(&mut self, fd: &FnDecl) {
-        self.check_function_as(fd, &fd.name.clone());
+        let fn_name = scoped_module_item_name(self.current_module.as_deref(), &fd.name)
+            .unwrap_or_else(|| fd.name.clone());
+        self.check_function_as(fd, &fn_name);
     }
 
     /// Check a function body using `fn_name` for the `fn_sigs` lookup.

@@ -44,6 +44,13 @@ pub(super) fn lookup_scoped_item<'a, T>(
     }
 }
 
+pub(super) fn scoped_module_item_name(module_name: Option<&str>, name: &str) -> Option<String> {
+    if name.contains("::") || name.contains('.') {
+        return None;
+    }
+    module_name.map(|module_name| format!("{module_name}.{name}"))
+}
+
 pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Option<Span> {
     match &type_expr.0 {
         TypeExpr::Infer => Some(type_expr.1.clone()),

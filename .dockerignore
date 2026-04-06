@@ -3,7 +3,6 @@ target/
 .worktrees/
 .claude/
 hew-codegen/build/
-hew-observe/
 docs/
 examples/
 *.tar.gz

@@ -7,7 +7,7 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 
 - [ ] All release-lane PRs merged to `main`
 - [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
-- [ ] Nightly sanitizers are clean (check [Actions → Nightly Sanitizers](../../actions/workflows/nightly-sanitizers.yml))
+- [ ] Nightly sanitizers are clean (check [Actions → Nightly Sanitizers](../../actions/workflows/nightly-sanitizers.yml)) — TSan is advisory, see Known gaps
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
 - [ ] CHANGELOG.md `[Unreleased]` section is populated
 - [ ] Version in workspace `Cargo.toml` is still the *previous* release (bump happens below)
@@ -123,6 +123,7 @@ This triggers `.github/workflows/release.yml`, which:
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
 | FreeBSD build + tests        | freebsd.yml (nightly)        | Advisory  |
 | ASan + UBSan                 | nightly-sanitizers.yml       | Advisory  |
+| TSan (Rust runtime)          | nightly-sanitizers.yml       | Advisory (waived — see Known gaps) |
 | Codegen silent-failure lint  | codegen-lint.yml (PR)        | Advisory  |
 | Local cross-platform build   | `make pre-release`           | Recommended |
 
@@ -134,3 +135,6 @@ This triggers `.github/workflows/release.yml`, which:
 - **linux-aarch64**: No CI gate before tagging; first exercised by release.yml.
   Mitigation: linux-aarch64 shares the same codegen as linux-x86_64.
 - **FreeBSD**: Nightly only. Check the last run before tagging.
+- **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +
+  TSan link failures (duplicate lang items, panic-strategy mismatch) have no clean
+  repo-side fix as of 2026-04.  Kept for signal; re-evaluate when upstream resolves.

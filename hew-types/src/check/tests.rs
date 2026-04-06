@@ -6527,6 +6527,58 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
 }
 
 #[test]
+fn module_qualified_call_rejects_private_body_only_signature() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("mymod".to_string());
+    checker.fn_sigs.insert(
+        "mymod.secret".to_string(),
+        FnSig {
+            return_type: Ty::I64,
+            ..FnSig::default()
+        },
+    );
+
+    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let ty = checker.check_method_call(&receiver, "secret", &[], &(0..12));
+
+    assert_eq!(ty, Ty::Error);
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
+        "module-qualified calls must not resolve against non-exported private signatures: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn module_qualified_call_accepts_exported_signature() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("mymod".to_string());
+    checker
+        .module_fn_exports
+        .insert("mymod.visible".to_string());
+    checker.fn_sigs.insert(
+        "mymod.visible".to_string(),
+        FnSig {
+            return_type: Ty::I64,
+            ..FnSig::default()
+        },
+    );
+
+    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let ty = checker.check_method_call(&receiver, "visible", &[], &(0..13));
+
+    assert_eq!(ty, Ty::I64);
+    assert!(
+        checker.errors.is_empty(),
+        "exported module-qualified calls must keep working; errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
 fn module_graph_body_private_local_type_is_available() {
     let local_type = TypeDecl {
         visibility: Visibility::Private,

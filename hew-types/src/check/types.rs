@@ -237,6 +237,10 @@ pub struct Checker {
     pub(super) used_modules: RefCell<HashSet<String>>,
     /// Module short names for user (non-stdlib) imports.
     pub(super) user_modules: HashSet<String>,
+    /// Qualified callable names (`module.name`) that are intentionally exported
+    /// through a module surface. Keeps module-qualified calls from resolving
+    /// against private helper signatures that exist only for body checking/codegen.
+    pub(super) module_fn_exports: HashSet<String>,
     /// Maps unqualified function names to module short names (for glob/named imports).
     /// Used to mark the module as used when the function is called.
     pub(super) unqualified_to_module: HashMap<String, String>,
@@ -347,6 +351,7 @@ impl Checker {
             import_spans: HashMap::new(),
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
+            module_fn_exports: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,

@@ -218,6 +218,9 @@ impl Checker {
     }
 
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {
+        if name.contains('.') {
+            self.module_fn_exports.insert(name.to_string());
+        }
         self.fn_sigs.insert(
             name.to_string(),
             FnSig {
@@ -2051,6 +2054,7 @@ impl Checker {
                         .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
                     if let Some(sig) = sig {
                         let key = format!("{short}.{method}");
+                        self.module_fn_exports.insert(key.clone());
                         self.fn_sigs.insert(key.clone(), sig);
                         if wrapper_sig.is_none() {
                             self.unsafe_functions.insert(key);
@@ -2224,6 +2228,7 @@ impl Checker {
                     let qualified = format!("{module_short}.{}", fd.name);
                     if !self.fn_sigs.contains_key(&qualified) {
                         let sig = self.build_fn_sig_from_decl(fd);
+                        self.module_fn_exports.insert(qualified.clone());
                         self.fn_sigs.insert(qualified, sig);
                     }
                 }
@@ -2498,6 +2503,7 @@ impl Checker {
 
                     let sig = self.build_fn_sig_from_decl(fd);
                     let qualified = format!("{module_short}.{}", fd.name);
+                    self.module_fn_exports.insert(qualified.clone());
                     self.fn_sigs.insert(qualified, sig.clone());
 
                     // If named import or glob, also register unqualified (using alias if present)

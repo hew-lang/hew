@@ -675,9 +675,24 @@ impl Checker {
     ) -> Ty {
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
-            if self.modules.contains(name) && self.env.lookup_ref(name).is_none() {
-                self.used_modules.borrow_mut().insert(name.clone());
-                let key = format!("{name}.{method}");
+            let receiver_is_binding = self.env.lookup_ref(name).is_some();
+            let key = format!("{name}.{method}");
+            let looks_like_module_call = !receiver_is_binding
+                && (self.modules.contains(name)
+                    || self.module_fn_exports.contains(&key)
+                    || self.fn_sigs.contains_key(&key));
+            if looks_like_module_call {
+                if self.modules.contains(name) {
+                    self.used_modules.borrow_mut().insert(name.clone());
+                }
+                if !self.module_fn_exports.contains(&key) {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!("no function `{method}` in module `{name}`"),
+                    );
+                    return Ty::Error;
+                }
                 self.require_unsafe(&key, span);
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     if let Some(caller) = &self.current_function {

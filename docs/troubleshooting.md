@@ -60,7 +60,8 @@ What to check:
 
 - Start with `hew check <file.hew>`.
 - While iterating on the same file or directory,
-  `hew watch <file_or_dir> [options]` can keep rerunning checks.
+  `hew watch <file_or_dir>` can keep rerunning checks automatically on every
+  save — see [Watch mode](#watch-mode) below.
 - Add explicit types to function parameters, return values, locals flowing into
   generic code, and any `_` placeholders.
 - `type Foo = _;` currently fails closed with `cannot infer type for type alias`
@@ -173,6 +174,25 @@ What to check:
   back), or setting `min_version` above the baseline version is breaking.
 - Use the last released or otherwise agreed baseline schema, not another
   in-progress branch snapshot.
+
+## Watch mode
+
+`hew watch` re-runs type-checking (and optionally the program) every time a
+watched file changes. It uses the same check pipeline as `hew check`, so
+all diagnostics appear in the same format.
+
+```sh
+hew watch myapp.hew               # Re-check on every save
+hew watch --run myapp.hew         # Re-check and re-run on each successful check
+hew watch --clear myapp.hew       # Clear terminal before each check
+hew watch --debounce 500 myapp.hew  # Wait 500 ms after last event (default: 300)
+```
+
+This is the recommended inner-loop workflow for type-error hunts and
+refactors. Exit with `Ctrl-C`.
+
+For the full flag reference, see the [Watch mode section of
+`../hew-cli/README.md`](../hew-cli/README.md#watch-mode).
 
 ## Related docs
 

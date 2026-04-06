@@ -2586,4 +2586,80 @@ mod tests {
         unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
         hew_sched_shutdown();
     }
+
+    /// `actor_ask_wasm_impl` with a generous wall-clock deadline returns the
+    /// reply when the actor dispatches within the first scheduler tick.
+    ///
+    /// Coverage note: this exercises the `Some(timeout_ms)` branch of
+    /// `actor_ask_wasm_impl` on the success path (deadline does not expire
+    /// before the reply arrives).  The complementary failure branch
+    /// (`bounded_wasm_ask_timeout_cancels_before_target_activation`) covers
+    /// `Some(0)`.  Direct WASM target execution is not available in the
+    /// current CI harness; this test runs the WASM cooperative path on the
+    /// native target using the `cfg(any(target_arch = "wasm32", test))`
+    /// availability of `actor_ask_wasm_impl`.
+    // WASM-TODO: run this test against an actual wasm32 target once the CI
+    // harness gains wasm32 test execution support.
+    #[test]
+    fn wasm_ask_with_generous_timeout_returns_reply_when_actor_is_fast() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access to shared globals.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+        let mut replier = stub_actor();
+        replier.dispatch = Some(reply_payload_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        replier.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        replier
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        replier.budget.store(1, Ordering::Relaxed);
+        let replier_ptr: *mut HewActor = (&raw mut replier).cast();
+
+        let ask_value = 13i32;
+        // SAFETY: actor and payload remain valid for the duration of the ask.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                replier_ptr.cast(),
+                1,
+                (&raw const ask_value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+                Some(5_000), // 5-second deadline — the fast actor replies in one tick
+            )
+        };
+
+        assert!(
+            !reply.is_null(),
+            "ask_timeout with a generous deadline should return the actor's reply"
+        );
+        // SAFETY: reply is an i32 payload allocated by hew_reply in reply_payload_dispatch.
+        unsafe {
+            assert_eq!(
+                *reply.cast::<i32>(),
+                ask_value,
+                "reply payload must match the sent value"
+            );
+            libc::free(reply);
+        }
+        assert_eq!(
+            REPLY_DISPATCHES.load(Ordering::Relaxed),
+            1,
+            "dispatch must run exactly once"
+        );
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            0,
+            "successful timed WASM ask must leave no live reply channels"
+        );
+
+        hew_sched_shutdown();
+        // SAFETY: mailbox is no longer referenced after scheduler shutdown.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_free(replier.mailbox.cast());
+            reset_globals();
+        }
+    }
 }

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-06
+
 ### Added
 
 - **Cross-target object emission (`--emit-obj`):** `hew build --target <triple> --emit-obj`
@@ -10,6 +12,47 @@
   `<stem><target-object-suffix>`). Foreign native executable linking is rejected early with a
   clear error directing users to `--emit-obj`. Verified by e2e tests that inspect object-file
   format and architecture via the `object` crate (#730, closes phase-1 of #254).
+- **HTTP client surface:** `std::net::http` now includes bounded client wrapper helpers plus
+  request/response header accessors for Hew programs, making it easier to build clients without
+  dropping into Rust glue (#722, #747, #750).
+
+### Fixed
+
+- **Non-root module typechecking:** module graph bodies are now typechecked end-to-end while
+  keeping local non-root types visible inside their own module, preventing imported private helper
+  leaks, preserving static type methods, and restoring preregistered QUIC handle method
+  enrichment (#756).
+- **HTTP request typing precision:** request-building header inputs now stay aligned with the
+  tuple-based header model exposed elsewhere in the HTTP surface (#758).
+- **Composite generic codegen fail-closed behavior:** the remaining composite type-argument
+  struct-init path now rejects unsupported inputs instead of reaching a late build-time crash
+  during code generation (#769).
+- **Builtin collection clone support:** `clone()` now works correctly for `Vec`, `HashMap`, and
+  `HashSet`, including chained receiver expressions such as `v.clone().len()` and the missing
+  `hew_hashset_clone` runtime hook (#772).
+- **FreeBSD embedded codegen builds:** FreeBSD now uses the correct static LLVM/MLIR embedded
+  codegen path, and the CLI fails closed when embedded codegen was explicitly requested but could
+  not be configured instead of linking undefined embedded symbols (#775).
+- **Release smoke portability and reliability:** the Darwin release path keeps its deployment
+  target pin scoped correctly, pre-release validation no longer depends on GNU-only `mktemp`
+  behavior, sanitizer OOM tests are hardened, and the QUIC remote-service smoke gate is
+  stabilized (#763, #764, #771, #773).
+
+### Changed
+
+- **Release gating:** the pre-tag release gate is stronger, and the rust-runtime TSan lane is now
+  explicitly documented as advisory until upstream toolchain support is restored (#757, #765).
+- **Runtime/WASM parity proof:** closed-mailbox send behavior plus mailbox/scheduler/reply-channel
+  parity are now explicitly covered in the native and wasm test matrix (#754).
+- **CLI/docs truth surfaces:** the CLI/playground docs, first-run examples, and `hew fmt`/`hew
+  doc` guidance now match the actual user-facing behavior more closely (#720, #748, #752, #755).
+
+### Known Limitations
+
+- **Nightly C++ sanitizer advisory:** the nightly `Codegen C++ ASan+UBSan` lane still reports an
+  MLIR/container-overflow false-positive candidate in `mlirgen` teardown. It is tracked as #774
+  and carried as an explicit advisory for v0.3.0; ordinary release builds and focused validation
+  are otherwise green.
 
 ## [0.2.2] - 2026-03-29
 

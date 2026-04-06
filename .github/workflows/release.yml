@@ -651,6 +651,13 @@ jobs:
         with:
           targets: ${{ matrix.rust_musl_target }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Use the pre-built LLVM+MLIR from the Alpine Docker image (musl-based).
       # Ubuntu's glibc LLVM causes linker errors when targeting musl.
       - name: Pull pre-built LLVM+MLIR for Alpine (musl)

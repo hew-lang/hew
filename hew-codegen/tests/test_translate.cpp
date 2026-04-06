@@ -486,6 +486,7 @@ static bool test2_build_and_lower() {
   if (mlir::failed(mlir::verify(module))) {
     fprintf(stderr, "  FAILED: module verification failed before passes\n");
     module.dump();
+    module->destroy();
     return false;
   }
 
@@ -503,6 +504,7 @@ static bool test2_build_and_lower() {
 
   if (mlir::failed(pm.run(module))) {
     fprintf(stderr, "  FAILED: pass pipeline failed\n");
+    module->destroy();
     return false;
   }
 
@@ -512,10 +514,13 @@ static bool test2_build_and_lower() {
   if (hasUnrealizedConversionCast(module.getOperation())) {
     fprintf(stderr, "  FAILED: unrealized_conversion_cast remained after reconcile\n");
     module.dump();
+    module->destroy();
     return false;
   }
 
-  return translateWithTimeout(module, context);
+  bool ok = translateWithTimeout(module, context);
+  module->destroy();
+  return ok;
 }
 
 //=== Test 3: Build LLVM dialect module directly, translate (no passes) ===
@@ -553,7 +558,9 @@ static bool test3_build_llvm_directly() {
   fprintf(stderr, "  Module:\n");
   module.dump();
 
-  return translateWithTimeout(module, context);
+  bool ok = translateWithTimeout(module, context);
+  module->destroy();
+  return ok;
 }
 
 //=== Test 4: Ensure codegen rejects unreconciled casts before translation ===
@@ -582,6 +589,7 @@ static bool test4_reject_unreconciled_cast() {
   if (mlir::failed(mlir::verify(module))) {
     fprintf(stderr, "  FAILED: malformed test module\n");
     module.dump();
+    module->destroy();
     return false;
   }
 
@@ -592,23 +600,28 @@ static bool test4_reject_unreconciled_cast() {
       captureStderr([&] { llvmModule = codegen.lowerToLLVMIR(module, llvmContext); });
   if (llvmModule) {
     fprintf(stderr, "  FAILED: expected lowerToLLVMIR to reject unreconciled casts\n");
+    module->destroy();
     return false;
   }
   if (stderrOutput.find("unreconciled unrealized_conversion_cast remained after reconcile pass") ==
       std::string::npos) {
     fprintf(stderr, "  FAILED: expected unreconciled-cast diagnostic in stderr\n");
+    module->destroy();
     return false;
   }
   if (stderrOutput.find("MLIR module dump (after reconcile pass):") == std::string::npos) {
     fprintf(stderr, "  FAILED: expected module dump header for reconcile failure\n");
+    module->destroy();
     return false;
   }
   if (stderrOutput.find("builtin.unrealized_conversion_cast") == std::string::npos) {
     fprintf(stderr, "  FAILED: expected unreconciled cast in dumped module\n");
+    module->destroy();
     return false;
   }
 
   fprintf(stderr, "  OK: unreconciled cast was rejected before translation\n");
+  module->destroy();
   return true;
 }
 

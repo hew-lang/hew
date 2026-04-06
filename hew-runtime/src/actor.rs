@@ -29,6 +29,43 @@ thread_local! {
     static CURRENT_ACTOR: Cell<*mut HewActor> = const { Cell::new(ptr::null_mut()) };
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static FAIL_ACTOR_STATE_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+struct ActorStateAllocFailureGuard;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for ActorStateAllocFailureGuard {
+    fn drop(&mut self) {
+        FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn fail_actor_state_alloc_on_nth(n: usize) -> ActorStateAllocFailureGuard {
+    FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(n));
+    ActorStateAllocFailureGuard
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn should_fail_actor_state_alloc() -> bool {
+    FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| {
+        let remaining = slot.get();
+        if remaining == usize::MAX {
+            return false;
+        }
+        if remaining == 0 {
+            slot.set(usize::MAX);
+            return true;
+        }
+        slot.set(remaining - 1);
+        false
+    })
+}
+
 #[cfg(target_arch = "wasm32")]
 static mut CURRENT_ACTOR_WASM: *mut HewActor = ptr::null_mut();
 
@@ -620,6 +657,18 @@ fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
 // All spawn functions use native mailbox/scheduler and are not available on WASM.
 // WASM actors are created through the bridge module instead.
 
+fn actor_state_malloc(size: usize) -> *mut c_void {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    {
+        if should_fail_actor_state_alloc() {
+            return ptr::null_mut();
+        }
+    }
+
+    // SAFETY: `size` is forwarded to libc unchanged.
+    unsafe { libc::malloc(size) }
+}
+
 /// Deep-copy `src` into a new malloc'd buffer.
 ///
 /// Returns null if `src` is null, `size` is 0, or allocation fails.
@@ -634,7 +683,7 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
     }
     // SAFETY: Caller guarantees `src` is readable for `size` bytes.
     unsafe {
-        let dst = libc::malloc(size);
+        let dst = actor_state_malloc(size);
         if dst.is_null() {
             crate::set_last_error(format!(
                 "OOM: failed to allocate {size} bytes for actor state copy"
@@ -2824,12 +2873,12 @@ mod tests {
     }
 
     #[test]
-    fn deep_copy_state_absurd_size_returns_null_and_sets_error() {
+    fn deep_copy_state_alloc_failure_returns_null_and_sets_error() {
         let src: u8 = 1;
-        // Request an impossibly large allocation to exercise the OOM path.
-        // SAFETY: src is valid; malloc will fail for usize::MAX bytes.
-        let dst =
-            unsafe { deep_copy_state(std::ptr::from_ref(&src).cast_mut().cast(), usize::MAX) };
+        crate::hew_clear_error();
+        let _guard = fail_actor_state_alloc_on_nth(0);
+        // SAFETY: src is valid; allocation failure is injected by the test.
+        let dst = unsafe { deep_copy_state(std::ptr::from_ref(&src).cast_mut().cast(), 1) };
         assert!(dst.is_null(), "should return null on allocation failure");
         let err = crate::hew_last_error();
         assert!(!err.is_null(), "hew_last_error should be set after OOM");
@@ -2947,19 +2996,27 @@ mod tests {
     }
 
     #[test]
-    fn spawn_with_absurd_state_returns_null() {
+    fn spawn_with_restart_state_alloc_failure_returns_null_and_sets_error() {
         let src: u8 = 1;
-        // SAFETY: src is valid; the absurd size triggers OOM in deep_copy_state.
+        crate::hew_clear_error();
+        let _guard = fail_actor_state_alloc_on_nth(1);
+        // SAFETY: src is valid; allocation failure is injected into the restart-state copy.
         let actor = unsafe {
             hew_actor_spawn(
                 std::ptr::from_ref(&src).cast_mut().cast(),
-                usize::MAX,
+                1,
                 Some(noop_dispatch),
             )
         };
         assert!(actor.is_null(), "spawn should return null on OOM");
         let err = crate::hew_last_error();
         assert!(!err.is_null(), "hew_last_error should be set after OOM");
+        // SAFETY: hew_last_error returned a non-null C string.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
+        assert!(
+            msg.contains("OOM"),
+            "error message should mention OOM, got: {msg}"
+        );
     }
 }
 

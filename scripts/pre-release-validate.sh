@@ -73,6 +73,7 @@ SMOKE_TIMEOUT="${HEW_TIMEOUT_SMOKE:-120}"
 TEST_TIMEOUT="${HEW_TIMEOUT_TEST:-900}"
 
 # shellcheck source=scripts/lib/timeout.sh
+# shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/lib/timeout.sh"
 
 # ── State tracking ───────────────────────────────────────────────────────────
@@ -139,8 +140,10 @@ validate_linux() {
         test -f target/release/libhew.a
 
         echo "==> Step 3: Smoke test — compile and run a Hew program"
-        local smoke_file
-        smoke_file=$(mktemp --suffix=.hew)
+        local smoke_file_base
+        smoke_file_base=$(mktemp)
+        local smoke_file="${smoke_file_base}.hew"
+        mv "$smoke_file_base" "$smoke_file"
         write_smoke_test "$smoke_file"
         local smoke_bin
         smoke_bin=$(mktemp)

@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 // ── Reply channel ───────────────────────────────────────────────────────
 
+#[cfg(test)]
+static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
+
 /// One-shot reply channel for the actor ask pattern.
 ///
 /// Thread-safety contract: exactly one thread calls [`hew_reply`],
@@ -61,6 +64,8 @@ impl std::fmt::Debug for HewReplyChannel {
 /// The returned pointer must be freed with [`hew_reply_channel_free`].
 #[no_mangle]
 pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
+    #[cfg(test)]
+    ACTIVE_CHANNELS.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(Box::new(HewReplyChannel {
         refs: AtomicUsize::new(1),
         ready: AtomicBool::new(false),
@@ -170,6 +175,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
+        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
         if release_sender_ref_if_cancelled(ch) {
             return;
         }
@@ -340,6 +346,8 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
         if !(*ch).value.is_null() {
             libc::free((*ch).value);
         }
+        #[cfg(test)]
+        ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
         drop(Box::from_raw(ch));
     }
 }
@@ -417,6 +425,11 @@ pub unsafe extern "C" fn hew_select_first(
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[cfg(test)]
+pub(crate) fn active_channel_count() -> usize {
+    ACTIVE_CHANNELS.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

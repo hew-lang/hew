@@ -57,6 +57,13 @@ impl Checker {
     ];
 
     /// Pass 3: Check all bodies
+    #[expect(
+        clippy::too_many_lines,
+        reason = "orchestrates the full check pipeline: non-root body pass, root pass, \
+                  type resolution, warning emission, and deferred-hole drain; \
+                  each phase is a distinct step and extracting further helpers \
+                  would only obscure the pipeline order"
+    )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.register_builtins();
         self.collect_types(program);
@@ -76,7 +83,7 @@ impl Checker {
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
-                    self.current_module = Some(module_name);
+                    self.current_module = Some(module_name.clone());
                     // Temporarily scope local_type_defs / local_trait_defs to
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
@@ -93,9 +100,31 @@ impl Checker {
                             _ => {}
                         }
                     }
+
+                    // Snapshot error/warning counts before body-checking this module.
+                    // Everything emitted during the body check that still has
+                    // `source_module: None` is tagged below with the module name,
+                    // so the CLI can route it to the correct source file.
+                    let err_before = self.errors.len();
+                    let warn_before = self.warnings.len();
+
                     for (item, span) in &module.items {
                         self.check_item(item, span);
                     }
+
+                    // Tag diagnostics that were not already tagged (e.g. by a
+                    // nested call that already knew the origin).
+                    for e in &mut self.errors[err_before..] {
+                        if e.source_module.is_none() {
+                            e.source_module = Some(module_name.clone());
+                        }
+                    }
+                    for w in &mut self.warnings[warn_before..] {
+                        if w.source_module.is_none() {
+                            w.source_module = Some(module_name.clone());
+                        }
+                    }
+
                     self.local_type_defs = saved_local_type_defs;
                     self.local_trait_defs = saved_local_trait_defs;
                 }
@@ -124,6 +153,7 @@ impl Checker {
                     message: format!("unused import: `{module_name}`"),
                     notes: vec![],
                     suggestions: vec!["remove this import".to_string()],
+                    source_module: None,
                 });
             }
         }

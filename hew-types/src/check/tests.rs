@@ -7316,3 +7316,373 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         output.errors
     );
 }
+
+// ── module-body-diagnostic-completion: source_module tagging tests ────────────
+//
+// These tests prove that diagnostics originating in non-root module bodies
+// carry the correct `source_module` value so the CLI can route them to the
+// right source file when rendering.
+//
+// Wave: lane/module-body-diagnostic-completion (combines module-body-typecheck-parity
+// with the first diagnostic-envelope-unification slice).
+
+#[cfg(test)]
+mod module_body_diagnostic_envelope {
+    use super::*;
+
+    // ── helpers ────────────────────────────────────────────────────────────────
+
+    /// Build a minimal `Program` with a non-root module `mod_name` whose items
+    /// are the supplied `items`.  The root module is empty.
+    fn make_program_with_named_module(mod_name: &str, items: Vec<Spanned<Item>>) -> Program {
+        let root_id = ModuleId::root();
+        let mod_id = ModuleId::new(vec![mod_name.to_string()]);
+
+        let non_root = Module {
+            id: mod_id.clone(),
+            items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(non_root);
+        mg.topo_order = vec![mod_id, root_id];
+
+        Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        }
+    }
+
+    /// Build a minimal fn declaration that returns `bool` but is declared `-> i64`.
+    fn make_mistyped_fn(name: &str) -> Spanned<Item> {
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Pub,
+            is_pure: false,
+            name: name.to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: Some((
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                5..8,
+            )),
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: Some(Box::new((Expr::Literal(Literal::Bool(true)), 10..14))),
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+        (Item::Function(fn_decl), 0..20)
+    }
+
+    // ── body-check errors carry the module name ────────────────────────────────
+
+    /// A type mismatch in a non-root module body must be tagged with the
+    /// module's dotted name in `TypeError::source_module`.
+    #[test]
+    fn body_mismatch_error_tagged_with_source_module() {
+        let program = make_program_with_named_module("mymod", vec![make_mistyped_fn("bad")]);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            !output.errors.is_empty(),
+            "expected a type error from non-root module body"
+        );
+        for err in &output.errors {
+            assert_eq!(
+                err.source_module.as_deref(),
+                Some("mymod"),
+                "error from non-root module body must be tagged with 'mymod'; got: {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// A type mismatch in the root module must NOT be tagged (`source_module`
+    /// stays None).
+    #[test]
+    fn root_module_error_has_no_source_module_tag() {
+        // fn bad() -> i64 { true }  in root items
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "bad".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: Some((
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                5..8,
+            )),
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: Some(Box::new((Expr::Literal(Literal::Bool(true)), 10..14))),
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+        let program = Program {
+            module_graph: None,
+            items: vec![(Item::Function(fn_decl), 0..20)],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            !output.errors.is_empty(),
+            "expected a type error from root module"
+        );
+        for err in &output.errors {
+            assert!(
+                err.source_module.is_none(),
+                "root module error must not have source_module set; got: {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// Errors from different non-root modules must each carry their own module name.
+    #[test]
+    fn errors_from_multiple_modules_tagged_independently() {
+        use hew_parser::ast::{Block, FnDecl, Item, Literal, TypeExpr, Visibility};
+
+        let make_bad_fn = |fn_name: &str| -> Spanned<Item> {
+            let fd = FnDecl {
+                attributes: vec![],
+                is_async: false,
+                is_generator: false,
+                visibility: Visibility::Pub,
+                is_pure: false,
+                name: fn_name.to_string(),
+                type_params: None,
+                params: vec![],
+                return_type: Some((
+                    TypeExpr::Named {
+                        name: "i64".to_string(),
+                        type_args: None,
+                    },
+                    5..8,
+                )),
+                where_clause: None,
+                body: Block {
+                    stmts: vec![],
+                    trailing_expr: Some(Box::new((Expr::Literal(Literal::Bool(true)), 10..14))),
+                },
+                doc_comment: None,
+                decl_span: 0..0,
+            };
+            (Item::Function(fd), 0..20)
+        };
+
+        let root_id = ModuleId::root();
+        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+
+        let alpha = Module {
+            id: alpha_id.clone(),
+            items: vec![make_bad_fn("alpha_bad")],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let beta = Module {
+            id: beta_id.clone(),
+            items: vec![make_bad_fn("beta_bad")],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(alpha);
+        mg.add_module(beta);
+        mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            output.errors.len() >= 2,
+            "expected errors from both alpha and beta modules; got: {:?}",
+            output.errors
+        );
+
+        let alpha_errs: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.source_module.as_deref() == Some("alpha"))
+            .collect();
+        let beta_errs: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.source_module.as_deref() == Some("beta"))
+            .collect();
+
+        assert!(
+            !alpha_errs.is_empty(),
+            "expected at least one error tagged 'alpha'; errors: {:?}",
+            output.errors
+        );
+        assert!(
+            !beta_errs.is_empty(),
+            "expected at least one error tagged 'beta'; errors: {:?}",
+            output.errors
+        );
+    }
+
+    // ── deferred inference hole drain carries source module ────────────────────
+
+    /// An unresolved cast target `as _` in a non-root module body must produce
+    /// an `InferenceFailed` error tagged with the module name.
+    #[test]
+    fn deferred_cast_hole_tagged_with_source_module() {
+        // fn foo(x: i64) { let y = x as _; }  — cast target _ never resolved
+        use hew_parser::ast::{Block, FnDecl, Param, Stmt, TypeExpr, Visibility};
+
+        let cast_expr = Expr::Cast {
+            expr: Box::new((Expr::Identifier("x".to_string()), 20..21)),
+            ty: (TypeExpr::Infer, 25..26),
+        };
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            ty: None,
+            value: Some((cast_expr, 18..27)),
+        };
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "foo".to_string(),
+            type_params: None,
+            params: vec![Param {
+                name: "x".to_string(),
+                ty: (
+                    TypeExpr::Named {
+                        name: "i64".to_string(),
+                        type_args: None,
+                    },
+                    8..11,
+                ),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(let_stmt, 13..28)],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let program =
+            make_program_with_named_module("castmod", vec![(Item::Function(fn_decl), 0..30)]);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let inference_failed: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+            .collect();
+
+        assert!(
+            !inference_failed.is_empty(),
+            "expected InferenceFailed for unresolved `as _` in non-root module; errors: {:?}",
+            output.errors
+        );
+        for err in &inference_failed {
+            assert_eq!(
+                err.source_module.as_deref(),
+                Some("castmod"),
+                "deferred cast inference error must carry source module 'castmod'; got {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// Signature-level inference holes in non-root modules (fn param `_`) must
+    /// also be tagged with the module name.
+    #[test]
+    fn signature_inference_hole_tagged_with_source_module() {
+        // fn helper(_ : _) {}  — unresolved param type
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "helper".to_string(),
+            type_params: None,
+            params: vec![Param {
+                name: "v".to_string(),
+                ty: (TypeExpr::Infer, 10..11),
+                is_mutable: false,
+            }],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        let program =
+            make_program_with_named_module("sigmod", vec![(Item::Function(fn_decl), 0..20)]);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let inference_failed: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+            .collect();
+
+        assert!(
+            !inference_failed.is_empty(),
+            "expected InferenceFailed for `_` param in non-root module fn; errors: {:?}",
+            output.errors
+        );
+        for err in &inference_failed {
+            assert_eq!(
+                err.source_module.as_deref(),
+                Some("sigmod"),
+                "signature inference error must carry source module 'sigmod'; got {:?}",
+                err.source_module
+            );
+        }
+    }
+}

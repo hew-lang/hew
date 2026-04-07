@@ -270,6 +270,52 @@ fn build_module_search_paths() -> Vec<PathBuf> {
     hew_types::module_registry::build_module_search_paths()
 }
 
+/// Build a map from dotted module name (e.g. `"net.http"`) to
+/// `(source_text, display_filename)` for every non-root module in the program.
+///
+/// Used by `typecheck_program` to route diagnostics from non-root module
+/// bodies to the correct source file when rendering them.
+///
+/// Source texts are read on demand from `module.source_paths[0]`; modules
+/// with no source path on disk (e.g. in-memory unit-test programs) are
+/// silently skipped — their diagnostics fall back to the root source.
+///
+/// # Platform notes
+///
+/// This function uses `std::fs::read_to_string`, which requires filesystem
+/// access.
+///
+/// // WASM-TODO: `std::fs` is unavailable in WASM / no-fs contexts, so this
+/// // map will always be empty there and all diagnostics will fall back to
+/// // the root-source rendering (matching pre-fix behaviour — no regression,
+/// // but non-root module errors still show the wrong file in WASM mode).
+/// // Tracked for the WASM render pass.
+fn build_module_source_map(
+    program: &hew_parser::ast::Program,
+) -> HashMap<String, (String, String)> {
+    let Some(ref mg) = program.module_graph else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    for mod_id in &mg.topo_order {
+        if *mod_id == mg.root {
+            continue;
+        }
+        let Some(module) = mg.modules.get(mod_id) else {
+            continue;
+        };
+        let Some(path) = module.source_paths.first() else {
+            continue;
+        };
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let display = path.display().to_string();
+            let key = mod_id.path.join(".");
+            map.insert(key, (text, display));
+        }
+    }
+    map
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline stage helpers
 // ---------------------------------------------------------------------------
@@ -421,10 +467,26 @@ fn typecheck_program(
     let tco = checker.check_program(program);
     let has_errors = !tco.errors.is_empty();
 
+    // Build a map from dotted module name → (source_text, display_filename) so
+    // diagnostics from non-root module bodies are rendered against the correct
+    // source file rather than the root compilation unit.
+    let module_source_map = build_module_source_map(program);
+
+    // Helper: pick the right (source, filename) for a diagnostic.
+    let source_for = |diag: &hew_types::TypeError| -> (&str, &str) {
+        if let Some(ref mod_name) = diag.source_module {
+            if let Some((mod_src, mod_file)) = module_source_map.get(mod_name.as_str()) {
+                return (mod_src.as_str(), mod_file.as_str());
+            }
+        }
+        (source, input)
+    };
+
     for err in &tco.errors {
+        let (src, fname) = source_for(err);
         super::diagnostic::render_diagnostic_with_raw_notes(
-            source,
-            input,
+            src,
+            fname,
             &err.span,
             &err.message,
             &err.notes,
@@ -434,9 +496,10 @@ fn typecheck_program(
 
     // Render warnings (these don't block compilation).
     for warn in &tco.warnings {
+        let (src, fname) = source_for(warn);
         super::diagnostic::render_warning_with_raw_notes(
-            source,
-            input,
+            src,
+            fname,
             &warn.span,
             &warn.message,
             &warn.notes,
@@ -2315,6 +2378,247 @@ fn helper() -> int { 41 }
         assert!(
             dep_fn_names.contains(&"dep_value") && dep_fn_names.contains(&"helper"),
             "dependency module should still own its imported bodies"
+        );
+    }
+
+    // ── multi-file diagnostic source routing ───────────────────────────────────
+    //
+    // These tests prove that type errors originating in non-root module bodies
+    // carry the correct `source_module` tag AND that `build_module_source_map`
+    // correctly maps module names to their source files.
+
+    /// A type error in an imported module body must have `source_module` set to
+    /// the imported module's dotted name, not `None`.
+    ///
+    /// Regression guard for the checker→CLI diagnostic-envelope path surfacing
+    /// non-root module body errors with the right origin tag.
+    #[test]
+    fn non_root_module_body_error_carries_source_module_tag() {
+        let fixture = TestFixtureDir::new(
+            "non-root-body-diag-source-module",
+            &[
+                ("main.hew", "import \"dep.hew\";\n\nfn main() {}\n"),
+                // dep.hew: fn mistyped() -> i64 { true }  — body returns bool
+                ("dep.hew", "pub fn mistyped() -> i64 { true }\n"),
+            ],
+        );
+
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
+
+        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture must build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+
+        assert!(
+            !tco.errors.is_empty(),
+            "expected type errors from non-root module body; got none"
+        );
+        // Every error must be tagged with the dep module name, not root.
+        // Module name is derived from the file path: "dep.hew" → "dep".
+        for err in &tco.errors {
+            assert!(
+                err.source_module.is_some(),
+                "error from non-root module body must carry source_module; got None for: {err:?}"
+            );
+            let mod_name = err.source_module.as_deref().unwrap();
+            assert!(
+                mod_name.contains("dep"),
+                "error source_module should contain 'dep'; got {mod_name:?} for: {err:?}"
+            );
+        }
+    }
+
+    /// `build_module_source_map` must populate an entry for each non-root
+    /// module that has a source file on disk.
+    #[test]
+    fn build_module_source_map_populates_non_root_entries() {
+        let fixture = TestFixtureDir::new(
+            "source-map-populate",
+            &[
+                ("main.hew", "import \"util.hew\";\nfn main() {}\n"),
+                ("util.hew", "pub fn helper() -> i64 { 1 }\n"),
+            ],
+        );
+
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
+
+        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture must build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let source_map = build_module_source_map(&program);
+
+        assert!(
+            !source_map.is_empty(),
+            "source map must contain at least the util module entry"
+        );
+        let has_util = source_map.keys().any(|k| k.contains("util"));
+        assert!(
+            has_util,
+            "source map must contain an entry for the 'util' module; keys: {:?}",
+            source_map.keys().collect::<Vec<_>>()
+        );
+
+        let (util_key, (util_src, _)) = source_map
+            .iter()
+            .find(|(k, _)| k.contains("util"))
+            .expect("util entry must exist");
+        assert!(
+            util_src.contains("helper"),
+            "source map entry for {util_key} must contain 'helper'; got: {util_src:?}"
+        );
+    }
+
+    /// Root module errors must still have `source_module = None` even in a
+    /// multi-file program.
+    #[test]
+    fn root_module_error_source_module_is_none_in_multi_file_program() {
+        let fixture = TestFixtureDir::new(
+            "root-error-no-source-module",
+            &[
+                // Root has the type error; dep is fine.
+                ("main.hew", "import \"ok.hew\";\nfn bad() -> i64 { true }\n"),
+                ("ok.hew", "pub fn fine() -> i64 { 1 }\n"),
+            ],
+        );
+
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
+
+        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture must build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+
+        assert!(
+            !tco.errors.is_empty(),
+            "expected type errors from root module; got none"
+        );
+        for err in &tco.errors {
+            assert!(
+                err.source_module.is_none(),
+                "root module error must have source_module = None; got {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// Registration-phase errors (e.g. duplicate function definitions) emitted
+    /// by `collect_functions` for a non-root module must be tagged with that
+    /// module's name, not left as `None`.
+    #[test]
+    fn registration_phase_error_tagged_with_non_root_module() {
+        let fixture = TestFixtureDir::new(
+            "reg-phase-source-module",
+            &[
+                ("main.hew", "import \"dep.hew\";\nfn main() {}\n"),
+                // dep.hew has two functions with the same name — duplicate_definition
+                // error emitted during collect_functions.
+                (
+                    "dep.hew",
+                    "pub fn dup() -> i64 { 1 }\npub fn dup() -> i64 { 2 }\n",
+                ),
+            ],
+        );
+
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
+
+        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture must build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+
+        assert!(
+            !tco.errors.is_empty(),
+            "expected duplicate-definition error from dep module; got none"
+        );
+        let dep_errors: Vec<_> = tco
+            .errors
+            .iter()
+            .filter(|e| e.source_module.as_deref() == Some("dep"))
+            .collect();
+        assert!(
+            !dep_errors.is_empty(),
+            "registration-phase error from dep.hew must have source_module = Some(\"dep\"); \
+             errors: {:?}",
+            tco.errors
+                .iter()
+                .map(|e| &e.source_module)
+                .collect::<Vec<_>>()
         );
     }
 }

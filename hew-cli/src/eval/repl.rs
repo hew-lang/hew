@@ -87,6 +87,11 @@ enum EvalCheckFailure {
     },
 }
 
+enum CompiledEvalError {
+    DiagnosticsRendered,
+    Message(String),
+}
+
 impl Default for ReplSession {
     fn default() -> Self {
         Self::new()
@@ -153,6 +158,7 @@ impl ReplSession {
         match run_inprocess_compiled(
             checked_program.program,
             &checked_program.source,
+            "<repl>",
             self.execution_timeout,
         ) {
             Ok(output) => {
@@ -165,10 +171,15 @@ impl ReplSession {
                     errors: Vec::new(),
                 }
             }
-            Err(e) => EvalResult {
+            Err(CompiledEvalError::DiagnosticsRendered) => EvalResult {
                 output: String::new(),
                 had_errors: true,
-                errors: vec![e],
+                errors: vec!["diagnostics already rendered".to_string()],
+            },
+            Err(CompiledEvalError::Message(error)) => EvalResult {
+                output: String::new(),
+                had_errors: true,
+                errors: vec![error],
             },
         }
     }
@@ -200,13 +211,58 @@ impl ReplSession {
         match run_inprocess_compiled(
             checked_program.program,
             &checked_program.source,
+            "<repl>",
             self.execution_timeout,
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
                 Ok(output)
             }
-            Err(error) => Err(CliEvalError::Message(error)),
+            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
+            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
+        }
+    }
+
+    fn eval_file_cli(
+        &mut self,
+        input: &str,
+        input_name: &str,
+        source_label: &str,
+    ) -> Result<String, CliEvalError> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(String::new());
+        }
+
+        let kind = classify::classify(trimmed);
+
+        if let InputKind::Command(cmd) = &kind {
+            return self.handle_cli_command(cmd, input_name);
+        }
+
+        let synthetic_program = self.session.build_program_with_kind(trimmed, kind.clone());
+        let parse_result = hew_parser::parse(&synthetic_program.source);
+        if !parse_result.errors.is_empty() {
+            crate::diagnostic::render_parse_diagnostics(
+                &synthetic_program.source,
+                input_name,
+                &parse_result.errors,
+            );
+            return Err(CliEvalError::DiagnosticsRendered);
+        }
+
+        match run_inprocess_compiled(
+            parse_result.program,
+            &synthetic_program.source,
+            source_label,
+            self.execution_timeout,
+        ) {
+            Ok(output) => {
+                self.record_success(trimmed, &kind);
+                Ok(output)
+            }
+            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
+            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
         }
     }
 
@@ -531,39 +587,56 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
 fn run_inprocess_compiled(
     program: hew_parser::ast::Program,
     source: &str,
+    source_label: &str,
     timeout: Duration,
-) -> Result<String, String> {
-    let tmp_dir = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
+) -> Result<String, CompiledEvalError> {
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
     let bin_path = tmp_dir.path().join(bin_name);
     let bin_path_str = bin_path
         .to_str()
-        .ok_or_else(|| "temp binary path is not valid UTF-8".to_string())?;
+        .ok_or_else(|| CompiledEvalError::Message("temp binary path is not valid UTF-8".into()))?;
 
     crate::compile::compile_from_source_checked(
         program,
         source,
-        "<repl>",
+        source_label,
         bin_path_str,
         &crate::compile::CompileOptions::default(),
-    )?;
+    )
+    .map_err(|error| normalize_compiled_eval_error(&error))?;
 
     match run_eval_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
             // Normalize Windows \r\n line endings to \n for consistent output.
             Ok(stdout.replace("\r\n", "\n"))
         }
-        Ok(crate::process::BinaryRunOutcome::Failed { stderr, .. }) => Err(if stderr.is_empty() {
-            "program exited with non-zero status".to_string()
-        } else {
-            stderr
-        }),
-        Ok(crate::process::BinaryRunOutcome::Timeout) => Err(format!(
+        Ok(crate::process::BinaryRunOutcome::Failed { stderr, .. }) => {
+            Err(CompiledEvalError::Message(if stderr.is_empty() {
+                "program exited with non-zero status".to_string()
+            } else {
+                stderr
+            }))
+        }
+        Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
             "evaluation timed out after {}",
             crate::process::format_timeout(timeout)
-        )),
-        Err(e) => Err(format!("cannot execute compiled program: {e}")),
+        ))),
+        Err(e) => Err(CompiledEvalError::Message(format!(
+            "cannot execute compiled program: {e}"
+        ))),
+    }
+}
+
+fn normalize_compiled_eval_error(error: &str) -> CompiledEvalError {
+    match error {
+        "type errors found" => CompiledEvalError::DiagnosticsRendered,
+        _ if error.starts_with("parsing failed in imported file") => {
+            CompiledEvalError::DiagnosticsRendered
+        }
+        _ => CompiledEvalError::Message(error.strip_prefix("Error: ").unwrap_or(error).to_string()),
     }
 }
 
@@ -846,7 +919,7 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
             continue;
         }
 
-        let output = session.eval_cli(input, &input_name)?;
+        let output = session.eval_file_cli(input, &input_name, &input_name)?;
         if !output.is_empty() {
             print!("{output}");
         }
@@ -856,7 +929,7 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
     // Evaluate any remaining buffered input.
     let input = buffer.trim();
     if !input.is_empty() {
-        let output = session.eval_cli(input, &input_name)?;
+        let output = session.eval_file_cli(input, &input_name, &input_name)?;
         if !output.is_empty() {
             print!("{output}");
         }

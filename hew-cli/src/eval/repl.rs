@@ -1,6 +1,6 @@
 //! Main REPL loop — interactive read-eval-print for Hew.
 
-use super::classify::{self, InputKind, ReplCommand};
+use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::Session;
 use std::fmt;
 use std::io::Read;
@@ -759,8 +759,11 @@ pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Erro
 
         let mut input = line.clone();
 
-        // Multi-line: keep reading if delimiters are unclosed.
-        while classify::has_unclosed_delimiters(&input) {
+        // Multi-line: keep reading while the parser says the input is incomplete.
+        while matches!(
+            classify::input_completeness(&input),
+            InputCompleteness::Incomplete
+        ) {
             match rl.readline("... ") {
                 Ok(cont) => {
                     input.push('\n');
@@ -830,8 +833,10 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
         }
         buffer.push_str(line);
 
-        // Keep accumulating if delimiters are unclosed.
-        if classify::has_unclosed_delimiters(&buffer) {
+        if matches!(
+            classify::input_completeness(&buffer),
+            InputCompleteness::Incomplete
+        ) {
             continue;
         }
 
@@ -1041,10 +1046,10 @@ mod tests {
     }
 
     #[test]
-    fn interactive_parse_errors_use_shared_diagnostics_path() {
+    fn interactive_invalid_input_uses_shared_diagnostics_path() {
         let mut session = ReplSession::new();
         assert_eq!(
-            handle_interactive_input(&mut session, "1 +"),
+            handle_interactive_input(&mut session, "1 + *"),
             InteractiveEvalOutcome::RenderedDiagnostics
         );
     }
@@ -1088,6 +1093,19 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
+        assert!(result.is_ok(), "eval_file failed: {result:?}");
+    }
+
+    #[test]
+    fn eval_file_balanced_incomplete_expression() {
+        if !require_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
+        std::fs::write(&path, "1 +\n2\n").unwrap();
+
         let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }

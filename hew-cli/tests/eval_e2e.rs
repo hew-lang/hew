@@ -251,6 +251,126 @@ fn eval_repl_timeout_is_reported_and_quit_still_works() {
 }
 
 #[test]
+fn eval_repl_continues_balanced_incomplete_expression() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(&["eval"], "1 +\n2\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("3\n"), "stdout: {stdout}");
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(!stderr.contains("expected expression"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_repl_reports_balanced_invalid_input_without_waiting() {
+    let output = run_eval_with_stdin(&["eval"], "1 + *\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<repl>:2:"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_stdin_continues_balanced_incomplete_expression() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "1 +\n2\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+#[test]
+fn eval_stdin_reports_balanced_invalid_input() {
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "1 + *\n");
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<stdin>:2:"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_file_continues_balanced_incomplete_expression() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("balanced_incomplete.hew");
+    std::fs::write(&path, "1 +\n2\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+#[test]
+fn eval_file_reports_balanced_invalid_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("balanced_invalid.hew");
+    std::fs::write(&path, "1 + *\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let header = format!("{}:2:", path.display());
+    assert!(stderr.contains(&header), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
 fn eval_inline_parse_errors_render_cli_diagnostics() {
     let output = Command::new(hew_binary())
         .args(["eval", "1 +"])

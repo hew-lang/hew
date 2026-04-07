@@ -4282,6 +4282,26 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
   // Check if receiver is a typed handle (http.Server, net.Connection, etc.)
   if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiver.getType())) {
     const auto handleType = handleTy.getHandleKind().str();
+    if (!knownHandleTypes.count(handleType))
+      return std::nullopt;
+
+    bool haveResolvedHandleReceiver = false;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
+      haveResolvedHandleReceiver =
+          !typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr).empty();
+    if (!haveResolvedHandleReceiver && !currentActorName.empty()) {
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
+        auto key = currentActorName + "." + ie->name;
+        auto aft = actorFieldTypes.find(key);
+        if (aft != actorFieldTypes.end())
+          haveResolvedHandleReceiver = true;
+      }
+    }
+    if (!haveResolvedHandleReceiver) {
+      requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
+      return nullptr;
+    }
+
     const auto &method = methodName;
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     auto i32Type = builder.getI32Type();
@@ -4390,28 +4410,19 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
     };
 
     std::string handleType;
-    // Prefer resolved type from the type checker
+    // Require resolved type from the type checker — no per-variable fallback.
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
       handleType = typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr);
-    // Fall back to identifier-based map lookup
-    if (handleType.empty()) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto hit = handleVarTypes.find(ie->name);
-        if (hit != handleVarTypes.end())
-          handleType = hit->second;
-      }
-    }
     handleType = normalizeHandleType(handleType);
-    // Check field access (bare field name as receiver, e.g. conn.method())
+    // Actor-field access: bare field name as receiver inside an actor body
+    // (e.g. `conn.method()` where `conn` is a handle-typed actor field).
+    // This is a deferred structural path, not a per-variable fallback.
     if (handleType.empty() && !currentActorName.empty()) {
-      // Bare field name as receiver (e.g. conn.method())
-      if (handleType.empty()) {
-        if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-          auto key = currentActorName + "." + ie->name;
-          auto aft = actorFieldTypes.find(key);
-          if (aft != actorFieldTypes.end())
-            handleType = normalizeHandleType(aft->second);
-        }
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
+        auto key = currentActorName + "." + ie->name;
+        auto aft = actorFieldTypes.find(key);
+        if (aft != actorFieldTypes.end())
+          handleType = normalizeHandleType(aft->second);
       }
     }
     if (!handleType.empty()) {
@@ -4474,8 +4485,8 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
   const auto &methodName = mc.method;
   auto receiverType = receiver.getType();
 
-  // Check if receiver is an actor (ptr type + tracked in actorVarTypes,
-  // or i64 PID from Node::lookup for remote actors)
+  // Check if receiver is actor-like (typed/untyped actor ref or i64 PID from
+  // Node::lookup). Receiver-type resolution is delegated to resolveActorTypeName().
   if (isPointerLikeType(receiverType) || mlir::isa<mlir::IntegerType>(receiverType)) {
     std::string actorTypeName = resolveActorTypeName(mc.receiver->value, &mc.receiver->span);
 
@@ -4563,24 +4574,48 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (auto result = generateHandleMethodCall(mc, receiver, location))
     return *result;
 
+  auto receiverType = receiver.getType();
+  auto matchesKnownHandleName = [&](llvm::StringRef typeName) {
+    if (knownHandleTypes.count(typeName.str()))
+      return true;
+    for (const auto &knownHandle : knownHandleTypes) {
+      auto knownRef = llvm::StringRef(knownHandle);
+      auto dot = knownRef.rfind('.');
+      if (dot != llvm::StringRef::npos && knownRef.substr(dot + 1) == typeName)
+        return true;
+    }
+    return false;
+  };
+  auto isKnownHandleReceiverType = [&](mlir::Type type) {
+    if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type))
+      return structType.isIdentified() && matchesKnownHandleName(structType.getName());
+    if (auto handleTy = mlir::dyn_cast<hew::HandleType>(type))
+      return matchesKnownHandleName(handleTy.getHandleKind());
+    return false;
+  };
+  auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
+    return method == "accept" || method == "close" || method == "read" || method == "read_string" ||
+           method == "write" || method == "write_string" || method == "set_read_timeout" ||
+           method == "set_write_timeout";
+  };
+  if (!resolvedTypeOf(mc.receiver->span) &&
+      (isKnownHandleReceiverType(receiverType) ||
+       (receiverType.isInteger(32) && isKnownI32HandleMethod(methodName)))) {
+    requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
+    return nullptr;
+  }
+
   // Actor / generator dispatch
   if (auto result = generateActorMethodCall(mc, receiver, location))
     return *result;
 
-  // Trait object dispatch
+  // Trait object dispatch — requires a resolved dyn Trait type from the checker.
+  // Note: alias-to-dyn-trait is intentionally out of scope until typeExprTraitName()
+  // becomes alias-aware; see docs/plans for the dispatch-authority roadmap.
   {
     std::string traitName;
-    // Prefer resolved type from the type checker
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
       traitName = typeExprTraitName(*typeExpr);
-    // Fall back to identifier-based map lookup
-    if (traitName.empty()) {
-      if (auto *recvIdent = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto dtIt = dynTraitVarTypes.find(recvIdent->name);
-        if (dtIt != dynTraitVarTypes.end())
-          traitName = dtIt->second;
-      }
-    }
     if (!traitName.empty()) {
       auto dispIt = traitDispatchRegistry.find(traitName);
       if (dispIt == traitDispatchRegistry.end() || dispIt->second.impls.empty()) {
@@ -4638,7 +4673,6 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     return *result;
 
   // Determine type name from the receiver's MLIR type (struct/enum or handle).
-  auto receiverType = receiver.getType();
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
   std::string resolvedTypeName;
   if (structType && structType.isIdentified()) {
@@ -6098,7 +6132,7 @@ mlir::Value MLIRGen::emitRuntimeCall(llvm::StringRef callee, mlir::Type resultTy
 std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span *span) {
   auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
 
-  // Prefer resolved type from the type checker when a span is available.
+  // Require resolved type from the type checker for identifier-based dispatch.
   if (span) {
     if (auto *typeExpr = resolvedTypeOf(*span)) {
       auto name = typeExprToTypeName(*typeExpr, resolveAliasExpr);
@@ -6107,10 +6141,10 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
     }
   }
   if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
-    auto it = actorVarTypes.find(ie->name);
-    if (it != actorVarTypes.end())
-      return it->second;
-    // Bare field name that is an actor-typed actor field (e.g. `target`)
+    // Actor-field access: bare field name referring to an actor-typed field on
+    // the current actor body (e.g. `target` inside an actor receive handler).
+    // This structural path is explicitly deferred from the dispatch-authority
+    // slice; see docs/plans for the actor-field / supervisor-child roadmap.
     if (!currentActorName.empty()) {
       auto key = currentActorName + "." + ie->name;
       auto aft = actorFieldTypes.find(key);

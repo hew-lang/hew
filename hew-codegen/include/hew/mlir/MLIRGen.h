@@ -328,8 +328,9 @@ private:
 
   // ── Select/Join helpers ───────────────────────────────────────────
   /// Resolve actor type name from an expression (e.g., variable holding actor).
-  /// Checks resolvedTypeOf (from type checker), identifier-based actorVarTypes,
-  /// and field-access-based actorFieldTypes.
+  /// Requires resolvedTypeOf (from type checker) for identifier dispatch; falls
+  /// back to actorFieldTypes for bare actor-field names inside actor bodies, and
+  /// to actorVarTypes for supervisor-child field-access shapes (deferred path).
   std::string resolveActorTypeName(const ast::Expr &expr, const ast::Span *span = nullptr);
 
   /// Pack argument values into a stack-allocated buffer for sending.

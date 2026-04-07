@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <utility>
 
 static int tests_run = 0;
@@ -480,8 +481,17 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   return generateMLIR(ctx, program, dumpIR);
 }
 
+static std::vector<hew::ast::Spanned<hew::ast::Item>> *rootItems(hew::ast::Program &program) {
+  if (program.module_graph) {
+    auto it = program.module_graph->modules.find(program.module_graph->root);
+    if (it != program.module_graph->modules.end())
+      return &it->second.items;
+  }
+  return &program.items;
+}
+
 static hew::ast::FnDecl *findFunctionDecl(hew::ast::Program &program, llvm::StringRef name) {
-  for (auto &item : program.items) {
+  for (auto &item : *rootItems(program)) {
     if (auto *fn = std::get_if<hew::ast::FnDecl>(&item.value.kind); fn && fn->name == name)
       return fn;
   }
@@ -497,6 +507,89 @@ static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast
                                           }),
                            program.expr_types.end());
   return program.expr_types.size() != oldSize;
+}
+
+static std::optional<hew::ast::Span> restoreReturnedHandleMethodCall(hew::ast::FnDecl &fn,
+                                                                     llvm::StringRef callee,
+                                                                     llvm::StringRef methodName) {
+  if (fn.body.stmts.size() != 2)
+    return std::nullopt;
+
+  auto *retStmt = std::get_if<hew::ast::StmtReturn>(&fn.body.stmts[1]->value.kind);
+  if (!retStmt || !retStmt->value)
+    return std::nullopt;
+
+  auto *callExpr = std::get_if<hew::ast::ExprCall>(&retStmt->value->value.kind);
+  if (!callExpr || !callExpr->function)
+    return std::nullopt;
+
+  auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
+  if (!calleeIdent || calleeIdent->name != callee)
+    return std::nullopt;
+
+  if (callExpr->args.size() != 1)
+    return std::nullopt;
+
+  auto *receiverArg = std::get_if<hew::ast::CallArgPositional>(&callExpr->args.front());
+  if (!receiverArg || !receiverArg->expr)
+    return std::nullopt;
+
+  auto receiverSpan = receiverArg->expr->span;
+  hew::ast::ExprMethodCall methodCall;
+  methodCall.receiver = std::move(receiverArg->expr);
+  methodCall.method = methodName.str();
+  retStmt->value->value.kind = std::move(methodCall);
+  return receiverSpan;
+}
+
+static hew::ast::Span *findMutableReturnedMethodReceiverSpan(hew::ast::FnDecl &fn,
+                                                             llvm::StringRef methodName) {
+  for (auto &stmt : fn.body.stmts) {
+    auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+    if (!retStmt || !retStmt->value)
+      continue;
+
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&retStmt->value->value.kind);
+    if (!methodCall || methodCall->method != methodName)
+      continue;
+
+    return &methodCall->receiver->span;
+  }
+  return nullptr;
+}
+
+static std::optional<hew::ast::Span> findMethodReceiverSpanInStmt(const hew::ast::Stmt &stmt,
+                                                                  const std::string &methodName) {
+  auto receiverSpanForExpr =
+      [&](const hew::ast::Spanned<hew::ast::Expr> &expr) -> std::optional<hew::ast::Span> {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&expr.value.kind);
+    if (!methodCall || methodCall->method != methodName)
+      return std::nullopt;
+    return methodCall->receiver->span;
+  };
+
+  if (auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt.kind))
+    return retStmt->value ? receiverSpanForExpr(*retStmt->value) : std::nullopt;
+
+  if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt.kind))
+    return receiverSpanForExpr(exprStmt->expr);
+
+  return std::nullopt;
+}
+
+static std::optional<hew::ast::Span> findFunctionMethodReceiverSpan(const hew::ast::FnDecl &fn,
+                                                                    const std::string &methodName) {
+  for (const auto &stmt : fn.body.stmts)
+    if (auto span = findMethodReceiverSpanInStmt(stmt->value, methodName))
+      return span;
+
+  if (fn.body.trailing_expr) {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&fn.body.trailing_expr->value.kind);
+    if (methodCall && methodCall->method == methodName)
+      return methodCall->receiver->span;
+  }
+
+  return std::nullopt;
 }
 
 static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
@@ -5513,6 +5606,221 @@ fn main() -> int {
 // ============================================================================
 // Test: aliased Node::lookup receivers lower through remote actor ask dispatch
 // ============================================================================
+// Test: handle dispatch requires a resolved receiver type annotation.
+//
+// When the receiver span is rewritten to miss expr_types metadata, handle
+// dispatch must fail closed rather than silently emitting wrong code.
+// ============================================================================
+
+static void test_handle_dispatch_requires_resolved_type() {
+  TEST(handle_dispatch_requires_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::net;
+
+extern "C" {
+    fn fake_conn() -> net.Connection;
+}
+
+fn use_conn() -> int {
+    let conn: net.Connection = unsafe { fake_conn() };
+    return conn.close();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable or std::net not found; cannot run handle dispatch negative test");
+    return;
+  }
+
+  auto *useConn = findFunctionDecl(program, "use_conn");
+  if (!useConn) {
+    FAIL("failed to find use_conn function for handle dispatch negative test");
+    return;
+  }
+
+  // Handle methods are rewritten to C calls during enrichment. Restore the
+  // method-call shape here so the C++ MLIRGen handle-dispatch path sees the
+  // same receiver expression and span metadata it would have consumed before
+  // serialization rewrote `conn.close()` to `hew_tcp_close(conn)`.
+  auto receiverSpan = restoreReturnedHandleMethodCall(*useConn, "hew_tcp_close", "close");
+  auto *restoredReceiverSpan = findMutableReturnedMethodReceiverSpan(*useConn, "close");
+  if (!receiverSpan || !restoredReceiverSpan) {
+    FAIL("failed to restore handle dispatch shape");
+    return;
+  }
+  *restoredReceiverSpan = {990000000000ULL, 990000000001ULL};
+
+  // Simulate absent type-checker metadata at the restored handle dispatch
+  // site by moving the receiver to a fresh span with no expr_types entry.
+  // i32-backed handle dispatch must now fail closed.
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for handle dispatch without resolved type annotation");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for handle method receiver") == std::string::npos) {
+    FAIL("expected missing-expr_types diagnostic for unresolved handle dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: actor dispatch requires a resolved receiver type annotation.
+//
+// When the receiver's expr_types entry is removed, the actorVarTypes
+// identifier fallback no longer exists. An actor receive-method call with no
+// dispatch-site type annotation must fail closed instead of silently emitting
+// wrong code.
+// ============================================================================
+
+static void test_actor_dispatch_requires_resolved_type() {
+  TEST(actor_dispatch_requires_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+actor Counter {
+    let count: int;
+    receive fn get() -> int {
+        count
+    }
+}
+
+fn use_counter(ref_: ActorRef<Counter>) -> int {
+    return ref_.get();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run actor dispatch negative test");
+    return;
+  }
+
+  auto *useCounter = findFunctionDecl(program, "use_counter");
+  if (!useCounter) {
+    FAIL("failed to find use_counter function for actor dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*useCounter, "get");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove actor receiver expr_types entry");
+    return;
+  }
+
+  // Simulate absent type-checker metadata at the dispatch site: the old
+  // actorVarTypes fallback would have rescued this call; after its removal,
+  // codegen must fail.
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for actor dispatch without resolved type annotation");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("method call on non-struct/enum type") == std::string::npos) {
+    FAIL("expected 'method call on non-struct/enum type' diagnostic for unresolved actor dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: trait dispatch requires a resolved receiver type annotation.
+//
+// When the receiver's expr_types entry is removed, the dynTraitVarTypes
+// identifier fallback no longer exists. A dyn-trait method call with no
+// dispatch-site type annotation must fail closed instead of silently emitting
+// wrong code.
+// ============================================================================
+
+static void test_trait_dispatch_requires_resolved_type() {
+  TEST(trait_dispatch_requires_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Greeter {
+    fn greet(s: Self) -> String;
+}
+
+type Bot {
+    name: String;
+}
+
+impl Greeter for Bot {
+    fn greet(s: Bot) -> String {
+        "hello"
+    }
+}
+
+fn use_greeter(g: dyn Greeter) -> String {
+    return g.greet();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run trait dispatch negative test");
+    return;
+  }
+
+  auto *useGreeter = findFunctionDecl(program, "use_greeter");
+  if (!useGreeter) {
+    FAIL("failed to find use_greeter function for trait dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*useGreeter, "greet");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove trait receiver expr_types entry");
+    return;
+  }
+
+  // Simulate absent type-checker metadata at the dispatch site: the old
+  // dynTraitVarTypes fallback would have rescued this call; after its
+  // removal, codegen must fail.
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for trait dispatch without resolved type annotation");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("method call on non-struct/enum type") == std::string::npos) {
+    FAIL("expected 'method call on non-struct/enum type' diagnostic for unresolved trait dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 
 static void test_remote_actor_alias_ask_is_recognized() {
   TEST(remote_actor_alias_ask_is_recognized);
@@ -6108,6 +6416,9 @@ int main() {
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_handle_alias_call_receiver_is_recognized();
+  test_handle_dispatch_requires_resolved_type();
+  test_actor_dispatch_requires_resolved_type();
+  test_trait_dispatch_requires_resolved_type();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();
   test_for_await_receiver_alias_inferred_binding_uses_resolved_type();

@@ -2671,6 +2671,26 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
+        AtomicPtr::new(ptr::null_mut());
+
+    struct NativeSchedulerGuard;
+
+    impl NativeSchedulerGuard {
+        fn new() -> Self {
+            assert_eq!(crate::scheduler::hew_sched_init(), 0);
+            Self
+        }
+    }
+
+    impl Drop for NativeSchedulerGuard {
+        fn drop(&mut self) {
+            crate::scheduler::hew_sched_shutdown();
+            crate::scheduler::hew_runtime_cleanup();
+        }
+    }
+
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
         _msg_type: i32,
@@ -2709,6 +2729,85 @@ mod tests {
                     .store(target_state as i32, Ordering::Release);
             }
         })
+    }
+
+    unsafe extern "C" fn native_self_stop_without_reply_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
+        LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
+        hew_actor_self_stop();
+    }
+
+    unsafe extern "C" fn native_reply_once_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        let mut value: i32 = 21;
+        // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
+        // and `value` lives for the duration of the call.
+        unsafe {
+            crate::reply_channel::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+    }
+
+    unsafe extern "C" fn native_late_reply_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        let mut value: i32 = 99;
+        // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
+        // and `value` lives for the duration of the call.
+        unsafe {
+            crate::reply_channel::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+    }
+
+    unsafe extern "C" fn native_reply_then_trap_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        let mut value: i32 = 123;
+        // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
+        // and `value` lives for the duration of the call.
+        unsafe {
+            crate::reply_channel::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
+        hew_panic();
     }
 
     fn make_runnable_stop_test_actor() -> (*mut HewActor, *mut HewMailbox) {
@@ -2803,6 +2902,212 @@ mod tests {
             reply_channel::hew_reply_channel_free(ch);
             assert_eq!(hew_actor_free(actor), 0);
         }
+    }
+
+    #[test]
+    fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
+        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+        LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
+
+        // SAFETY: null state and dispatch function are valid for actor spawn.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::null_mut(),
+                0,
+                Some(native_self_stop_without_reply_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let actor_addr = actor as usize;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ask_thread = std::thread::spawn(move || {
+            let actor = actor_addr as *mut HewActor;
+            // SAFETY: actor was spawned by this test and remains live until the thread joins.
+            let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+            let reply_is_null = reply.is_null();
+            if !reply.is_null() {
+                // SAFETY: successful ask replies are malloc-allocated.
+                unsafe { libc::free(reply) };
+            }
+            tx.send(reply_is_null)
+                .expect("native ask waiter should report its result");
+        });
+
+        let reply_is_null = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(reply_is_null) => reply_is_null,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
+                if !ch.is_null() {
+                    // SAFETY: this is the captured in-flight reply channel from the stalled ask.
+                    unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+                }
+                let recovered = rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("manual fallback reply should unblock a stalled self-stop ask");
+                ask_thread
+                    .join()
+                    .expect("native ask waiter thread should not panic after cleanup");
+                assert!(
+                    recovered,
+                    "manual fallback reply should still resolve self-stop asks as null"
+                );
+                panic!("native hew_actor_ask should resolve null after self-stop without manual cleanup");
+            }
+            Err(err) => panic!("native ask waiter thread disconnected unexpectedly: {err:?}"),
+        };
+
+        ask_thread
+            .join()
+            .expect("native ask waiter thread should not panic");
+
+        assert!(
+            reply_is_null,
+            "ask should resolve as null when the actor self-stops before replying"
+        );
+        // SAFETY: `actor` remains allocated and owned by this test while we
+        // inspect its atomic state.
+        let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(actor_state, HewActorState::Stopped as i32);
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "self-stop ask cleanup should release the native reply channel",
+        );
+
+        // SAFETY: actor is stopped and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
+    }
+
+    #[test]
+    fn native_ask_successful_reply_returns_value_without_duplicate_cleanup() {
+        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+
+        // SAFETY: null state and dispatch function are valid for actor spawn.
+        let actor =
+            unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(native_reply_once_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid for the duration of the ask.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(!reply.is_null(), "native ask should return the reply value");
+        // SAFETY: non-null asks return a malloc-allocated i32 payload here.
+        assert_eq!(unsafe { *reply.cast::<i32>() }, 21);
+        // SAFETY: successful ask replies are malloc-allocated.
+        unsafe { libc::free(reply) };
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "successful native asks should leave no live reply channels",
+        );
+
+        // SAFETY: actor is idle and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
+    }
+
+    #[test]
+    fn native_ask_timeout_rejects_late_reply_after_blocking_dispatch() {
+        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+
+        // SAFETY: null state and dispatch function are valid for actor spawn.
+        let actor =
+            unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(native_late_reply_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid for the duration of the timed ask.
+        let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 1) };
+        assert!(
+            reply.is_null(),
+            "timed native asks should reject replies that only arrive after the timeout"
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "timed-out native asks should release late-reply channels after cancellation",
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                // SAFETY: actor remains owned by this test while waiting for dispatch to finish.
+                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                state == HewActorState::Idle as i32 || state == HewActorState::Stopped as i32
+            }),
+            "late-reply dispatch should finish after the timeout path",
+        );
+
+        // SAFETY: actor is quiescent and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
+    }
+
+    #[test]
+    fn native_ask_reply_then_trap_returns_value_without_duplicate_crash_reply() {
+        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+
+        // SAFETY: null state and dispatch function are valid for actor spawn.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::null_mut(),
+                0,
+                Some(native_reply_then_trap_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid for the duration of the ask.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(
+            !reply.is_null(),
+            "asks should preserve the first reply even if dispatch traps afterwards"
+        );
+        // SAFETY: non-null asks return a malloc-allocated i32 payload here.
+        assert_eq!(unsafe { *reply.cast::<i32>() }, 123);
+        // SAFETY: successful ask replies are malloc-allocated.
+        unsafe { libc::free(reply) };
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                // SAFETY: actor remains owned by this test while we poll its state.
+                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                state == HewActorState::Crashed as i32
+            }),
+            "reply-then-trap dispatch should still transition the actor to Crashed",
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "trap-after-reply asks should not double-complete or leak reply channels",
+        );
+
+        // SAFETY: actor is quiescent and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
     }
 
     #[test]

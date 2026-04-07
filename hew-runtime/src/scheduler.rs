@@ -52,6 +52,9 @@ thread_local! {
     /// Set before calling the actor's dispatch function, cleared after.
     /// Read by codegen-emitted code via [`hew_get_reply_channel`].
     static CURRENT_REPLY_CHANNEL: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
+    /// Whether the current dispatch consumed the reply channel's sender-side
+    /// reference by calling `hew_reply`.
+    static CURRENT_REPLY_CHANNEL_CONSUMED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Get the reply channel for the currently-dispatched message.
@@ -61,6 +64,32 @@ thread_local! {
 #[no_mangle]
 pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
     CURRENT_REPLY_CHANNEL.with(std::cell::Cell::get)
+}
+
+pub(crate) fn set_current_reply_channel(ch: *mut c_void) {
+    CURRENT_REPLY_CHANNEL.with(|current| current.set(ch));
+    CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(false));
+}
+
+pub(crate) fn clear_current_reply_channel() -> *mut c_void {
+    let ch = CURRENT_REPLY_CHANNEL.with(|current| current.replace(std::ptr::null_mut()));
+    CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(false));
+    ch
+}
+
+pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
+    if ch.is_null() {
+        return;
+    }
+    CURRENT_REPLY_CHANNEL.with(|current| {
+        if current.get() == ch {
+            CURRENT_REPLY_CHANNEL_CONSUMED.with(|consumed| consumed.set(true));
+        }
+    });
+}
+
+fn current_reply_channel_consumed() -> bool {
+    CURRENT_REPLY_CHANNEL_CONSUMED.with(std::cell::Cell::get)
 }
 
 // ── Global scheduler instance ───────────────────────────────────────────
@@ -632,7 +661,7 @@ fn activate_actor(actor: *mut HewActor) {
 
                     // Make the reply channel available to the dispatch function
                     // via hew_get_reply_channel().
-                    CURRENT_REPLY_CHANNEL.with(|c| c.set(msg_ref.reply_channel));
+                    set_current_reply_channel(msg_ref.reply_channel);
 
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
@@ -640,13 +669,18 @@ fn activate_actor(actor: *mut HewActor) {
                         dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     }
 
-                    CURRENT_REPLY_CHANNEL.with(|c| c.set(std::ptr::null_mut()));
+                    let reply_consumed = current_reply_channel_consumed();
+                    clear_current_reply_channel();
 
-                    // The dispatch function handled the reply channel (if any).
-                    // Clear it from the message node so hew_msg_node_free
-                    // doesn't send a duplicate reply.
-                    // SAFETY: msg is exclusively owned by this worker.
-                    unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                    // Leave unconsumed reply channels attached so
+                    // hew_msg_node_free can publish the empty fallback reply for
+                    // self-stop / no-reply paths. If dispatch already consumed
+                    // the sender-side reference via hew_reply, clear the node to
+                    // avoid duplicate cleanup.
+                    if reply_consumed {
+                        // SAFETY: msg is exclusively owned by this worker.
+                        unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                    }
 
                     // Dispatch completed successfully — clear recovery point.
                     crate::signal::clear_dispatch_recovery();
@@ -690,12 +724,13 @@ fn activate_actor(actor: *mut HewActor) {
                         unsafe { crate::arena::hew_arena_reset(actor_arena) };
                     }
 
-                    // If a reply channel was set, send an empty reply so the
-                    // waiting caller of hew_actor_ask is unblocked rather
-                    // than deadlocking.
-                    let crash_reply =
-                        CURRENT_REPLY_CHANNEL.with(|c| c.replace(std::ptr::null_mut()));
-                    if !crash_reply.is_null() {
+                    let reply_consumed = current_reply_channel_consumed();
+                    let crash_reply = clear_current_reply_channel();
+                    // If dispatch has not already consumed the sender-side
+                    // reply reference, send an empty reply so the waiting
+                    // caller of hew_actor_ask is unblocked rather than
+                    // deadlocking.
+                    if !reply_consumed && !crash_reply.is_null() {
                         // SAFETY: crash_reply is a valid HewReplyChannel pointer.
                         unsafe {
                             crate::reply_channel::hew_reply(

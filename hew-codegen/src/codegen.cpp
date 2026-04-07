@@ -2555,6 +2555,23 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
     if (suffix.empty())
       suffix = vecElemSuffix(resultType);
 
+    if (suffix == "_generic") {
+      // hew_vec_pop_generic(v, out_ptr) -> i32 writes through an out pointer.
+      // Alloca a slot for the element, call pop_generic to fill it, then load.
+      auto one = mlir::LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
+                                                rewriter.getI64IntegerAttr(1));
+      auto alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
+      auto i32Type = rewriter.getI32Type();
+      auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i32Type});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_pop_generic",
+                          funcType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_vec_pop_generic", mlir::TypeRange{i32Type},
+                                 mlir::ValueRange{adaptor.getVec(), alloca});
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, alloca);
+      rewriter.replaceOp(op, loaded.getResult());
+      return mlir::success();
+    }
+
     std::string funcName = "hew_vec_pop" + suffix;
     mlir::Type callResultType = resultType;
     if (suffix == "_f64" && resultType.isF32())

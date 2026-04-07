@@ -918,6 +918,7 @@ add_wasm_file_test(match_or_pattern     e2e_data_structures match_or_pattern)
 add_wasm_file_test(match_struct_pat     e2e_data_structures match_struct_pattern)
 add_wasm_file_test(vec_operations       e2e_data_structures vec_operations)
 add_wasm_file_test(vec_f64_ops          e2e_data_structures vec_f64_ops)
+add_wasm_file_test(vec_tuple_pop        e2e_data_structures vec_tuple_pop)
 
 # Generics
 add_wasm_file_test(generic_identity     e2e_generics generic_identity)

@@ -1,0 +1,61 @@
+// Test: Vec<(int, int)> pop — regression for ABI-wrong hew_vec_pop_generic lowering.
+// Prior to the fix, the _generic path called hew_vec_pop_generic as a single-arg
+// function returning a struct by value, which is wrong: the runtime uses
+// hew_vec_pop_generic(v, out_ptr) -> i32 (out-pointer ABI). This test is only
+// reachable after #786 fixed HewTupleType dispatch into vecElemSuffix.
+fn main() -> int {
+    println("=== Vec<(int,int)> pop ===");
+    var passed = 0;
+    let total = 4;
+
+    // Test 1: pop returns LIFO order and correct field values
+    let v1: Vec<(int, int)> = Vec::new();
+    v1.push((10, 20));
+    v1.push((30, 40));
+    v1.push((50, 60));
+    let p = v1.pop();
+    let (a, b) = p;
+    if a == 50 {
+        if b == 60 {
+            println("PASS: pop fields lifo");
+            passed = passed + 1;
+        }
+    }
+
+    // Test 2: length shrinks after pop
+    if v1.len() == 2 {
+        println("PASS: len after pop");
+        passed = passed + 1;
+    }
+
+    // Test 3: second pop returns the correct prior element
+    let q = v1.pop();
+    let (c, d) = q;
+    if c == 30 {
+        if d == 40 {
+            println("PASS: second pop");
+            passed = passed + 1;
+        }
+    }
+
+    // Test 4: asymmetric tuple values are not swapped
+    let v2: Vec<(int, int)> = Vec::new();
+    v2.push((1, 999));
+    let r = v2.pop();
+    let (x, y) = r;
+    if x == 1 {
+        if y == 999 {
+            println("PASS: asymmetric fields");
+            passed = passed + 1;
+        }
+    }
+
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

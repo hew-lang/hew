@@ -1,0 +1,6 @@
+=== Vec<(int,int)> pop ===
+PASS: pop fields lifo
+PASS: len after pop
+PASS: second pop
+PASS: asymmetric fields
+Passed: 4/4

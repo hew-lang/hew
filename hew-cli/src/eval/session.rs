@@ -1,6 +1,7 @@
 //! REPL session state — accumulates items and bindings across evaluations.
 
 use std::fmt::Write;
+use std::ops::Range;
 
 use hew_parser::ast::{Item, Stmt};
 
@@ -71,6 +72,7 @@ impl Session {
     #[must_use]
     pub fn build_program_with_kind(&self, input: &str, kind: InputKind) -> SyntheticProgram {
         let mut source = String::new();
+        let mut diagnostic_view = None;
 
         // Emit prior items.
         for item in &self.items {
@@ -100,11 +102,17 @@ impl Session {
                 }
                 source.push_str("    ");
                 let trimmed = input.trim();
+                let input_start = source.len();
                 source.push_str(trimmed);
+                let input_end = source.len();
                 if !trimmed.ends_with(';') {
                     source.push(';');
                 }
                 source.push_str("\n}\n");
+                diagnostic_view = Some(SyntheticDiagnosticView {
+                    source: trimmed.to_string(),
+                    input_span: input_start..input_end,
+                });
             }
             InputKind::Expression => {
                 source.push_str("fn main() {\n");
@@ -117,7 +125,15 @@ impl Session {
                 let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
                 // Wrap the expression for auto-printing via the
                 // type-generic `println()` builtin.
-                let _ = write!(source, "    println({trimmed});\n}}");
+                source.push_str("    println(");
+                let input_start = source.len();
+                source.push_str(trimmed);
+                let input_end = source.len();
+                source.push_str(");\n}\n");
+                diagnostic_view = Some(SyntheticDiagnosticView {
+                    source: trimmed.to_string(),
+                    input_span: input_start..input_end,
+                });
             }
             InputKind::Command(_) => {
                 // Commands are handled before we get here; return a no-op program.
@@ -125,7 +141,11 @@ impl Session {
             }
         }
 
-        SyntheticProgram { source, kind }
+        SyntheticProgram {
+            source,
+            kind,
+            diagnostic_view,
+        }
     }
 
     /// Build a program that just type-checks an expression and returns its type.
@@ -196,6 +216,17 @@ pub struct SyntheticProgram {
     /// What kind of input produced this program.
     #[cfg_attr(not(test), allow(dead_code))]
     pub kind: InputKind,
+    /// Optional user-facing view for remapping diagnostics away from wrappers.
+    pub diagnostic_view: Option<SyntheticDiagnosticView>,
+}
+
+/// Mapping metadata for wrapper-stripped diagnostics.
+#[derive(Debug, Clone)]
+pub struct SyntheticDiagnosticView {
+    /// The user-facing input source that should appear in diagnostics.
+    pub source: String,
+    /// Byte range of the user input within the synthetic program source.
+    pub input_span: Range<usize>,
 }
 
 #[cfg(test)]

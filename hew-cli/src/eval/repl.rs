@@ -1,7 +1,7 @@
 //! Main REPL loop — interactive read-eval-print for Hew.
 
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
-use super::session::Session;
+use super::session::{Session, SyntheticDiagnosticView};
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
@@ -79,10 +79,12 @@ struct CheckedProgram {
 enum EvalCheckFailure {
     Parse {
         source: String,
+        diagnostic_view: Option<SyntheticDiagnosticView>,
         errors: Vec<hew_parser::ParseError>,
     },
     Type {
         source: String,
+        diagnostic_view: Option<SyntheticDiagnosticView>,
         errors: Vec<hew_types::TypeError>,
     },
 }
@@ -96,6 +98,158 @@ impl Default for ReplSession {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn typecheck_program(program: &hew_parser::ast::Program) -> hew_types::check::TypeCheckOutput {
+    let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+        hew_types::module_registry::build_module_search_paths(),
+    ));
+    checker.check_program(program)
+}
+
+fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
+    program
+        .items
+        .iter()
+        .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
+}
+
+fn render_eval_parse_diagnostics(
+    source: &str,
+    input_name: &str,
+    diagnostic_view: Option<&SyntheticDiagnosticView>,
+    errors: &[hew_parser::ParseError],
+) {
+    if let Some(diagnostic_view) = diagnostic_view {
+        if let Some(errors) = remap_parse_errors(diagnostic_view, errors) {
+            crate::diagnostic::render_parse_diagnostics(
+                &diagnostic_view.source,
+                input_name,
+                &errors,
+            );
+            return;
+        }
+    }
+
+    crate::diagnostic::render_parse_diagnostics(source, input_name, errors);
+}
+
+fn render_eval_type_diagnostics(
+    source: &str,
+    input_name: &str,
+    diagnostic_view: Option<&SyntheticDiagnosticView>,
+    diagnostics: &[hew_types::TypeError],
+) {
+    if let Some(diagnostic_view) = diagnostic_view {
+        if let Some(diagnostics) = remap_type_diagnostics(diagnostic_view, diagnostics) {
+            crate::diagnostic::render_type_diagnostics(
+                &diagnostic_view.source,
+                input_name,
+                &diagnostics,
+            );
+            return;
+        }
+    }
+
+    crate::diagnostic::render_type_diagnostics(source, input_name, diagnostics);
+}
+
+fn remap_parse_errors(
+    diagnostic_view: &SyntheticDiagnosticView,
+    errors: &[hew_parser::ParseError],
+) -> Option<Vec<hew_parser::ParseError>> {
+    let mut remapped = Vec::new();
+    let mut fallback_suffix_error = None;
+
+    for error in errors {
+        match remap_parse_span(diagnostic_view, &error.span)? {
+            RemappedParseSpan::InInput(span) => remapped.push(hew_parser::ParseError {
+                span,
+                ..error.clone()
+            }),
+            RemappedParseSpan::AtInputEnd(span) => {
+                fallback_suffix_error.get_or_insert_with(|| hew_parser::ParseError {
+                    span,
+                    ..error.clone()
+                });
+            }
+        }
+    }
+
+    if remapped.is_empty() {
+        remapped.push(fallback_suffix_error?);
+    }
+
+    Some(remapped)
+}
+
+fn remap_type_diagnostics(
+    diagnostic_view: &SyntheticDiagnosticView,
+    diagnostics: &[hew_types::TypeError],
+) -> Option<Vec<hew_types::TypeError>> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let span = remap_type_span(diagnostic_view, &diagnostic.span)?;
+            let notes = diagnostic
+                .notes
+                .iter()
+                .map(|(span, message)| {
+                    Some((remap_type_span(diagnostic_view, span)?, message.clone()))
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some(hew_types::TypeError {
+                span,
+                notes,
+                ..diagnostic.clone()
+            })
+        })
+        .collect()
+}
+
+enum RemappedParseSpan {
+    InInput(std::ops::Range<usize>),
+    AtInputEnd(std::ops::Range<usize>),
+}
+
+fn remap_parse_span(
+    diagnostic_view: &SyntheticDiagnosticView,
+    span: &std::ops::Range<usize>,
+) -> Option<RemappedParseSpan> {
+    if span.start < diagnostic_view.input_span.start {
+        return None;
+    }
+
+    let input_len = diagnostic_view.source.len();
+    if span.start >= diagnostic_view.input_span.end {
+        return Some(RemappedParseSpan::AtInputEnd(input_len..input_len));
+    }
+
+    let start = span.start - diagnostic_view.input_span.start;
+    let end = span
+        .end
+        .saturating_sub(diagnostic_view.input_span.start)
+        .min(input_len);
+    Some(RemappedParseSpan::InInput(start..end.max(start)))
+}
+
+fn remap_type_span(
+    diagnostic_view: &SyntheticDiagnosticView,
+    span: &std::ops::Range<usize>,
+) -> Option<std::ops::Range<usize>> {
+    if span.start < diagnostic_view.input_span.start || span.start >= diagnostic_view.input_span.end
+    {
+        return None;
+    }
+
+    let input_len = diagnostic_view.source.len();
+    let start = span.start.saturating_sub(diagnostic_view.input_span.start);
+    let end = span
+        .end
+        .saturating_sub(diagnostic_view.input_span.start)
+        .min(input_len);
+    Some(start..end.max(start))
 }
 
 impl ReplSession {
@@ -198,12 +352,30 @@ impl ReplSession {
 
         let checked_program = match self.prepare_program(trimmed, kind) {
             Ok(program) => program,
-            Err(EvalCheckFailure::Parse { source, errors }) => {
-                crate::diagnostic::render_parse_diagnostics(&source, input_name, &errors);
+            Err(EvalCheckFailure::Parse {
+                source,
+                diagnostic_view,
+                errors,
+            }) => {
+                render_eval_parse_diagnostics(
+                    &source,
+                    input_name,
+                    diagnostic_view.as_ref(),
+                    &errors,
+                );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
-            Err(EvalCheckFailure::Type { source, errors }) => {
-                crate::diagnostic::render_type_diagnostics(&source, input_name, &errors);
+            Err(EvalCheckFailure::Type {
+                source,
+                diagnostic_view,
+                errors,
+            }) => {
+                render_eval_type_diagnostics(
+                    &source,
+                    input_name,
+                    diagnostic_view.as_ref(),
+                    &errors,
+                );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
         };
@@ -243,12 +415,28 @@ impl ReplSession {
         let synthetic_program = self.session.build_program_with_kind(trimmed, kind.clone());
         let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
-            crate::diagnostic::render_parse_diagnostics(
+            render_eval_parse_diagnostics(
                 &synthetic_program.source,
                 input_name,
+                synthetic_program.diagnostic_view.as_ref(),
                 &parse_result.errors,
             );
             return Err(CliEvalError::DiagnosticsRendered);
+        }
+
+        if matches!(kind, InputKind::Expression | InputKind::Statement)
+            && !program_has_imports(&parse_result.program)
+        {
+            let tco = typecheck_program(&parse_result.program);
+            if !tco.errors.is_empty() {
+                render_eval_type_diagnostics(
+                    &synthetic_program.source,
+                    input_name,
+                    synthetic_program.diagnostic_view.as_ref(),
+                    &tco.errors,
+                );
+                return Err(CliEvalError::DiagnosticsRendered);
+            }
         }
 
         match run_inprocess_compiled(
@@ -289,17 +477,16 @@ impl ReplSession {
         if !parse_result.errors.is_empty() {
             return Err(EvalCheckFailure::Parse {
                 source,
+                diagnostic_view: None,
                 errors: parse_result.errors,
             });
         }
 
-        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
-        ));
-        let tco = checker.check_program(&parse_result.program);
+        let tco = typecheck_program(&parse_result.program);
         if !tco.errors.is_empty() {
             return Err(EvalCheckFailure::Type {
                 source,
+                diagnostic_view: None,
                 errors: tco.errors,
             });
         }
@@ -359,12 +546,30 @@ impl ReplSession {
 
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(format!("{ty}\n")),
-            Err(EvalCheckFailure::Parse { source, errors }) => {
-                crate::diagnostic::render_parse_diagnostics(&source, input_name, &errors);
+            Err(EvalCheckFailure::Parse {
+                source,
+                diagnostic_view,
+                errors,
+            }) => {
+                render_eval_parse_diagnostics(
+                    &source,
+                    input_name,
+                    diagnostic_view.as_ref(),
+                    &errors,
+                );
                 Err(CliEvalError::DiagnosticsRendered)
             }
-            Err(EvalCheckFailure::Type { source, errors }) => {
-                crate::diagnostic::render_type_diagnostics(&source, input_name, &errors);
+            Err(EvalCheckFailure::Type {
+                source,
+                diagnostic_view,
+                errors,
+            }) => {
+                render_eval_type_diagnostics(
+                    &source,
+                    input_name,
+                    diagnostic_view.as_ref(),
+                    &errors,
+                );
                 Err(CliEvalError::DiagnosticsRendered)
             }
         }
@@ -514,23 +719,23 @@ impl ReplSession {
         kind: InputKind,
     ) -> Result<CheckedProgram, EvalCheckFailure> {
         let synthetic_program = self.session.build_program_with_kind(input, kind.clone());
+        let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
         let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
             return Err(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
+                diagnostic_view,
                 errors: parse_result.errors,
             });
         }
 
-        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
-        ));
-        let tco = checker.check_program(&parse_result.program);
+        let tco = typecheck_program(&parse_result.program);
 
         if !tco.errors.is_empty() {
             return Err(EvalCheckFailure::Type {
                 source: synthetic_program.source,
+                diagnostic_view,
                 errors: tco.errors,
             });
         }
@@ -1152,6 +1357,17 @@ mod tests {
             session.eval_cli(":type 1 + \"x\"", "<repl>"),
             Err(CliEvalError::DiagnosticsRendered)
         ));
+    }
+
+    #[test]
+    fn remap_type_span_excludes_end_boundary() {
+        let diagnostic_view = SyntheticDiagnosticView {
+            source: "1 + \"x\"".to_string(),
+            input_span: 12..19,
+        };
+
+        assert_eq!(remap_type_span(&diagnostic_view, &(18..19)), Some(6..7));
+        assert_eq!(remap_type_span(&diagnostic_view, &(19..20)), None);
     }
 
     #[test]

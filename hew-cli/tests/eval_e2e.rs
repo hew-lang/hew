@@ -400,9 +400,11 @@ fn eval_repl_reports_balanced_invalid_input_without_waiting() {
     );
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("<repl>:2:"), "stderr: {stderr}");
+    assert!(stderr.contains("<repl>:1:"), "stderr: {stderr}");
     assert!(stderr.contains("error:"), "stderr: {stderr}");
     assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | 1 + *"), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
 }
 
 #[test]
@@ -429,9 +431,11 @@ fn eval_stdin_reports_balanced_invalid_input() {
     assert!(!output.status.success());
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("<stdin>:2:"), "stderr: {stderr}");
+    assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
     assert!(stderr.contains("error:"), "stderr: {stderr}");
     assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | 1 + *"), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
     assert!(!stderr.contains("Error:"), "stderr: {stderr}");
 }
 
@@ -479,10 +483,12 @@ fn eval_file_reports_balanced_invalid_input() {
     assert!(!output.status.success());
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    let header = format!("{}:2:", path.display());
+    let header = format!("{}:1:", path.display());
     assert!(stderr.contains(&header), "stderr: {stderr}");
     assert!(stderr.contains("error:"), "stderr: {stderr}");
     assert!(stderr.contains("expected expression"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | 1 + *"), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
     assert!(!stderr.contains("Error:"), "stderr: {stderr}");
 }
 
@@ -497,10 +503,146 @@ fn eval_inline_parse_errors_render_cli_diagnostics() {
     assert!(!output.status.success());
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("<eval>:2:"), "stderr: {stderr}");
+    assert!(stderr.contains("<eval>:1:"), "stderr: {stderr}");
     assert!(stderr.contains("error:"), "stderr: {stderr}");
-    assert!(stderr.contains("2 |     println(1 +);"), "stderr: {stderr}");
-    assert!(stderr.contains("|                ^"), "stderr: {stderr}");
+    assert!(stderr.contains("1 | 1 +"), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_inline_statement_type_errors_render_user_input() {
+    let output = Command::new(hew_binary())
+        .args(["eval", "let x: i64 = \"oops\";"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<eval>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("type mismatch: expected `int`, found `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("1 | let x: i64 = \"oops\";"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_inline_expression_type_errors_render_user_input() {
+    let output = Command::new(hew_binary())
+        .args(["eval", "1 + \"x\""])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<eval>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("cannot apply `+` to `int` and `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_repl_statement_type_errors_render_user_input() {
+    let output = run_eval_with_stdin(&["eval"], "let x: i64 = \"oops\";\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<repl>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("type mismatch: expected `int`, found `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("1 | let x: i64 = \"oops\";"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_repl_expression_type_errors_render_user_input() {
+    let output = run_eval_with_stdin(&["eval"], "1 + \"x\"\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<repl>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("cannot apply `+` to `int` and `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_stdin_statement_type_errors_render_user_input() {
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "let x: i64 = \"oops\";\n");
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("type mismatch: expected `int`, found `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("1 | let x: i64 = \"oops\";"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
+    assert!(!stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
+fn eval_stdin_expression_type_errors_render_user_input() {
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "1 + \"x\"\n");
+
+    assert!(!output.status.success());
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("cannot apply `+` to `int` and `String`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
+    assert!(!stderr.contains("println("), "stderr: {stderr}");
+    assert!(!stderr.contains("2 |"), "stderr: {stderr}");
+    assert!(!stderr.contains("fn main()"), "stderr: {stderr}");
     assert!(!stderr.contains("Error:"), "stderr: {stderr}");
 }
 

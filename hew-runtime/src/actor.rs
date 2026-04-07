@@ -343,6 +343,39 @@ fn actor_free_state_is_quiescent(state: i32) -> bool {
         || state == HewActorState::Idle as i32
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct DeferredActorFree(*mut HewActor);
+
+#[cfg(not(target_arch = "wasm32"))]
+// SAFETY: the deferred free thread only observes the raw pointer value after
+// the owning dispatch thread has requested teardown.
+unsafe impl Send for DeferredActorFree {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn free_deferred_actor(deferred: DeferredActorFree) {
+    // SAFETY: the runtime still owns `actor`; the background thread simply
+    // retries the same free once the current dispatch unwinds.
+    let rc = unsafe { hew_actor_free(deferred.0) };
+    if rc != 0 {
+        eprintln!("hew: warning: deferred actor free failed with rc={rc}");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
+    let deferred = DeferredActorFree(actor);
+    if std::thread::Builder::new()
+        .name("deferred-actor-free".into())
+        .spawn(move || free_deferred_actor(deferred))
+        .is_err()
+    {
+        crate::set_last_error("hew_actor_free: failed to spawn deferred free thread");
+        return -1;
+    }
+    0
+}
+
 /// Check whether an actor pointer is still live (tracked and not yet freed).
 pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
     let guard = LIVE_ACTORS.lock_or_recover();
@@ -1237,6 +1270,15 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    if hew_actor_self() == actor {
+        let state = a.actor_state.load(Ordering::Acquire);
+        if state == HewActorState::Stopping as i32 || actor_free_state_is_quiescent(state) {
+            return defer_actor_free_on_background_thread(actor);
+        }
+        crate::set_last_error("hew_actor_free: current actor is still dispatching");
+        return -2;
+    }
 
     // Wait until actor reaches a terminal or idle state (with timeout).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -2637,6 +2679,38 @@ mod tests {
     ) {
     }
 
+    fn wait_for_condition(
+        timeout: std::time::Duration,
+        mut condition: impl FnMut() -> bool,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        condition()
+    }
+
+    fn defer_state_transition(
+        actor: *mut HewActor,
+        target_state: HewActorState,
+        delay: std::time::Duration,
+    ) -> std::thread::JoinHandle<()> {
+        let actor_addr = actor as usize;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            // SAFETY: the test keeps the actor allocation alive until the
+            // background transition fires.
+            unsafe {
+                (*(actor_addr as *mut HewActor))
+                    .actor_state
+                    .store(target_state as i32, Ordering::Release);
+            }
+        })
+    }
+
     fn make_runnable_stop_test_actor() -> (*mut HewActor, *mut HewMailbox) {
         // SAFETY: test helper fully owns the returned actor/mailbox and never publishes them.
         unsafe {
@@ -2843,6 +2917,55 @@ mod tests {
     }
 
     #[test]
+    fn free_current_actor_from_dispatch_is_deferred() {
+        // SAFETY: this test fully owns the spawned actor and only mutates its
+        // fields while no other runtime threads can access it.
+        unsafe {
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopping as i32, Ordering::Release);
+
+            let prev_actor = set_current_actor(actor);
+            let unblock = defer_state_transition(
+                actor,
+                HewActorState::Stopped,
+                std::time::Duration::from_millis(200),
+            );
+
+            let start = std::time::Instant::now();
+            let rc = hew_actor_free(actor);
+            let elapsed = start.elapsed();
+
+            unblock.join().unwrap();
+            set_current_actor(prev_actor);
+
+            let freed =
+                wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
+            if !freed && is_actor_live(actor) {
+                (*actor)
+                    .actor_state
+                    .store(HewActorState::Stopped as i32, Ordering::Release);
+                assert_eq!(hew_actor_free(actor), 0);
+            }
+
+            assert_eq!(
+                rc, 0,
+                "current-thread frees should defer instead of timing out"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_millis(100),
+                "current-thread free should return immediately instead of waiting for dispatch teardown, took {elapsed:?}"
+            );
+            assert!(
+                freed,
+                "actor should be freed asynchronously after dispatch unwinds"
+            );
+        }
+    }
+
+    #[test]
     fn deep_copy_state_copies_data_correctly() {
         let src: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
         // SAFETY: src is a valid 4-byte buffer.
@@ -2924,6 +3047,38 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "should not hang much longer than the timeout, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn free_current_actor_from_terminate_is_deferred() {
+        // SAFETY: this test fully owns the spawned actor and simulates the
+        // terminate callback state on the current thread.
+        unsafe {
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let a = &*actor;
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            a.terminate_called.store(true, Ordering::Release);
+            a.terminate_finished.store(false, Ordering::Release);
+
+            let prev_actor = set_current_actor(actor);
+
+            let start = std::time::Instant::now();
+            let rc = hew_actor_free(actor);
+            let elapsed = start.elapsed();
+
+            a.terminate_finished.store(true, Ordering::Release);
+            set_current_actor(prev_actor);
+
+            let _ = wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
+
+            assert_eq!(rc, 0, "reentrant terminate frees should still succeed");
+            assert!(
+                elapsed < std::time::Duration::from_secs(1),
+                "reentrant free should defer instead of spin-waiting in terminate, took {elapsed:?}"
+            );
+        }
     }
 
     #[test]

@@ -125,6 +125,14 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn is_supervisor_registered_for_test(
+    sup: *mut crate::supervisor::HewSupervisor,
+) -> bool {
+    let sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+    sups.iter().any(|candidate| candidate.0 == sup)
+}
+
 /// Free all registered top-level supervisors without waiting for actors.
 ///
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker

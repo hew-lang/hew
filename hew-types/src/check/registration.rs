@@ -252,6 +252,8 @@ impl Checker {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
+                    let module_name = mod_id.path.join(".");
+                    self.current_module = Some(module_name.clone());
                     // Temporarily scope local_type_defs so that resolve_type_expr
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
@@ -261,15 +263,28 @@ impl Checker {
                             self.local_type_defs.insert(td.name.clone());
                         }
                     }
+                    let err_before = self.errors.len();
+                    let warn_before = self.warnings.len();
                     for (item, _) in &module.items {
                         if let Item::TypeDecl(td) = item {
                             self.pre_register_type_decl(td);
+                        }
+                    }
+                    for e in &mut self.errors[err_before..] {
+                        if e.source_module.is_none() {
+                            e.source_module = Some(module_name.clone());
+                        }
+                    }
+                    for w in &mut self.warnings[warn_before..] {
+                        if w.source_module.is_none() {
+                            w.source_module = Some(module_name.clone());
                         }
                     }
                     self.local_type_defs = saved_local_type_defs;
                 }
             }
         }
+        self.current_module = None;
 
         // Process root module items (full registration with namespace dedup).
         for (item, span) in &program.items {
@@ -1427,7 +1442,7 @@ impl Checker {
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
-                    self.current_module = Some(module_name);
+                    self.current_module = Some(module_name.clone());
                     // Temporarily scope local_type_defs to this module so
                     // that register_channel_recv_builtins (called from
                     // register_extern_block) can detect module-local types
@@ -1439,9 +1454,30 @@ impl Checker {
                             self.local_type_defs.insert(td.name.clone());
                         }
                     }
+
+                    // Snapshot error/warning counts before signature registration
+                    // for this module.  Diagnostics emitted during collect_function_item
+                    // (e.g. duplicate-definition errors, import errors) are tagged with
+                    // the module name below so the CLI renders them against the correct
+                    // source file rather than the root compilation unit.
+                    let err_before = self.errors.len();
+                    let warn_before = self.warnings.len();
+
                     for (item, span) in &module.items {
                         self.collect_function_item(item, span);
                     }
+
+                    for e in &mut self.errors[err_before..] {
+                        if e.source_module.is_none() {
+                            e.source_module = Some(module_name.clone());
+                        }
+                    }
+                    for w in &mut self.warnings[warn_before..] {
+                        if w.source_module.is_none() {
+                            w.source_module = Some(module_name.clone());
+                        }
+                    }
+
                     self.local_type_defs = saved_local_type_defs;
                 }
             }

@@ -2546,4 +2546,68 @@ fn helper() -> int { 41 }
             );
         }
     }
+
+    /// Registration-phase errors (e.g. duplicate function definitions) emitted
+    /// by `collect_functions` for a non-root module must be tagged with that
+    /// module's name, not left as `None`.
+    #[test]
+    fn registration_phase_error_tagged_with_non_root_module() {
+        let fixture = TestFixtureDir::new(
+            "reg-phase-source-module",
+            &[
+                ("main.hew", "import \"dep.hew\";\nfn main() {}\n"),
+                // dep.hew has two functions with the same name — duplicate_definition
+                // error emitted during collect_functions.
+                (
+                    "dep.hew",
+                    "pub fn dup() -> i64 { 1 }\npub fn dup() -> i64 { 2 }\n",
+                ),
+            ],
+        );
+
+        let root_path = fixture.join("main.hew");
+        let root_label = root_path.display().to_string();
+        let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
+
+        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: &fixture.path,
+        };
+        let module_graph = build_module_graph(
+            &root_path,
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect("fixture must build a module graph");
+        program.module_graph = Some(module_graph);
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+
+        assert!(
+            !tco.errors.is_empty(),
+            "expected duplicate-definition error from dep module; got none"
+        );
+        let dep_errors: Vec<_> = tco
+            .errors
+            .iter()
+            .filter(|e| e.source_module.as_deref() == Some("dep"))
+            .collect();
+        assert!(
+            !dep_errors.is_empty(),
+            "registration-phase error from dep.hew must have source_module = Some(\"dep\"); \
+             errors: {:?}",
+            tco.errors
+                .iter()
+                .map(|e| &e.source_module)
+                .collect::<Vec<_>>()
+        );
+    }
 }

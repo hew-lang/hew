@@ -40,10 +40,6 @@ using namespace mlir;
 
 namespace {
 
-bool isReceiverTypeName(llvm::StringRef name) {
-  return name == "Receiver" || name == "channel.Receiver";
-}
-
 bool isInferredType(const ast::Spanned<ast::TypeExpr> &typeExpr) {
   return typeExpr.span.start == 0 && typeExpr.span.end == 0;
 }
@@ -651,7 +647,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // Track actor variable types for method call dispatch
     // Normal spawns: extract from type annotation (ActorRef<MyActor>)
     if (stmt.ty) {
-      auto actorName = typeExprToActorName(stmt.ty->value);
+      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+      auto actorName = typeExprToActorName(stmt.ty->value, resolveAliasExpr);
       if (!actorName.empty() && actorRegistry.count(actorName))
         actorVarTypes[varName] = actorName;
     }
@@ -673,10 +670,10 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             if (fnIdent->name == "Node::lookup") {
               std::string actorName;
               if (stmt.ty) {
-                actorName = typeExprToTypeName(stmt.ty->value);
-              }
-              if (stmt.ty) {
-                actorName = typeExprToTypeName(stmt.ty->value);
+                auto resolveAliasExpr = [this](llvm::StringRef name) {
+                  return resolveTypeAliasExpr(name);
+                };
+                actorName = typeExprToTypeName(stmt.ty->value, resolveAliasExpr);
               }
               if (!actorName.empty() && actorRegistry.count(actorName)) {
                 actorVarTypes[varName] = actorName;
@@ -759,7 +756,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 
     // Track handle variables from type annotation (filled by enrich_program)
     if (stmt.ty) {
-      auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
+      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+      auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes, resolveAliasExpr);
       if (!handleStr.empty()) {
         handleVarTypes[varName] = handleStr;
         if (auto bindingIdentity = resolveCurrentBindingIdentity(varName))
@@ -769,7 +767,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 
     // ── Track first-class Stream<T> / Sink<T> variables ─────────────────
     if (stmt.ty) {
-      auto streamStr = typeExprStreamKind(stmt.ty->value);
+      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+      auto streamStr = typeExprStreamKind(stmt.ty->value, resolveAliasExpr);
       if (!streamStr.empty())
         streamHandleVarTypes[varName] = streamStr;
     }
@@ -819,11 +818,12 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // the tuple type annotation tells us which elements are Stream/Sink.
     if (stmt.ty) {
       if (auto *tupleType = std::get_if<ast::TypeTuple>(&stmt.ty->value.kind)) {
+        auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
         for (size_t i = 0; i < tupleType->elements.size() && i < tuplePat->elements.size(); ++i) {
           auto *elemIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[i]->value.kind);
           if (!elemIdent)
             continue;
-          auto elemStream = typeExprStreamKind(tupleType->elements[i].value);
+          auto elemStream = typeExprStreamKind(tupleType->elements[i].value, resolveAliasExpr);
           if (elemStream.empty())
             continue;
           streamHandleVarTypes[elemIdent->name] = elemStream;
@@ -909,7 +909,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   // Track handle variables from type annotation (filled by enrich_program)
   if (stmt.ty) {
-    auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes);
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+    auto handleStr = typeExprToHandleString(stmt.ty->value, knownHandleTypes, resolveAliasExpr);
     if (!handleStr.empty()) {
       handleVarTypes[varNameStr] = handleStr;
       if (auto bindingIdentity = resolveCurrentBindingIdentity(varNameStr))
@@ -919,7 +920,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   // ── Track first-class Stream<T> / Sink<T> for var statements ────────────
   if (stmt.ty) {
-    auto streamStr = typeExprStreamKind(stmt.ty->value);
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+    auto streamStr = typeExprStreamKind(stmt.ty->value, resolveAliasExpr);
     if (!streamStr.empty())
       streamHandleVarTypes[varNameStr] = streamStr;
   }
@@ -2566,19 +2568,20 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
 
   // Check if the iterable is a Receiver<T> variable for channel iteration.
   if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
     if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
-      auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind);
-      if (named && isReceiverTypeName(named->name)) {
-        generateForReceiverStmt(stmt, named);
+      auto receiverType = classifyResolvedType(*typeExpr);
+      if (receiverType.isReceiver()) {
+        generateForReceiverStmt(stmt, receiverType.named);
         return;
       }
     }
     if (auto bindingIdentity = resolveCurrentBindingIdentity(identExpr->name)) {
       auto annotated = annotatedHandleTypes.find(bindingIdentity);
       if (annotated != annotatedHandleTypes.end()) {
-        auto *named = std::get_if<ast::TypeNamed>(&annotated->second->kind);
-        if (named && isReceiverTypeName(named->name)) {
-          generateForReceiverStmt(stmt, named);
+        auto receiverType = classifyResolvedType(*annotated->second, resolveAliasExpr);
+        if (receiverType.isReceiver()) {
+          generateForReceiverStmt(stmt, receiverType.named);
           return;
         }
       }
@@ -3028,7 +3031,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   // Prefer resolved type from the type checker
   if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
     collType = typeExprToCollectionString(
-        *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
+        *typeExpr, [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); });
   // Check bare field access for actor collection fields
   if (collType.empty() && !currentActorName.empty()) {
     // Bare field name (e.g. `for item in items`)

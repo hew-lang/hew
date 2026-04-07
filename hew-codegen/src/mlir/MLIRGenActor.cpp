@@ -131,18 +131,19 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
   // and collection-typed fields for Vec/HashMap method calls (e.g. self.items.push())
   for (const auto &field : decl.fields) {
     auto key = actorName + "." + field.name;
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
 
     // Track actor-typed fields (ActorRef<T> → extract T)
-    auto actorName2 = typeExprToActorName(field.ty.value);
+    auto actorName2 = typeExprToActorName(field.ty.value, resolveAliasExpr);
     if (!actorName2.empty()) {
       actorFieldTypes[key] = actorName2;
-    } else if (auto *named = std::get_if<ast::TypeNamed>(&field.ty.value.kind)) {
-      actorFieldTypes[key] = resolveTypeAlias(named->name);
+    } else if (auto typeName = typeExprToTypeName(field.ty.value, resolveAliasExpr);
+               !typeName.empty()) {
+      actorFieldTypes[key] = typeName;
     }
 
     // Track collection-typed fields (Vec<T>, HashMap<K,V>)
-    auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-    auto collStr = typeExprToCollectionString(field.ty.value, resolveAlias);
+    auto collStr = typeExprToCollectionString(field.ty.value, resolveAliasExpr);
     if (!collStr.empty())
       collectionFieldTypes[key] = collStr;
   }
@@ -395,7 +396,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
             // Register ActorRef<T> params for method dispatch
             {
-              auto actorName = typeExprToActorName(param.ty.value);
+              auto resolveAliasExpr = [this](llvm::StringRef name) {
+                return resolveTypeAliasExpr(name);
+              };
+              auto actorName = typeExprToActorName(param.ty.value, resolveAliasExpr);
               if (!actorName.empty())
                 actorVarTypes[param.name] = actorName;
             }
@@ -594,7 +598,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         declareVariable(param.name, argVal);
         // Register ActorRef<T> parameters for actor method dispatch
         {
-          auto actorName = typeExprToActorName(param.ty.value);
+          auto resolveAliasExpr = [this](llvm::StringRef name) {
+            return resolveTypeAliasExpr(name);
+          };
+          auto actorName = typeExprToActorName(param.ty.value, resolveAliasExpr);
           if (!actorName.empty())
             actorVarTypes[param.name] = actorName;
         }

@@ -48,48 +48,109 @@ inline std::string normalizeElemTypeName(const std::string &name) {
 // annotations (stmt.ty), replacing the manual inference heuristics that
 // previously pattern-matched function names and MLIR types.
 
+using ResolveTypeAliasExprFn = llvm::function_ref<const ast::TypeExpr *(llvm::StringRef)>;
+
+inline llvm::StringRef canonicalResolvedTypeName(llvm::StringRef name) {
+  if (name == "ActorStream")
+    return "Stream";
+  if (name == "stream.Stream")
+    return "Stream";
+  if (name == "stream.Sink")
+    return "Sink";
+  if (name == "channel.Sender")
+    return "Sender";
+  if (name == "channel.Receiver")
+    return "Receiver";
+  return name;
+}
+
+inline const ast::TypeExpr *resolveAliasedTypeExpr(const ast::TypeExpr &te,
+                                                   ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  if (!resolveAlias)
+    return &te;
+
+  const ast::TypeExpr *current = &te;
+  std::unordered_set<std::string> seen;
+  while (auto *named = std::get_if<ast::TypeNamed>(&current->kind)) {
+    if (!seen.insert(named->name).second)
+      break;
+    auto *alias = resolveAlias(named->name);
+    if (!alias)
+      break;
+    current = alias;
+  }
+  return current;
+}
+
+struct ResolvedTypeClassifier {
+  const ast::TypeExpr *resolvedType = nullptr;
+  const ast::TypeNamed *named = nullptr;
+  std::string canonicalName;
+
+  [[nodiscard]] bool isStream() const { return canonicalName == "Stream"; }
+  [[nodiscard]] bool isSink() const { return canonicalName == "Sink"; }
+  [[nodiscard]] bool isSender() const { return canonicalName == "Sender"; }
+  [[nodiscard]] bool isReceiver() const { return canonicalName == "Receiver"; }
+  [[nodiscard]] bool isActorRef() const { return canonicalName == "ActorRef"; }
+};
+
+inline ResolvedTypeClassifier classifyResolvedType(const ast::TypeExpr &te,
+                                                   ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  const ast::TypeExpr *resolved = resolveAliasedTypeExpr(te, resolveAlias);
+  auto *named = std::get_if<ast::TypeNamed>(&resolved->kind);
+  return {
+      resolved,
+      named,
+      named ? canonicalResolvedTypeName(named->name).str() : std::string{},
+  };
+}
+
+inline std::string resolvedTypeExprString(const ast::TypeExpr &te,
+                                          ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (!classified.named)
+    return "";
+
+  std::string typeName = normalizeElemTypeName(classified.canonicalName);
+  if (!classified.named->type_args || classified.named->type_args->empty())
+    return typeName;
+
+  typeName += "<";
+  for (size_t i = 0; i < classified.named->type_args->size(); ++i) {
+    if (i > 0)
+      typeName += ",";
+    auto argType = resolvedTypeExprString((*classified.named->type_args)[i].value, resolveAlias);
+    if (argType.empty())
+      return "";
+    typeName += argType;
+  }
+  typeName += ">";
+  return typeName;
+}
+
 /// Extract a collection type string from a TypeExpr.
 /// Returns "Vec<elem>", "HashMap<key,val>", "bytes", or "" (not a collection).
-inline std::string typeExprToCollectionString(
-    const ast::TypeExpr &te,
-    llvm::function_ref<std::string(const std::string &)> resolveAlias = nullptr) {
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (!named)
+inline std::string typeExprToCollectionString(const ast::TypeExpr &te,
+                                              ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (!classified.named)
     return "";
-  auto resolve = [&](const std::string &n) -> std::string {
-    return resolveAlias ? resolveAlias(n) : n;
-  };
-  auto resolved = resolve(named->name);
-  if (resolved == "bytes")
+
+  if (classified.canonicalName == "bytes")
     return "bytes";
-  if (resolved == "Vec") {
-    if (!named->type_args || named->type_args->empty())
+  if (classified.canonicalName == "Vec") {
+    if (!classified.named->type_args || classified.named->type_args->empty())
       return "";
-    const auto &arg = (*named->type_args)[0].value;
-    auto *en = std::get_if<ast::TypeNamed>(&arg.kind);
-    if (!en)
-      return "";
-    std::string elemType = normalizeElemTypeName(resolve(en->name));
-    // Handle nested generics like ActorRef<T>
-    if (en->type_args && !en->type_args->empty()) {
-      elemType += "<";
-      if (auto *inner = std::get_if<ast::TypeNamed>(&(*en->type_args)[0].value.kind))
-        elemType += resolve(inner->name);
-      else
-        return "";
-      elemType += ">";
-    }
-    return "Vec<" + elemType + ">";
+    auto elemType = resolvedTypeExprString((*classified.named->type_args)[0].value, resolveAlias);
+    return elemType.empty() ? "" : "Vec<" + elemType + ">";
   }
-  if (resolved == "HashMap") {
-    if (!named->type_args || named->type_args->size() < 2)
+  if (classified.canonicalName == "HashMap") {
+    if (!classified.named->type_args || classified.named->type_args->size() < 2)
       return "";
-    auto *k = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind);
-    auto *v = std::get_if<ast::TypeNamed>(&(*named->type_args)[1].value.kind);
-    if (!k || !v)
+    auto keyType = resolvedTypeExprString((*classified.named->type_args)[0].value, resolveAlias);
+    auto valType = resolvedTypeExprString((*classified.named->type_args)[1].value, resolveAlias);
+    if (keyType.empty() || valType.empty())
       return "";
-    std::string keyType = normalizeElemTypeName(resolve(k->name));
-    std::string valType = normalizeElemTypeName(resolve(v->name));
     return "HashMap<" + keyType + "," + valType + ">";
   }
   return "";
@@ -102,65 +163,87 @@ inline std::string typeExprToCollectionString(
 /// \p knownHandles must be the set built from program.handle_types by
 /// MLIRGen::generate() — NOT a hardcoded list — so that the lookup stays in
 /// sync with the Rust type-checker's handle-type registry.
-inline std::string
-typeExprToHandleString(const ast::TypeExpr &te,
-                       const std::unordered_set<std::string> &knownHandles) {
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (!named)
+inline std::string typeExprToHandleString(const ast::TypeExpr &te,
+                                          const std::unordered_set<std::string> &knownHandles,
+                                          ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (!classified.named)
     return "";
-  if (knownHandles.count(named->name))
-    return named->name;
+  if (knownHandles.count(classified.named->name))
+    return classified.named->name;
+  if (knownHandles.count(classified.canonicalName))
+    return classified.canonicalName;
+  if (classified.isStream() && knownHandles.count("stream.Stream"))
+    return "stream.Stream";
+  if (classified.isSink() && knownHandles.count("stream.Sink"))
+    return "stream.Sink";
+  if (classified.isSender() && knownHandles.count("channel.Sender"))
+    return "channel.Sender";
+  if (classified.isReceiver() && knownHandles.count("channel.Receiver"))
+    return "channel.Receiver";
   return "";
 }
 
 /// Extract stream kind from a TypeExpr.
 /// Returns "Stream", "Sink", or "" if not a stream type.
-inline std::string typeExprStreamKind(const ast::TypeExpr &te) {
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (!named)
-    return "";
-  if (named->name == "Stream")
+inline std::string typeExprStreamKind(const ast::TypeExpr &te,
+                                      ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (classified.isStream())
     return "Stream";
-  if (named->name == "Sink")
+  if (classified.isSink())
     return "Sink";
   return "";
 }
 
 /// Extract the element type name from a Stream<T> or Sink<T> TypeExpr.
 /// Returns "bytes", "string", or "" if the element type is absent or unknown.
-inline std::string typeExprStreamElement(const ast::TypeExpr &te) {
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (!named || !named->type_args || named->type_args->empty())
+inline std::string typeExprStreamElement(const ast::TypeExpr &te,
+                                         ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (!classified.named || !classified.named->type_args || classified.named->type_args->empty())
     return "";
-  auto *inner = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind);
-  if (!inner)
+  auto inner = classifyResolvedType((*classified.named->type_args)[0].value, resolveAlias);
+  if (!inner.named)
     return "";
-  return inner->name; // e.g. "bytes", "string"
+  if (inner.canonicalName == "String" || inner.canonicalName == "string" ||
+      inner.canonicalName == "str")
+    return "string";
+  return inner.canonicalName; // e.g. "bytes", "string"
 }
 
 /// Extract actor type name from a TypeExpr like ActorRef<MyActor>.
 /// Returns the actor name or "" if not an actor reference.
-inline std::string typeExprToActorName(const ast::TypeExpr &te) {
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (!named)
+inline std::string typeExprToTypeName(const ast::TypeExpr &te,
+                                      ResolveTypeAliasExprFn resolveAlias = nullptr);
+
+inline std::string typeExprToActorName(const ast::TypeExpr &te,
+                                       ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (!classified.isActorRef() || !classified.named || !classified.named->type_args ||
+      classified.named->type_args->empty()) {
     return "";
-  // ActorRef<Counter> → "Counter"
-  if (named->name == "ActorRef" && named->type_args && !named->type_args->empty()) {
-    if (auto *inner = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind))
-      return inner->name;
   }
-  return "";
+  return typeExprToTypeName((*classified.named->type_args)[0].value, resolveAlias);
 }
 
-/// Like typeExprToActorName but also returns the bare type name.
-/// Used for Node::lookup where the type annotation is `Counter` not `ActorRef<Counter>`.
-inline std::string typeExprToTypeName(const ast::TypeExpr &te) {
-  auto actor = typeExprToActorName(te);
+inline bool typeExprIsReceiver(const ast::TypeExpr &te,
+                               ResolveTypeAliasExprFn resolveAlias = nullptr) {
+  return classifyResolvedType(te, resolveAlias).isReceiver();
+}
+
+inline bool isReceiverTypeName(llvm::StringRef name) {
+  return canonicalResolvedTypeName(name) == "Receiver";
+}
+
+inline std::string typeExprToTypeName(const ast::TypeExpr &te,
+                                      ResolveTypeAliasExprFn resolveAlias) {
+  auto actor = typeExprToActorName(te, resolveAlias);
   if (!actor.empty())
     return actor;
-  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
-  if (named)
-    return named->name;
+  auto classified = classifyResolvedType(te, resolveAlias);
+  if (classified.named)
+    return classified.named->name;
   return "";
 }
 

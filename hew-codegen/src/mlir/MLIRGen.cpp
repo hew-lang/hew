@@ -403,6 +403,11 @@ std::string MLIRGen::resolveTypeAlias(const std::string &name) const {
   return name;
 }
 
+const ast::TypeExpr *MLIRGen::resolveTypeAliasExpr(llvm::StringRef name) const {
+  auto it = typeAliases.find(name.str());
+  return it == typeAliases.end() ? nullptr : it->second;
+}
+
 mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::Location> errorLoc) {
   auto diagLoc = errorLoc.value_or(currentLoc);
   if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
@@ -3301,7 +3306,7 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       // (e.g., Vec<BenchResult> → "Vec<BenchResult>" so struct field
       // accesses can trigger Vec method dispatch)
       field.typeExprStr = typeExprToCollectionString(
-          fieldItem->ty.value, [this](const std::string &n) { return resolveTypeAlias(n); });
+          fieldItem->ty.value, [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); });
       fieldTypes.push_back(field.type);
       info.fields.push_back(std::move(field));
     }
@@ -4314,7 +4319,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   uint32_t paramIdx = 0;
   for (const auto &param : method.params) {
     declareVariable(param.name, entryBlock->getArgument(paramIdx));
-    auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes);
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+    auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes, resolveAliasExpr);
     if (!handleStr.empty()) {
       handleVarTypes[param.name] = handleStr;
       if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))
@@ -4522,13 +4528,14 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;
     {
-      auto handleStr = typeExprToHandleString(paramTy, knownHandleTypes);
+      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+      auto handleStr = typeExprToHandleString(paramTy, knownHandleTypes, resolveAliasExpr);
       if (!handleStr.empty()) {
         handleVarTypes[paramName] = handleStr;
         if (auto bindingIdentity = resolveCurrentBindingIdentity(paramName))
           annotatedHandleTypes[bindingIdentity] = &paramTy;
       }
-      auto actorName = typeExprToActorName(paramTy);
+      auto actorName = typeExprToActorName(paramTy, resolveAliasExpr);
       if (!actorName.empty() && actorRegistry.count(actorName))
         actorVarTypes[paramName] = actorName;
     }
@@ -4997,7 +5004,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     uint32_t paramIdx = 0;
     for (const auto &param : fn.params) {
       declareVariable(param.name, entryBlock->getArgument(paramIdx));
-      auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes);
+      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+      auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes, resolveAliasExpr);
       if (!handleStr.empty()) {
         handleVarTypes[param.name] = handleStr;
         if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))

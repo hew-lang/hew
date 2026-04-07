@@ -6076,8 +6076,8 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
   // Prefer resolved type from the type checker when a span is available.
   if (span) {
     if (auto *typeExpr = resolvedTypeOf(*span)) {
-      auto name = typeExprToActorName(*typeExpr);
-      if (!name.empty())
+      auto name = typeExprToTypeName(*typeExpr);
+      if (!name.empty() && actorRegistry.count(name))
         return name;
     }
   }

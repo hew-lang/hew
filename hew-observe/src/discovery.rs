@@ -1,8 +1,34 @@
 //! Scan per-user discovery directory for running Hew profilers.
 //!
-//! Uses the same directory resolution as the runtime
-//! (`$XDG_RUNTIME_DIR/hew-profilers/` → `$TMPDIR/hew-profilers-{uid}/`
-//! → `/tmp/hew-profilers-{uid}/`).
+//! ## Discovery directory
+//!
+//! Uses the same directory resolution as the runtime, tried in order:
+//!
+//! 1. `$XDG_RUNTIME_DIR/hew-profilers/` (Linux standard runtime dir, if set)
+//! 2. `$TMPDIR/hew-profilers-{uid}/` (macOS / BSD, if `$TMPDIR` is set)
+//! 3. `/tmp/hew-profilers-{uid}/` (fallback)
+//!
+//! The first directory that exists and is owned by the calling user is used.
+//!
+//! ## Discovery lifecycle
+//!
+//! When a Hew program starts with `HEW_PPROF=auto`, the runtime creates a
+//! JSON descriptor file (`{pid}.json`) in the discovery directory containing
+//! the process PID, the unix socket path, the start timestamp (unix seconds),
+//! and the program name.  The unix socket is also created at that point.
+//!
+//! On clean shutdown the runtime removes both the descriptor file and the
+//! socket.  If the process is killed or crashes, [`scan_profilers`] and
+//! [`find_by_pid`] prune stale entries automatically: when a PID is no longer
+//! alive (`kill(pid, 0)` returns `ESRCH`) the descriptor file and socket are
+//! removed before the entry is surfaced to the caller.
+//!
+//! ## Security
+//!
+//! [`discovery_dir`] validates that the chosen directory is owned by the
+//! calling UID and has no group or other write bits (lower 6 mode bits must be
+//! zero), preventing symlink attacks or injection of fake descriptors by other
+//! users on the same machine.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

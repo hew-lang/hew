@@ -271,6 +271,13 @@ impl App {
             .is_some_and(|cluster| cluster.nodes.len() > 1)
     }
 
+    /// Returns `true` when the app was started with no initial connection and
+    /// is waiting for a profiler to appear via auto-discovery.
+    #[cfg(unix)]
+    pub fn is_waiting(&self) -> bool {
+        self.cluster.is_none() && self.auto_discover
+    }
+
     pub fn configured_node_count(&self) -> usize {
         self.cluster
             .as_ref()

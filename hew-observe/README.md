@@ -39,3 +39,56 @@ hew-observe                 # or: hew-observe --addr localhost:6060
 ## Part of the Hew compiler
 
 This crate is an internal component of the [Hew](https://github.com/hew-lang/hew) compiler toolchain.
+
+## Discovery order
+
+On Unix, `hew-observe` resolves the profiler socket directory in this order:
+
+1. `$XDG_RUNTIME_DIR/hew-profilers/` (Linux, if `$XDG_RUNTIME_DIR` is set)
+2. `$TMPDIR/hew-profilers-{uid}/` (macOS / BSD, if `$TMPDIR` is set)
+3. `/tmp/hew-profilers-{uid}/` (fallback)
+
+The Hew runtime writes a JSON descriptor (`{pid}.json`) to whichever
+directory it chooses.  `hew-observe` reads from the first directory that
+exists and is owned by your UID.  Stale entries (processes that are no longer
+alive) are pruned automatically on the next scan.
+
+## Troubleshooting
+
+**No profiler discovered at startup?**
+
+The observer starts in *waiting mode* and will attach automatically as soon
+as a compatible profiler appears in the discovery directory.  Run
+`hew-observe --list` to check what is currently visible.
+
+Make sure the Hew program was started with profiling enabled:
+
+```sh
+hew run myapp.hew --profile
+# or
+HEW_PPROF=auto ./myapp
+```
+
+**"Multiple profilers running" error?**
+
+Use `hew-observe --list` to see all active profilers, then pick one:
+
+```sh
+hew-observe --list        # shows PID, program name, uptime, socket path
+hew-observe --pid 12345   # attach to that specific PID
+```
+
+**"No profiler found for PID …" error?**
+
+The process may have exited or profiling may not be enabled.  Check with
+`hew-observe --list` to see what is currently available.
+
+**On non-Unix platforms (Windows)?**
+
+Automatic discovery is not available.  Use `--addr` to specify the profiler
+address explicitly:
+
+```sh
+HEW_PPROF=:6060 myapp.exe
+hew-observe --addr localhost:6060
+```

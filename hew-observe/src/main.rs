@@ -74,10 +74,18 @@ struct AmbiguousProfiler {
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoProfilerForPid(pid) => write!(f, "No profiler found for PID {pid}"),
+            Self::NoProfilerForPid(pid) => write!(
+                f,
+                "No profiler found for PID {pid} — \
+                 run 'hew-observe --list' to see active profilers"
+            ),
             #[cfg(unix)]
             Self::MultipleProfilers(profilers) => {
-                write!(f, "Multiple profilers discovered — specify --pid:")?;
+                write!(
+                    f,
+                    "Multiple profilers running — \
+                     use --pid to select one (try 'hew-observe --list' for details):"
+                )?;
                 for profiler in profilers {
                     write!(
                         f,
@@ -125,7 +133,10 @@ fn connect(cli: &Cli) -> Result<App, ConnectError> {
     #[cfg(not(unix))]
     {
         let _ = cli.pid; // suppress unused warning
-        eprintln!("No profilers discovered, falling back to localhost:6060");
+        eprintln!(
+            "note: automatic discovery is not available on this platform — \
+             use --addr host:port to specify the profiler address (falling back to localhost:6060)"
+        );
         Ok(App::new_tcp(&["localhost:6060".to_owned()]))
     }
 }
@@ -406,7 +417,12 @@ mod tests {
         .expect_err("invalid --pid should fail");
 
         assert_eq!(error, ConnectError::NoProfilerForPid(42));
-        assert_eq!(error.to_string(), "No profiler found for PID 42");
+        let msg = error.to_string();
+        assert!(
+            msg.contains("No profiler found for PID 42"),
+            "unexpected message: {msg}"
+        );
+        assert!(msg.contains("--list"), "error should suggest --list: {msg}");
     }
 
     #[cfg(unix)]
@@ -435,9 +451,51 @@ mod tests {
                 },
             ]),
         );
-        assert_eq!(
-            error.to_string(),
-            "Multiple profilers discovered — specify --pid:\n  --pid 101  alpha  (up 100s)\n  --pid 202  beta  (up 20s)",
+        let msg = error.to_string();
+        assert!(
+            msg.contains("--pid 101") && msg.contains("alpha"),
+            "should list first profiler: {msg}"
+        );
+        assert!(
+            msg.contains("--pid 202") && msg.contains("beta"),
+            "should list second profiler: {msg}"
+        );
+        assert!(msg.contains("--list"), "error should suggest --list: {msg}");
+        assert!(msg.contains("--pid"), "error should suggest --pid: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_profilers_returns_waiting_app() {
+        // Zero discovered profilers → observer starts in waiting mode.
+        let app = connect_with(
+            &cli(None),
+            |_| panic!("unexpected pid lookup"),
+            Vec::new,
+            1_000,
+        )
+        .expect("zero profilers should not fail — waiting mode");
+
+        assert!(
+            app.is_waiting(),
+            "should be in waiting mode when no profilers found"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_profiler_auto_connects() {
+        let app = connect_with(
+            &cli(None),
+            |_| panic!("unexpected pid lookup"),
+            || vec![profiler(55, "myapp", 900)],
+            1_000,
+        )
+        .expect("single profiler should auto-connect");
+
+        assert!(
+            !app.is_waiting(),
+            "should not be in waiting mode with one profiler"
         );
     }
 

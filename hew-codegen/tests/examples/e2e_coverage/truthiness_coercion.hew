@@ -1,0 +1,30 @@
+// Tests direct bool<->i32 truthiness/coercion semantics.
+fn takes_bool(flag: bool) -> i32 {
+    if flag {
+        return 1;
+    }
+    return 0;
+}
+
+fn main() {
+    let zero: i32 = 0;
+    let two: i32 = 2;
+    let neg: i32 = -7;
+
+    let zero_bool: bool = zero;
+    let two_bool: bool = two;
+    println(zero_bool);
+    println(two_bool);
+
+    println(takes_bool(zero));
+    println(takes_bool(two));
+    println(takes_bool(neg));
+
+    println(zero as bool);
+    println(two as bool);
+    println(neg as bool);
+
+    println(true as i32);
+    println(false as i32);
+    println((two as bool) as i32);
+}

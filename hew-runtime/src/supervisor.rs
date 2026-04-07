@@ -252,6 +252,7 @@ pub struct HewSupervisor {
 
     running: AtomicI32,
     cancelled: AtomicBool,
+    teardown_claimed: AtomicBool,
     pending_restart_timers: AtomicUsize,
     self_actor: *mut HewActor,
     /// Serializes public child-slot reads against restart-time replacement.
@@ -665,6 +666,12 @@ fn stop_deferred_supervisor(deferred: DeferredSupervisorStop) {
     unsafe { hew_supervisor_stop(deferred.0) };
 }
 
+fn stop_owned_deferred_supervisor(deferred: DeferredSupervisorStop) {
+    // SAFETY: teardown ownership was claimed by the caller before this thread
+    // was spawned, so this background thread is the unique destructor.
+    unsafe { stop_supervisor_owned(deferred.0) };
+}
+
 fn spawn_deferred_supervisor_stop(
     child_sup: *mut HewSupervisor,
     allow_sync_fallback: bool,
@@ -689,6 +696,25 @@ fn spawn_deferred_supervisor_stop(
         } else {
             eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
         }
+        return false;
+    }
+    true
+}
+
+fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
+    if sup.is_null() {
+        return true;
+    }
+
+    let sup_addr = sup as usize;
+    if std::thread::Builder::new()
+        .name("deferred-sup-stop".into())
+        .spawn(move || {
+            stop_owned_deferred_supervisor(DeferredSupervisorStop(sup_addr as *mut HewSupervisor));
+        })
+        .is_err()
+    {
+        eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
         return false;
     }
     true
@@ -737,6 +763,123 @@ fn current_thread_owns_supervisor_tree(sup: *mut HewSupervisor) -> bool {
 /// Stop a child supervisor without blocking the current scheduler worker.
 fn defer_stop_child_supervisor(child_sup: *mut HewSupervisor) {
     let _ = spawn_deferred_supervisor_stop(child_sup, true);
+}
+
+fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
+    if sup.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
+    unsafe {
+        (&*sup)
+            .teardown_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+fn release_supervisor_teardown(sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+    // SAFETY: only used to roll back a failed deferred-spawn attempt while the
+    // supervisor is still live and owned by the caller.
+    unsafe {
+        (&*sup).teardown_claimed.store(false, Ordering::Release);
+    }
+}
+
+fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
+    unsafe {
+        let s = &*sup;
+        s.cancelled.store(true, Ordering::Release);
+        s.running.store(0, Ordering::Release);
+    }
+}
+
+fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+
+    // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
+    unsafe {
+        let s = &*sup;
+        if s.self_actor.is_null() {
+            return;
+        }
+
+        actor::hew_actor_stop(s.self_actor);
+        loop {
+            let state = (*s.self_actor).actor_state.load(Ordering::Acquire);
+            if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32 {
+                break;
+            }
+            std::thread::yield_now();
+        }
+    }
+}
+
+unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
+    request_supervisor_shutdown(sup);
+    wait_for_supervisor_self_actor_quiescent(sup);
+
+    // SAFETY: teardown ownership is held exclusively by this thread and the
+    // supervisor memory remains live until `Box::from_raw` below.
+    let shared = unsafe { &*sup };
+    while shared.pending_restart_timers.load(Ordering::Acquire) != 0 {
+        std::thread::yield_now();
+    }
+
+    // SAFETY: teardown ownership was claimed once for this supervisor, the
+    // self actor is no longer dispatching, and no other thread may consume the
+    // raw pointer now.
+    let mut s = unsafe { Box::from_raw(sup) };
+
+    // Recursively stop all child supervisors first.
+    for child_sup in std::mem::take(&mut s.child_supervisors) {
+        if !child_sup.is_null() {
+            // SAFETY: child_sup is a valid supervisor added via
+            // hew_supervisor_add_child_supervisor.
+            unsafe { hew_supervisor_stop(child_sup) };
+        }
+    }
+    // Stop all children and wait for each to reach a terminal state.
+    for i in 0..s.child_count {
+        let child = take_child_slot(&mut s, i);
+        if !child.is_null() {
+            // SAFETY: child pointer is valid.
+            unsafe { actor::hew_actor_stop(child) };
+            // SAFETY: child pointer is valid.
+            unsafe {
+                loop {
+                    let state = (*child).actor_state.load(Ordering::Acquire);
+                    if state != HewActorState::Running as i32
+                        && state != HewActorState::Runnable as i32
+                    {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                actor::hew_actor_free(child);
+            }
+        }
+    }
+
+    if !s.self_actor.is_null() {
+        // SAFETY: self_actor was stopped and waited above; it is no longer
+        // dispatching and now only needs final pointer cleanup and free.
+        unsafe {
+            (*s.self_actor).state = ptr::null_mut();
+            (*s.self_actor).state_size = 0;
+            actor::hew_actor_free(s.self_actor);
+        }
+        s.self_actor = ptr::null_mut();
+    }
 }
 
 /// Restart a child from its spec, returning the new actor pointer.
@@ -1179,6 +1322,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         restart_head: 0,
         running: AtomicI32::new(0),
         cancelled: AtomicBool::new(false),
+        teardown_claimed: AtomicBool::new(false),
         pending_restart_timers: AtomicUsize::new(0),
         self_actor: ptr::null_mut(),
         children_lock: Mutex::new(()),
@@ -1388,90 +1532,32 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
 pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
     cabi_guard!(sup.is_null());
 
-    if current_thread_owns_supervisor_tree(sup) {
-        // SAFETY: the current actor is actively running under this supervisor
-        // tree, so `sup` remains valid until the dispatch/terminate callback
-        // unwinds and the deferred stop takes over.
-        let s = unsafe { &*sup };
-        if s.cancelled.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        s.running.store(0, Ordering::Release);
-        if !spawn_deferred_supervisor_stop(sup, false) {
-            set_last_error("hew_supervisor_stop: failed to spawn deferred stop thread");
-        }
+    if !claim_supervisor_teardown(sup) {
         return;
     }
 
-    // Unregister from shutdown list to prevent double-stop.
-    // SAFETY: sup is still valid here.
+    request_supervisor_shutdown(sup);
+
+    if current_thread_owns_supervisor_tree(sup) {
+        if !spawn_owned_deferred_supervisor_stop(sup) {
+            release_supervisor_teardown(sup);
+            set_last_error("hew_supervisor_stop: failed to spawn deferred stop thread");
+        }
+        // Unregister from shutdown once the deferred owner is guaranteed to
+        // finish the teardown.
+        // SAFETY: `sup` is still live here and was previously registered as a
+        // top-level supervisor when started.
+        unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+        return;
+    }
+
+    // Unregister from shutdown before consuming the raw pointer so later
+    // shutdown sweeps cannot race this exact-once teardown owner.
+    // SAFETY: `sup` is still live here and was previously registered as a
+    // top-level supervisor when started.
     unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
-
-    // SAFETY: caller guarantees sup is valid and surrenders ownership.
-    let mut s = unsafe { Box::from_raw(sup) };
-
-    s.cancelled.store(true, Ordering::Release);
-    s.running.store(0, Ordering::Release);
-    while s.pending_restart_timers.load(Ordering::Acquire) != 0 {
-        std::thread::yield_now();
-    }
-
-    // Recursively stop all child supervisors first.
-    for child_sup in std::mem::take(&mut s.child_supervisors) {
-        if !child_sup.is_null() {
-            // SAFETY: child_sup is a valid supervisor added via
-            // hew_supervisor_add_child_supervisor.
-            unsafe { hew_supervisor_stop(child_sup) };
-        }
-    }
-    // Stop all children and wait for each to reach a terminal state.
-    for i in 0..s.child_count {
-        let child = take_child_slot(&mut s, i);
-        if !child.is_null() {
-            // SAFETY: child pointer is valid.
-            unsafe { actor::hew_actor_stop(child) };
-            // Spin-wait until actor is no longer Running or Runnable.
-            // SAFETY: child pointer is valid.
-            unsafe {
-                loop {
-                    let state = (*child).actor_state.load(Ordering::Acquire);
-                    if state != HewActorState::Running as i32
-                        && state != HewActorState::Runnable as i32
-                    {
-                        break;
-                    }
-                    std::thread::yield_now();
-                }
-                actor::hew_actor_free(child);
-            }
-        }
-    }
-
-    // Stop the supervisor actor and wait for it to finish.
-    if !s.self_actor.is_null() {
-        // SAFETY: self_actor is valid.
-        unsafe {
-            actor::hew_actor_stop(s.self_actor);
-            // Spin-wait until self_actor reaches a terminal state.
-            loop {
-                let state = (*s.self_actor).actor_state.load(Ordering::Acquire);
-                if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32
-                {
-                    break;
-                }
-                std::thread::yield_now();
-            }
-            // Null the state before freeing — it points to the supervisor
-            // struct, not a deep copy.
-            (*s.self_actor).state = ptr::null_mut();
-            (*s.self_actor).state_size = 0;
-            actor::hew_actor_free(s.self_actor);
-        }
-        s.self_actor = ptr::null_mut();
-    }
-
-    // Child spec resources (init_state, name) are freed by the Drop impl
-    // on InternalChildSpec when `s` (the Box) drops here.
+    // SAFETY: teardown ownership was claimed above and remains unique.
+    unsafe { stop_supervisor_owned(sup) };
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1624,6 +1710,87 @@ mod tests {
             assert!(
                 elapsed < std::time::Duration::from_secs(1),
                 "reentrant supervisor stop should defer instead of spinning inside terminate, took {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_second_stop_returns_while_deferred_owner_waits() {
+        // SAFETY: this test owns the supervisor tree, injects a synthetic
+        // current actor for the owner-thread path, and only mutates actor
+        // states through test-controlled atomics.
+        unsafe {
+            let (sup, child, self_actor) = make_supervisor_with_child();
+            let child_sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!child_sup.is_null());
+            assert_eq!(hew_supervisor_add_child_supervisor(sup, child_sup), 0);
+
+            (*child)
+                .actor_state
+                .store(HewActorState::Running as i32, Ordering::Release);
+            (*self_actor)
+                .actor_state
+                .store(HewActorState::Running as i32, Ordering::Release);
+
+            let prev_actor = actor::set_current_actor(child);
+            let self_unblock = defer_state_transition(
+                self_actor,
+                HewActorState::Stopped,
+                std::time::Duration::from_millis(200),
+            );
+            let child_unblock = defer_state_transition(
+                child,
+                HewActorState::Stopped,
+                std::time::Duration::from_millis(250),
+            );
+
+            hew_supervisor_stop(sup);
+
+            let finished = std::sync::Arc::new(AtomicBool::new(false));
+            let elapsed_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let finished_clone = std::sync::Arc::clone(&finished);
+            let elapsed_clone = std::sync::Arc::clone(&elapsed_ms);
+            let sup_addr = sup as usize;
+            let second = std::thread::spawn(move || {
+                let start = std::time::Instant::now();
+                hew_supervisor_stop(sup_addr as *mut HewSupervisor);
+                let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                elapsed_clone.store(elapsed, Ordering::Release);
+                finished_clone.store(true, Ordering::Release);
+            });
+
+            assert!(
+                wait_for_condition(std::time::Duration::from_millis(100), || {
+                    finished.load(Ordering::Acquire)
+                }),
+                "second stop caller should return while deferred teardown owns the supervisor"
+            );
+            assert!(
+                elapsed_ms.load(Ordering::Acquire) < 100,
+                "second stop caller should not race into teardown ownership"
+            );
+            assert_eq!(
+                (*sup).child_supervisors.len(),
+                1,
+                "deferred teardown must not mutate child supervisor vectors before self actor quiesces"
+            );
+
+            second.join().unwrap();
+            self_unblock.join().unwrap();
+            child_unblock.join().unwrap();
+            actor::set_current_actor(prev_actor);
+
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live(child)
+                }),
+                "child actor should still be released after the deferred winner completes"
+            );
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live(self_actor)
+                }),
+                "supervisor self actor should still be released after the deferred winner completes"
             );
         }
     }

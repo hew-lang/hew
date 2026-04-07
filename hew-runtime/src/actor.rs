@@ -356,7 +356,10 @@ unsafe impl Send for DeferredActorFree {}
 fn free_deferred_actor(deferred: DeferredActorFree) {
     // SAFETY: the runtime still owns `actor`; the background thread simply
     // retries the same free once the current dispatch unwinds.
-    let _ = unsafe { hew_actor_free(deferred.0) };
+    let rc = unsafe { hew_actor_free(deferred.0) };
+    if rc != 0 {
+        eprintln!("hew: warning: deferred actor free failed with rc={rc}");
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

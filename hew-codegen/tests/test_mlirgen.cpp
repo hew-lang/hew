@@ -2906,6 +2906,74 @@ fn broken_direct_range(lo: u64, hi: u64) -> int {
   PASS();
 }
 
+static void test_direct_unsigned_range_missing_upper_expr_type_fails_closed() {
+  TEST(direct_unsigned_range_missing_upper_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_direct_range_upper(lo: u64, hi: u64) -> int {
+    var n: int = 0;
+    for _ in lo..hi {
+        n = n + 1;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_direct_range_upper");
+  if (!fn) {
+    FAIL("broken_direct_range_upper function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected direct range for-loop");
+    return;
+  }
+
+  auto *rangeExpr = std::get_if<hew::ast::ExprBinary>(&forStmt->iterable.value.kind);
+  if (!rangeExpr || !rangeExpr->right) {
+    FAIL("expected direct range iterable expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, rangeExpr->right->span)) {
+    FAIL("failed to remove expr_types entry for direct range upper bound");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when direct range upper metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for direct range loop upper bound signedness") ==
+      std::string::npos) {
+    FAIL("expected direct range upper bound fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for direct range upper metadata");
+    return;
+  }
+
+  PASS();
+}
+
 static void test_materialized_unsigned_range_missing_expr_type_fails_closed() {
   TEST(materialized_unsigned_range_missing_expr_type_fails_closed);
 
@@ -6212,6 +6280,7 @@ int main() {
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();
   test_direct_unsigned_range_missing_expr_type_fails_closed();
+  test_direct_unsigned_range_missing_upper_expr_type_fails_closed();
   test_materialized_unsigned_range_missing_expr_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();

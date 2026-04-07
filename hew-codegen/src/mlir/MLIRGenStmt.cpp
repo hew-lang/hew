@@ -2801,6 +2801,11 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     if (!rangeBoundType)
       return;
   }
+  if (rangeExpr.right &&
+      !requireResolvedTypeOf(rangeExpr.right->span, "direct range loop upper bound signedness",
+                             location)) {
+    return;
+  }
 
   mlir::Value lb = nullptr;
   mlir::Value ub = nullptr;

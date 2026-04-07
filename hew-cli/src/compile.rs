@@ -2006,6 +2006,36 @@ fn main() {
     }
 
     #[test]
+    fn typecheck_rejects_unresolved_inferred_binding_before_enrichment() {
+        let source = "fn main() {\n    let f = (x) => x;\n}\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let target = TargetSpec::from_requested(None).expect("host target");
+
+        let err = typecheck_program(
+            &program,
+            source,
+            "main.hew",
+            &target,
+            &CompileOptions::default(),
+        );
+        let Err(err) = err else {
+            panic!("typecheck should reject unresolved inferred bindings");
+        };
+        assert_eq!(err, "type errors found");
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::InferenceFailed)),
+            "expected typecheck-stage InferenceFailed, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn build_module_graph_reuses_resolved_file_imports_for_diamond_deps() {
         let fixture = TestFixtureDir::new(
             "diamond-file-import-cache",

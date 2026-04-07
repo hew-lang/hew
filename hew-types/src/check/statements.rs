@@ -209,6 +209,8 @@ impl Checker {
                     Pattern::Identifier(name) => format!("local binding `{name}`"),
                     _ => "local binding".to_string(),
                 };
+                let deferred_hole_mark = self.deferred_inference_holes.len();
+                let deferred_cast_mark = self.deferred_cast_checks.len();
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =
@@ -218,7 +220,7 @@ impl Checker {
                         self.synthesize(val, vs)
                     }
                 } else if let Some(annotation) = ty {
-                    self.resolve_annotation_with_holes(annotation, binding_context)
+                    self.resolve_annotation_with_holes(annotation, binding_context.clone())
                 } else {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
@@ -239,6 +241,26 @@ impl Checker {
                         } if !tps.is_empty()
                     )
                 });
+                if ty.is_none() && !value_is_direct_generic_lambda {
+                    let more_specific_hole_vars: Vec<_> = self.deferred_inference_holes
+                        [deferred_hole_mark..]
+                        .iter()
+                        .flat_map(|hole| hole.hole_vars.iter().copied())
+                        .chain(
+                            self.deferred_cast_checks[deferred_cast_mark..]
+                                .iter()
+                                .flat_map(|check| check.target_hole_vars.iter().copied()),
+                        )
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    self.record_deferred_monomorphic_site(
+                        &pattern.1,
+                        &binding_context,
+                        &val_ty,
+                        more_specific_hole_vars,
+                    );
+                }
                 // For simple identifier patterns, track the definition span
                 if let Pattern::Identifier(name) = &pattern.0 {
                     if val_ty == Ty::Unit && value.is_some() {
@@ -283,6 +305,8 @@ impl Checker {
             }
             Stmt::Var { name, ty, value } => {
                 let binding_context = format!("local binding `{name}`");
+                let deferred_hole_mark = self.deferred_inference_holes.len();
+                let deferred_cast_mark = self.deferred_cast_checks.len();
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =
@@ -292,11 +316,40 @@ impl Checker {
                         self.synthesize(val, vs)
                     }
                 } else if let Some(annotation) = ty {
-                    self.resolve_annotation_with_holes(annotation, binding_context)
+                    self.resolve_annotation_with_holes(annotation, binding_context.clone())
                 } else {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
+                    matches!(
+                        val,
+                        Expr::Lambda {
+                            type_params: Some(tps),
+                            ..
+                        } if !tps.is_empty()
+                    )
+                });
+                if ty.is_none() && !value_is_direct_generic_lambda {
+                    let more_specific_hole_vars: Vec<_> = self.deferred_inference_holes
+                        [deferred_hole_mark..]
+                        .iter()
+                        .flat_map(|hole| hole.hole_vars.iter().copied())
+                        .chain(
+                            self.deferred_cast_checks[deferred_cast_mark..]
+                                .iter()
+                                .flat_map(|check| check.target_hole_vars.iter().copied()),
+                        )
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    self.record_deferred_monomorphic_site(
+                        span,
+                        &binding_context,
+                        &val_ty,
+                        more_specific_hole_vars,
+                    );
+                }
                 self.check_shadowing(name, span);
                 self.env
                     .define_with_span(name.clone(), val_ty, true, span.clone());

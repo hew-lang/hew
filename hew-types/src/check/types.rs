@@ -175,6 +175,14 @@ pub(super) struct DeferredCastCheck {
     pub(super) target_hole_vars: Vec<TypeVar>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct DeferredMonomorphicSite {
+    pub(super) span: Span,
+    pub(super) context: String,
+    pub(super) ty: Ty,
+    pub(super) more_specific_hole_vars: Vec<TypeVar>,
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -195,6 +203,7 @@ pub struct Checker {
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span where each function was first defined (for duplicate detection).
     pub(super) fn_def_spans: HashMap<String, Span>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
@@ -329,6 +338,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
+            deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             type_def_spans: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),

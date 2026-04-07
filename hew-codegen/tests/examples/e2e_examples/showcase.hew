@@ -85,7 +85,7 @@ fn main() {
     }
     // 4. Lambdas
     println("4. Lambdas:");
-    let square = (n) => n * n;
+    let square: fn(int) -> int = (n) => n * n;
     println("  Lambda defined");
 
     // 5. Fibonacci

@@ -2662,4 +2662,329 @@ mod tests {
             reset_globals();
         }
     }
+
+    // ── Budget / reduction-enforcement tests ─────────────────────────────
+
+    /// Violation counter: incremented by `dispatch_check_reductions` whenever
+    /// the reductions field is not `HEW_DEFAULT_REDUCTIONS` at dispatch entry.
+    static REDUCTIONS_WRONG_COUNT: AtomicI32 = AtomicI32::new(0);
+
+    /// Dispatch that verifies the reductions field is reset before each call.
+    ///
+    /// Expects `state` to point to the owning `HewActor` — set by the test via
+    /// `actor.state = actor_ptr.cast()` so that this function can read the
+    /// field directly without requiring a global actor slot.
+    unsafe extern "C" fn dispatch_check_reductions(
+        state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+    ) {
+        // SAFETY: state was set to a valid *mut HewActor by the test.
+        let a = unsafe { &*state.cast::<HewActor>() };
+        if a.reductions.load(Ordering::Relaxed) != HEW_DEFAULT_REDUCTIONS {
+            REDUCTIONS_WRONG_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Queue `count` messages directly into an actor's mailbox without calling
+    /// `wake_wasm_actor`.  Use when the actor is already `Runnable` (or when
+    /// the caller will enqueue it explicitly) to avoid double-enqueue.
+    ///
+    /// # Safety
+    ///
+    /// `actor` must be a valid pointer to a `HewActor` whose mailbox is live.
+    unsafe fn queue_messages_only(actor: *mut HewActor, count: usize) {
+        // Fixed payload — dispatch callbacks only care about message count.
+        let mut payload: i32 = 0;
+        for i in 0..count {
+            // SAFETY: actor and its mailbox are valid; payload outlives the call.
+            let rc = unsafe {
+                crate::mailbox_wasm::hew_mailbox_send(
+                    (*actor).mailbox.cast(),
+                    1,
+                    (&raw mut payload).cast(),
+                    std::mem::size_of::<i32>(),
+                )
+            };
+            assert_eq!(
+                rc,
+                HewError::Ok as i32,
+                "queue_messages_only: send #{i} failed"
+            );
+        }
+    }
+
+    /// An actor with `budget=3` and 5 queued messages must process exactly 3
+    /// messages per activation, leaving 2 in the mailbox.
+    #[test]
+    fn budget_enforces_message_cap_per_activation() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.budget.store(3, Ordering::Relaxed);
+        // stub_actor() starts Runnable; queue_messages_only skips wake so no
+        // double-enqueue occurs.
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // Queue 5 messages without waking (actor is already Runnable).
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 5) };
+
+        // One activation: must consume exactly budget=3 messages.
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            3,
+            "budget=3 must dispatch exactly 3 messages per activation"
+        );
+        // 2 messages remain → actor must be Runnable (not Idle) after activation.
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor with remaining messages must be Runnable after a budget-capped activation"
+        );
+        // SAFETY: mailbox is still live; no one else holds a reference.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(actor.mailbox.cast()),
+                2,
+                "2 messages must remain in the mailbox after budget-capped activation"
+            );
+        }
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// High-priority scaling: `budget=4` with `HEW_PRIORITY_HIGH` (2× factor)
+    /// must dispatch 8 messages per activation.
+    #[test]
+    fn high_priority_doubles_effective_budget() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.budget.store(4, Ordering::Relaxed);
+        actor.priority.store(HEW_PRIORITY_HIGH, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // 10 messages — more than the 8 the scaled budget allows.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 10) };
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            8,
+            "HIGH priority with budget=4 must dispatch 4×2=8 messages per activation"
+        );
+        // SAFETY: mailbox is still live.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(actor.mailbox.cast()),
+                2,
+                "2 messages must remain after high-priority activation"
+            );
+        }
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// Low-priority scaling: `budget=4` with `HEW_PRIORITY_LOW` (÷2 factor)
+    /// must dispatch 2 messages per activation.
+    #[test]
+    fn low_priority_halves_effective_budget() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.budget.store(4, Ordering::Relaxed);
+        actor.priority.store(HEW_PRIORITY_LOW, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // 10 messages — more than the 2 the scaled budget allows.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 10) };
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            2,
+            "LOW priority with budget=4 must dispatch 4÷2=2 messages per activation"
+        );
+        // SAFETY: mailbox is still live.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(actor.mailbox.cast()),
+                8,
+                "8 messages must remain after low-priority activation"
+            );
+        }
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// Low-priority floor: `budget=1` with `HEW_PRIORITY_LOW` yields
+    /// `max(1÷2, 1) = 1`, so exactly 1 message is dispatched.
+    #[test]
+    fn low_priority_budget_floor_is_one() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.budget.store(1, Ordering::Relaxed);
+        actor.priority.store(HEW_PRIORITY_LOW, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 3) };
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            1,
+            "LOW priority with budget=1 must dispatch exactly 1 message (floor clamps 0 to 1)"
+        );
+        // SAFETY: mailbox is still live.
+        unsafe {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_len(actor.mailbox.cast()),
+                2,
+                "2 messages must remain after the single-message floor activation"
+            );
+        }
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// Zero budget falls back to `HEW_MSG_BUDGET` (256): a mailbox with fewer
+    /// than 256 messages must be fully drained in a single activation.
+    #[test]
+    fn zero_budget_falls_back_to_default_msg_budget() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noisy_dispatch);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        // budget=0 → activate_actor_wasm falls back to HEW_MSG_BUDGET (256).
+        actor.budget.store(0, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        // 5 messages — well within the 256-message fallback budget.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 5) };
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            5,
+            "zero budget must fall back to HEW_MSG_BUDGET and drain all 5 messages"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "actor must be Idle when all messages are drained under the fallback budget"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
+
+    /// The scheduler resets the reduction counter to `HEW_DEFAULT_REDUCTIONS`
+    /// before every dispatch call, regardless of how many messages the actor
+    /// has already processed in the current activation.
+    ///
+    /// Coverage note: runs on the native target via the cooperative WASM path.
+    // WASM-TODO: run against an actual wasm32 target once CI gains wasm32 test
+    // execution support (same limitation as `wasm_ask_with_generous_timeout_…`).
+    #[test]
+    fn reductions_reset_to_default_per_dispatch() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        reset_wasm_dispatch_counters();
+        REDUCTIONS_WRONG_COUNT.store(0, Ordering::Relaxed);
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        // Pass the actor pointer as state so dispatch_check_reductions can
+        // inspect the reductions field without a separate global.
+        actor.state = actor_ptr.cast::<c_void>();
+        actor.dispatch = Some(dispatch_check_reductions);
+        // SAFETY: test creates and exclusively owns this mailbox.
+        actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+        actor.budget.store(3, Ordering::Relaxed);
+
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_messages_only(actor_ptr, 3) };
+
+        // SAFETY: actor is valid and scheduler is initialized.
+        unsafe { activate_actor_wasm(actor_ptr) };
+
+        assert_eq!(
+            NOISY_DISPATCHES.load(Ordering::Relaxed),
+            3,
+            "dispatch must run exactly 3 times (one per queued message)"
+        );
+        assert_eq!(
+            REDUCTIONS_WRONG_COUNT.load(Ordering::Relaxed),
+            0,
+            "reductions must equal HEW_DEFAULT_REDUCTIONS at the start of every dispatch call"
+        );
+
+        // SAFETY: mailbox was allocated for this test.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        hew_sched_shutdown();
+    }
 }

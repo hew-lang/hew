@@ -4419,6 +4419,13 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
   });
 
   mlir::RewritePatternSet patterns(&context);
+  // Pre-allocate to avoid std::vector reallocation during pattern population.
+  // Reallocation via __split_buffer can produce incorrect ASan container-overflow
+  // annotations on Apple libc++ 22.x, causing false-positive sanitizer failures
+  // during RewritePatternSet destruction. 256 comfortably covers all patterns
+  // added below (~107 explicit + helpers added by populateWith* calls).
+  // WORKAROUND: remove once the upstream MLIR/libc++ interaction is resolved.
+  patterns.getNativePatterns().reserve(256);
 
   // Add our custom lowering patterns for hew ops
   patterns.add<PrintOpLowering>(typeConverter, &context);

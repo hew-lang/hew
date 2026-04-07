@@ -1,0 +1,6 @@
+// Regression for issue #768: wrap(wrap(42)) where the outer call's type arg
+// T=Option<int> is inferred by the type checker and filled in by the enricher
+// as TypeExpr::Option. resolveTypeArgMangledName must return nullopt for this
+// variant and abort with a clean diagnostic instead of segfaulting (exit 139).
+fn wrap<T>(x: T) -> Option<T> { Some(x) }
+fn main() { let x = wrap(wrap(42)); }

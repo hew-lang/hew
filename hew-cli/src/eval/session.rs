@@ -2,6 +2,8 @@
 
 use std::fmt::Write;
 
+use hew_parser::ast::{Item, Stmt};
+
 use super::classify::{self, InputKind};
 
 /// Persistent state for a REPL session.
@@ -43,6 +45,13 @@ impl Session {
     /// Record a successfully-evaluated binding (let/var).
     pub fn add_binding(&mut self, source: &str) {
         self.bindings.push(source.to_string());
+    }
+
+    /// Record any explicit bindings from a successfully-evaluated statement input.
+    pub fn add_persistent_bindings_from_statement(&mut self, input: &str) {
+        for binding in persistent_binding_sources(input) {
+            self.add_binding(&binding);
+        }
     }
 
     /// Build a complete Hew program from session state plus new input.
@@ -140,6 +149,45 @@ impl Session {
     }
 }
 
+fn persistent_binding_sources(input: &str) -> Vec<String> {
+    const MAIN_PREFIX: &str = "fn main() {\n";
+
+    let source = format!("{MAIN_PREFIX}{input}\n}}\n");
+    let parse_result = hew_parser::parse(&source);
+    if !parse_result.errors.is_empty() || parse_result.program.items.len() != 1 {
+        debug_assert!(
+            false,
+            "statement persistence expected parseable statement input: {input:?}"
+        );
+        return Vec::new();
+    }
+
+    let Some((Item::Function(function), _)) = parse_result.program.items.first() else {
+        debug_assert!(false, "statement persistence expected synthetic main");
+        return Vec::new();
+    };
+
+    let prefix_len = MAIN_PREFIX.len();
+    function
+        .body
+        .stmts
+        .iter()
+        .filter_map(|(stmt, span)| match stmt {
+            Stmt::Let { .. } | Stmt::Var { .. } => {
+                let start = span.start.checked_sub(prefix_len)?;
+                let end = span.end.checked_sub(prefix_len)?.min(input.len());
+                let binding = input.get(start..end)?.trim();
+                Some(if binding.ends_with(';') {
+                    binding.to_string()
+                } else {
+                    format!("{binding};")
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// A synthetic program assembled from session state and new input.
 #[derive(Debug)]
 pub struct SyntheticProgram {
@@ -178,6 +226,35 @@ mod tests {
         let prog = session.build_program("x + 5");
         assert!(prog.source.contains("let x = 10;"));
         assert!(prog.source.contains("println(x + 5)"));
+    }
+
+    #[test]
+    fn statement_replay_keeps_only_explicit_bindings() {
+        let mut session = Session::new();
+        session.add_persistent_bindings_from_statement("let x = 10;\nvar y = x + 1;");
+        let prog = session.build_program("x + y");
+        assert!(
+            prog.source.contains("let x = 10;"),
+            "source: {}",
+            prog.source
+        );
+        assert!(
+            prog.source.contains("var y = x + 1;"),
+            "source: {}",
+            prog.source
+        );
+    }
+
+    #[test]
+    fn statement_replay_ignores_one_shot_statement() {
+        let mut session = Session::new();
+        session.add_persistent_bindings_from_statement("println(\"once\");");
+        let prog = session.build_program("1 + 1");
+        assert!(
+            !prog.source.contains("println(\"once\")"),
+            "source: {}",
+            prog.source
+        );
     }
 
     #[test]

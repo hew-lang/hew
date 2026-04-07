@@ -270,7 +270,11 @@ endif
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
 assemble: | hew adze runtime stdlib
-	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
+	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
+	@# assemble-release makes build/std a symlink to ../std; reset it so the
+	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
+	@rm -rf $(BUILD_DIR)/std
+	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn ../../$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
 	@# Package manager

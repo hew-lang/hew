@@ -254,6 +254,7 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("duration"), Some(Ty::Duration));
     assert_eq!(Ty::from_name("Duration"), Some(Ty::Duration));
     assert_eq!(Ty::from_name("()"), Some(Ty::Unit));
+    assert_eq!(Ty::from_name("!"), Some(Ty::Never));
 }
 
 #[test]
@@ -262,6 +263,61 @@ fn from_name_unknown_returns_none() {
     assert_eq!(Ty::from_name("HashMap"), None);
     assert_eq!(Ty::from_name("NonExistent"), None);
     assert_eq!(Ty::from_name(""), None);
+}
+
+#[test]
+fn canonical_lowering_name_normalizes_internal_spellings() {
+    let cases = [
+        (Ty::I64, Some("i64")),
+        (Ty::U64, Some("u64")),
+        (Ty::F64, Some("f64")),
+        (Ty::Bool, Some("bool")),
+        (Ty::Char, Some("char")),
+        (Ty::String, Some("string")),
+        (Ty::Bytes, Some("bytes")),
+        (Ty::Duration, Some("duration")),
+        (Ty::Never, Some("!")),
+        (named("Vec"), None),
+    ];
+
+    for (ty, expected) in cases {
+        assert_eq!(
+            ty.canonical_lowering_name(),
+            expected,
+            "unexpected lowering for {ty:?}"
+        );
+    }
+}
+
+#[test]
+fn canonical_lowering_name_round_trips_through_from_name() {
+    let primitives = [
+        Ty::I8,
+        Ty::I16,
+        Ty::I32,
+        Ty::I64,
+        Ty::U8,
+        Ty::U16,
+        Ty::U32,
+        Ty::U64,
+        Ty::F32,
+        Ty::F64,
+        Ty::Bool,
+        Ty::Char,
+        Ty::String,
+        Ty::Bytes,
+        Ty::Duration,
+        Ty::Never,
+    ];
+
+    for ty in primitives {
+        let name = ty.canonical_lowering_name().unwrap();
+        assert_eq!(
+            Ty::from_name(name),
+            Some(ty),
+            "round-trip failed for `{name}`"
+        );
+    }
 }
 
 // ===========================================================================

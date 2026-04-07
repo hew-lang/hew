@@ -197,13 +197,7 @@ impl Substitution {
 }
 
 impl Ty {
-    /// Canonical mapping from type-name strings (including user-facing aliases)
-    /// to primitive `Ty` variants.  Returns `None` for non-primitive names.
-    ///
-    /// This is the **single source of truth** — every call site that needs to
-    /// resolve a type name string to a `Ty` must go through this function.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Ty> {
+    fn primitive_from_name(name: &str) -> Option<Ty> {
         Some(match name {
             "i8" => Ty::I8,
             "i16" => Ty::I16,
@@ -221,6 +215,45 @@ impl Ty {
             "bytes" | "Bytes" => Ty::Bytes,
             "duration" | "Duration" => Ty::Duration,
             "()" => Ty::Unit,
+            "!" => Ty::Never,
+            _ => return None,
+        })
+    }
+
+    /// Canonical mapping from type-name strings (including user-facing aliases)
+    /// to primitive `Ty` variants.  Returns `None` for non-primitive names.
+    ///
+    /// This is the **single source of truth** — every call site that needs to
+    /// resolve a type name string to a `Ty` must go through this function.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Ty> {
+        Self::primitive_from_name(name)
+    }
+
+    /// Canonical internal lowering spelling used when serializing resolved
+    /// types back into `TypeExpr`s for downstream codegen consumers.
+    ///
+    /// `Ty::Unit` is intentionally excluded because it lowers structurally to
+    /// `TypeExpr::Tuple([])` rather than through a primitive named spelling.
+    #[must_use]
+    pub fn canonical_lowering_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Ty::I8 => "i8",
+            Ty::I16 => "i16",
+            Ty::I32 => "i32",
+            Ty::I64 => "i64",
+            Ty::U8 => "u8",
+            Ty::U16 => "u16",
+            Ty::U32 => "u32",
+            Ty::U64 => "u64",
+            Ty::F32 => "f32",
+            Ty::F64 => "f64",
+            Ty::Bool => "bool",
+            Ty::Char => "char",
+            Ty::String => "string",
+            Ty::Bytes => "bytes",
+            Ty::Duration => "duration",
+            Ty::Never => "!",
             _ => return None,
         })
     }

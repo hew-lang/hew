@@ -192,25 +192,7 @@ fn ty_element_name(ty: &Ty) -> Option<&str> {
 
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
-    match ty {
-        Ty::I8 => Some("i8"),
-        Ty::I16 => Some("i16"),
-        Ty::I32 => Some("i32"),
-        Ty::I64 => Some("i64"),
-        Ty::U8 => Some("u8"),
-        Ty::U16 => Some("u16"),
-        Ty::U32 => Some("u32"),
-        Ty::U64 => Some("u64"),
-        Ty::F32 => Some("f32"),
-        Ty::F64 => Some("f64"),
-        Ty::Bool => Some("bool"),
-        Ty::Char => Some("char"),
-        Ty::String => Some("string"),
-        Ty::Bytes => Some("bytes"),
-        Ty::Duration => Some("duration"),
-        Ty::Never => Some("!"),
-        _ => None,
-    }
+    ty.canonical_lowering_name()
 }
 
 #[allow(

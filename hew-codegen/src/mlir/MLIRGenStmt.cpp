@@ -2264,9 +2264,9 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
   }
 
   auto innerName = resolveTypeAlias(inner->name);
-  bool isIntChannel = (innerName == "int" || innerName == "i64");
-  bool isStringChannel =
-      !isIntChannel && (innerName == "String" || innerName == "string" || innerName == "str");
+  auto canonicalInnerName = canonicalPrimitiveTypeName(innerName);
+  bool isIntChannel = (canonicalInnerName == "i64");
+  bool isStringChannel = !isIntChannel && (canonicalInnerName == "string");
 
   if (!isIntChannel && !isStringChannel) {
     ++errorCount_;

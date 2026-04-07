@@ -21,6 +21,7 @@
 #include "mlir/IR/Value.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -33,13 +34,92 @@ inline bool isValidType(mlir::Type type) {
   return type && !mlir::isa<mlir::NoneType>(type);
 }
 
-/// Normalize an AST element type name to canonical form (e.g. "Vec<i64>").
-/// The language aliases "int" → i64 and "float" → f64, so we must unify them.
-inline std::string normalizeElemTypeName(const std::string &name) {
-  if (name == "int")
+enum class PrimitiveTypeKind {
+  Unknown,
+  I8,
+  I16,
+  I32,
+  I64,
+  U8,
+  U16,
+  U32,
+  U64,
+  F32,
+  F64,
+  Bool,
+  Char,
+  String,
+  Bytes,
+  Duration,
+};
+
+inline PrimitiveTypeKind primitiveTypeKind(llvm::StringRef name) {
+  return llvm::StringSwitch<PrimitiveTypeKind>(name)
+      .Case("i8", PrimitiveTypeKind::I8)
+      .Case("i16", PrimitiveTypeKind::I16)
+      .Case("i32", PrimitiveTypeKind::I32)
+      .Cases({"i64", "int"}, PrimitiveTypeKind::I64)
+      .Cases({"Int", "isize"}, PrimitiveTypeKind::I64)
+      .Case("u8", PrimitiveTypeKind::U8)
+      .Case("byte", PrimitiveTypeKind::U8)
+      .Case("u16", PrimitiveTypeKind::U16)
+      .Case("u32", PrimitiveTypeKind::U32)
+      .Cases({"u64", "uint"}, PrimitiveTypeKind::U64)
+      .Case("usize", PrimitiveTypeKind::U64)
+      .Case("f32", PrimitiveTypeKind::F32)
+      .Cases({"f64", "float"}, PrimitiveTypeKind::F64)
+      .Case("Float", PrimitiveTypeKind::F64)
+      .Cases({"bool", "Bool"}, PrimitiveTypeKind::Bool)
+      .Cases({"char", "Char"}, PrimitiveTypeKind::Char)
+      .Cases({"string", "String"}, PrimitiveTypeKind::String)
+      .Case("str", PrimitiveTypeKind::String)
+      .Cases({"bytes", "Bytes"}, PrimitiveTypeKind::Bytes)
+      .Cases({"duration", "Duration"}, PrimitiveTypeKind::Duration)
+      .Default(PrimitiveTypeKind::Unknown);
+}
+
+inline llvm::StringRef canonicalPrimitiveTypeName(llvm::StringRef name) {
+  switch (primitiveTypeKind(name)) {
+  case PrimitiveTypeKind::I8:
+    return "i8";
+  case PrimitiveTypeKind::I16:
+    return "i16";
+  case PrimitiveTypeKind::I32:
+    return "i32";
+  case PrimitiveTypeKind::I64:
     return "i64";
-  if (name == "float")
+  case PrimitiveTypeKind::U8:
+    return "u8";
+  case PrimitiveTypeKind::U16:
+    return "u16";
+  case PrimitiveTypeKind::U32:
+    return "u32";
+  case PrimitiveTypeKind::U64:
+    return "u64";
+  case PrimitiveTypeKind::F32:
+    return "f32";
+  case PrimitiveTypeKind::F64:
     return "f64";
+  case PrimitiveTypeKind::Bool:
+    return "bool";
+  case PrimitiveTypeKind::Char:
+    return "char";
+  case PrimitiveTypeKind::String:
+    return "string";
+  case PrimitiveTypeKind::Bytes:
+    return "bytes";
+  case PrimitiveTypeKind::Duration:
+    return "duration";
+  case PrimitiveTypeKind::Unknown:
+    return {};
+  }
+  return {};
+}
+
+/// Normalize an AST element type name to canonical form (e.g. "Vec<i64>").
+inline std::string normalizeElemTypeName(const std::string &name) {
+  if (auto canonical = canonicalPrimitiveTypeName(name); !canonical.empty())
+    return canonical.str();
   return name;
 }
 
@@ -61,6 +141,8 @@ inline llvm::StringRef canonicalResolvedTypeName(llvm::StringRef name) {
     return "Sender";
   if (name == "channel.Receiver")
     return "Receiver";
+  if (auto canonical = canonicalPrimitiveTypeName(name); !canonical.empty())
+    return canonical;
   return name;
 }
 

@@ -332,6 +332,20 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       return mlir::success();
     }
 
+    // Bool ↔ int uses truthiness semantics, not raw sign-extension/truncation.
+    if (inputType.isInteger(1) && mlir::isa<mlir::IntegerType>(resultType) &&
+        !resultType.isInteger(1)) {
+      rewriter.replaceOpWithNewOp<mlir::arith::ExtUIOp>(op, resultType, inputVal);
+      return mlir::success();
+    }
+    if (mlir::isa<mlir::IntegerType>(inputType) && !inputType.isInteger(1) &&
+        resultType.isInteger(1)) {
+      auto zero = mlir::arith::ConstantIntOp::create(rewriter, op.getLoc(), inputType, 0);
+      rewriter.replaceOpWithNewOp<mlir::arith::CmpIOp>(op, mlir::arith::CmpIPredicate::ne, inputVal,
+                                                       zero);
+      return mlir::success();
+    }
+
     // Int widening/narrowing
     if (inputType.isIntOrIndex() && resultType.isIntOrIndex()) {
       auto inWidth = inputType.getIntOrFloatBitWidth();

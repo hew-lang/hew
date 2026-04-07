@@ -506,9 +506,23 @@ mlir::OpFoldResult hew::CastOp::fold(FoldAdaptor adaptor) {
 
   // Int to int or int to float constant fold.
   // Use zero-extension for unsigned casts, sign-extension for signed ones.
-  bool isUnsigned =
-      (*this)->hasAttr("is_unsigned") &&
-      mlir::cast<mlir::BoolAttr>((*this)->getAttr("is_unsigned")).getValue();
+  bool isUnsigned = (*this)->hasAttr("is_unsigned") &&
+                    mlir::cast<mlir::BoolAttr>((*this)->getAttr("is_unsigned")).getValue();
+
+  if (auto intResultType = mlir::dyn_cast<mlir::IntegerType>(resultType)) {
+    if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(inputAttr)) {
+      if (intResultType.getWidth() == 1)
+        return boolAttr;
+      return mlir::IntegerAttr::get(intResultType, boolAttr.getValue() ? 1 : 0);
+    }
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(inputAttr)) {
+      auto srcIntType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType());
+      if (intResultType.getWidth() == 1 && (!srcIntType || srcIntType.getWidth() > 1))
+        return mlir::BoolAttr::get(getContext(), !intAttr.getValue().isZero());
+      if (srcIntType && srcIntType.getWidth() == 1 && intResultType.getWidth() > 1)
+        return mlir::IntegerAttr::get(intResultType, intAttr.getValue().isZero() ? 0 : 1);
+    }
+  }
 
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(inputAttr)) {
     if (auto intResultType = mlir::dyn_cast<mlir::IntegerType>(resultType)) {
@@ -783,13 +797,13 @@ mlir::LogicalResult hew::EnumExtractPayloadOp::verify() {
     if (fieldIndex == 1) {
       if (getResult().getType() != resType.getOkType())
         return emitOpError("result type ")
-               << getResult().getType()
-               << " does not match !hew.result ok type " << resType.getOkType();
+               << getResult().getType() << " does not match !hew.result ok type "
+               << resType.getOkType();
     } else if (fieldIndex == 2) {
       if (getResult().getType() != resType.getErrType())
         return emitOpError("result type ")
-               << getResult().getType()
-               << " does not match !hew.result err type " << resType.getErrType();
+               << getResult().getType() << " does not match !hew.result err type "
+               << resType.getErrType();
     } else {
       return emitOpError("field_index for !hew.result must be 1 (ok) or 2 (err), got ")
              << fieldIndex;
@@ -978,8 +992,7 @@ mlir::LogicalResult hew::TraitObjectTagOp::verify() {
 
   // The tag (vtable pointer) is field 1 of the struct<(ptr, ptr)> lowering.
   if (!llvm::isa<mlir::LLVM::LLVMPointerType>(getResult().getType())) {
-    return emitOpError("result must be !llvm.ptr (vtable pointer), got ")
-           << getResult().getType();
+    return emitOpError("result must be !llvm.ptr (vtable pointer), got ") << getResult().getType();
   }
 
   return success();

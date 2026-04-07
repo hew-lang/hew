@@ -57,9 +57,13 @@ alive) are pruned automatically on the next scan.
 
 **No profiler discovered at startup?**
 
-The observer starts in *waiting mode* and will attach automatically as soon
-as a compatible profiler appears in the discovery directory.  Run
-`hew-observe --list` to check what is currently visible.
+The observer starts in *waiting mode* and displays an informative splash
+screen.  It rescans the discovery directory every **3 seconds** and will
+auto-connect as soon as a profiler appears — no restart required.  The
+status bar shows `[WAITING]` and the connection indicator shows
+`◌ Waiting for profiler…` while scanning.
+
+Run `hew-observe --list` to check what is currently visible.
 
 Make sure the Hew program was started with profiling enabled:
 

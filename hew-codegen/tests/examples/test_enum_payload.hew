@@ -1,17 +1,17 @@
-enum Option {
-    Some(int);
-    None;
+enum PayloadOption {
+    Value(int);
+    Empty;
 }
 
 fn main() {
-    let a = Some(42);
-    let b = None;
+    let a = Value(42);
+    let b = Empty;
     match a {
-        Some(x) => println(x),
-        None => println(0),
+        Value(x) => println(x),
+        Empty => println(0),
     }
     match b {
-        Some(x) => println(x),
-        None => println(-1),
+        Value(x) => println(x),
+        Empty => println(-1),
     }
 }

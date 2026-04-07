@@ -5,7 +5,7 @@ fn keep(rx: channel.Receiver<String>) {
 }
 
 fn main() {
-    let (tx, rx) = channel.new(4);
+    let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
     tx.close();
 
     for await msg in rx {

@@ -1260,6 +1260,18 @@ void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
   mutableVars.insert(name, alloca);
 }
 
+void MLIRGen::bindParam(const ast::Param &param, mlir::Value value) {
+  auto name = intern(param.name);
+  // Param::is_mutable is the semantic source of truth. Still shadow any outer
+  // mutable binding with the same name so nested specialization/codegen does
+  // not capture a caller-region alloca via mutableVars lookup.
+  if (param.is_mutable || mutableVars.lookup(name)) {
+    declareMutableVariable(name, value.getType(), value);
+    return;
+  }
+  declareVariable(name, value);
+}
+
 void MLIRGen::storeVariable(llvm::StringRef name, mlir::Value value) {
   auto it = getMutableVarSlot(name);
   if (!it) {
@@ -4329,7 +4341,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
 
   uint32_t paramIdx = 0;
   for (const auto &param : method.params) {
-    declareVariable(param.name, entryBlock->getArgument(paramIdx));
+    bindParam(param, entryBlock->getArgument(paramIdx));
     auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
     auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes, resolveAliasExpr);
     if (!handleStr.empty()) {
@@ -4526,15 +4538,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   for (const auto &param : fn.params) {
     const auto &paramName = param.name;
     auto paramValue = entryBlock->getArgument(paramIdx);
-    auto internedName = intern(paramName);
-    if (mutableVars.lookup(internedName)) {
-      // Generic specialization can happen while lowering a caller body. Shadow
-      // any outer mutable binding with the same name so lookups in the
-      // specialized callee don't capture an alloca from the caller's region.
-      declareMutableVariable(internedName, paramValue.getType(), paramValue);
-    } else {
-      declareVariable(internedName, paramValue);
-    }
+    bindParam(param, paramValue);
 
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;
@@ -5014,7 +5018,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     // Bind function parameters
     uint32_t paramIdx = 0;
     for (const auto &param : fn.params) {
-      declareVariable(param.name, entryBlock->getArgument(paramIdx));
+      bindParam(param, entryBlock->getArgument(paramIdx));
       auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
       auto handleStr = typeExprToHandleString(param.ty.value, knownHandleTypes, resolveAliasExpr);
       if (!handleStr.empty()) {

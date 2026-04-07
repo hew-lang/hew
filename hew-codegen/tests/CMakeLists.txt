@@ -1231,6 +1231,7 @@ add_wasm_file_test(coverage_string_interp         e2e_coverage  string_interp_co
 add_wasm_file_test(coverage_string_methods        e2e_coverage  string_method_calls)
 add_wasm_file_test(coverage_to_string             e2e_coverage  to_string_op)
 add_wasm_file_test(coverage_trait_dispatch        e2e_coverage  trait_dispatch_generic)
+add_wasm_file_test(coverage_param_mutability      e2e_coverage  param_mutability_codegen)
 add_wasm_file_test(coverage_truthiness_coercion   e2e_coverage  truthiness_coercion)
 add_wasm_file_test(coverage_var_reassign_drop     e2e_coverage  var_reassign_drop)
 add_wasm_file_test(coverage_vec_functional        e2e_coverage  vec_functional_ops)

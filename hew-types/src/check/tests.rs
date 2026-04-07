@@ -1247,6 +1247,35 @@ fn no_warn_var_actually_mutated() {
 }
 
 #[test]
+fn mutable_param_can_be_reassigned() {
+    let (errors, warnings) = parse_and_check("fn bump(var x: int) -> int { x = x + 1; x }");
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "mutable param reassignment should suppress unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn immutable_param_cannot_be_reassigned() {
+    let (errors, warnings) = parse_and_check("fn bump(x: int) -> int { x = x + 1; x }");
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable `x`")),
+        "expected immutable parameter assignment error, got: {errors:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "immutable param should not produce unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn warn_var_never_mutated_suggestion() {
     let (_, warnings) = parse_and_check("fn main() { var x = 10; println(x); }");
     let w = warnings
@@ -6485,6 +6514,156 @@ mod non_root_module_inference_scope {
         assert!(
             output.errors.is_empty(),
             "let `_` annotation must resolve cleanly; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn inferred_binding_without_annotation_fails_closed() {
+        let source = "fn main() { let f = (x) => x; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.iter()
+                .any(|err| err.message.contains("local binding `f`")),
+            "expected InferenceFailed for unresolved inferred binding `f`; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn explicit_generic_lambda_binding_stays_valid() {
+        let source = "fn main() { let id = <T>(x: T) => x; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.is_empty(),
+            "explicit generic lambda binding should not produce InferenceFailed: {errs:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "explicit generic lambda binding should type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn unresolved_inferred_return_through_none_fails_closed() {
+        let source = "fn maybe() -> _ { None }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            !errs.is_empty(),
+            "expected InferenceFailed for unresolved `None` return; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn inferred_binding_does_not_duplicate_lambda_hole_error() {
+        let source = "fn main() { let f = (x: _) => x; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        let errs = inference_failed_errors(&output);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected only the lambda hole diagnostic, got: {:?}",
+            output.errors
+        );
+        assert!(
+            errs[0].message.contains("lambda parameter `x`"),
+            "expected lambda hole diagnostic, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn inferred_binding_does_not_duplicate_cast_hole_error() {
+        let source = "fn main(x: int) { let y = x as _; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        let errs = inference_failed_errors(&output);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected only the cast hole diagnostic, got: {:?}",
+            output.errors
+        );
+        assert!(
+            errs[0].message.contains("cast target type"),
+            "expected cast hole diagnostic, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn bare_channel_handle_signature_stays_valid() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn close_sender(tx: channel.Sender) {\n",
+            "    tx.close();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.is_empty(),
+            "bare channel handle signatures should not produce InferenceFailed: {errs:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "bare channel handle signatures should type-check cleanly: {:?}",
             output.errors
         );
     }

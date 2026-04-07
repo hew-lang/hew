@@ -5105,6 +5105,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_mutable_function_param() {
+        let source = "fn f(var x: int) -> int { x }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.program.items[0].0 {
+            Item::Function(f) => {
+                assert_eq!(f.params.len(), 1);
+                assert_eq!(f.params[0].name, "x");
+                assert!(f.params[0].is_mutable);
+            }
+            other => panic!("expected function item, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_lambda_var_param_is_error() {
+        let source = "fn main() { let f = (var x: int) => x; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for lambda var parameter"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("expected expression")),
+            "expected expression parse error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
     fn parse_fibonacci_example() {
         let source = include_str!("../../examples/fibonacci.hew");
         let result = parse(source);

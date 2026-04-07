@@ -1,0 +1,19 @@
+actor ParamStreamer {
+    let base: int;
+
+    receive gen fn stream(var start: int, count: int) -> int {
+        start = start + base;
+        var i: int = 0;
+        while i < count {
+            yield start + i;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn ParamStreamer(base: 11);
+    for await value in worker.stream(1, 2) {
+        println(value);
+    }
+}

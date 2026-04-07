@@ -1,0 +1,55 @@
+type CounterBox {
+    value: int;
+}
+
+trait CounterOps {
+    fn bump(var box: CounterBox) -> int {
+        box = CounterBox { value: box.value + 1 };
+        box.value
+    }
+}
+
+impl CounterOps for CounterBox {}
+
+fn bump_fn(var x: int) -> int {
+    x = x + 1;
+    x
+}
+
+gen fn bump_gen(var x: int) -> int {
+    let first = x + 1;
+    x = first;
+    yield first;
+    x = x + 2;
+    yield x;
+}
+
+actor ParamActor {
+    let base: int;
+
+    init(var seed: int) {
+        seed = seed + 1;
+        base = seed;
+    }
+
+    receive fn apply(var delta: int) -> int {
+        delta = delta + 2;
+        base + delta
+    }
+
+}
+
+fn main() {
+    println(bump_fn(40));
+
+    let boxed = CounterBox { value: 5 };
+    println(boxed.bump());
+
+    let g = bump_gen(5);
+    let discarded = g.next();
+    println(g.next());
+
+    let worker = spawn ParamActor(seed: 10);
+    let applied = await worker.apply(1);
+    println(applied);
+}

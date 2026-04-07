@@ -427,6 +427,11 @@ private:
   /// Declare a mutable variable (allocates a memref slot).
   void declareMutableVariable(llvm::StringRef name, mlir::Type type, mlir::Value initialValue);
 
+  /// Bind a function/actor parameter, using Param::is_mutable as the semantic
+  /// source of truth while shadowing any outer mutable binding with the same
+  /// name.
+  void bindParam(const ast::Param &param, mlir::Value value);
+
   /// Create a memref alloca for a variable slot. When return guards are active,
   /// hoists the alloca to the function entry block and zero-initialises
   /// pointer-like types so unconditional drops are safe.

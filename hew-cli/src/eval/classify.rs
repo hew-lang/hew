@@ -18,6 +18,17 @@ pub enum InputKind {
     Expression,
 }
 
+/// Whether buffered REPL input should be evaluated, extended, or rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputCompleteness {
+    /// The current buffer is a complete input and can be evaluated now.
+    Complete,
+    /// The current buffer is a valid prefix of a larger input and should keep buffering.
+    Incomplete,
+    /// The current buffer is syntactically invalid and should surface diagnostics now.
+    Invalid,
+}
+
 /// A REPL meta-command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplCommand {
@@ -56,6 +67,25 @@ pub fn classify(input: &str) -> InputKind {
     }
 }
 
+/// Classify whether a buffered REPL input is complete enough to evaluate.
+#[must_use]
+pub fn input_completeness(input: &str) -> InputCompleteness {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with(':') {
+        return InputCompleteness::Complete;
+    }
+
+    if parses_in_any_context(trimmed) {
+        return InputCompleteness::Complete;
+    }
+
+    if has_unclosed_delimiters(trimmed) || parses_with_continuation(trimmed) {
+        return InputCompleteness::Incomplete;
+    }
+
+    InputCompleteness::Invalid
+}
+
 /// Parse a REPL command string (after the leading `:`).
 fn parse_command(cmd: &str) -> ReplCommand {
     let parts: Vec<&str> = cmd.trim().splitn(2, char::is_whitespace).collect();
@@ -91,11 +121,39 @@ fn parses_as_statement(input: &str) -> bool {
     function.body.trailing_expr.is_none() && !function.body.stmts.is_empty()
 }
 
-#[cfg(test)]
 fn parses_as_expression(input: &str) -> bool {
     let source = format!("fn main() {{\n    let __hew_eval_probe = {input};\n}}\n");
     let parse_result = hew_parser::parse(&source);
     parse_result.errors.is_empty() && parse_result.program.items.len() == 1
+}
+
+fn parses_in_any_context(input: &str) -> bool {
+    parses_as_item(input) || parses_as_statement(input) || parses_as_expression(input)
+}
+
+fn parses_with_continuation(input: &str) -> bool {
+    const CONTINUATION_SUFFIXES: &[&str] = &[
+        "\"",
+        " __hew_repl_probe__",
+        "\n__hew_repl_probe__",
+        " 0",
+        "\n0",
+        " 0;",
+        "\n0;",
+        " i64;",
+        "\ni64;",
+        " {\n}\n",
+        "\n{\n}\n",
+        " i64 {\n}\n",
+        "\ni64 {\n}\n",
+    ];
+
+    CONTINUATION_SUFFIXES.iter().any(|suffix| {
+        let mut candidate = String::with_capacity(input.len() + suffix.len());
+        candidate.push_str(input);
+        candidate.push_str(suffix);
+        parses_in_any_context(&candidate)
+    })
 }
 
 /// Check whether input has unclosed delimiters (for multi-line input).
@@ -121,7 +179,7 @@ pub fn has_unclosed_delimiters(input: &str) -> bool {
         prev = ch;
     }
 
-    depth > 0
+    depth > 0 || in_string
 }
 
 #[cfg(test)]
@@ -189,6 +247,7 @@ mod tests {
     fn unclosed_delimiters() {
         assert!(has_unclosed_delimiters("fn foo() {"));
         assert!(has_unclosed_delimiters("let x = (1 +"));
+        assert!(has_unclosed_delimiters(r#"let s = "hello"#));
         assert!(!has_unclosed_delimiters("fn foo() {}"));
         assert!(!has_unclosed_delimiters("let x = (1 + 2);"));
         assert!(!has_unclosed_delimiters(r#"let s = "hello {world";"#));
@@ -203,5 +262,39 @@ mod tests {
     #[test]
     fn expression_probe_accepts_block_expressions() {
         assert!(parses_as_expression("{ let x = 1; x + 2 }"));
+    }
+
+    #[test]
+    fn input_completeness_recognizes_complete_inputs() {
+        assert_eq!(input_completeness("1 + 2"), InputCompleteness::Complete);
+        assert_eq!(
+            input_completeness("let answer = 42;"),
+            InputCompleteness::Complete
+        );
+        assert_eq!(input_completeness(":type 1 +"), InputCompleteness::Complete);
+    }
+
+    #[test]
+    fn input_completeness_recognizes_incomplete_inputs() {
+        assert_eq!(input_completeness("1 +"), InputCompleteness::Incomplete);
+        assert_eq!(
+            input_completeness("let answer ="),
+            InputCompleteness::Incomplete
+        );
+        assert_eq!(input_completeness("if true"), InputCompleteness::Incomplete);
+        assert_eq!(
+            input_completeness("fn add(a: i64, b: i64) ->"),
+            InputCompleteness::Incomplete
+        );
+        assert_eq!(
+            input_completeness(r#""hello"#),
+            InputCompleteness::Incomplete
+        );
+    }
+
+    #[test]
+    fn input_completeness_recognizes_invalid_inputs() {
+        assert_eq!(input_completeness("1 + *"), InputCompleteness::Invalid);
+        assert_eq!(input_completeness("let = 1;"), InputCompleteness::Invalid);
     }
 }

@@ -2794,6 +2794,13 @@ void MLIRGen::generateForStmt(const ast::StmtFor &stmt) {
 
 void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &rangeExpr) {
   auto location = currentLoc;
+  const ast::TypeExpr *rangeBoundType = nullptr;
+  if (rangeExpr.left) {
+    rangeBoundType =
+        requireResolvedTypeOf(rangeExpr.left->span, "direct range loop signedness", location);
+    if (!rangeBoundType)
+      return;
+  }
 
   mlir::Value lb = nullptr;
   mlir::Value ub = nullptr;
@@ -2829,11 +2836,7 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   }
 
   // Determine if the range is over an unsigned type
-  bool rangeIsUnsigned = false;
-  if (rangeExpr.left) {
-    if (auto *ty = resolvedTypeOf(rangeExpr.left->span))
-      rangeIsUnsigned = isUnsignedTypeExpr(*ty);
-  }
+  bool rangeIsUnsigned = rangeBoundType && isUnsignedTypeExpr(*rangeBoundType);
 
   // Use scf.while instead of scf.for to support break/continue.
   // This mirrors the pattern in generateForCollectionStmt.
@@ -3052,19 +3055,20 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
            mlir::cast<hew::HewTupleType>(collection.getType()).getElementTypes()[1])) {
 
     auto location = currentLoc;
+    auto *rangeType =
+        requireResolvedTypeOf(stmt.iterable.span, "materialized range loop signedness", location);
+    if (!rangeType)
+      return;
     auto tupleType = mlir::cast<hew::HewTupleType>(collection.getType());
     auto elemType = tupleType.getElementTypes()[0];
     bool rangeIsUnsigned = false;
-    if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
-      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind)) {
-        if (resolveTypeAlias(named->name) == "Range" && named->type_args &&
-            !named->type_args->empty()) {
-          rangeIsUnsigned = isUnsignedTypeExpr((*named->type_args)[0].value);
-        }
-      } else if (auto *tuple = std::get_if<ast::TypeTuple>(&typeExpr->kind)) {
-        if (!tuple->elements.empty())
-          rangeIsUnsigned = isUnsignedTypeExpr(tuple->elements.front().value);
-      }
+    if (auto *named = std::get_if<ast::TypeNamed>(&rangeType->kind)) {
+      if (resolveTypeAlias(named->name) == "Range" && named->type_args &&
+          !named->type_args->empty())
+        rangeIsUnsigned = isUnsignedTypeExpr((*named->type_args)[0].value);
+    } else if (auto *tuple = std::get_if<ast::TypeTuple>(&rangeType->kind)) {
+      if (!tuple->elements.empty())
+        rangeIsUnsigned = isUnsignedTypeExpr(tuple->elements.front().value);
     }
 
     // Extract start/end from the range tuple

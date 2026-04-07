@@ -672,12 +672,15 @@ fn activate_actor(actor: *mut HewActor) {
                     let reply_consumed = current_reply_channel_consumed();
                     clear_current_reply_channel();
 
-                    // Leave unconsumed reply channels attached so
-                    // hew_msg_node_free can publish the empty fallback reply for
-                    // self-stop / no-reply paths. If dispatch already consumed
-                    // the sender-side reference via hew_reply, clear the node to
-                    // avoid duplicate cleanup.
-                    if reply_consumed {
+                    // Preserve the mailbox-owned reply sender only for teardown
+                    // states so hew_msg_node_free can publish the self-stop
+                    // fallback reply. Ordinary no-reply returns must keep the
+                    // prior pending-ask behavior instead of resolving early.
+                    let actor_state = a.actor_state.load(Ordering::Acquire);
+                    if reply_consumed
+                        || (actor_state != HewActorState::Stopping as i32
+                            && actor_state != HewActorState::Stopped as i32)
+                    {
                         // SAFETY: msg is exclusively owned by this worker.
                         unsafe { (*msg).reply_channel = std::ptr::null_mut() };
                     }

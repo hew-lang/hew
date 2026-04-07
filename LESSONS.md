@@ -1,5 +1,16 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-04-07 orchestration recovery
+
+### 1. Missing build artifacts on a PR gate should be classified before they trigger repair work
+
+PR `#806` failed only on macOS arm64 in `eval_large_stderr_completes_before_timeout`,
+but the decisive symptom was not a changed assertion or a new compiler diagnostic —
+it was `clang` failing to find `target/debug/libhew.a`. When a failing check is
+outside the PR diff and the log shows a missing build artefact, treat it as a
+gate-classification problem first: inspect the diff, compare with recent main
+behaviour, and rerun the job before opening a same-branch repair lane.
+
 ## From the 2026-03-25 completion recursion fix
 
 ### 1. Completion walks need span-checked recursion through "transparent" AST nodes
@@ -677,3 +688,11 @@ The cluster member snapshot already shared the array-building pattern, and movin
 position. Reusing one block walker for both statement bodies and tail expressions
 silently misses optimizations in real tail positions and can also create false
 positives if trailing expressions are marked unconditionally.
+
+## A worktree's existence is not evidence that implementation has started
+
+After `#805` merged (primitive alias unification), three worktrees (`resolved-receiver-dispatch`, `literal-kind-foundation`, `primitive-alias-source`) remained at the stale `4e2ae14` SHA. The plan described them as "live" but no new implementation commits existed. Always verify `git worktree list` SHA against `origin/main` HEAD before treating a lane as in-progress.
+
+## macOS CI reruns are a normal first step, not a last resort
+
+Several PRs in the #795–#806 range were blocked solely by flaky or first-run macOS CI failures on the codegen stack. In every case a plain rerun cleared the failure without any code change. Schedule the rerun immediately; do not treat it as evidence of a code regression until the rerun also fails.

@@ -3486,64 +3486,80 @@ Stream<T>   // readable sequential source (analogous to an iterator that blocks)
 Sink<T>     // writable sequential destination (blocks when backing buffer is full)
 ```
 
-Both types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`. `Sink<bytes>` write blocks if the downstream consumer is not keeping up — this is the backpressure mechanism.
+The contract frozen in this stage is intentionally small:
 
-#### 6.5.1 Creation
+- `Stream<bytes>` / `Sink<bytes>` are the canonical first-class streaming foundation.
+- `Stream<String>` / `Sink<String>` are convenience text ABI wrappers over the same bounded channel contract.
+- Core `.next()` / `.write()` operations are blocking and backpressured; this section makes no nonblocking promises.
+- EOF means **end-of-stream only**. Zero-length `bytes` values and empty `String` values are valid data items.
+- `sink.close()` or dropping a sink produces graceful EOF after buffered items drain.
+- `stream.close()` or dropping a stream is local cancel/discard of unread items.
+- Stage-1 errors cover constructor/open failures only. Transport/runtime read/write errors after open remain wrapper-specific and out of scope here.
+
+Both handle types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`.
+
+#### 6.5.1 Current `std::stream` surface
 
 ```hew
 import std::stream;
 
-// In-memory bounded channel (for actor-to-actor communication)
-let pair = hew_stream_channel(capacity);     // HewStreamPair* (opaque)
-let sink: Sink<bytes>   = hew_stream_pair_sink(pair);
-let stream: Stream<bytes> = hew_stream_pair_stream(pair);
-hew_stream_pair_free(pair);
+// Canonical in-memory bounded bytes pipe
+let (bytes_sink, bytes_stream) = stream.bytes_pipe(16);
 
-// File-backed
-let src  = hew_stream_from_file_read("data.bin");   // Stream<bytes>
-let dst  = hew_stream_from_file_write("out.bin");   // Sink<bytes>
+// Convenience text pipe
+let (text_sink, text_stream) = stream.pipe(16);
 
-// Byte-buffer (drains a byte slice)
-let s = hew_stream_from_bytes(ptr, len, item_size); // Stream<bytes>
+// Current file helpers remain text-only in this slice
+let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<String>, String>
+let file_out = stream.to_file("out.txt")?;      // Result<Sink<String>, String>
 ```
 
-#### 6.5.2 Consumption and Production
+`from_file()` / `to_file()` are intentionally unchanged in this slice: they
+remain `Stream<String>` / `Sink<String>`. No file-adapter migration is implied
+by this contract freeze.
+
+#### 6.5.2 Current operations
 
 ```hew
-// Iterate over all items
-for await chunk in stream { ... }
+// Pull items
+match bytes_stream.next() {
+    Some(chunk) => { ... },
+    None => { /* EOF only */ },
+}
 
-// Get one item (method call, desugars to hew_stream_next)
-let item = stream.next();
+// Empty items are valid data, not EOF
+text_sink.write("");
+bytes_sink.write(b"");
 
-// Adapters (take ownership of the source stream)
-let lines  = stream.lines();          // Stream<bytes> → Stream<string>
-let chunks = stream.chunks(4096);     // Stream<bytes> → fixed-size chunks
-
-// Sink operations
-hew_sink_write(sink, data_ptr, size); // write raw bytes
-sink.flush();                         // flush buffered writes
-sink.close();                         // signal EOF to the reader
-stream.close();                       // discard remaining items
+// Close semantics
+bytes_sink.close();   // graceful EOF for the paired reader
+bytes_stream.close(); // local cancel / discard unread items
 ```
+
+`for await` is the usual way to drain a stream. The only adapter point frozen in
+this slice is that `lines()` remains `Stream<String> -> Stream<String>` today;
+no `Stream<bytes>` `lines()` surface is promised here.
 
 #### 6.5.3 Lifecycle Rules
 
-- Calling `.lines()` or `.chunks()` **transfers ownership** of the source stream; do not use the source after the adapter is created.
-- Closing a `Sink` signals EOF to the paired `Stream`: subsequent `.next()` calls on the stream return `null` / EOF.
+- Closing or dropping a `Sink` signals graceful EOF to the paired `Stream`.
+- Closing or dropping a `Stream` discards unread local data and releases the underlying handle.
 - Streams and sinks implement `Resource`/`Drop` and **auto-close on scope exit** (RAII). Explicit `.close()` is available for early release but is not required.
 - Types holding OS resources (streams, sinks, file handles) implement `Resource`/`Drop` and are **never arena-allocated**.
 
 #### 6.5.4 Relation to Actor Streams
 
-`receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol. First-class `Stream<T>` values (from `hew_stream_channel`, `hew_stream_from_file_read`, etc.) are backed by bounded channels or files. Both are consumed with `for await`, but they have different implementations:
+`receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol.
+First-class `Stream<T>` values from `std::stream` are bounded handles that may
+be moved across actor boundaries. Both are consumed with `for await`, but they
+have different implementations:
 
-|                     | Actor stream (`receive gen fn`) | `Stream<T>`                                             |
-| ------------------- | ------------------------------- | ------------------------------------------------------- |
-| Created by          | `receive gen fn` call           | `hew_stream_channel`, `hew_stream_from_file_read`, etc. |
-| Backed by           | Actor mailbox protocol          | Bounded mpsc channel / file / bytes                     |
-| Passable as value   | No (tied to the spawned actor)  | Yes (move-only, `Send`)                                 |
-| Use in actor fields | No                              | Yes                                                     |
+|                     | Actor stream (`receive gen fn`) | `std::stream::Stream<T>`                   |
+| ------------------- | ------------------------------- | ------------------------------------------ |
+| Created by          | `receive gen fn` call           | `bytes_pipe()`, `pipe()`, `from_file()`, etc. |
+| Backed by           | Actor mailbox protocol          | Bounded channel / wrapper-specific handle  |
+| Passable as value   | No (tied to the spawned actor)  | Yes (move-only, `Send`)                    |
+| Use in actor fields | No                              | Yes                                        |
 
 ---
 

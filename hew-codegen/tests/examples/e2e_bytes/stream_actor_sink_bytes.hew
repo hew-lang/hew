@@ -1,0 +1,25 @@
+import std::stream;
+
+actor Writer {
+    receive fn write_items(sink: Sink<bytes>) {
+        sink.write(bytes::from([65, 66]));
+        sink.write(bytes::from([90]));
+        sink.close();
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    let w = spawn Writer;
+    w.write_items(sink);
+
+    var count: int = 0;
+    for await item in input {
+        println(item.len());
+        println(item.get(0));
+        count = count + 1;
+    }
+    println(count);
+    input.close();
+}

@@ -3,14 +3,23 @@
 //! Streams and sinks are language intrinsics for passing typed data between
 //! producers and consumers, including across actor boundaries.
 //!
-//! - `Stream<T>` is a readable handle — pull items with `.next()` or `for await`
-//! - `Sink<T>` is a writable handle — push items with `.write(value)`
-//! - Both are move-only and `Send` (safe to pass to actors)
-//! - Both auto-close when dropped (RAII); explicit `.close()` is optional
+//! Contract slice frozen here:
+//! - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class foundation
+//! - `Stream<String>` / `Sink<String>` are convenience text ABI wrappers
+//! - EOF means end-of-stream only; zero-length `bytes` and empty `String`
+//!   values are valid items
+//! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
+//!   local cancel/discard of unread items
+//! - Core `.next()` / `.write()` operations are blocking and backpressured; no
+//!   nonblocking semantics are promised here
+//! - Stage-1 errors cover constructor/open failures only; transport/runtime
+//!   read/write errors remain wrapper-specific and out of scope
 //!
-//! The element type `T` determines which runtime marshalling the compiler emits:
-//! - `Stream<String>` / `Sink<String>` — null-terminated C string ABI
-//! - `Stream<bytes>` / `Sink<bytes>` — length-prefixed byte buffer ABI
+//! Current stdlib scope:
+//! - `bytes_pipe()` is the canonical in-memory constructor
+//! - `pipe()` remains the text convenience constructor
+//! - `from_file()` / `to_file()` remain `Stream<String>` / `Sink<String>`
+//! - `lines()` remains a `Stream<String>` adapter today
 //!
 //! # Example
 //!
@@ -53,6 +62,9 @@ type Sink<T> {}
 // ── Constructors ──────────────────────────────────────────────────────
 
 /// Create a bounded in-memory string pipe with the given capacity.
+///
+/// This is the convenience text ABI lane over the same bounded, blocking,
+/// backpressured contract as `bytes_pipe()`.
 /// Returns a `(Sink<String>, Stream<String>)` pair for writing and reading.
 pub fn pipe(capacity: i64) -> (Sink<String>, Stream<String>) {
     unsafe {
@@ -65,6 +77,8 @@ pub fn pipe(capacity: i64) -> (Sink<String>, Stream<String>) {
 }
 
 /// Create a bounded in-memory bytes pipe with the given capacity.
+///
+/// This is the canonical first-class Stream/Sink foundation for binary items.
 /// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
 pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     unsafe {
@@ -79,6 +93,9 @@ pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
 /// Open a file as a readable Stream<String>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be opened.
+/// This stage only freezes constructor/open errors; read-time failures after a
+/// stream is opened remain wrapper-specific and out of scope for the core
+/// Stream/Sink contract.
 /// Use `try_from_file` for a structured `Result<Stream<String>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
@@ -115,6 +132,9 @@ pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
 /// Open a file as a writable Sink<String>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be created.
+/// This stage only freezes constructor/open errors; write-time failures after a
+/// sink is opened remain wrapper-specific and out of scope for the core
+/// Stream/Sink contract.
 /// Use `try_to_file` for a structured `Result<Sink<String>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///

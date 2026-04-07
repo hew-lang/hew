@@ -39,95 +39,61 @@
 
 #include <cctype>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 
 namespace hew {
 
-// ============================================================================
-// WireTypeInfo — single source of truth for primitive wire type attributes
-// ============================================================================
-//
-// Each entry captures the four boolean predicates that were previously
-// duplicated across needsZigzag / isUnsignedWireType / isVarintType /
-// isWirePrimitiveType.  All entries in this table are primitives by definition.
-//
-// Key invariants encoded here:
-//   • "int" and "Int" are BOTH listed as zigzag-signed (both map to i64).
-//   • "duration" is varint but neither zigzag nor unsigned (nanosecond i64,
-//     always non-negative in practice — zigzag would be wrong).
-//   • "bytes" is distinct from "String"/"string"/"str" at the wire level even
-//     though they share JSON behaviour; the dispatch helpers (wireKindOf,
-//     encodeFunc) still handle bytes/string separately for wire encoding.
-//
-// To add a new type alias: add ONE row here.  No other predicate needs changing.
-
 struct WireTypeInfo {
-  bool zigzag;    ///< signed integer needing zigzag encoding
+  bool zigzag;     ///< signed integer needing zigzag encoding
   bool isUnsigned; ///< unsigned integer (zero-extend to i64 for JSON output)
-  bool isVarint;  ///< varint wire encoding (not fixed-width, not length-delimited)
+  bool isVarint;   ///< varint wire encoding (not fixed-width, not length-delimited)
 };
 
-/// Lookup table for all known primitive wire type names.
-/// Non-primitive (user-defined struct) names are NOT present; callers that
-/// need to distinguish primitives from structs can check for nullptr return.
-static const std::unordered_map<std::string, WireTypeInfo> &wireTypeInfoTable() {
-  // clang-format off
-  static const std::unordered_map<std::string, WireTypeInfo> kTable = {
-    // name         zigzag  unsigned  varint
-    { "bool",     { false,  false,    true  } },
-    { "i8",       { true,   false,    true  } },
-    { "u8",       { false,  true,     true  } },
-    { "i16",      { true,   false,    true  } },
-    { "u16",      { false,  true,     true  } },
-    { "i32",      { true,   false,    true  } },
-    { "u32",      { false,  true,     true  } },
-    { "i64",      { true,   false,    true  } },
-    { "u64",      { false,  true,     true  } },
-    { "f32",      { false,  false,    false } },
-    { "f64",      { false,  false,    false } },
-    { "String",   { false,  false,    false } },
-    { "string",   { false,  false,    false } },
-    { "str",      { false,  false,    false } },
-    { "bytes",    { false,  false,    false } },
-    // Hew type aliases — must mirror the semantics of the canonical types above.
-    { "int",      { true,   false,    true  } }, // alias for i64 (signed)
-    { "Int",      { true,   false,    true  } }, // alias for i64 (capital form)
-    { "uint",     { false,  true,     true  } }, // alias for u64
-    { "float",    { false,  false,    false } }, // alias for f64
-    { "byte",     { false,  true,     true  } }, // alias for u8
-    { "char",     { false,  true,     true  } }, // unicode codepoint, always >= 0
-    { "duration", { false,  false,    true  } }, // nanosecond i64 varint, no zigzag
-    { "usize",    { false,  true,     true  } }, // alias for u64
-    { "isize",    { true,   false,    true  } }, // alias for i64
-  };
-  // clang-format on
-  return kTable;
-}
-
-/// Returns a pointer to the WireTypeInfo for a known primitive type name, or
-/// nullptr if the name is not a primitive (i.e. it is a user-defined struct).
-static const WireTypeInfo *lookupWireType(const std::string &ty) {
-  const auto &table = wireTypeInfoTable();
-  auto it = table.find(ty);
-  return it != table.end() ? &it->second : nullptr;
+static std::optional<WireTypeInfo> wireTypeInfo(llvm::StringRef ty) {
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::Bool:
+    return WireTypeInfo{false, false, true};
+  case PrimitiveTypeKind::I8:
+  case PrimitiveTypeKind::I16:
+  case PrimitiveTypeKind::I32:
+  case PrimitiveTypeKind::I64:
+    return WireTypeInfo{true, false, true};
+  case PrimitiveTypeKind::U8:
+  case PrimitiveTypeKind::U16:
+  case PrimitiveTypeKind::U32:
+  case PrimitiveTypeKind::U64:
+  case PrimitiveTypeKind::Char:
+    return WireTypeInfo{false, true, true};
+  case PrimitiveTypeKind::F32:
+  case PrimitiveTypeKind::F64:
+  case PrimitiveTypeKind::String:
+  case PrimitiveTypeKind::Bytes:
+    return WireTypeInfo{false, false, false};
+  case PrimitiveTypeKind::Duration:
+    return WireTypeInfo{false, false, true};
+  case PrimitiveTypeKind::Unknown:
+    return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 // ============================================================================
-// Predicate helpers — now driven from wireTypeInfoTable
+// Predicate helpers — now driven from the shared primitive canonicalizer
 // ============================================================================
 
 /// Check if a wire type name is a primitive scalar wire type.
 /// Type names that are NOT primitives are treated as nested wire struct
 /// references and require a struct-type lookup via structTypes.
 static bool isWirePrimitiveType(const std::string &ty) {
-  return lookupWireType(ty) != nullptr;
+  return wireTypeInfo(ty).has_value();
 }
 
 /// Check if a wire type is a signed integer needing zigzag encoding.
 /// Covers i8/i16/i32/i64 and their wire-level aliases: int/Int map to i64 in
 /// the type checker; isize is treated as i64 by the codegen (wireTypeToMLIR).
 static bool needsZigzag(const std::string &ty) {
-  const WireTypeInfo *info = lookupWireType(ty);
+  auto info = wireTypeInfo(ty);
   return info && info->zigzag;
 }
 
@@ -135,7 +101,7 @@ static bool needsZigzag(const std::string &ty) {
 /// i64 for JSON integer output).
 /// byte → u8, char → unicode codepoint (always non-negative), uint/usize → u64.
 static bool isUnsignedWireType(const std::string &ty) {
-  const WireTypeInfo *info = lookupWireType(ty);
+  auto info = wireTypeInfo(ty);
   return info && info->isUnsigned;
 }
 
@@ -144,7 +110,7 @@ static bool isUnsignedWireType(const std::string &ty) {
 /// duration is encoded as a nanosecond i64 varint (always non-negative in
 /// practice, so no zigzag).
 static bool isVarintType(const std::string &ty) {
-  const WireTypeInfo *info = lookupWireType(ty);
+  auto info = wireTypeInfo(ty);
   return info && info->isVarint;
 }
 
@@ -157,62 +123,86 @@ static bool isVarintType(const std::string &ty) {
 enum class WireJsonKind { Bool, Float32, Float64, String, Bytes, Integer };
 
 static WireJsonKind jsonKindOf(const std::string &ty) {
-  if (ty == "bool")
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::Bool:
     return WireJsonKind::Bool;
-  if (ty == "f32")
+  case PrimitiveTypeKind::F32:
     return WireJsonKind::Float32;
-  if (ty == "f64" || ty == "float")
+  case PrimitiveTypeKind::F64:
     return WireJsonKind::Float64;
-  if (ty == "String" || ty == "string" || ty == "str")
+  case PrimitiveTypeKind::String:
     return WireJsonKind::String;
-  if (ty == "bytes")
+  case PrimitiveTypeKind::Bytes:
     return WireJsonKind::Bytes;
-  return WireJsonKind::Integer;
+  default:
+    return WireJsonKind::Integer;
+  }
 }
 
 /// Map a wire type name to the MLIR type used for the field value.
 /// Includes Hew type aliases (int, uint, float, etc.) for correctness.
 static mlir::Type wireTypeToMLIR(mlir::OpBuilder &builder, const std::string &ty) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  if (ty == "i64" || ty == "u64" || ty == "int" || ty == "Int" || ty == "uint" ||
-      ty == "duration" || ty == "usize" || ty == "isize")
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::I64:
+  case PrimitiveTypeKind::U64:
+  case PrimitiveTypeKind::Duration:
     return builder.getI64Type();
-  if (ty == "f32")
+  case PrimitiveTypeKind::F32:
     return builder.getF32Type();
-  if (ty == "f64" || ty == "float")
+  case PrimitiveTypeKind::F64:
     return builder.getF64Type();
-  if (ty == "String" || ty == "bytes" || ty == "string" || ty == "str")
+  case PrimitiveTypeKind::String:
+  case PrimitiveTypeKind::Bytes:
     return ptrType;
-  return builder.getI32Type(); // i32, u32, i16, u16, i8, u8, bool, byte, char
+  case PrimitiveTypeKind::I8:
+  case PrimitiveTypeKind::U8:
+  case PrimitiveTypeKind::I16:
+  case PrimitiveTypeKind::U16:
+  case PrimitiveTypeKind::I32:
+  case PrimitiveTypeKind::U32:
+  case PrimitiveTypeKind::Bool:
+  case PrimitiveTypeKind::Char:
+    return builder.getI32Type();
+  case PrimitiveTypeKind::Unknown:
+    return {};
+  }
+  return {};
 }
 
 enum class WireKind { Bool, Float32, Float64, String, Bytes, Integer };
 
 static WireKind wireKindOf(const std::string &ty) {
-  if (ty == "bool")
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::Bool:
     return WireKind::Bool;
-  if (ty == "f32")
+  case PrimitiveTypeKind::F32:
     return WireKind::Float32;
-  if (ty == "f64" || ty == "float")
+  case PrimitiveTypeKind::F64:
     return WireKind::Float64;
-  if (ty == "String" || ty == "string" || ty == "str")
+  case PrimitiveTypeKind::String:
     return WireKind::String;
-  if (ty == "bytes")
+  case PrimitiveTypeKind::Bytes:
     return WireKind::Bytes;
-  return WireKind::Integer;
+  default:
+    return WireKind::Integer;
+  }
 }
 
 /// Return the runtime encode function name for a wire field type.
 static std::string encodeFunc(const std::string &ty) {
-  if (ty == "f32")
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::F32:
     return "hew_wire_encode_field_fixed32";
-  if (ty == "f64" || ty == "float")
+  case PrimitiveTypeKind::F64:
     return "hew_wire_encode_field_fixed64";
-  if (ty == "String" || ty == "string" || ty == "str")
+  case PrimitiveTypeKind::String:
     return "hew_wire_encode_field_string";
-  if (ty == "bytes")
+  case PrimitiveTypeKind::Bytes:
     return "hew_wire_encode_field_bytes";
-  return "hew_wire_encode_field_varint";
+  default:
+    return "hew_wire_encode_field_varint";
+  }
 }
 
 struct WireSerialIntegerBounds {
@@ -222,33 +212,35 @@ struct WireSerialIntegerBounds {
 
 /// Return the valid decode range for bounded integer wire types that are
 /// represented as i32 in the lowered struct storage.
-static std::optional<WireSerialIntegerBounds> wireFromSerialIntegerBounds(
-    const std::string &ty) {
-  if (ty == "i8")
+static std::optional<WireSerialIntegerBounds> wireFromSerialIntegerBounds(const std::string &ty) {
+  switch (primitiveTypeKind(ty)) {
+  case PrimitiveTypeKind::I8:
     return WireSerialIntegerBounds{-128, 127};
-  if (ty == "u8" || ty == "byte")
+  case PrimitiveTypeKind::U8:
     return WireSerialIntegerBounds{0, 255};
-  if (ty == "i16")
+  case PrimitiveTypeKind::I16:
     return WireSerialIntegerBounds{-32768, 32767};
-  if (ty == "u16")
+  case PrimitiveTypeKind::U16:
     return WireSerialIntegerBounds{0, 65535};
-  if (ty == "i32")
+  case PrimitiveTypeKind::I32:
     return WireSerialIntegerBounds{-2147483648LL, 2147483647LL};
-  if (ty == "u32")
+  case PrimitiveTypeKind::U32:
     return WireSerialIntegerBounds{0, 4294967295LL};
-  if (ty == "char")
+  case PrimitiveTypeKind::Char:
     return WireSerialIntegerBounds{0, 1114111};
-  return std::nullopt;
+  default:
+    return std::nullopt;
+  }
 }
 
-static std::string wireFromSerialIntegerDecodeErrorMessage(
-    llvm::StringRef format, llvm::StringRef fieldName, llvm::StringRef ty,
-    const WireSerialIntegerBounds &bounds) {
-  return "wire " + format.str() + " decode error for field '" + fieldName.str() +
-         "': expected " + ty.str() + " in range [" + std::to_string(bounds.min) + ", " +
-         std::to_string(bounds.max) + "]";
+static std::string wireFromSerialIntegerDecodeErrorMessage(llvm::StringRef format,
+                                                           llvm::StringRef fieldName,
+                                                           llvm::StringRef ty,
+                                                           const WireSerialIntegerBounds &bounds) {
+  return "wire " + format.str() + " decode error for field '" + fieldName.str() + "': expected " +
+         ty.str() + " in range [" + std::to_string(bounds.min) + ", " + std::to_string(bounds.max) +
+         "]";
 }
-
 
 /// Resolve the MLIR type for a wire field.  For non-primitive type names
 /// (user-defined wire struct references), returns a (possibly forward-declared)
@@ -400,16 +392,23 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
       // Unknown type: not a wire struct and not a known primitive — fail closed.
       ++errorCount_;
       emitError(builder.getUnknownLoc())
-          << "wire struct '" << declName << "': field '" << field.name
-          << "' has unsupported type '" << field.ty << "'";
+          << "wire struct '" << declName << "': field '" << field.name << "' has unsupported type '"
+          << field.ty << "'";
       return;
     } else {
       mlirTy = wireTypeToMLIR(builder, field.ty);
+      if (!mlirTy) {
+        ++errorCount_;
+        emitError(builder.getUnknownLoc())
+            << "wire struct '" << declName << "': field '" << field.name
+            << "' has unsupported primitive type '" << field.ty << "'";
+        return;
+      }
     }
     fieldTypes.push_back(mlirTy);
     // Preserve Hew-level semantic type for owned-field detection.
     // wireTypeToMLIR maps String/bytes to !llvm.ptr, losing type info.
-    auto semanticTy = (field.ty == "String" || field.ty == "string" || field.ty == "str")
+    auto semanticTy = (primitiveTypeKind(field.ty) == PrimitiveTypeKind::String)
                           ? mlir::Type(hew::StringRefType::get(&context))
                           : mlirTy;
     info.fields.push_back({field.name, mlirTy, semanticTy, fieldIdx, field.ty});
@@ -461,18 +460,13 @@ void MLIRGen::predeclareWireHelpers(const ast::WireDecl &decl) {
     }
   };
 
-  predeclare(name + "_encode",
-             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_encode", mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
   predeclare(name + "_decode",
              mlir::FunctionType::get(&context, {ptrType, i64Type}, {structMlirTy}));
-  predeclare(name + "_to_json",
-             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
-  predeclare(name + "_from_json",
-             mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
-  predeclare(name + "_to_yaml",
-             mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
-  predeclare(name + "_from_yaml",
-             mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
+  predeclare(name + "_to_json", mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_from_json", mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
+  predeclare(name + "_to_yaml", mlir::FunctionType::get(&context, fieldTypes, {ptrType}));
+  predeclare(name + "_from_yaml", mlir::FunctionType::get(&context, {ptrType}, {structMlirTy}));
 }
 
 void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
@@ -756,10 +750,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         const auto &innerInfo = structTypes.at(field.ty);
         llvm::SmallVector<mlir::Value, 8> innerArgs;
         for (unsigned j = 0; j < innerInfo.fields.size(); ++j)
-          innerArgs.push_back(
-              mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal, j));
-        auto innerEncFn =
-            module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_encode");
+          innerArgs.push_back(mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal, j));
+        auto innerEncFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_encode");
         auto innerBuf =
             mlir::func::CallOp::create(builder, location, innerEncFn, innerArgs).getResult(0);
         auto innerData =
@@ -853,8 +845,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     auto scratchI64 = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i64Type, one);
     auto scratchI32 = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i32Type, one);
     auto scratchPtr = mlir::LLVM::AllocaOp::create(builder, location, ptrType, ptrType, one);
-    auto scratchLen =
-        mlir::LLVM::AllocaOp::create(builder, location, ptrType, nativeSizeType, one);
+    auto scratchLen = mlir::LLVM::AllocaOp::create(builder, location, ptrType, nativeSizeType, one);
     auto scratchFieldNum = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i32Type, one);
     auto scratchWireType = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i32Type, one);
 
@@ -958,10 +949,9 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                        mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
                                        mlir::ValueRange{bufPtr, scratchPtr, scratchLen})
                 .getResult();
-        auto bytesOk =
-            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
-                                        decodeBytesResult,
-                                        createIntConstant(builder, location, i32Type, 0));
+        auto bytesOk = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::eq, decodeBytesResult,
+            createIntConstant(builder, location, i32Type, 0));
         auto bytesIf = mlir::scf::IfOp::create(builder, location, ptrType, bytesOk,
                                                /*withElseRegion=*/true);
 
@@ -970,10 +960,10 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         auto rawLen = mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
         auto vecFromRawType = builder.getFunctionType({ptrType, nativeSizeType}, {ptrType});
         getOrCreateExternFunc("hew_vec_from_raw_bytes", vecFromRawType);
-        auto bytesVec = mlir::func::CallOp::create(builder, location, "hew_vec_from_raw_bytes",
-                                                   mlir::TypeRange{ptrType},
-                                                   mlir::ValueRange{rawPtr, rawLen})
-                            .getResult(0);
+        auto bytesVec =
+            mlir::func::CallOp::create(builder, location, "hew_vec_from_raw_bytes",
+                                       mlir::TypeRange{ptrType}, mlir::ValueRange{rawPtr, rawLen})
+                .getResult(0);
         mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{bytesVec});
 
         builder.setInsertionPointToStart(&bytesIf.getElseRegion().front());
@@ -992,9 +982,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                        mlir::ValueRange{bufPtr})
                 .getResult();
         auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-        auto stringOk = mlir::LLVM::ICmpOp::create(builder, location,
-                                                   mlir::LLVM::ICmpPredicate::ne, decodedStr,
-                                                   nullPtr);
+        auto stringOk = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                   decodedStr, nullPtr);
         auto stringIf = mlir::scf::IfOp::create(builder, location, ptrType, stringOk,
                                                 /*withElseRegion=*/true);
 
@@ -1018,22 +1007,19 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                        mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
                                        mlir::ValueRange{bufPtr, scratchPtr, scratchLen})
                 .getResult();
-        auto nestedBytesOk =
-            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
-                                        decodeBytesResult,
-                                        createIntConstant(builder, location, i32Type, 0));
+        auto nestedBytesOk = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::eq, decodeBytesResult,
+            createIntConstant(builder, location, i32Type, 0));
         auto nestedIf =
             mlir::scf::IfOp::create(builder, location, fty, nestedBytesOk, /*withElseRegion=*/true);
 
         builder.setInsertionPointToStart(&nestedIf.getThenRegion().front());
         auto innerDataPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, scratchPtr);
-        auto innerLen =
-            mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
+        auto innerLen = mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
         auto innerDecFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_decode");
-        auto innerStruct =
-            mlir::func::CallOp::create(builder, location, innerDecFn,
-                                       mlir::ValueRange{innerDataPtr, innerLen})
-                .getResult(0);
+        auto innerStruct = mlir::func::CallOp::create(builder, location, innerDecFn,
+                                                      mlir::ValueRange{innerDataPtr, innerLen})
+                               .getResult(0);
         mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{innerStruct});
 
         builder.setInsertionPointToStart(&nestedIf.getElseRegion().front());
@@ -1066,20 +1052,16 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         if (auto bounds = wireFromSerialIntegerBounds(field.ty)) {
           auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
           auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
-          auto belowMin =
-              mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
-                                          val, minVal);
-          auto aboveMax =
-              mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sgt,
-                                          val, maxVal);
+          auto belowMin = mlir::arith::CmpIOp::create(builder, location,
+                                                      mlir::arith::CmpIPredicate::slt, val, minVal);
+          auto aboveMax = mlir::arith::CmpIOp::create(builder, location,
+                                                      mlir::arith::CmpIPredicate::sgt, val, maxVal);
           auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
           auto outOfRangeIf =
               mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
           builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
-          auto msgPtr =
-              wireStringPtr(location,
-                            wireFromSerialIntegerDecodeErrorMessage("binary", field.name, field.ty,
-                                                                    *bounds));
+          auto msgPtr = wireStringPtr(location, wireFromSerialIntegerDecodeErrorMessage(
+                                                    "binary", field.name, field.ty, *bounds));
           hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                      mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
                                      mlir::ValueRange{msgPtr});
@@ -1283,18 +1265,16 @@ void MLIRGen::generateWireToSerial(
       llvm::SmallVector<mlir::Value, 8> innerArgs;
       for (unsigned j = 0; j < innerInfo.fields.size(); ++j)
         innerArgs.push_back(mlir::LLVM::ExtractValueOp::create(builder, location, fv, j));
-      auto innerSerFn =
-          module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_to_" + format.str());
+      auto innerSerFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_to_" + format.str());
       auto innerStr =
           mlir::func::CallOp::create(builder, location, innerSerFn, innerArgs).getResult(0);
       std::string rtParseFn = "hew_" + format.str() + "_parse";
       std::string rtStrFreeFn = "hew_" + format.str() + "_string_free";
       std::string rtSetObjFn = "hew_" + format.str() + "_object_set";
-      auto innerVal =
-          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                     mlir::SymbolRefAttr::get(&context, rtParseFn),
-                                     mlir::ValueRange{innerStr})
-              .getResult();
+      auto innerVal = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                 mlir::SymbolRefAttr::get(&context, rtParseFn),
+                                                 mlir::ValueRange{innerStr})
+                          .getResult();
       // object_set takes ownership of innerVal; do not free separately.
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetObjFn),
@@ -1327,8 +1307,8 @@ void MLIRGen::generateWireToSerial(
       // Unknown type: not a wire struct and not a known primitive — fail closed.
       ++errorCount_;
       emitError(location) << "wire struct '" << decl.name << "': field '" << field.name
-                          << "' has unsupported type '" << field.ty
-                          << "' for " << format.str() << " serialization";
+                          << "' has unsupported type '" << field.ty << "' for " << format.str()
+                          << " serialization";
       return;
     } else {
       // Integer types: extend to i64 (zero-extend unsigned, sign-extend signed)
@@ -1433,10 +1413,10 @@ void MLIRGen::generateWireFromSerial(
       auto cmp = mlir::func::CallOp::create(builder, location, "strcmp", mlir::TypeRange{i32Type},
                                             mlir::ValueRange{variantName, expectedPtr})
                      .getResult(0);
-      auto isMatch = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
-                                                 cmp, createIntConstant(builder, location, i32Type, 0));
-      auto ifOp =
-          mlir::scf::IfOp::create(builder, location, enumType, isMatch, /*hasElse=*/true);
+      auto isMatch =
+          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, cmp,
+                                      createIntConstant(builder, location, i32Type, 0));
+      auto ifOp = mlir::scf::IfOp::create(builder, location, enumType, isMatch, /*hasElse=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       auto thenValue = createIntConstant(builder, location, enumType, static_cast<int64_t>(index));
@@ -1525,13 +1505,11 @@ void MLIRGen::generateWireFromSerial(
       // Nested wire struct: stringify the child JSON node, then call T_from_{format}.
       std::string rtStringifyFn = "hew_" + format.str() + "_stringify";
       std::string rtStrFreeFn = "hew_" + format.str() + "_string_free";
-      auto innerStr =
-          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                     mlir::SymbolRefAttr::get(&context, rtStringifyFn),
-                                     mlir::ValueRange{fieldJval})
-              .getResult();
-      auto innerDecFn =
-          module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_from_" + format.str());
+      auto innerStr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                 mlir::SymbolRefAttr::get(&context, rtStringifyFn),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+      auto innerDecFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_from_" + format.str());
       decoded =
           mlir::func::CallOp::create(builder, location, innerDecFn, mlir::ValueRange{innerStr})
               .getResult(0);
@@ -1568,35 +1546,40 @@ void MLIRGen::generateWireFromSerial(
       // Unknown type: not a wire struct and not a known primitive — fail closed.
       ++errorCount_;
       emitError(location) << "wire struct '" << decl.name << "': field '" << field.name
-                          << "' has unsupported type '" << field.ty
-                          << "' for " << format.str() << " deserialization";
+                          << "' has unsupported type '" << field.ty << "' for " << format.str()
+                          << " deserialization";
       return;
     } else {
       auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                mlir::SymbolRefAttr::get(&context, rtGetInt),
                                                mlir::ValueRange{fieldJval})
-                       .getResult();
+                        .getResult();
       if (auto bounds = wireFromSerialIntegerBounds(field.ty)) {
         auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
         auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
-        auto belowMin =
-            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
-                                        rawI64, minVal);
-        auto aboveMax =
-            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sgt,
-                                        rawI64, maxVal);
+        auto belowMin = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::slt, rawI64, minVal);
+        auto aboveMax = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::sgt, rawI64, maxVal);
         auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
         auto outOfRangeIf =
             mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
         builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
-        auto msgPtr = wireStringPtr(
-            location, wireFromSerialIntegerDecodeErrorMessage(format, fieldName, field.ty, *bounds));
+        auto msgPtr = wireStringPtr(location, wireFromSerialIntegerDecodeErrorMessage(
+                                                  format, fieldName, field.ty, *bounds));
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                    mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
                                    mlir::ValueRange{msgPtr});
         builder.setInsertionPointAfter(outOfRangeIf);
       }
       auto fieldType = wireTypeToMLIR(builder, field.ty);
+      if (!fieldType) {
+        ++errorCount_;
+        emitError(location) << "wire struct '" << decl.name << "': field '" << field.name
+                            << "' has unsupported primitive type '" << field.ty << "' for "
+                            << format.str() << " deserialization";
+        return;
+      }
       decoded = (fieldType == i32Type)
                     ? mlir::arith::TruncIOp::create(builder, location, i32Type, rawI64).getResult()
                     : rawI64;
@@ -1648,8 +1631,8 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
   const auto &declName = decl.name;
 
   auto generatePassThroughInstanceWrapper = [&](llvm::StringRef methodName,
-                                                const std::string &delegateName, mlir::Type selfType,
-                                                mlir::Type resultType) {
+                                                const std::string &delegateName,
+                                                mlir::Type selfType, mlir::Type resultType) {
     std::string mangledName = mangleName(currentModulePath, declName, methodName.str());
 
     auto savedIP = builder.saveInsertionPoint();
@@ -1663,8 +1646,8 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
     builder.setInsertionPointToStart(entry);
 
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(delegateName);
-    auto callOp =
-        mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{entry->getArgument(0)});
+    auto callOp = mlir::func::CallOp::create(builder, location, callee,
+                                             mlir::ValueRange{entry->getArgument(0)});
     mlir::func::ReturnOp::create(builder, location, callOp.getResults());
     builder.restoreInsertionPoint(savedIP);
   };
@@ -1999,10 +1982,10 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
 
   // Branch on null: null → Err("failed to parse ..."), non-null → Ok(struct)
   auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-  auto isNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq,
-                                           objPtr, nullPtr);
+  auto isNull =
+      mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, objPtr, nullPtr);
   auto ifOp = mlir::scf::IfOp::create(builder, location, resultEnumType, isNull,
-                                       /*withElseRegion=*/true);
+                                      /*withElseRegion=*/true);
 
   // Then branch (null / parse failed): return Err("failed to parse {format}: invalid input")
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -2011,10 +1994,10 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
     auto errStrRef =
         hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
             .getResult();
-    auto errResult = hew::EnumConstructOp::create(
-        builder, location, resultEnumType, /*variantIndex=*/1u,
-        llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
-        /*payload_positions=*/builder.getI64ArrayAttr({2}));
+    auto errResult =
+        hew::EnumConstructOp::create(builder, location, resultEnumType, /*variantIndex=*/1u,
+                                     llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
+                                     /*payload_positions=*/builder.getI64ArrayAttr({2}));
     mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errResult});
   }
 
@@ -2041,8 +2024,7 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
           hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
               .getResult();
       return hew::EnumConstructOp::create(builder, location, resultEnumType, /*variantIndex=*/1u,
-                                          llvm::StringRef("__Result"),
-                                          mlir::ValueRange{errStrRef},
+                                          llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
                                           builder.getI64ArrayAttr({2}));
     };
 
@@ -2063,24 +2045,21 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
 
       const auto &field = info.fields[fieldIdx];
       auto keyPtr = wireStringPtr(location, field.name);
-      auto fieldJval =
-          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                     mlir::SymbolRefAttr::get(&context, rtGetField),
-                                     mlir::ValueRange{objPtr, keyPtr})
-              .getResult();
+      auto fieldJval = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                  mlir::SymbolRefAttr::get(&context, rtGetField),
+                                                  mlir::ValueRange{objPtr, keyPtr})
+                           .getResult();
 
       // If get_field returned null the key was missing or the document is not
       // an object — treat as a structural error.
-      auto isFieldNull =
-          mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, fieldJval,
-                                     nullPtr);
+      auto isFieldNull = mlir::LLVM::ICmpOp::create(
+          builder, location, mlir::LLVM::ICmpPredicate::eq, fieldJval, nullPtr);
       auto fieldIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, isFieldNull,
-                                                /*withElseRegion=*/true);
+                                               /*withElseRegion=*/true);
 
       // Then: field missing — free doc and return Err.
       builder.setInsertionPointToStart(&fieldIfOp.getThenRegion().front());
-      mlir::scf::YieldOp::create(builder, location,
-                                 mlir::ValueRange{emitFieldErr(field.name)});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{emitFieldErr(field.name)});
 
       // Else: field present — decode scalar, free field node, recurse.
       //
@@ -2101,11 +2080,10 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
                                                  mlir::SymbolRefAttr::get(&context, rtGetString),
                                                  mlir::ValueRange{fieldJval})
                           .getResult();
-        auto strIsNull =
-            mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, strPtr,
-                                       nullPtr);
+        auto strIsNull = mlir::LLVM::ICmpOp::create(builder, location,
+                                                    mlir::LLVM::ICmpPredicate::eq, strPtr, nullPtr);
         auto strTypeIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, strIsNull,
-                                                    /*withElseRegion=*/true);
+                                                   /*withElseRegion=*/true);
 
         // Then: wrong type — free field node, free document, return Err.
         builder.setInsertionPointToStart(&strTypeIfOp.getThenRegion().front());
@@ -2116,16 +2094,14 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
                                    mlir::SymbolRefAttr::get(&context, rtFree),
                                    mlir::ValueRange{objPtr});
         {
-          auto errSym = getOrCreateGlobalString(
-              "failed to parse " + format.str() + ": field '" + field.name + "' is not a string");
+          auto errSym = getOrCreateGlobalString("failed to parse " + format.str() + ": field '" +
+                                                field.name + "' is not a string");
           auto errStrRef =
-              hew::ConstantOp::create(builder, location, strRefType,
-                                      builder.getStringAttr(errSym))
+              hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
                   .getResult();
           auto errVal = hew::EnumConstructOp::create(
-              builder, location, resultEnumType, /*variantIndex=*/1u,
-              llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
-              builder.getI64ArrayAttr({2}));
+              builder, location, resultEnumType, /*variantIndex=*/1u, llvm::StringRef("__Result"),
+              mlir::ValueRange{errStrRef}, builder.getI64ArrayAttr({2}));
           mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errVal});
         }
 
@@ -2142,8 +2118,7 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
         }
 
         builder.setInsertionPointAfter(strTypeIfOp);
-        mlir::scf::YieldOp::create(builder, location,
-                                   mlir::ValueRange{strTypeIfOp.getResult(0)});
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{strTypeIfOp.getResult(0)});
         builder.setInsertionPointAfter(fieldIfOp);
         return fieldIfOp.getResult(0);
       }
@@ -2161,18 +2136,16 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
       else // Integer (i8/i16/i32/i64 variants)
         rtIsPred = "hew_" + format.str() + "_is_int";
 
-      auto typeOkI32 =
-          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                                     mlir::SymbolRefAttr::get(&context, rtIsPred),
-                                     mlir::ValueRange{fieldJval})
-              .getResult();
+      auto typeOkI32 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                                  mlir::SymbolRefAttr::get(&context, rtIsPred),
+                                                  mlir::ValueRange{fieldJval})
+                           .getResult();
       auto typeOk =
-          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
-                                      typeOkI32,
+          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, typeOkI32,
                                       createIntConstant(builder, location, i32Type, 0));
 
       auto typeCheckIfOp = mlir::scf::IfOp::create(builder, location, resultEnumType, typeOk,
-                                                    /*withElseRegion=*/true);
+                                                   /*withElseRegion=*/true);
 
       // Then: correct type — decode scalar, free field node, recurse.
       builder.setInsertionPointToStart(&typeCheckIfOp.getThenRegion().front());
@@ -2189,8 +2162,7 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
                                                  mlir::SymbolRefAttr::get(&context, rtGetFloat),
                                                  mlir::ValueRange{fieldJval})
                           .getResult();
-          decoded =
-              mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
+          decoded = mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
         } else if (jkind == WireJsonKind::Float64) {
           decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
                                                mlir::SymbolRefAttr::get(&context, rtGetFloat),
@@ -2201,10 +2173,10 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
                                                    mlir::SymbolRefAttr::get(&context, rtGetInt),
                                                    mlir::ValueRange{fieldJval})
                             .getResult();
-          decoded = (field.type != i64Type)
-                        ? mlir::arith::TruncIOp::create(builder, location, field.type, rawI64)
-                              .getResult()
-                        : rawI64;
+          decoded =
+              (field.type != i64Type)
+                  ? mlir::arith::TruncIOp::create(builder, location, field.type, rawI64).getResult()
+                  : rawI64;
         }
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                    mlir::SymbolRefAttr::get(&context, rtFree),
@@ -2224,21 +2196,19 @@ void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::String
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                    mlir::SymbolRefAttr::get(&context, rtFree),
                                    mlir::ValueRange{objPtr});
-        auto errSym = getOrCreateGlobalString("failed to parse " + format.str() +
-                                              ": field '" + field.name + "' has wrong type");
+        auto errSym = getOrCreateGlobalString("failed to parse " + format.str() + ": field '" +
+                                              field.name + "' has wrong type");
         auto errStrRef =
             hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(errSym))
                 .getResult();
         auto errVal = hew::EnumConstructOp::create(
-            builder, location, resultEnumType, /*variantIndex=*/1u,
-            llvm::StringRef("__Result"), mlir::ValueRange{errStrRef},
-            builder.getI64ArrayAttr({2}));
+            builder, location, resultEnumType, /*variantIndex=*/1u, llvm::StringRef("__Result"),
+            mlir::ValueRange{errStrRef}, builder.getI64ArrayAttr({2}));
         mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{errVal});
       }
 
       builder.setInsertionPointAfter(typeCheckIfOp);
-      mlir::scf::YieldOp::create(builder, location,
-                                 mlir::ValueRange{typeCheckIfOp.getResult(0)});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{typeCheckIfOp.getResult(0)});
       builder.setInsertionPointAfter(fieldIfOp);
       return fieldIfOp.getResult(0);
     };

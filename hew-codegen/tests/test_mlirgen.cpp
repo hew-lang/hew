@@ -5052,6 +5052,13 @@ type Input = stream.Stream<String>;
 type Inbox = channel.Receiver<String>;
 type PatternAlias = regex.Pattern;
 type ActorVec = Vec<ActorRef<Stats>>;
+type Score = int;
+type Count = uint;
+type Text = String;
+type LowerText = str;
+type ByteAlias = byte;
+type FlagAlias = Bool;
+type Timeout = Duration;
 
 fn make_input() -> stream.Stream<String> {
     let (_sink, input) = stream.pipe(1);
@@ -5073,6 +5080,13 @@ fn main() {
     let input: Input = make_input();
     let pattern: PatternAlias = regex.new("[0-9]+");
     let actors: ActorVec = Vec::new();
+    let score: Score = 1;
+    let count: Count = 2;
+    let text: Text = "hi";
+    let lower: LowerText = "bye";
+    let byte_value: ByteAlias = 7;
+    let flag: FlagAlias = true;
+    let timeout: Timeout = 1s;
 }
   )",
                              program)) {
@@ -5123,9 +5137,18 @@ fn main() {
   const auto *inputLet = findLet(*mainFn, "input");
   const auto *patternLet = findLet(*mainFn, "pattern");
   const auto *actorsLet = findLet(*mainFn, "actors");
+  const auto *scoreLet = findLet(*mainFn, "score");
+  const auto *countLet = findLet(*mainFn, "count");
+  const auto *textLet = findLet(*mainFn, "text");
+  const auto *lowerLet = findLet(*mainFn, "lower");
+  const auto *byteValueLet = findLet(*mainFn, "byte_value");
+  const auto *flagLet = findLet(*mainFn, "flag");
+  const auto *timeoutLet = findLet(*mainFn, "timeout");
   if (!remoteLet || !remoteLet->ty || !greeterLet || !greeterLet->ty || !modeLet || !modeLet->ty ||
       !inputLet || !inputLet->ty || !patternLet || !patternLet->ty || !actorsLet ||
-      !actorsLet->ty) {
+      !actorsLet->ty || !scoreLet || !scoreLet->ty || !countLet || !countLet->ty || !textLet ||
+      !textLet->ty || !lowerLet || !lowerLet->ty || !byteValueLet || !byteValueLet->ty ||
+      !flagLet || !flagLet->ty || !timeoutLet || !timeoutLet->ty) {
     FAIL("expected typed let bindings in resolved-type classifier test program");
     return;
   }
@@ -5176,6 +5199,16 @@ fn main() {
   if (hew::typeExprToCollectionString(actorsLet->ty->value, resolveAlias) !=
       "Vec<ActorRef<Stats>>") {
     FAIL("aliased collection receiver should preserve canonical nested actor type");
+    return;
+  }
+  if (hew::resolvedTypeExprString(scoreLet->ty->value, resolveAlias) != "i64" ||
+      hew::resolvedTypeExprString(countLet->ty->value, resolveAlias) != "u64" ||
+      hew::resolvedTypeExprString(textLet->ty->value, resolveAlias) != "string" ||
+      hew::resolvedTypeExprString(lowerLet->ty->value, resolveAlias) != "string" ||
+      hew::resolvedTypeExprString(byteValueLet->ty->value, resolveAlias) != "u8" ||
+      hew::resolvedTypeExprString(flagLet->ty->value, resolveAlias) != "bool" ||
+      hew::resolvedTypeExprString(timeoutLet->ty->value, resolveAlias) != "duration") {
+    FAIL("primitive aliases should resolve to canonical lowering spellings");
     return;
   }
 
@@ -5674,6 +5707,58 @@ fn main() -> int {
   PASS();
 }
 
+static void test_for_await_receiver_int_alias_uses_canonical_primitive_classification() {
+  TEST(for_await_receiver_int_alias_uses_canonical_primitive_classification);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::channel::channel;
+
+type Count = Int;
+type Inbox = channel.Receiver<Count>;
+
+fn inbox() -> Inbox {
+    let pair = channel.new(1);
+    let tx = pair.0;
+    let rx = pair.1;
+    tx.send(41);
+    tx.close();
+    rx
+}
+
+fn main() -> int {
+    let rx = inbox();
+    for await msg in rx {
+        return msg;
+    }
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased int for-await receiver iterable");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for aliased int for-await receiver iterable");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_channel_recv_int") != 1) {
+    FAIL("expected aliased int for-await receiver iterable to lower to hew_channel_recv_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
 // ============================================================================
 // Test: remote void actor asks do not free the reply sentinel
 // ============================================================================
@@ -6026,6 +6111,7 @@ int main() {
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();
   test_for_await_receiver_alias_inferred_binding_uses_resolved_type();
+  test_for_await_receiver_int_alias_uses_canonical_primitive_classification();
   test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();

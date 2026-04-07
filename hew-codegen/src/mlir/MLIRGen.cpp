@@ -427,29 +427,34 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
     if (alias != typeAliases.end()) {
       return convertType(*alias->second, errorLoc);
     }
-    if (name == "i8")
+    switch (primitiveTypeKind(name)) {
+    case PrimitiveTypeKind::I8:
+    case PrimitiveTypeKind::U8:
       return builder.getIntegerType(8);
-    if (name == "i16")
+    case PrimitiveTypeKind::I16:
+    case PrimitiveTypeKind::U16:
       return builder.getIntegerType(16);
-    if (name == "i32")
+    case PrimitiveTypeKind::I32:
+    case PrimitiveTypeKind::U32:
+    case PrimitiveTypeKind::Char:
       return builder.getI32Type();
-    if (name == "i64" || name == "int" || name == "Int")
+    case PrimitiveTypeKind::I64:
+    case PrimitiveTypeKind::U64:
+    case PrimitiveTypeKind::Duration:
       return builder.getI64Type();
-    // Unsigned integers: use signless MLIR types (arith ops require signless)
-    if (name == "u8" || name == "byte")
-      return builder.getIntegerType(8);
-    if (name == "u16")
-      return builder.getIntegerType(16);
-    if (name == "u32")
-      return builder.getIntegerType(32);
-    if (name == "u64" || name == "uint")
-      return builder.getIntegerType(64);
-    if (name == "f32")
+    case PrimitiveTypeKind::F32:
       return builder.getF32Type();
-    if (name == "f64" || name == "float")
+    case PrimitiveTypeKind::F64:
       return builder.getF64Type();
-    if (name == "bool")
+    case PrimitiveTypeKind::Bool:
       return builder.getI1Type();
+    case PrimitiveTypeKind::String:
+      return hew::StringRefType::get(&context);
+    case PrimitiveTypeKind::Bytes:
+      return hew::VecType::get(&context, builder.getI32Type());
+    case PrimitiveTypeKind::Unknown:
+      break;
+    }
     if (name == "Range") {
       if (!named->type_args || named->type_args->empty()) {
         emitError(diagLoc) << "Range type requires a type argument";
@@ -461,15 +466,6 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
         return nullptr;
       return hew::HewTupleType::get(&context, {elemType, elemType});
     }
-    if (name == "char")
-      return builder.getI32Type();
-    if (name == "duration")
-      return builder.getI64Type();
-    if (name == "String" || name == "string" || name == "str")
-      return hew::StringRefType::get(&context);
-    // bytes = mutable byte buffer; stored as Vec<i32> to reuse existing runtime
-    if (name == "bytes")
-      return hew::VecType::get(&context, builder.getI32Type());
     // Vec<T>: extract element type from generic args
     if (name == "Vec") {
       if (!(named->type_args && !named->type_args->empty())) {
@@ -2600,8 +2596,8 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   });
 
   // Pre-pass 1b2: Collect all wire struct names so preRegisterWireStructType
-  // can tell struct-type field references apart from primitive type aliases
-  // (e.g. "int", "uint") that wireTypeToMLIR maps via its default i32 fallback.
+  // can tell struct-type field references apart from primitive aliases before
+  // wire lowering rejects unsupported names explicitly.
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {

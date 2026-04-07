@@ -4,6 +4,8 @@
 //! (one-for-one, one-for-all, rest-for-one) and sliding-window restart
 //! tracking. Mirrors the C implementation in `hew-codegen/runtime/src/supervisor.c`.
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -706,6 +708,11 @@ fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
         return true;
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if should_fail_owned_deferred_supervisor_spawn() {
+        return false;
+    }
+
     let sup_addr = sup as usize;
     if std::thread::Builder::new()
         .name("deferred-sup-stop".into())
@@ -763,6 +770,16 @@ fn current_thread_owns_supervisor_tree(sup: *mut HewSupervisor) -> bool {
 /// Stop a child supervisor without blocking the current scheduler worker.
 fn defer_stop_child_supervisor(child_sup: *mut HewSupervisor) {
     let _ = spawn_deferred_supervisor_stop(child_sup, true);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn should_fail_owned_deferred_supervisor_spawn() -> bool {
+    FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(Cell::get)
 }
 
 fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
@@ -1542,6 +1559,7 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
         if !spawn_owned_deferred_supervisor_stop(sup) {
             release_supervisor_teardown(sup);
             set_last_error("hew_supervisor_stop: failed to spawn deferred stop thread");
+            return;
         }
         // Unregister from shutdown once the deferred owner is guaranteed to
         // finish the teardown.
@@ -1563,6 +1581,19 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    struct OwnedDeferredSupervisorSpawnFailureGuard;
+
+    impl Drop for OwnedDeferredSupervisorSpawnFailureGuard {
+        fn drop(&mut self) {
+            FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(|slot| slot.set(false));
+        }
+    }
+
+    fn fail_owned_deferred_supervisor_spawn() -> OwnedDeferredSupervisorSpawnFailureGuard {
+        FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(|slot| slot.set(true));
+        OwnedDeferredSupervisorSpawnFailureGuard
+    }
 
     fn wait_for_condition(
         timeout: std::time::Duration,
@@ -1792,6 +1823,37 @@ mod tests {
                 }),
                 "supervisor self actor should still be released after the deferred winner completes"
             );
+        }
+    }
+
+    #[test]
+    fn failed_deferred_spawn_keeps_supervisor_registered() {
+        // SAFETY: this test owns the supervisor tree, injects the current actor
+        // to exercise the owner-thread path, and then performs synchronous
+        // cleanup once the injected spawn failure has been asserted.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let fail_guard = fail_owned_deferred_supervisor_spawn();
+
+            let prev_actor = actor::set_current_actor(child);
+            crate::hew_clear_error();
+            hew_supervisor_stop(sup);
+            actor::set_current_actor(prev_actor);
+
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(sup),
+                "failed deferred spawn must not orphan the top-level supervisor from shutdown tracking"
+            );
+            let err = crate::hew_last_error();
+            assert!(!err.is_null(), "spawn failure should surface an error");
+            let msg = std::ffi::CStr::from_ptr(err).to_string_lossy();
+            assert!(
+                msg.contains("failed to spawn deferred stop thread"),
+                "spawn failure should preserve the stop error, got: {msg}"
+            );
+
+            drop(fail_guard);
+            hew_supervisor_stop(sup);
         }
     }
 }

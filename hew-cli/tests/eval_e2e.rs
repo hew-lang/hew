@@ -129,6 +129,58 @@ fn eval_stdin_in_repl_context_succeeds() {
 }
 
 #[test]
+fn statement_replay_stdin_does_not_repeat_one_shot_statement() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "println(\"once\");\n1 + 1\n");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "once\n2\n");
+}
+
+#[test]
+fn statement_replay_stdin_keeps_explicit_binding() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], "let x = 41;\nx + 1\n");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
+fn statement_replay_repl_does_not_repeat_one_shot_statement() {
+    if !require_codegen() {
+        return;
+    }
+
+    let output = run_eval_with_stdin(&["eval"], "println(\"once\");\n1 + 1\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("once\n").count(), 1, "stdout: {stdout}");
+    assert!(stdout.contains("2\n"), "stdout: {stdout}");
+}
+
+#[test]
 fn eval_timeout_exit_code_is_non_zero() {
     if !require_codegen() {
         return;

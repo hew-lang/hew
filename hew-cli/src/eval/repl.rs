@@ -489,7 +489,7 @@ impl ReplSession {
     fn record_success(&mut self, input: &str, kind: &InputKind) {
         match kind {
             InputKind::Item => self.session.add_item(input),
-            InputKind::Statement => self.session.add_binding(input),
+            InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
             InputKind::Expression | InputKind::Command(_) => {}
         }
     }

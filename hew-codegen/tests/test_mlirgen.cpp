@@ -27,6 +27,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -477,6 +478,25 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   if (!loadProgramFromSource(source, program))
     return {};
   return generateMLIR(ctx, program, dumpIR);
+}
+
+static hew::ast::FnDecl *findFunctionDecl(hew::ast::Program &program, llvm::StringRef name) {
+  for (auto &item : program.items) {
+    if (auto *fn = std::get_if<hew::ast::FnDecl>(&item.value.kind); fn && fn->name == name)
+      return fn;
+  }
+  return nullptr;
+}
+
+static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast::Span &span) {
+  auto oldSize = program.expr_types.size();
+  program.expr_types.erase(std::remove_if(program.expr_types.begin(), program.expr_types.end(),
+                                          [&](const hew::ast::ExprTypeEntry &entry) {
+                                            return entry.start == span.start &&
+                                                   entry.end == span.end;
+                                          }),
+                           program.expr_types.end());
+  return program.expr_types.size() != oldSize;
 }
 
 static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
@@ -2807,6 +2827,128 @@ fn count(lo: u64, hi: u64) -> int {
   }
 
   module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_unsigned_binary_ops_use_unsigned_lowering() {
+  TEST(unsigned_binary_ops_use_unsigned_lowering);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn unsigned_ops() -> u16 {
+    let a: u8 = 3;
+    let b: u16 = 9;
+    let c: u16 = 12;
+    let widened: u16 = a + b;
+    if widened < c {
+        c / widened
+    } else {
+        c % widened
+    }
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto fn = lookupFuncBySuffix(module, "unsigned_ops");
+  if (!fn) {
+    FAIL("unsigned_ops function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasExtUI = false;
+  bool hasExtSI = false;
+  bool hasDivUI = false;
+  bool hasDivSI = false;
+  bool hasRemUI = false;
+  bool hasRemSI = false;
+  bool hasUnsignedCompare = false;
+  bool hasSignedCompare = false;
+
+  fn.walk([&](mlir::arith::ExtUIOp) { hasExtUI = true; });
+  fn.walk([&](mlir::arith::ExtSIOp) { hasExtSI = true; });
+  fn.walk([&](mlir::arith::DivUIOp) { hasDivUI = true; });
+  fn.walk([&](mlir::arith::DivSIOp) { hasDivSI = true; });
+  fn.walk([&](mlir::arith::RemUIOp) { hasRemUI = true; });
+  fn.walk([&](mlir::arith::RemSIOp) { hasRemSI = true; });
+  fn.walk([&](mlir::arith::CmpIOp cmp) {
+    hasUnsignedCompare |= cmp.getPredicate() == mlir::arith::CmpIPredicate::ult;
+    hasSignedCompare |= cmp.getPredicate() == mlir::arith::CmpIPredicate::slt;
+  });
+
+  if (!hasExtUI || hasExtSI || !hasDivUI || hasDivSI || !hasRemUI || hasRemSI ||
+      !hasUnsignedCompare || hasSignedCompare) {
+    FAIL("expected unsigned widening/division/remainder/compare lowering");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_unsigned_binary_expr_missing_expr_type_fails_closed() {
+  TEST(unsigned_binary_expr_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_unsigned_cmp() -> bool {
+    let a: u8 = 1;
+    let b: u16 = 2;
+    a < b
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_unsigned_cmp");
+  if (!fn || !fn->body.trailing_expr) {
+    FAIL("broken_unsigned_cmp body missing trailing expression");
+    return;
+  }
+
+  auto *binary = std::get_if<hew::ast::ExprBinary>(&fn->body.trailing_expr->value.kind);
+  if (!binary) {
+    FAIL("expected trailing binary expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, binary->left->span)) {
+    FAIL("failed to remove expr_types entry for left operand");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when unsigned binary metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for integer widening of binary left operand") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for missing expr_types");
+    return;
+  }
+
   PASS();
 }
 
@@ -5844,6 +5986,8 @@ int main() {
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();
+  test_unsigned_binary_ops_use_unsigned_lowering();
+  test_unsigned_binary_expr_missing_expr_type_fails_closed();
   test_materialized_unsigned_range_uses_unsigned_compare();
   test_return_stmt();
   test_logical_ops();

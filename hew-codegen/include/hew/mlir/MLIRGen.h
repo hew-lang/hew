@@ -561,6 +561,10 @@ private:
       return it->second;
     return nullptr;
   }
+  /// Like resolvedTypeOf(), but emits a fail-closed diagnostic when the
+  /// type-checker metadata entry is missing.
+  const ast::TypeExpr *requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
+                                             std::optional<mlir::Location> errorLoc = std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can

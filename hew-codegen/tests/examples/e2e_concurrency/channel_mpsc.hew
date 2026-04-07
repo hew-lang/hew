@@ -7,7 +7,7 @@ fn producer(tx: Sender, label: String) {
 }
 
 fn main() {
-    let (tx, rx) = channel.new(8);
+    let (tx, rx): (channel.Sender, channel.Receiver<String>) = channel.new(8);
 
     // Clone the sender for a second producer.
     let tx2 = tx.clone();

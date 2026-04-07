@@ -31,6 +31,54 @@ pub(super) fn ty_has_unresolved_inference_var(ty: &Ty) -> bool {
     }
 }
 
+pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<TypeVar>) {
+    match ty {
+        Ty::Var(var) => {
+            vars.insert(*var);
+        }
+        Ty::Tuple(elems) => {
+            for elem in elems {
+                collect_unresolved_inference_vars(elem, vars);
+            }
+        }
+        Ty::Array(elem, _) | Ty::Slice(elem) | Ty::Pointer { pointee: elem, .. } => {
+            collect_unresolved_inference_vars(elem, vars);
+        }
+        Ty::Named { args, .. } => {
+            for arg in args {
+                collect_unresolved_inference_vars(arg, vars);
+            }
+        }
+        Ty::Function { params, ret } => {
+            for param in params {
+                collect_unresolved_inference_vars(param, vars);
+            }
+            collect_unresolved_inference_vars(ret, vars);
+        }
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            for param in params {
+                collect_unresolved_inference_vars(param, vars);
+            }
+            collect_unresolved_inference_vars(ret, vars);
+            for capture in captures {
+                collect_unresolved_inference_vars(capture, vars);
+            }
+        }
+        Ty::TraitObject { traits } => {
+            for bound in traits {
+                for arg in &bound.args {
+                    collect_unresolved_inference_vars(arg, vars);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn lookup_scoped_item<'a, T>(
     items: &'a HashMap<String, T>,
     module_name: Option<&str>,

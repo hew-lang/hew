@@ -119,6 +119,22 @@ impl Checker {
         });
     }
 
+    pub(super) fn record_deferred_monomorphic_site(
+        &mut self,
+        span: &Span,
+        context: impl Into<String>,
+        ty: &Ty,
+        more_specific_hole_vars: Vec<TypeVar>,
+    ) {
+        self.deferred_monomorphic_sites
+            .push(DeferredMonomorphicSite {
+                span: span.clone(),
+                context: context.into(),
+                ty: ty.clone(),
+                more_specific_hole_vars,
+            });
+    }
+
     pub(super) fn resolve_annotation_with_holes(
         &mut self,
         annotation: &Spanned<TypeExpr>,
@@ -188,6 +204,41 @@ impl Checker {
             })
             .collect();
         self.errors.extend(deferred_cast_errors);
+    }
+
+    pub(super) fn report_unresolved_monomorphic_sites(&mut self) {
+        let site_errors: Vec<_> = std::mem::take(&mut self.deferred_monomorphic_sites)
+            .into_iter()
+            .filter_map(|site| {
+                let resolved = self.subst.resolve(&site.ty);
+                let mut unresolved_site_vars = HashSet::new();
+                collect_unresolved_inference_vars(&resolved, &mut unresolved_site_vars);
+                if unresolved_site_vars.is_empty() {
+                    return None;
+                }
+
+                let mut unresolved_specific_vars = HashSet::new();
+                for hole_var in site.more_specific_hole_vars {
+                    let resolved_hole = self.subst.resolve(&Ty::Var(hole_var));
+                    collect_unresolved_inference_vars(
+                        &resolved_hole,
+                        &mut unresolved_specific_vars,
+                    );
+                }
+
+                if !unresolved_specific_vars.is_empty()
+                    && unresolved_site_vars.is_subset(&unresolved_specific_vars)
+                {
+                    return None;
+                }
+
+                Some(TypeError::inference_failed(
+                    site.span.clone(),
+                    &site.context,
+                ))
+            })
+            .collect();
+        self.errors.extend(site_errors);
     }
 
     #[expect(

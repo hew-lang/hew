@@ -739,6 +739,17 @@ mlir::Type MLIRGen::convertTypeOrError(const ast::TypeExpr &type, llvm::StringRe
   return result;
 }
 
+const ast::TypeExpr *MLIRGen::requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
+                                                    std::optional<mlir::Location> errorLoc) {
+  if (const auto *resolved = resolvedTypeOf(span))
+    return resolved;
+
+  ++errorCount_;
+  emitError(errorLoc.value_or(currentLoc)) << "missing expr_types entry for " << context
+                                           << " at span [" << span.start << ", " << span.end << ")";
+  return nullptr;
+}
+
 // ============================================================================
 // Type coercion
 // ============================================================================

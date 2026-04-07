@@ -1061,17 +1061,19 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   bool lhsIsFloat = llvm::isa<mlir::FloatType>(lhs.getType());
   bool rhsIsFloat = llvm::isa<mlir::FloatType>(rhs.getType());
   if (lhsIsFloat && !rhsIsFloat) {
-    bool rhsUns = false;
-    if (auto *rt = resolvedTypeOf(expr.right->span))
-      rhsUns = isUnsignedTypeExpr(*rt);
-    rhs = coerceType(rhs, lhs.getType(), location, rhsUns);
+    auto *rhsType = requireResolvedTypeOf(
+        expr.right->span, "integer-to-float promotion of binary right operand", location);
+    if (!rhsType)
+      return nullptr;
+    rhs = coerceType(rhs, lhs.getType(), location, isUnsignedTypeExpr(*rhsType));
     if (!rhs)
       return nullptr;
   } else if (rhsIsFloat && !lhsIsFloat) {
-    bool lhsUns = false;
-    if (auto *lt = resolvedTypeOf(expr.left->span))
-      lhsUns = isUnsignedTypeExpr(*lt);
-    lhs = coerceType(lhs, rhs.getType(), location, lhsUns);
+    auto *lhsType = requireResolvedTypeOf(
+        expr.left->span, "integer-to-float promotion of binary left operand", location);
+    if (!lhsType)
+      return nullptr;
+    lhs = coerceType(lhs, rhs.getType(), location, isUnsignedTypeExpr(*lhsType));
     if (!lhs)
       return nullptr;
   }
@@ -1081,17 +1083,19 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   auto rhsInt = mlir::dyn_cast<mlir::IntegerType>(rhs.getType());
   if (lhsInt && rhsInt && lhsInt.getWidth() != rhsInt.getWidth()) {
     if (lhsInt.getWidth() < rhsInt.getWidth()) {
-      bool lhsUnsigned = false;
-      if (auto *lt = resolvedTypeOf(expr.left->span))
-        lhsUnsigned = isUnsignedTypeExpr(*lt);
-      lhs = lhsUnsigned
+      auto *lhsType = requireResolvedTypeOf(expr.left->span,
+                                            "integer widening of binary left operand", location);
+      if (!lhsType)
+        return nullptr;
+      lhs = isUnsignedTypeExpr(*lhsType)
                 ? mlir::arith::ExtUIOp::create(builder, location, rhs.getType(), lhs).getResult()
                 : mlir::arith::ExtSIOp::create(builder, location, rhs.getType(), lhs).getResult();
     } else {
-      bool rhsUnsigned = false;
-      if (auto *rt = resolvedTypeOf(expr.right->span))
-        rhsUnsigned = isUnsignedTypeExpr(*rt);
-      rhs = rhsUnsigned
+      auto *rhsType = requireResolvedTypeOf(expr.right->span,
+                                            "integer widening of binary right operand", location);
+      if (!rhsType)
+        return nullptr;
+      rhs = isUnsignedTypeExpr(*rhsType)
                 ? mlir::arith::ExtUIOp::create(builder, location, lhs.getType(), rhs).getResult()
                 : mlir::arith::ExtSIOp::create(builder, location, lhs.getType(), rhs).getResult();
     }
@@ -1104,9 +1108,26 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   // MLIR IntegerTypes are signless, so intType.isUnsigned() always returns false;
   // we must consult the source type name instead.
   bool isUnsigned = false;
-  if (mlir::isa<mlir::IntegerType>(type)) {
-    if (auto *lhsType = resolvedTypeOf(expr.left->span))
-      isUnsigned = isUnsignedTypeExpr(*lhsType);
+  auto needsSignednessMetadata = [&]() {
+    switch (expr.op) {
+    case ast::BinaryOp::Divide:
+    case ast::BinaryOp::Modulo:
+    case ast::BinaryOp::Less:
+    case ast::BinaryOp::LessEqual:
+    case ast::BinaryOp::Greater:
+    case ast::BinaryOp::GreaterEqual:
+    case ast::BinaryOp::Shr:
+      return true;
+    default:
+      return false;
+    }
+  };
+  if (mlir::isa<mlir::IntegerType>(type) && needsSignednessMetadata()) {
+    auto *lhsType = requireResolvedTypeOf(
+        expr.left->span, "binary signedness decision for the left operand", location);
+    if (!lhsType)
+      return nullptr;
+    isUnsigned = isUnsignedTypeExpr(*lhsType);
   }
 
   // Hoist actor-pointer detection for pointer comparison operators.

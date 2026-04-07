@@ -1076,6 +1076,8 @@ private:
   std::unordered_map<std::string, std::string> typeParamSubstitutions;
   // Type alias mappings (e.g., "Distance" → TypeNode for i32).
   std::unordered_map<std::string, const ast::TypeExpr *> typeAliases;
+  // Resolve a type alias to its underlying TypeExpr, if present.
+  const ast::TypeExpr *resolveTypeAliasExpr(llvm::StringRef name) const;
   // Resolve a type name through the type alias map (e.g., "TopicFilter" → "string").
   // Returns the original name unchanged if no alias is found.
   std::string resolveTypeAlias(const std::string &name) const;

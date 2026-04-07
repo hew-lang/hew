@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../src/mlir/MLIRGenHelpers.h"
 #include "hew/codegen.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
@@ -4877,6 +4878,169 @@ fn main() {
 }
 
 // ============================================================================
+// Test: shared resolved-type classifier canonicalizes aliases + qualified names
+// ============================================================================
+
+static void test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers() {
+  TEST(resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::channel::channel;
+import std::stream;
+import std::text::regex;
+
+actor Stats {
+    receive fn ping() {}
+}
+
+type Greeter {
+    greeting: String;
+}
+
+enum Mode {
+    Idle;
+    Busy;
+}
+
+type RemoteStats = Stats;
+type GreeterAlias = Greeter;
+type ModeAlias = Mode;
+type Input = stream.Stream<String>;
+type Inbox = channel.Receiver<String>;
+type PatternAlias = regex.Pattern;
+type ActorVec = Vec<ActorRef<Stats>>;
+
+fn make_input() -> stream.Stream<String> {
+    let (_sink, input) = stream.pipe(1);
+    input
+}
+
+fn drain(rx: channel.Receiver<String>) {
+    rx.close();
+}
+
+fn drain_alias(rx: Inbox) {
+    rx.close();
+}
+
+fn main() {
+    let remote: RemoteStats = Node::lookup("stats");
+    let greeter: GreeterAlias = Greeter { greeting: "hi" };
+    let mode: ModeAlias = Idle;
+    let input: Input = make_input();
+    let pattern: PatternAlias = regex.new("[0-9]+");
+    let actors: ActorVec = Vec::new();
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for resolved-type classifier test");
+    return;
+  }
+
+  auto findFunction = [&](llvm::StringRef name) -> const hew::ast::FnDecl * {
+    for (const auto &item : program.items) {
+      if (auto *fn = std::get_if<hew::ast::FnDecl>(&item.value.kind); fn && fn->name == name)
+        return fn;
+    }
+    return nullptr;
+  };
+  auto findLet = [](const hew::ast::FnDecl &fn, llvm::StringRef name) -> const hew::ast::StmtLet * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *letStmt = std::get_if<hew::ast::StmtLet>(&stmt->value.kind);
+      if (!letStmt)
+        continue;
+      auto *ident = std::get_if<hew::ast::PatIdentifier>(&letStmt->pattern.value.kind);
+      if (ident && ident->name == name)
+        return letStmt;
+    }
+    return nullptr;
+  };
+  auto resolveAlias = [&](llvm::StringRef name) -> const hew::ast::TypeExpr * {
+    for (const auto &item : program.items) {
+      if (auto *alias = std::get_if<hew::ast::TypeAliasDecl>(&item.value.kind);
+          alias && alias->name == name) {
+        return &alias->ty.value;
+      }
+    }
+    return nullptr;
+  };
+
+  const auto *mainFn = findFunction("main");
+  const auto *makeInputFn = findFunction("make_input");
+  const auto *drainFn = findFunction("drain");
+  const auto *drainAliasFn = findFunction("drain_alias");
+  if (!mainFn || !makeInputFn || !makeInputFn->return_type || !drainFn || !drainAliasFn) {
+    FAIL("expected helper functions in resolved-type classifier test program");
+    return;
+  }
+
+  const auto *remoteLet = findLet(*mainFn, "remote");
+  const auto *greeterLet = findLet(*mainFn, "greeter");
+  const auto *modeLet = findLet(*mainFn, "mode");
+  const auto *inputLet = findLet(*mainFn, "input");
+  const auto *patternLet = findLet(*mainFn, "pattern");
+  const auto *actorsLet = findLet(*mainFn, "actors");
+  if (!remoteLet || !remoteLet->ty || !greeterLet || !greeterLet->ty || !modeLet || !modeLet->ty ||
+      !inputLet || !inputLet->ty || !patternLet || !patternLet->ty || !actorsLet ||
+      !actorsLet->ty) {
+    FAIL("expected typed let bindings in resolved-type classifier test program");
+    return;
+  }
+
+  std::unordered_set<std::string> knownHandles(program.handle_types.begin(),
+                                               program.handle_types.end());
+  if (!knownHandles.count("regex.Pattern") || !knownHandles.count("channel.Receiver") ||
+      !knownHandles.count("stream.Stream")) {
+    FAIL("expected regex/channel/stream handles in metadata-driven known handle set");
+    return;
+  }
+
+  if (hew::typeExprToTypeName(remoteLet->ty->value, resolveAlias) != "Stats") {
+    FAIL("aliased actor receiver should resolve to canonical actor name");
+    return;
+  }
+  if (hew::typeExprToTypeName(greeterLet->ty->value, resolveAlias) != "Greeter") {
+    FAIL("aliased struct receiver should resolve to canonical struct name");
+    return;
+  }
+  if (hew::typeExprToTypeName(modeLet->ty->value, resolveAlias) != "Mode") {
+    FAIL("aliased enum receiver should resolve to canonical enum name");
+    return;
+  }
+  if (hew::typeExprStreamKind(makeInputFn->return_type->value, resolveAlias) != "Stream") {
+    FAIL("module-qualified stream type should classify as Stream");
+    return;
+  }
+  if (hew::typeExprStreamKind(inputLet->ty->value, resolveAlias) != "Stream") {
+    FAIL("aliased stream receiver should classify as Stream");
+    return;
+  }
+  if (!hew::typeExprIsReceiver(drainFn->params[0].ty.value, resolveAlias) ||
+      !hew::typeExprIsReceiver(drainAliasFn->params[0].ty.value, resolveAlias)) {
+    FAIL("qualified and aliased receiver types should classify as Receiver");
+    return;
+  }
+  if (hew::typeExprToHandleString(drainAliasFn->params[0].ty.value, knownHandles, resolveAlias) !=
+      "channel.Receiver") {
+    FAIL("aliased receiver handle should resolve to channel.Receiver");
+    return;
+  }
+  if (hew::typeExprToHandleString(patternLet->ty->value, knownHandles, resolveAlias) !=
+      "regex.Pattern") {
+    FAIL("aliased handle should resolve to regex.Pattern");
+    return;
+  }
+  if (hew::typeExprToCollectionString(actorsLet->ty->value, resolveAlias) !=
+      "Vec<ActorRef<Stats>>") {
+    FAIL("aliased collection receiver should preserve canonical nested actor type");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: typeExprToHandleString uses program.handle_types (drift fix)
 //
 // Regression guard: knownHandleTypes is populated from program.handle_types
@@ -5122,6 +5286,249 @@ fn main() -> int {
     return;
   }
 
+  PASS();
+}
+
+// ============================================================================
+// Test: aliased i32-handle call receivers lower through handle dispatch
+// ============================================================================
+
+static void test_handle_alias_call_receiver_is_recognized() {
+  TEST(handle_alias_call_receiver_is_recognized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::net;
+
+type Conn = net.Connection;
+
+fn open() -> Conn {
+    net.connect("127.0.0.1:1")
+}
+
+fn main() -> int {
+    open().close()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased handle call receiver");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for aliased handle call receiver");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn.getOperation(), "hew_tcp_close") != 1) {
+    FAIL("expected aliased handle call receiver to lower to hew_tcp_close");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: aliased Node::lookup receivers lower through remote actor ask dispatch
+// ============================================================================
+
+static void test_remote_actor_alias_ask_is_recognized() {
+  TEST(remote_actor_alias_ask_is_recognized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn snapshot() -> int {
+        10
+    }
+}
+
+type RemoteStats = Stats;
+
+fn main() -> int {
+    let remote: RemoteStats = Node::lookup("stats");
+    await remote.snapshot()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased remote actor ask");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for aliased remote actor ask");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  bool foundRemoteAsk = false;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_node_api_ask") {
+        foundRemoteAsk = true;
+        break;
+      }
+    }
+    if (foundRemoteAsk)
+      break;
+  }
+
+  if (!foundRemoteAsk) {
+    FAIL("expected aliased remote actor ask to lower to hew_node_api_ask");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: aliased actor-returning call receivers lower through remote actor ask
+// ============================================================================
+
+static void test_remote_actor_alias_call_receiver_is_recognized() {
+  TEST(remote_actor_alias_call_receiver_is_recognized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn snapshot() -> int {
+        10
+    }
+}
+
+type RemoteStats = Stats;
+
+fn main() -> int {
+    await ({
+        let remote: RemoteStats = Node::lookup("stats");
+        remote
+    }).snapshot()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased remote actor call receiver");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for aliased remote actor call receiver");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  bool foundRemoteAsk = false;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_node_api_ask") {
+        foundRemoteAsk = true;
+        break;
+      }
+    }
+    if (foundRemoteAsk)
+      break;
+  }
+
+  if (!foundRemoteAsk) {
+    FAIL("expected aliased remote actor call receiver to lower to hew_node_api_ask");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: aliased for-await receivers use resolvedTypeOf before handle fallback
+// ============================================================================
+
+static void test_for_await_receiver_alias_inferred_binding_uses_resolved_type() {
+  TEST(for_await_receiver_alias_inferred_binding_uses_resolved_type);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::channel::channel;
+
+type Inbox = channel.Receiver<String>;
+
+fn inbox() -> Inbox {
+    let pair = channel.new(1);
+    let tx = pair.0;
+    let rx = pair.1;
+    tx.send("hello");
+    tx.close();
+    rx
+}
+
+fn main() -> int {
+    let rx = inbox();
+    for await msg in rx {
+        return 1;
+    }
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased for-await receiver iterable");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for aliased for-await receiver iterable");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_channel_recv") != 1) {
+    FAIL("expected aliased for-await receiver iterable to lower to hew_channel_recv");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
   PASS();
 }
 
@@ -5468,8 +5875,13 @@ int main() {
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
   test_imported_json_value_scope_drop_uses_metadata();
+  test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers();
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
+  test_handle_alias_call_receiver_is_recognized();
+  test_remote_actor_alias_ask_is_recognized();
+  test_remote_actor_alias_call_receiver_is_recognized();
+  test_for_await_receiver_alias_inferred_binding_uses_resolved_type();
   test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();

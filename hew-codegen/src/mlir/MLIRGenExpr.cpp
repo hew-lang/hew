@@ -1615,6 +1615,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     for (const auto &ta : *call.type_args) {
       auto resolved = resolveTypeArgMangledName(ta.value);
       if (!resolved) {
+        ++errorCount_;
         emitError(location) << "generic call '" << calleeName
                             << "': composite type arguments (Option<T>, Result<T,E>, "
                                "tuples, slices, …) are not supported as type parameters";
@@ -2566,6 +2567,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
             // a valid iterator regardless of whether specialization succeeded.
             auto maybeMangled = resolveTypeArgMangledName(*resolvedTy);
             if (!maybeMangled) {
+              ++errorCount_;
               emitError(location) << "generic struct '" << named->name
                                   << "': composite type arguments (Option<T>, Result<T,E>, "
                                      "tuples, slices, …) are not supported as type parameters";

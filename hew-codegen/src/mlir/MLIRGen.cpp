@@ -557,6 +557,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
         for (const auto &ta : *named->type_args) {
           auto resolved = resolveTypeArgMangledName(ta.value);
           if (!resolved) {
+            ++errorCount_;
             emitError(builder.getUnknownLoc())
                 << "generic struct '" << name
                 << "': composite type arguments (Option<T>, Result<T,E>, "

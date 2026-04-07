@@ -5478,6 +5478,61 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: aliased for-await receivers use resolvedTypeOf before handle fallback
+// ============================================================================
+
+static void test_for_await_receiver_alias_inferred_binding_uses_resolved_type() {
+  TEST(for_await_receiver_alias_inferred_binding_uses_resolved_type);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::channel::channel;
+
+type Inbox = channel.Receiver<String>;
+
+fn inbox() -> Inbox {
+    let pair = channel.new(1);
+    let tx = pair.0;
+    let rx = pair.1;
+    tx.send("hello");
+    tx.close();
+    rx
+}
+
+fn main() -> int {
+    let rx = inbox();
+    for await msg in rx {
+        return 1;
+    }
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased for-await receiver iterable");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for aliased for-await receiver iterable");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_channel_recv") != 1) {
+    FAIL("expected aliased for-await receiver iterable to lower to hew_channel_recv");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: remote void actor asks do not free the reply sentinel
 // ============================================================================
 
@@ -5826,6 +5881,7 @@ int main() {
   test_handle_alias_call_receiver_is_recognized();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();
+  test_for_await_receiver_alias_inferred_binding_uses_resolved_type();
   test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();

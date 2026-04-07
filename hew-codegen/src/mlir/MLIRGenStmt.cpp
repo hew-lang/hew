@@ -2570,7 +2570,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
     auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
     if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
-      auto receiverType = classifyResolvedType(*typeExpr);
+      auto receiverType = classifyResolvedType(*typeExpr, resolveAliasExpr);
       if (receiverType.isReceiver()) {
         generateForReceiverStmt(stmt, receiverType.named);
         return;

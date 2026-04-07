@@ -279,6 +279,17 @@ fn build_module_search_paths() -> Vec<PathBuf> {
 /// Source texts are read on demand from `module.source_paths[0]`; modules
 /// with no source path on disk (e.g. in-memory unit-test programs) are
 /// silently skipped — their diagnostics fall back to the root source.
+///
+/// # Platform notes
+///
+/// This function uses `std::fs::read_to_string`, which requires filesystem
+/// access.
+///
+/// // WASM-TODO: `std::fs` is unavailable in WASM / no-fs contexts, so this
+/// // map will always be empty there and all diagnostics will fall back to
+/// // the root-source rendering (matching pre-fix behaviour — no regression,
+/// // but non-root module errors still show the wrong file in WASM mode).
+/// // Tracked for the WASM render pass.
 fn build_module_source_map(
     program: &hew_parser::ast::Program,
 ) -> HashMap<String, (String, String)> {

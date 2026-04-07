@@ -4894,7 +4894,18 @@ actor Stats {
     receive fn ping() {}
 }
 
+type Greeter {
+    greeting: String;
+}
+
+enum Mode {
+    Idle;
+    Busy;
+}
+
 type RemoteStats = Stats;
+type GreeterAlias = Greeter;
+type ModeAlias = Mode;
 type Input = stream.Stream<String>;
 type Inbox = channel.Receiver<String>;
 type PatternAlias = regex.Pattern;
@@ -4915,6 +4926,8 @@ fn drain_alias(rx: Inbox) {
 
 fn main() {
     let remote: RemoteStats = Node::lookup("stats");
+    let greeter: GreeterAlias = Greeter { greeting: "hi" };
+    let mode: ModeAlias = Idle;
     let input: Input = make_input();
     let pattern: PatternAlias = regex.new("[0-9]+");
     let actors: ActorVec = Vec::new();
@@ -4963,11 +4976,14 @@ fn main() {
   }
 
   const auto *remoteLet = findLet(*mainFn, "remote");
+  const auto *greeterLet = findLet(*mainFn, "greeter");
+  const auto *modeLet = findLet(*mainFn, "mode");
   const auto *inputLet = findLet(*mainFn, "input");
   const auto *patternLet = findLet(*mainFn, "pattern");
   const auto *actorsLet = findLet(*mainFn, "actors");
-  if (!remoteLet || !remoteLet->ty || !inputLet || !inputLet->ty || !patternLet ||
-      !patternLet->ty || !actorsLet || !actorsLet->ty) {
+  if (!remoteLet || !remoteLet->ty || !greeterLet || !greeterLet->ty || !modeLet || !modeLet->ty ||
+      !inputLet || !inputLet->ty || !patternLet || !patternLet->ty || !actorsLet ||
+      !actorsLet->ty) {
     FAIL("expected typed let bindings in resolved-type classifier test program");
     return;
   }
@@ -4982,6 +4998,14 @@ fn main() {
 
   if (hew::typeExprToTypeName(remoteLet->ty->value, resolveAlias) != "Stats") {
     FAIL("aliased actor receiver should resolve to canonical actor name");
+    return;
+  }
+  if (hew::typeExprToTypeName(greeterLet->ty->value, resolveAlias) != "Greeter") {
+    FAIL("aliased struct receiver should resolve to canonical struct name");
+    return;
+  }
+  if (hew::typeExprToTypeName(modeLet->ty->value, resolveAlias) != "Mode") {
+    FAIL("aliased enum receiver should resolve to canonical enum name");
     return;
   }
   if (hew::typeExprStreamKind(makeInputFn->return_type->value, resolveAlias) != "Stream") {
@@ -5266,6 +5290,52 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: aliased i32-handle call receivers lower through handle dispatch
+// ============================================================================
+
+static void test_handle_alias_call_receiver_is_recognized() {
+  TEST(handle_alias_call_receiver_is_recognized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::net;
+
+type Conn = net.Connection;
+
+fn open() -> Conn {
+    net.connect("127.0.0.1:1")
+}
+
+fn main() -> int {
+    open().close()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased handle call receiver");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for aliased handle call receiver");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn.getOperation(), "hew_tcp_close") != 1) {
+    FAIL("expected aliased handle call receiver to lower to hew_tcp_close");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: aliased Node::lookup receivers lower through remote actor ask dispatch
 // ============================================================================
 
@@ -5329,6 +5399,78 @@ fn main() -> int {
 
   if (!foundRemoteAsk) {
     FAIL("expected aliased remote actor ask to lower to hew_node_api_ask");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: aliased actor-returning call receivers lower through remote actor ask
+// ============================================================================
+
+static void test_remote_actor_alias_call_receiver_is_recognized() {
+  TEST(remote_actor_alias_call_receiver_is_recognized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn snapshot() -> int {
+        10
+    }
+}
+
+type RemoteStats = Stats;
+
+fn main() -> int {
+    await ({
+        let remote: RemoteStats = Node::lookup("stats");
+        remote
+    }).snapshot()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for aliased remote actor call receiver");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for aliased remote actor call receiver");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  bool foundRemoteAsk = false;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_node_api_ask") {
+        foundRemoteAsk = true;
+        break;
+      }
+    }
+    if (foundRemoteAsk)
+      break;
+  }
+
+  if (!foundRemoteAsk) {
+    FAIL("expected aliased remote actor call receiver to lower to hew_node_api_ask");
     return;
   }
 
@@ -5681,7 +5823,9 @@ int main() {
   test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers();
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
+  test_handle_alias_call_receiver_is_recognized();
   test_remote_actor_alias_ask_is_recognized();
+  test_remote_actor_alias_call_receiver_is_recognized();
   test_remote_actor_void_ask_does_not_free_reply();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();

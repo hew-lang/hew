@@ -4238,6 +4238,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
                                                              mlir::Value receiver,
                                                              mlir::Location location) {
   const auto &methodName = mc.method;
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
 
   // Local wrapper around member emitRuntimeCall, capturing `location`.
   auto rtCall = [&](llvm::StringRef callee, mlir::Type resultType,
@@ -4370,7 +4371,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
     std::string handleType;
     // Prefer resolved type from the type checker
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      handleType = typeExprToHandleString(*typeExpr, knownHandleTypes);
+      handleType = typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr);
     // Fall back to identifier-based map lookup
     if (handleType.empty()) {
       if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
@@ -4517,6 +4518,7 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
 mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   auto location = currentLoc;
   const auto &methodName = mc.method;
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
 
   // Module-qualified calls (math.exp, random.seed, log.info, etc.)
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
@@ -4625,7 +4627,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // registered under their handle kind name (e.g. "json.Value").
     resolvedTypeName = handleTy.getHandleKind().str();
   } else if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
-    auto candidate = typeExprToTypeName(*typeExpr);
+    auto candidate = typeExprToTypeName(*typeExpr, resolveAliasExpr);
     if (!candidate.empty() && (structTypes.count(candidate) || enumTypes.count(candidate)))
       resolvedTypeName = candidate;
   }
@@ -6073,10 +6075,12 @@ mlir::Value MLIRGen::emitRuntimeCall(llvm::StringRef callee, mlir::Type resultTy
 // ============================================================================
 
 std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span *span) {
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+
   // Prefer resolved type from the type checker when a span is available.
   if (span) {
     if (auto *typeExpr = resolvedTypeOf(*span)) {
-      auto name = typeExprToTypeName(*typeExpr);
+      auto name = typeExprToTypeName(*typeExpr, resolveAliasExpr);
       if (!name.empty() && actorRegistry.count(name))
         return name;
     }

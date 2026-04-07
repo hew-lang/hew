@@ -165,6 +165,8 @@ pub(super) struct DeferredInferenceHole {
     pub(super) span: Span,
     pub(super) context: String,
     pub(super) hole_vars: Vec<TypeVar>,
+    /// Module path where this hole was recorded (None = root module).
+    pub(super) source_module: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +175,8 @@ pub(super) struct DeferredCastCheck {
     pub(super) actual: Ty,
     pub(super) target: Ty,
     pub(super) target_hole_vars: Vec<TypeVar>,
+    /// Module path where this cast check was recorded (None = root module).
+    pub(super) source_module: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +185,8 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) context: String,
     pub(super) ty: Ty,
     pub(super) more_specific_hole_vars: Vec<TypeVar>,
+    /// Module path where this site was recorded (None = root module).
+    pub(super) source_module: Option<String>,
 }
 
 /// The main type checker.

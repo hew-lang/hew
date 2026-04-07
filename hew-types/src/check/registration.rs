@@ -796,6 +796,7 @@ impl Checker {
                     ),
                     notes: vec![],
                     suggestions: vec![],
+                    source_module: None,
                 });
             }
         }
@@ -816,6 +817,7 @@ impl Checker {
                         ),
                         notes: vec![],
                         suggestions: vec![],
+                        source_module: None,
                     });
                 }
 
@@ -833,6 +835,7 @@ impl Checker {
                             ),
                             notes: vec![],
                             suggestions: vec![],
+                            source_module: None,
                         });
                     }
                 }
@@ -852,6 +855,7 @@ impl Checker {
                         ),
                         notes: vec![],
                         suggestions: vec![],
+                        source_module: None,
                     });
                 }
             }

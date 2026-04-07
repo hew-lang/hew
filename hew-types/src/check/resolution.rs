@@ -98,6 +98,7 @@ impl Checker {
             span: first_infer_span_in_type_expr(annotation).unwrap_or_else(|| annotation.1.clone()),
             context: context.into(),
             hole_vars,
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -116,6 +117,7 @@ impl Checker {
             actual: actual.clone(),
             target: target.clone(),
             target_hole_vars,
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -132,6 +134,7 @@ impl Checker {
                 context: context.into(),
                 ty: ty.clone(),
                 more_specific_hole_vars,
+                source_module: self.current_module.clone(),
             });
     }
 
@@ -178,7 +181,11 @@ impl Checker {
         let deferred_errors: Vec<_> = std::mem::take(&mut self.deferred_inference_holes)
             .into_iter()
             .filter(|hole| self.inference_holes_still_unresolved(&hole.hole_vars))
-            .map(|hole| TypeError::inference_failed(hole.span.clone(), &hole.context))
+            .map(|hole| {
+                let mut err = TypeError::inference_failed(hole.span.clone(), &hole.context);
+                err.source_module = hole.source_module;
+                err
+            })
             .collect();
         self.errors.extend(deferred_errors);
 
@@ -192,14 +199,16 @@ impl Checker {
                     && !ty_has_unresolved_inference_var(&target)
                     && !cast_is_valid(&actual, &target))
                 .then(|| {
-                    TypeError::new(
+                    let mut err = TypeError::new(
                         TypeErrorKind::Mismatch {
                             expected: target.to_string(),
                             actual: actual.to_string(),
                         },
                         check.span.clone(),
                         format!("cannot cast `{actual}` to `{target}`"),
-                    )
+                    );
+                    err.source_module = check.source_module;
+                    err
                 })
             })
             .collect();
@@ -232,10 +241,9 @@ impl Checker {
                     return None;
                 }
 
-                Some(TypeError::inference_failed(
-                    site.span.clone(),
-                    &site.context,
-                ))
+                let mut err = TypeError::inference_failed(site.span.clone(), &site.context);
+                err.source_module = site.source_module;
+                Some(err)
             })
             .collect();
         self.errors.extend(site_errors);
@@ -250,6 +258,11 @@ impl Checker {
         items: &[Spanned<Item>],
         module_name: Option<&str>,
     ) {
+        // Snapshot error count so we can tag newly-emitted errors with the source
+        // module after the walk.  All errors emitted inside this function for a
+        // non-root module must point to that module's source file when rendered.
+        let err_before = self.errors.len();
+
         for (item, span) in items {
             match item {
                 Item::Function(fd) => {
@@ -407,6 +420,16 @@ impl Checker {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Tag all newly-emitted errors with the source module for non-root modules.
+        // This allows the CLI to route each error to the correct source file for display.
+        if let Some(mod_name) = module_name {
+            for e in &mut self.errors[err_before..] {
+                if e.source_module.is_none() {
+                    e.source_module = Some(mod_name.to_string());
+                }
             }
         }
     }

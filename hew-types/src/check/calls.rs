@@ -53,6 +53,7 @@ impl Checker {
                  deliver the result as a message"
                     .to_string(),
             ],
+            source_module: None,
         });
     }
 

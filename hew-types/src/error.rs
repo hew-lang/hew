@@ -70,6 +70,10 @@ pub struct TypeError {
     pub notes: Vec<(Span, String)>,
     /// "Did you mean?" suggestions
     pub suggestions: Vec<String>,
+    /// Dotted module path of the non-root module this diagnostic originates from
+    /// (e.g. `"net.http"`).  `None` means the root compilation unit.
+    /// Used by the CLI to route the error to the correct source file for display.
+    pub source_module: Option<String>,
 }
 
 impl TypeError {
@@ -83,7 +87,20 @@ impl TypeError {
             message: message.into(),
             notes: Vec::new(),
             suggestions: Vec::new(),
+            source_module: None,
         }
+    }
+
+    /// Attach a source module path to this diagnostic (builder).
+    ///
+    /// The module path is the dotted form (e.g. `"net.http"`) used by
+    /// [`check_program`](crate::Checker::check_program) to tag non-root
+    /// module body diagnostics.  The CLI uses it to select the right source
+    /// file when rendering the diagnostic.
+    #[must_use]
+    pub fn with_source_module(mut self, module: impl Into<String>) -> Self {
+        self.source_module = Some(module.into());
+        self
     }
 
     /// Add a note with location.
@@ -190,6 +207,7 @@ impl TypeError {
             message: format!("non-exhaustive match: {}", detail.into()),
             notes: Vec::new(),
             suggestions: Vec::new(),
+            source_module: None,
         }
     }
 
@@ -262,6 +280,7 @@ impl TypeError {
             suggestions: vec![
                 "consider using weak references or restructuring the supervision tree".to_string(),
             ],
+            source_module: None,
         }
     }
 }

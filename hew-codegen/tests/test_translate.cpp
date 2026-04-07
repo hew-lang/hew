@@ -93,8 +93,20 @@ static bool translateWithTimeout(mlir::ModuleOp module, mlir::MLIRContext &conte
   }
 
   if (!done) {
-    fprintf(stderr, "  TIMEOUT: translateModuleToLLVMIR hung!\n");
-    worker.detach();
+    // Layer 1 (in-process): the deadline above detects the hang and we report
+    // it here, then join() to ensure the worker finishes before returning.
+    // join() is safe because the worker only touches stack-local state and the
+    // borrowed module — it cannot spin forever without the OS eventually
+    // scheduling it.
+    // Layer 2 (process-level): CMakeLists.txt sets TIMEOUT 120 on this test so
+    // CTest kills the whole process if join() somehow never returns, keeping CI
+    // bounded.
+    // Rationale for join() over detach(): a detached thread that still holds a
+    // borrowed ModuleOp reference would be a use-after-free once the caller
+    // calls module->destroy() (see tests 2–3).
+    fprintf(stderr, "  TIMEOUT: translateModuleToLLVMIR hung — joining worker before return "
+                    "(lifetime safety; outer bound via CTest TIMEOUT)\n");
+    worker.join();
     return false;
   }
   worker.join();

@@ -54,6 +54,11 @@ target_link_libraries(test_translate PRIVATE
 )
 
 add_test(NAME translate COMMAND test_translate)
+# Outer process-level bound: 10 subtests × 5 s inner timeout = 50 s worst
+# case on a fast machine.  120 s gives 2.4× headroom for slow CI runners
+# while still guaranteeing the suite doesn't block indefinitely if join()
+# itself never returns (e.g. a genuine infinite hang on Windows).
+set_tests_properties(translate PROPERTIES TIMEOUT 120)
 
 # ── Codegen C API test ────────────────────────────────────────────────────
 add_executable(test_codegen_capi test_codegen_capi.cpp)

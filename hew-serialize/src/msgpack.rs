@@ -408,6 +408,29 @@ mod tests {
         assert_eq!(program, restored);
     }
 
+    #[test]
+    fn round_trip_mutable_function_param() {
+        let parsed = hew_parser::parse("fn bump(var x: int) -> int { x = x + 1; x }");
+        assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+
+        let bytes = serialize_to_msgpack(
+            &parsed.program,
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
+
+        assert_eq!(parsed.program, restored);
+        match &restored.items[0].0 {
+            Item::Function(function) => assert!(function.params[0].is_mutable),
+            other => panic!("expected function item, got: {other:?}"),
+        }
+    }
+
     /// Verify that the serialized msgpack contains a `schema_version` field
     /// set to `SCHEMA_VERSION`, and that a round-trip still produces an
     /// identical `Program` (the version field is metadata, not part of `Program`).

@@ -1,5 +1,28 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Wave recovery and compiler queue reset (2026-04-07)
+
+### Goal
+
+Recover the long-running orchestration after an interrupted session without losing
+the real queue state or restarting from stale planning snapshots.
+
+### Decisions
+
+- Treated live GitHub state, live worktrees, and `.tmp/MODULE_RELIABILITY_PLAN.md`
+  as the authoritative recovery sources instead of trusting the stale
+  `docs/plans/review-program.md` snapshot.
+- Re-grounded the `#796`-`#806` wave from live PR state and closed it only after
+  `#806` cleared a rerun and merged.
+- Restored the shared root checkout to `main` before starting the next wave so
+  implementation work can resume from a clean base.
+- Kept `resolved-receiver-dispatch` as the next ready compiler lane and left
+  `literal-kind-foundation` queued behind it, because both worktrees were still
+  stranded at the old `4e2ae14` primitive-alias SHA rather than real
+  implementation heads.
+
+---
+
 ## Module System Reliability (2026-03-29)
 
 ### Analysis
@@ -1401,3 +1424,15 @@ nested return flows through a `match` arm.
 - Extended the pass and its defer guard to recurse through `Stmt::Match`,
   `Expr::Match`, and other expression containers so nested `return foo()` cases in
   block-valued arms are handled consistently.
+
+## Recovery Wave Closeout: PRs #796–#806 (2026-04-07)
+
+### What settled
+
+A coordinated recovery wave resolved the remaining compiler correctness and REPL quality lanes that were blocked on signed-commit policy, macOS CI reruns, and sequencing dependencies. PRs landed in order: `#796` (mutable params end-to-end), `#797` (bool-int truthiness casts), `#798` (unsigned lowering metadata fail-closed), `#799` (stream contract docs), `#800` (REPL incomplete-input buffering), `#801` (native ask reply cleanup), `#802` (REPL one-shot replay stop), `#803` (eval -f import roots), `#804` (REPL diagnostic envelopes), `#805` (primitive alias lowering unification), `#806` (module diagnostic routing). `#806` needed a macOS rerun before it could merge; it cleared and closed the wave.
+
+### Decisions
+
+- macOS CI reruns are a normal part of the merge flow for the codegen stack, not a sign of a code problem. Schedule a rerun as the first repair step, not the last resort.
+- Worktrees for `resolved-receiver-dispatch`, `literal-kind-foundation`, and `primitive-alias-source` were left at the stale `4e2ae14` SHA from the primitive-alias era. Do not treat a worktree's existence as evidence that implementation has started; verify the SHA against current `origin/main` before assigning a lane.
+- Governance queue is now split into four explicit tiers (ready-now, investigate-first, no-action/narrow, deferred) rather than one flat list. This makes concurrency scheduling decisions directly readable from the plan.

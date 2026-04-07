@@ -1247,6 +1247,35 @@ fn no_warn_var_actually_mutated() {
 }
 
 #[test]
+fn mutable_param_can_be_reassigned() {
+    let (errors, warnings) = parse_and_check("fn bump(var x: int) -> int { x = x + 1; x }");
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "mutable param reassignment should suppress unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn immutable_param_cannot_be_reassigned() {
+    let (errors, warnings) = parse_and_check("fn bump(x: int) -> int { x = x + 1; x }");
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable `x`")),
+        "expected immutable parameter assignment error, got: {errors:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "immutable param should not produce unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn warn_var_never_mutated_suggestion() {
     let (_, warnings) = parse_and_check("fn main() { var x = 10; println(x); }");
     let w = warnings

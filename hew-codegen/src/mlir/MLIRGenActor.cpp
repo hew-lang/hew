@@ -392,7 +392,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
                   return;
               }
             }
-            declareVariable(param.name, paramVal);
+            bindParam(param, paramVal);
 
             // Register ActorRef<T> params for method dispatch
             {
@@ -595,7 +595,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
       size_t pi = 0;
       for (const auto &param : recv.params) {
         auto argVal = entryBlock->getArgument(pi + 1);
-        declareVariable(param.name, argVal);
+        bindParam(param, argVal);
         // Register ActorRef<T> parameters for actor method dispatch
         {
           auto resolveAliasExpr = [this](llvm::StringRef name) {
@@ -723,7 +723,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
             if (!paramVal)
               return;
           }
-          declareVariable(param.name, paramVal);
+          bindParam(param, paramVal);
         }
       }
     }

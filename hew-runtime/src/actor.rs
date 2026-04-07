@@ -2971,7 +2971,21 @@ mod tests {
         // SAFETY: `actor` remains allocated and owned by this test while we
         // inspect its atomic state.
         let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-        assert_eq!(actor_state, HewActorState::Stopped as i32);
+        assert!(
+            actor_state == HewActorState::Stopping as i32
+                || actor_state == HewActorState::Stopped as i32,
+            "self-stop ask should leave the actor in teardown, got state {actor_state}"
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                // SAFETY: `actor` remains allocated and owned by this test while
+                // we poll its atomic state.
+                unsafe {
+                    (*actor).actor_state.load(Ordering::Acquire) == HewActorState::Stopped as i32
+                }
+            }),
+            "self-stop ask should eventually drive the actor to Stopped"
+        );
         assert!(
             wait_for_condition(std::time::Duration::from_secs(1), || {
                 reply_channel::active_channel_count() == 0

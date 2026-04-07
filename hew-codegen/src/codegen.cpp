@@ -2080,7 +2080,7 @@ static std::string vecElemSuffix(mlir::Type elemType) {
       mlir::isa<hew::TypedActorRefType>(elemType) || mlir::isa<hew::HandleType>(elemType) ||
       mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
     return "_ptr";
-  if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
+  if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType) || mlir::isa<hew::HewTupleType>(elemType))
     return "_generic";
   if (elemType.isF32())
     return "_f64"; // f32 promoted to f64 for Vec storage (runtime has no _f32 variant)

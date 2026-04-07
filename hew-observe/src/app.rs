@@ -178,6 +178,10 @@ pub struct App {
     prev_timestamp: f64,
 }
 
+/// Scan interval for auto-discovery re-scans.
+#[cfg(unix)]
+pub(crate) const DISCOVERY_SCAN_INTERVAL: Duration = Duration::from_secs(3);
+
 impl App {
     /// Connect to profilers over TCP.
     pub fn new_tcp(node_addrs: &[String]) -> Self {
@@ -276,6 +280,13 @@ impl App {
     #[cfg(unix)]
     pub fn is_waiting(&self) -> bool {
         self.cluster.is_none() && self.auto_discover
+    }
+
+    /// Non-Unix stub — auto-discovery is unavailable so waiting mode never
+    /// occurs on these platforms.
+    #[cfg(not(unix))]
+    pub fn is_waiting(&self) -> bool {
+        false
     }
 
     pub fn configured_node_count(&self) -> usize {
@@ -779,13 +790,23 @@ impl App {
     #[cfg(unix)]
     /// Re-scan the discovery directory and reconnect if needed.
     ///
-    /// Scans every 3 seconds. When disconnected (or no cluster), picks
-    /// up a newly started profiler. When connected, does nothing — we
-    /// don't disrupt a live session.
+    /// Scans every [`DISCOVERY_SCAN_INTERVAL`]. When disconnected (or no
+    /// cluster), picks up a newly started profiler. When connected, does
+    /// nothing — we don't disrupt a live session.
     fn try_rediscover(&mut self) {
-        const SCAN_INTERVAL: Duration = Duration::from_secs(3);
+        self.try_rediscover_with(discovery::scan_profilers);
+    }
 
-        if self.last_discovery_scan.elapsed() < SCAN_INTERVAL {
+    /// Inner rediscovery logic with an injectable scan function.
+    ///
+    /// Separated from `try_rediscover` so unit tests can drive it without
+    /// touching the real discovery directory.
+    #[cfg(unix)]
+    pub(crate) fn try_rediscover_with<F>(&mut self, scan: F)
+    where
+        F: FnOnce() -> Vec<discovery::DiscoveredProfiler>,
+    {
+        if self.last_discovery_scan.elapsed() < DISCOVERY_SCAN_INTERVAL {
             return;
         }
         self.last_discovery_scan = Instant::now();
@@ -797,13 +818,22 @@ impl App {
             return;
         }
 
-        let profilers = discovery::scan_profilers();
+        let profilers = scan();
         if let Some(p) = profilers.first() {
             self.cluster = Some(ClusterClient::from_unix(&p.socket_path, &p.program));
             self.base_url.clone_from(&p.program);
             self.set_active_node(&p.program);
             self.connection_status = ConnectionStatus::Connecting;
         }
+    }
+
+    /// Expire the discovery scan timer so the next `try_rediscover_with`
+    /// call is not gated by the interval.  Test helper only.
+    #[cfg(all(unix, test))]
+    pub(crate) fn expire_discovery_scan(&mut self) {
+        self.last_discovery_scan = Instant::now()
+            .checked_sub(DISCOVERY_SCAN_INTERVAL + Duration::from_millis(1))
+            .unwrap_or_else(Instant::now);
     }
 
     fn sort_actors(&mut self) {
@@ -1570,5 +1600,93 @@ mod tests {
             (app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON,
             "core panes must stay pinned to the current healthy node"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rediscovery lifecycle tests (unix only)
+    // ---------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    fn stub_profiler(pid: u32, program: &str) -> crate::discovery::DiscoveredProfiler {
+        crate::discovery::DiscoveredProfiler {
+            pid,
+            socket_path: std::path::PathBuf::from(format!("/tmp/hew-test-{pid}.sock")),
+            started: 0,
+            program: program.to_owned(),
+        }
+    }
+
+    /// A waiting app with an expired scan timer picks up a newly appeared
+    /// profiler and transitions out of waiting mode.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_app_picks_up_appearing_profiler() {
+        let mut app = App::new_waiting();
+        assert!(app.is_waiting(), "precondition: must start in waiting mode");
+
+        app.expire_discovery_scan();
+        app.try_rediscover_with(|| vec![stub_profiler(55, "myapp")]);
+
+        assert!(
+            !app.is_waiting(),
+            "should leave waiting mode after profiler appears"
+        );
+        assert_eq!(
+            app.connection_status,
+            ConnectionStatus::Connecting,
+            "should transition to Connecting after discovering profiler"
+        );
+        assert!(
+            app.base_url.contains("myapp"),
+            "target label should reflect the discovered program name"
+        );
+    }
+
+    /// The scan is gated by [`DISCOVERY_SCAN_INTERVAL`]; calling
+    /// `try_rediscover_with` before the interval elapses must not invoke the
+    /// scan callback.
+    #[cfg(unix)]
+    #[test]
+    fn scan_interval_gate_prevents_premature_rediscovery() {
+        let mut app = App::new_waiting();
+        // last_discovery_scan was just set to Instant::now() in new_waiting(),
+        // so the interval has NOT elapsed yet.
+        app.try_rediscover_with(|| panic!("scan must not be called within the interval"));
+        // reaching here without a panic proves the gate works.
+        assert!(app.is_waiting(), "should remain in waiting mode");
+    }
+
+    /// When no profilers are visible at scan time the app remains in waiting
+    /// mode and is ready to try again on the next tick.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_app_stays_waiting_when_no_profilers_found() {
+        let mut app = App::new_waiting();
+        app.expire_discovery_scan();
+        app.try_rediscover_with(Vec::new);
+
+        assert!(
+            app.is_waiting(),
+            "should remain in waiting mode when scan returns empty"
+        );
+    }
+
+    /// After a profiler appears and auto-connect fires, a second scan while
+    /// already connecting must not disturb the in-progress connection.
+    #[cfg(unix)]
+    #[test]
+    fn connecting_app_skips_rediscovery_scan() {
+        let mut app = App::new_waiting();
+        // First scan: profiler appears → move to Connecting.
+        app.expire_discovery_scan();
+        app.try_rediscover_with(|| vec![stub_profiler(55, "myapp")]);
+        assert_eq!(app.connection_status, ConnectionStatus::Connecting);
+
+        // Second attempt while Connecting — scan callback must not be called
+        // because needs_connect is false (cluster is Some and status is not
+        // Disconnected).
+        app.expire_discovery_scan();
+        app.try_rediscover_with(|| panic!("must not re-scan while connecting"));
+        // Passing here proves the guard held.
     }
 }

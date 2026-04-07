@@ -102,7 +102,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         ConnectionStatus::Connecting => {
-            if app.is_multi_node() {
+            if app.is_waiting() {
+                ("◌ Waiting for profiler…".to_owned(), theme::CONN_CONNECTING)
+            } else if app.is_multi_node() {
                 (
                     format!(
                         "● Connecting {}/{} nodes",
@@ -125,6 +127,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.is_waiting() {
+        draw_waiting_splash(f, area);
+        return;
+    }
     match app.active_tab {
         Tab::Overview => draw_overview(f, app, area),
         Tab::Actors => draw_actors(f, app, area),
@@ -134,6 +140,77 @@ fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Messages => draw_messages(f, app, area),
         Tab::Timeline => draw_timeline(f, app, area),
     }
+}
+
+/// Centered splash shown while auto-discovery is scanning for a profiler.
+///
+/// Replaces the normal tab body so users see actionable guidance instead of
+/// an empty dashboard full of zeros.
+fn draw_waiting_splash(f: &mut Frame, area: Rect) {
+    let content_width: u16 = 58;
+    let content_height: u16 = 17;
+
+    let popup_width = content_width.min(area.width.saturating_sub(4));
+    let popup_height = content_height.min(area.height.saturating_sub(2));
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup = Rect::new(x, y, popup_width, popup_height);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ◌  Waiting for profiler…",
+            Style::default()
+                .fg(theme::CONN_CONNECTING)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Scanning discovery directory every 3 s.",
+            theme::muted_style(),
+        )),
+        Line::from(Span::styled(
+            "  Will auto-connect when a profiler appears.",
+            theme::muted_style(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Start a profiler:",
+            Style::default()
+                .fg(theme::TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "    hew run myapp.hew --profile",
+            theme::key_style(),
+        )),
+        Line::from(Span::styled(
+            "    HEW_PPROF=auto ./myapp",
+            theme::key_style(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Or connect to a TCP profiler directly:",
+            Style::default()
+                .fg(theme::TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "    hew-observe --addr localhost:6060",
+            theme::key_style(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Run  hew-observe --list  to see active profilers.",
+            theme::dim_style(),
+        )),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Waiting for Profiler ");
+    f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 fn active_node_title(app: &App) -> Option<Line<'static>> {
@@ -1274,6 +1351,9 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn status_bar_text(app: &App) -> String {
+    if app.is_waiting() {
+        return " [WAITING] Scanning for profiler every 3 s │ --list: show profilers │ --addr: TCP connect │ q: quit".to_owned();
+    }
     let mode = if app.demo_mode { "DEMO" } else { "LIVE" };
     if app.is_multi_node() {
         format!(
@@ -1583,5 +1663,41 @@ mod tests {
 
         assert!(text.contains("showing: alpha:6060"), "{text}");
         assert!(text.contains("[]: node"), "{text}");
+    }
+
+    /// Waiting-mode status bar must mention scanning cadence and escape hatch
+    /// commands so the user is never left with an opaque blank bar.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_mode_status_bar_mentions_scanning_and_hints() {
+        let app = App::new_waiting();
+
+        let text = status_bar_text(&app);
+
+        assert!(
+            text.contains("WAITING"),
+            "should label mode as WAITING: {text}"
+        );
+        assert!(
+            text.contains("3 s") || text.contains("3s"),
+            "should mention 3-second cadence: {text}"
+        );
+        assert!(text.contains("--list"), "should hint at --list: {text}");
+        assert!(text.contains("--addr"), "should hint at --addr: {text}");
+    }
+
+    /// The target label while waiting must be human-readable rather than an
+    /// empty string or a raw address.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_mode_configured_target_label_is_descriptive() {
+        let app = App::new_waiting();
+
+        let label = app.configured_target_label();
+
+        assert!(
+            label.contains("waiting"),
+            "target label should mention waiting state: {label}"
+        );
     }
 }

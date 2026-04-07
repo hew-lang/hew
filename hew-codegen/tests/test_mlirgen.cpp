@@ -488,6 +488,14 @@ static hew::ast::FnDecl *findFunctionDecl(hew::ast::Program &program, llvm::Stri
   return nullptr;
 }
 
+static hew::ast::StmtFor *findFirstForStmt(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *forStmt = std::get_if<hew::ast::StmtFor>(&stmt->value.kind))
+      return forStmt;
+  }
+  return nullptr;
+}
+
 static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast::Span &span) {
   auto oldSize = program.expr_types.size();
   program.expr_types.erase(std::remove_if(program.expr_types.begin(), program.expr_types.end(),
@@ -2827,6 +2835,205 @@ fn count(lo: u64, hi: u64) -> int {
   }
 
   module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_direct_unsigned_range_missing_expr_type_fails_closed() {
+  TEST(direct_unsigned_range_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_direct_range(lo: u64, hi: u64) -> int {
+    var n: int = 0;
+    for _ in lo..hi {
+        n = n + 1;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_direct_range");
+  if (!fn) {
+    FAIL("broken_direct_range function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected direct range for-loop");
+    return;
+  }
+
+  auto *rangeExpr = std::get_if<hew::ast::ExprBinary>(&forStmt->iterable.value.kind);
+  if (!rangeExpr || !rangeExpr->left) {
+    FAIL("expected direct range iterable expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, rangeExpr->left->span)) {
+    FAIL("failed to remove expr_types entry for direct range lower bound");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when direct range metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for direct range loop signedness") ==
+      std::string::npos) {
+    FAIL("expected direct range fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for direct range metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_direct_unsigned_range_missing_upper_expr_type_fails_closed() {
+  TEST(direct_unsigned_range_missing_upper_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_direct_range_upper(lo: u64, hi: u64) -> int {
+    var n: int = 0;
+    for _ in lo..hi {
+        n = n + 1;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_direct_range_upper");
+  if (!fn) {
+    FAIL("broken_direct_range_upper function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected direct range for-loop");
+    return;
+  }
+
+  auto *rangeExpr = std::get_if<hew::ast::ExprBinary>(&forStmt->iterable.value.kind);
+  if (!rangeExpr || !rangeExpr->right) {
+    FAIL("expected direct range iterable expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, rangeExpr->right->span)) {
+    FAIL("failed to remove expr_types entry for direct range upper bound");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when direct range upper metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for direct range loop upper bound signedness") ==
+      std::string::npos) {
+    FAIL("expected direct range upper bound fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for direct range upper metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_materialized_unsigned_range_missing_expr_type_fails_closed() {
+  TEST(materialized_unsigned_range_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_materialized_range(lo: u64, hi: u64) -> int {
+    let r: Range<u64> = lo..hi;
+    var n: int = 0;
+    for _ in r {
+        n = n + 1;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_materialized_range");
+  if (!fn) {
+    FAIL("broken_materialized_range function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected materialized range for-loop");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, forStmt->iterable.span)) {
+    FAIL("failed to remove expr_types entry for materialized range iterable");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when materialized range metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for materialized range loop signedness") ==
+      std::string::npos) {
+    FAIL("expected materialized range fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for materialized range metadata");
+    return;
+  }
+
   PASS();
 }
 
@@ -6071,9 +6278,12 @@ int main() {
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();
+  test_materialized_unsigned_range_uses_unsigned_compare();
+  test_direct_unsigned_range_missing_expr_type_fails_closed();
+  test_direct_unsigned_range_missing_upper_expr_type_fails_closed();
+  test_materialized_unsigned_range_missing_expr_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
-  test_materialized_unsigned_range_uses_unsigned_compare();
   test_return_stmt();
   test_logical_ops();
   test_unary_ops();

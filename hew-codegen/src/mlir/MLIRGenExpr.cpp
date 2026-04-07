@@ -4284,6 +4284,12 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
     const auto handleType = handleTy.getHandleKind().str();
     if (!knownHandleTypes.count(handleType))
       return std::nullopt;
+    // Only the runtime-special handle families are dispatched here. Generic
+    // handle-backed impl methods (e.g. json.Value.type_of()) must fall through
+    // to the normal impl lookup path below.
+    if (handleType != "http.Server" && handleType != "http.Request" &&
+        handleType != "regex.Pattern" && handleType != "process.Child")
+      return std::nullopt;
 
     bool haveResolvedHandleReceiver = false;
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
@@ -4575,32 +4581,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     return *result;
 
   auto receiverType = receiver.getType();
-  auto matchesKnownHandleName = [&](llvm::StringRef typeName) {
-    if (knownHandleTypes.count(typeName.str()))
-      return true;
-    for (const auto &knownHandle : knownHandleTypes) {
-      auto knownRef = llvm::StringRef(knownHandle);
-      auto dot = knownRef.rfind('.');
-      if (dot != llvm::StringRef::npos && knownRef.substr(dot + 1) == typeName)
-        return true;
-    }
-    return false;
-  };
-  auto isKnownHandleReceiverType = [&](mlir::Type type) {
-    if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type))
-      return structType.isIdentified() && matchesKnownHandleName(structType.getName());
-    if (auto handleTy = mlir::dyn_cast<hew::HandleType>(type))
-      return matchesKnownHandleName(handleTy.getHandleKind());
-    return false;
-  };
   auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
     return method == "accept" || method == "close" || method == "read" || method == "read_string" ||
            method == "write" || method == "write_string" || method == "set_read_timeout" ||
            method == "set_write_timeout";
   };
-  if (!resolvedTypeOf(mc.receiver->span) &&
-      (isKnownHandleReceiverType(receiverType) ||
-       (receiverType.isInteger(32) && isKnownI32HandleMethod(methodName)))) {
+  if (!resolvedTypeOf(mc.receiver->span) && receiverType.isInteger(32) &&
+      isKnownI32HandleMethod(methodName)) {
     requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
     return nullptr;
   }

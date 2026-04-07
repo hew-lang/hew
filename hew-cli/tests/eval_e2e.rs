@@ -28,10 +28,10 @@ fn hew_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_hew"))
 }
 
-fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
+fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output {
     let mut child = Command::new(hew_binary())
         .args(args)
-        .current_dir(repo_root())
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -44,6 +44,10 @@ fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
     }
 
     child.wait_with_output().unwrap()
+}
+
+fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
+    run_eval_with_stdin_in_dir(args, input, repo_root())
 }
 
 #[test]
@@ -110,6 +114,39 @@ fn eval_file_in_repl_context_succeeds() {
 }
 
 #[test]
+fn eval_file_resolves_sibling_imports_relative_to_file_path() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        nested.join("lib.hew"),
+        "pub fn answer() -> i64 {\n    42\n}\n",
+    )
+    .unwrap();
+    let path = nested.join("main.hew");
+    std::fs::write(&path, "import \"lib.hew\";\n\nanswer()\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
 fn eval_stdin_in_repl_context_succeeds() {
     if !require_codegen() {
         return;
@@ -118,6 +155,33 @@ fn eval_stdin_in_repl_context_succeeds() {
     let output = run_eval_with_stdin(
         &["eval", "-f", "-"],
         "fn identity<T>(x: T) -> T {\n    x\n}\n\nidentity(42)\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
+fn eval_stdin_file_mode_resolves_imports_from_cwd() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lib.hew"),
+        "pub fn answer() -> i64 {\n    42\n}\n",
+    )
+    .unwrap();
+
+    let output = run_eval_with_stdin_in_dir(
+        &["eval", "-f", "-"],
+        "import \"lib.hew\";\n\nanswer()\n",
+        dir.path(),
     );
 
     assert!(

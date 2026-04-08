@@ -1817,16 +1817,19 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         if (!argVal)
           return nullptr;
         mlir::Type optType;
-        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-          auto converted = convertType(*resolvedType);
-          if (converted && mlir::isa<hew::OptionEnumType>(converted))
-            optType = converted;
-        }
-        if (!optType && pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
+        if (pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
           optType = *pendingDeclaredType;
-        else if (!optType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
           optType = currentFunction.getResultTypes()[0];
+        // Fall back to checker-resolved expr type for statement-position composites.
+        if (!optType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::OptionEnumType>(converted))
+              optType = converted;
+          }
+        }
         if (!optType)
           optType = hew::OptionEnumType::get(&context, argVal.getType());
         if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
@@ -1852,17 +1855,23 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         if (!argVal)
           return nullptr;
         mlir::Type resultType;
-        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-          auto converted = convertType(*resolvedType);
-          if (converted && mlir::isa<hew::ResultEnumType>(converted))
-            resultType = converted;
-        }
-        if (!resultType && pendingDeclaredType &&
-            mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
+        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (!resultType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
+        // Fall back to the checker-resolved expr type (covers statement-position
+        // composites like `Ok(Some(7))` where no declaration context is present).
+        // This path is checked after context types because convertType of an
+        // unqualified handle name (e.g. "Value" from a module scope) produces
+        // the LLVM struct representation rather than the hew.handle form.
+        if (!resultType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::ResultEnumType>(converted))
+              resultType = converted;
+          }
+        }
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
@@ -1889,17 +1898,18 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         if (!argVal)
           return nullptr;
         mlir::Type resultType;
-        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-          auto converted = convertType(*resolvedType);
-          if (converted && mlir::isa<hew::ResultEnumType>(converted))
-            resultType = converted;
-        }
-        if (!resultType && pendingDeclaredType &&
-            mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
+        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (!resultType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
+        if (!resultType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::ResultEnumType>(converted))
+              resultType = converted;
+          }
+        }
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }

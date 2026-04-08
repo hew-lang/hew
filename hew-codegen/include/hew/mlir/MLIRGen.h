@@ -237,7 +237,7 @@ private:
   mlir::Value generateLiteral(const ast::Literal &lit, const ast::Span &span);
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
-  mlir::Value generateCallExpr(const ast::ExprCall &expr);
+  mlir::Value generateCallExpr(const ast::ExprCall &expr, const ast::Span &exprSpan);
   mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan,
                              bool statementPosition = false);
   mlir::Value generateBlockExpr(const ast::Block &block);

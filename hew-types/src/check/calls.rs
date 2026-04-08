@@ -84,11 +84,9 @@ impl Checker {
         }
     }
 
-    fn record_builtin_result_call_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
-        let key = SpanKey::from(span);
-        self.call_type_args
-            .insert(key.clone(), vec![ok_ty.clone(), err_ty.clone()]);
-        self.builtin_result_call_spans.insert(key);
+    fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
+        self.builtin_result_output_type_args
+            .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));
     }
 
     pub(super) fn check_call_against_expected_constructor(
@@ -165,7 +163,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, ok_ty);
                 }
-                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
+                self.record_builtin_result_output_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -177,7 +175,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, err_ty);
                 }
-                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
+                self.record_builtin_result_output_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -360,7 +358,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &ok_ty);
                 }
-                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
                 return Ty::result(ok_ty, err_ty);
             }
             "Err" => {
@@ -371,7 +369,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &err_ty);
                 }
-                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
                 return Ty::result(ok_ty, err_ty);
             }
             "close" => {

@@ -200,7 +200,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *un = std::get_if<ast::ExprUnary>(&expr.kind))
     return generateUnaryExpr(*un);
   if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
-    return generateCallExpr(*call);
+    return generateCallExpr(*call, expr.span);
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
@@ -1406,7 +1406,7 @@ mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
   return ifOp.getResult(0);
 }
 
-mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
+mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span &exprSpan) {
   auto location = currentLoc;
 
   // Check if the callee is a simple identifier (direct call)
@@ -1822,6 +1822,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
           optType = currentFunction.getResultTypes()[0];
+        // Fall back to checker-resolved expr type for statement-position composites.
+        if (!optType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::OptionEnumType>(converted))
+              optType = converted;
+          }
+        }
         if (!optType)
           optType = hew::OptionEnumType::get(&context, argVal.getType());
         if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
@@ -1852,7 +1860,19 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
-        else {
+        // Fall back to the checker-resolved expr type (covers statement-position
+        // composites like `Ok(Some(7))` where no declaration context is present).
+        // This path is checked after context types because convertType of an
+        // unqualified handle name (e.g. "Value" from a module scope) produces
+        // the LLVM struct representation rather than the hew.handle form.
+        if (!resultType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::ResultEnumType>(converted))
+              resultType = converted;
+          }
+        }
+        if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
@@ -1883,7 +1903,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
-        else {
+        if (!resultType) {
+          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+            auto converted = convertType(*resolvedType);
+            if (converted && mlir::isa<hew::ResultEnumType>(converted))
+              resultType = converted;
+          }
+        }
+        if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);

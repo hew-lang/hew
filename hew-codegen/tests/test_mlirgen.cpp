@@ -4252,6 +4252,8 @@ fn main() -> int {
     maybe;
     Ok(7);
     Err(9);
+    Ok(Some(11));
+    Err(Some(13));
     0
 }
   )");
@@ -4265,8 +4267,13 @@ fn main() -> int {
   int resultOkCount = 0;
   int resultErrCount = 0;
   bool optionSomeUsesFieldOne = false;
+  bool optionSomeTypeIsI64 = false;
   bool resultOkUsesFieldOne = false;
+  bool resultOkTypeIsI64I64 = false;
+  bool resultOkCompositeTypeIsOptionI64 = false;
   bool resultErrUsesFieldTwo = false;
+  bool resultErrTypeIsI64I64 = false;
+  bool resultErrCompositeTypeIsOptionI64 = false;
   module.walk([&](hew::EnumConstructOp op) {
     auto positions = op.getPayloadPositions();
     if (!positions || positions->size() != 1)
@@ -4276,6 +4283,8 @@ fn main() -> int {
     if (op.getEnumName() == "Option" && op.getVariantIndex() == 1) {
       optionSomeCount++;
       optionSomeUsesFieldOne |= payloadField == 1;
+      if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(op.getType()))
+        optionSomeTypeIsI64 |= optionType.getInnerType().isInteger(64);
       return;
     }
     if (op.getEnumName() != "__Result")
@@ -4283,11 +4292,31 @@ fn main() -> int {
     if (op.getVariantIndex() == 0) {
       resultOkCount++;
       resultOkUsesFieldOne |= payloadField == 1;
+      if (auto resultType = mlir::dyn_cast<hew::ResultEnumType>(op.getType())) {
+        auto okType = resultType.getOkType();
+        auto errType = resultType.getErrType();
+        resultOkTypeIsI64I64 |= okType.isInteger(64) && errType.isInteger(64);
+        auto okOption = mlir::dyn_cast<hew::OptionEnumType>(okType);
+        auto errOption = mlir::dyn_cast<hew::OptionEnumType>(errType);
+        resultOkCompositeTypeIsOptionI64 |= okOption && errOption &&
+                                            okOption.getInnerType().isInteger(64) &&
+                                            errOption.getInnerType().isInteger(64);
+      }
       return;
     }
     if (op.getVariantIndex() == 1) {
       resultErrCount++;
       resultErrUsesFieldTwo |= payloadField == 2;
+      if (auto resultType = mlir::dyn_cast<hew::ResultEnumType>(op.getType())) {
+        auto okType = resultType.getOkType();
+        auto errType = resultType.getErrType();
+        resultErrTypeIsI64I64 |= okType.isInteger(64) && errType.isInteger(64);
+        auto okOption = mlir::dyn_cast<hew::OptionEnumType>(okType);
+        auto errOption = mlir::dyn_cast<hew::OptionEnumType>(errType);
+        resultErrCompositeTypeIsOptionI64 |= okOption && errOption &&
+                                             okOption.getInnerType().isInteger(64) &&
+                                             errOption.getInnerType().isInteger(64);
+      }
     }
   });
 
@@ -4298,6 +4327,16 @@ fn main() -> int {
   }
   if (!optionSomeUsesFieldOne || !resultOkUsesFieldOne || !resultErrUsesFieldTwo) {
     FAIL("builtin enum constructors should use the expected payload field positions");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!optionSomeTypeIsI64 || !resultOkTypeIsI64I64 || !resultErrTypeIsI64I64) {
+    FAIL("builtin enum constructors should materialize concrete primitive Option/Result types");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (!resultOkCompositeTypeIsOptionI64 || !resultErrCompositeTypeIsOptionI64) {
+    FAIL("builtin Result constructors should prefer resolved expr types for composite payloads");
     module.getOperation()->destroy();
     return;
   }

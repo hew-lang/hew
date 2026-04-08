@@ -327,9 +327,9 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
-    /// Builtin `Ok`/`Err` constructor calls whose output-only type args may
-    /// need serializer-time fallback when one side remains unconstrained.
-    pub(super) builtin_result_call_spans: HashSet<SpanKey>,
+    /// Builtin `Ok`/`Err` constructor calls whose output type may need
+    /// checked-output fallback when one side remains unconstrained.
+    pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
     /// Maps a let-bound name to the (`TypeParam` name, `TypeVar`) pairs created
     /// when that name was bound to a generic lambda expression.  Used to
     /// populate `call_type_args` when the lambda is called later.
@@ -421,7 +421,7 @@ impl Checker {
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
-            builtin_result_call_spans: HashSet::new(),
+            builtin_result_output_type_args: HashMap::new(),
             lambda_poly_type_var_map: HashMap::new(),
             last_lambda_generic_vars: None,
             deferred_range_bounds: Vec::new(),

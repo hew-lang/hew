@@ -2961,6 +2961,7 @@ mod tests {
 
     #[test]
     fn ask_with_channel_send_failure_returns_error() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Spawning with null state and a valid dispatch function.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
@@ -3204,6 +3205,7 @@ mod tests {
 
     #[test]
     fn stop_idle_actor_is_idempotent_and_queues_no_shutdown_sys_messages() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Spawning with null state and a valid dispatch function.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
@@ -3292,6 +3294,7 @@ mod tests {
 
     #[test]
     fn free_actor_resources_completes_when_terminate_finishes_quickly() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: null state, valid dispatch.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
@@ -3315,6 +3318,7 @@ mod tests {
 
     #[test]
     fn free_current_actor_from_dispatch_is_deferred() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: this test fully owns the spawned actor and only mutates its
         // fields while no other runtime threads can access it.
         unsafe {
@@ -3394,6 +3398,7 @@ mod tests {
 
     #[test]
     fn deep_copy_state_alloc_failure_returns_null_and_sets_error() {
+        let _guard = crate::runtime_test_guard();
         let src: u8 = 1;
         crate::hew_clear_error();
         let _guard = fail_actor_state_alloc_on_nth(0);
@@ -3412,6 +3417,7 @@ mod tests {
 
     #[test]
     fn free_actor_resources_times_out_on_hanging_terminate() {
+        let _guard = crate::runtime_test_guard();
         // Simulate an actor whose terminate_called is true but
         // terminate_finished never becomes true. The bounded spin-wait in
         // free_actor_resources should time out after ~5s and proceed.
@@ -3448,6 +3454,7 @@ mod tests {
 
     #[test]
     fn free_current_actor_from_terminate_is_deferred() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: this test fully owns the spawned actor and simulates the
         // terminate callback state on the current thread.
         unsafe {
@@ -3509,6 +3516,7 @@ mod tests {
 
     #[test]
     fn wasm_free_reports_null_actor_failure_like_native_free() {
+        let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
 
         // SAFETY: null actor pointer is explicitly rejected by the free path.
@@ -3527,6 +3535,7 @@ mod tests {
 
     #[test]
     fn wasm_free_reports_untracked_actor_failure_like_native_free() {
+        let _guard = crate::runtime_test_guard();
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
         assert!(
             untrack_actor(actor),
@@ -3550,6 +3559,7 @@ mod tests {
 
     #[test]
     fn spawn_with_restart_state_alloc_failure_returns_null_and_sets_error() {
+        let _guard = crate::runtime_test_guard();
         let src: u8 = 1;
         crate::hew_clear_error();
         let _guard = fail_actor_state_alloc_on_nth(1);

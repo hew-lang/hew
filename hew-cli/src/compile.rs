@@ -839,6 +839,9 @@ pub fn compile(
     let assign_target_kinds = tco.as_ref().map_or_else(Vec::new, |tco| {
         hew_serialize::build_assign_target_kind_entries(&program, tco)
     });
+    let assign_target_shapes = tco.as_ref().map_or_else(Vec::new, |tco| {
+        hew_serialize::build_assign_target_shape_entries(&program, tco)
+    });
 
     if options.codegen_mode == CodegenMode::EmitJson {
         let json = hew_serialize::serialize_to_json(
@@ -846,6 +849,7 @@ pub fn compile(
             expr_type_map,
             method_call_receiver_kinds,
             assign_target_kinds,
+            assign_target_shapes,
             meta.handle_types,
             meta.handle_type_repr,
             meta.drop_funcs,
@@ -861,6 +865,7 @@ pub fn compile(
         expr_type_map,
         method_call_receiver_kinds,
         assign_target_kinds,
+        assign_target_shapes,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -966,6 +971,9 @@ pub(crate) fn compile_from_source_checked(
     let assign_target_kinds = tco.as_ref().map_or_else(Vec::new, |tco| {
         hew_serialize::build_assign_target_kind_entries(&program, tco)
     });
+    let assign_target_shapes = tco.as_ref().map_or_else(Vec::new, |tco| {
+        hew_serialize::build_assign_target_shape_entries(&program, tco)
+    });
 
     // Serialize to msgpack.
     let ast_data = hew_serialize::serialize_to_msgpack(
@@ -973,6 +981,7 @@ pub(crate) fn compile_from_source_checked(
         expr_type_map,
         method_call_receiver_kinds,
         assign_target_kinds,
+        assign_target_shapes,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -1846,6 +1855,7 @@ mod tests {
         TypeCheckOutput {
             expr_types: HashMap::new(),
             assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),

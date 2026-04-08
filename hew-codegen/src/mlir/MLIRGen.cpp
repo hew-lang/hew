@@ -772,6 +772,18 @@ MLIRGen::requireAssignTargetKindOf(const ast::Span &span, llvm::StringRef contex
   return nullptr;
 }
 
+const ast::AssignTargetShapeEntry *
+MLIRGen::requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef context,
+                                    std::optional<mlir::Location> errorLoc) {
+  if (const auto *shape = assignTargetShapeOf(span))
+    return shape;
+
+  ++errorCount_;
+  emitError(errorLoc.value_or(currentLoc)) << "missing assign_target_shapes entry for " << context
+                                           << " at span [" << span.start << ", " << span.end << ")";
+  return nullptr;
+}
+
 // ============================================================================
 // Type coercion
 // ============================================================================
@@ -2440,6 +2452,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   }
   for (const auto &entry : program.assign_target_kinds) {
     assignTargetKindMap[{entry.start, entry.end}] = &entry;
+  }
+  for (const auto &entry : program.assign_target_shapes) {
+    assignTargetShapeMap[{entry.start, entry.end}] = &entry;
   }
 
   // Populate handle type metadata from the Rust type checker.

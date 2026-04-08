@@ -418,6 +418,20 @@ impl Checker {
                         .insert(SpanKey::from(&target.1), kind);
                 }
                 let target_ty = self.synthesize(&target.0, &target.1);
+                // Record the type-shape metadata for every accepted target
+                // immediately after synthesising the target type so the MLIR
+                // compound-assignment paths can read signedness without
+                // falling back to the unreliable `resolvedTypeOf` path.
+                if self
+                    .assign_target_kinds
+                    .contains_key(&SpanKey::from(&target.1))
+                {
+                    let shape = AssignTargetShape {
+                        is_unsigned: target_ty.is_unsigned(),
+                    };
+                    self.assign_target_shapes
+                        .insert(SpanKey::from(&target.1), shape);
+                }
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(binding) = self.env.lookup_ref(name) {
                         if !binding.is_mutable {

@@ -1400,11 +1400,17 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (!kindEntry)
     return;
 
+  // Look up the checker-assigned type-shape fail-closed: the shape entry
+  // carries the signedness flag for compound-assignment arithmetic so that
+  // MLIR lowering does not need to re-derive it from the AST or fall back to
+  // the unreliable `resolvedTypeOf` path (which can be absent).
+  const auto *shapeEntry = requireAssignTargetShapeOf(stmt.target.span, "assignment", location);
+  if (!shapeEntry)
+    return;
+  const bool targetIsUnsigned = shapeEntry->is_unsigned;
+
   auto coerceAssignedValue = [&](mlir::Value value, mlir::Type targetType) -> mlir::Value {
-    bool isUnsigned = false;
-    if (mlir::isa<mlir::IntegerType>(targetType))
-      if (auto *ty = resolvedTypeOf(stmt.target.span))
-        isUnsigned = isUnsignedTypeExpr(*ty);
+    const bool isUnsigned = mlir::isa<mlir::IntegerType>(targetType) && targetIsUnsigned;
     return coerceType(value, targetType, location, isUnsigned);
   };
 
@@ -1446,10 +1452,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
               auto current = mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr);
               rhs = coerceAssignedValue(rhs, field.type);
               bool isFloat = llvm::isa<mlir::FloatType>(field.type);
-              bool isUnsigned = false;
-              if (mlir::isa<mlir::IntegerType>(field.type))
-                if (auto *ty = resolvedTypeOf(stmt.target.span))
-                  isUnsigned = isUnsignedTypeExpr(*ty);
+              bool isUnsigned = mlir::isa<mlir::IntegerType>(field.type) && targetIsUnsigned;
               rhs = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
               if (!rhs)
                 return;
@@ -1509,10 +1512,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
           llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
       rhs = coerceAssignedValue(rhs, targetField->type);
       bool isFloat = llvm::isa<mlir::FloatType>(targetField->type);
-      bool isUnsigned = false;
-      if (mlir::isa<mlir::IntegerType>(targetField->type))
-        if (auto *ty = resolvedTypeOf(stmt.target.span))
-          isUnsigned = isUnsignedTypeExpr(*ty);
+      bool isUnsigned = mlir::isa<mlir::IntegerType>(targetField->type) && targetIsUnsigned;
       rhs = emitCompoundArithOp(*stmt.op, currentFieldVal, rhs, isFloat, isUnsigned, location);
       if (!rhs)
         return;
@@ -1550,10 +1550,8 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         auto currentVal = hew::VecGetOp::create(builder, location, vecType.getElementType(),
                                                 collectionVal, indexVal);
         bool isFloat = llvm::isa<mlir::FloatType>(vecType.getElementType());
-        bool isUnsigned = false;
-        if (mlir::isa<mlir::IntegerType>(vecType.getElementType()))
-          if (auto *ty = resolvedTypeOf(stmt.target.span))
-            isUnsigned = isUnsignedTypeExpr(*ty);
+        bool isUnsigned =
+            mlir::isa<mlir::IntegerType>(vecType.getElementType()) && targetIsUnsigned;
         rhsVal = emitCompoundArithOp(*stmt.op, currentVal, rhsVal, isFloat, isUnsigned, location);
         if (!rhsVal)
           return;
@@ -1589,10 +1587,8 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         auto currentVal =
             mlir::LLVM::LoadOp::create(builder, location, hewArrayType.getElementType(), elemPtr);
         bool isFloat = llvm::isa<mlir::FloatType>(hewArrayType.getElementType());
-        bool isUnsigned = false;
-        if (mlir::isa<mlir::IntegerType>(hewArrayType.getElementType()))
-          if (auto *ty = resolvedTypeOf(stmt.target.span))
-            isUnsigned = isUnsignedTypeExpr(*ty);
+        bool isUnsigned =
+            mlir::isa<mlir::IntegerType>(hewArrayType.getElementType()) && targetIsUnsigned;
         rhsVal = emitCompoundArithOp(*stmt.op, currentVal, rhsVal, isFloat, isUnsigned, location);
         if (!rhsVal)
           return;
@@ -1651,10 +1647,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       rhs = coerceAssignedValue(rhs, existingVar.getType());
       auto type = existingVar.getType();
       bool isFloat = llvm::isa<mlir::FloatType>(type);
-      bool isUnsigned = false;
-      if (mlir::isa<mlir::IntegerType>(type))
-        if (auto *ty = resolvedTypeOf(stmt.target.span))
-          isUnsigned = isUnsignedTypeExpr(*ty);
+      bool isUnsigned = mlir::isa<mlir::IntegerType>(type) && targetIsUnsigned;
 
       auto result = emitCompoundArithOp(*stmt.op, existingVar, rhs, isFloat, isUnsigned, location);
       if (!result)
@@ -1713,10 +1706,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
             mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
         rhs = coerceAssignedValue(rhs, field.type);
         bool isFloat = llvm::isa<mlir::FloatType>(field.type);
-        bool isUnsigned = false;
-        if (mlir::isa<mlir::IntegerType>(field.type))
-          if (auto *ty = resolvedTypeOf(stmt.target.span))
-            isUnsigned = isUnsignedTypeExpr(*ty);
+        bool isUnsigned = mlir::isa<mlir::IntegerType>(field.type) && targetIsUnsigned;
         rhs = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
         if (!rhs)
           return;

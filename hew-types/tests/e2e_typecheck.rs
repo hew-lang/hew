@@ -228,6 +228,111 @@ actor Counter {
     );
 }
 
+#[test]
+fn assign_target_shapes_record_type_signedness() {
+    let output = typecheck_inline(
+        r"
+fn f() {
+    var a: u8 = 0;
+    a = 1;
+
+    var b: i32 = 0;
+    b = 1;
+
+    var c: u64 = 0;
+    c = 2;
+
+    var d: int = 0;
+    d = 3;
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.assign_target_shapes.len(),
+        4,
+        "expected four shape entries, got: {:?}",
+        output.assign_target_shapes
+    );
+    // u8 and u64 should be marked unsigned.
+    let unsigned_count = output
+        .assign_target_shapes
+        .values()
+        .filter(|s| s.is_unsigned)
+        .count();
+    assert_eq!(
+        unsigned_count, 2,
+        "expected 2 unsigned targets (u8, u64), got: {:?}",
+        output.assign_target_shapes
+    );
+    // i32 and int should be marked signed.
+    let signed_count = output
+        .assign_target_shapes
+        .values()
+        .filter(|s| !s.is_unsigned)
+        .count();
+    assert_eq!(
+        signed_count, 2,
+        "expected 2 signed targets (i32, int), got: {:?}",
+        output.assign_target_shapes
+    );
+}
+
+#[test]
+fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
+    // Verify that every span present in assign_target_kinds also has a
+    // corresponding entry in assign_target_shapes.
+    let output = typecheck_inline(
+        r"
+type Boxed {
+    value: int;
+}
+
+fn mutate() {
+    var local = 0;
+    local = 1;
+
+    var boxed = Boxed { value: 0 };
+    boxed.value = 2;
+
+    var nums = [1, 2];
+    nums[0] = 3;
+}
+
+actor Counter {
+    let total: int;
+
+    receive fn set(v: int) {
+        total = v;
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    // Every span in assign_target_kinds must have a shape entry.
+    for key in output.assign_target_kinds.keys() {
+        assert!(
+            output.assign_target_shapes.contains_key(key),
+            "assign_target_kinds span {key:?} is missing from assign_target_shapes",
+        );
+    }
+    // Every span in assign_target_shapes must have a kind entry.
+    for key in output.assign_target_shapes.keys() {
+        assert!(
+            output.assign_target_kinds.contains_key(key),
+            "assign_target_shapes span {key:?} is missing from assign_target_kinds",
+        );
+    }
+}
+
 fn test_directory(dir: &Path, label: &str) {
     let mut parse_ok = 0;
     let mut parse_fail = 0;

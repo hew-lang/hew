@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -75,6 +75,19 @@ pub struct AssignTargetKindEntry {
     pub kind: AssignTargetKindData,
 }
 
+/// Wire representation of assignment target type-shape metadata.
+///
+/// Carries the signedness flag that MLIR lowering needs for compound
+/// assignments.  Keyed by the same target expression span as
+/// [`AssignTargetKindEntry`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignTargetShapeEntry {
+    pub start: usize,
+    pub end: usize,
+    /// `true` when the target type is an unsigned integer (`u8`/`u16`/`u32`/`u64`).
+    pub is_unsigned: bool,
+}
+
 /// Top-level serialization wrapper: the program AST plus type-checker and
 /// source metadata used by C++ codegen.
 ///
@@ -85,6 +98,7 @@ pub struct AssignTargetKindEntry {
 /// - `"expr_types"`
 /// - `"method_call_receiver_kinds"`
 /// - `"assign_target_kinds"`
+/// - `"assign_target_shapes"`
 /// - `"handle_types"`
 /// - `"handle_type_repr"`
 /// - `"drop_funcs"`
@@ -105,6 +119,9 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Checker-resolved assignment target classifications (keyed by target span).
     /// Missing entries indicate the checker rejected those targets.
     assign_target_kinds: &'a [AssignTargetKindEntry],
+    /// Checker-resolved assignment target type-shape metadata (keyed by target span).
+    /// Consumed by MLIR lowering fail-closed to determine compound-assignment signedness.
+    assign_target_shapes: &'a [AssignTargetShapeEntry],
     /// Names of all known handle types (e.g., `"http.Server"`, `"json.Value"`).
     /// Flows type metadata to C++ codegen so it doesn't need hardcoded type lists.
     handle_types: Vec<String>,
@@ -142,6 +159,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         expr_types: &'a [ExprTypeEntry],
         method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
         assign_target_kinds: &'a [AssignTargetKindEntry],
+        assign_target_shapes: &'a [AssignTargetShapeEntry],
         handle_types: Vec<String>,
         handle_type_repr: HashMap<String, String>,
         drop_funcs: Vec<(String, String)>,
@@ -156,6 +174,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             expr_types,
             method_call_receiver_kinds,
             assign_target_kinds,
+            assign_target_shapes,
             handle_types,
             handle_type_repr,
             drop_funcs,
@@ -187,6 +206,7 @@ pub fn serialize_to_msgpack(
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
+    assign_target_shapes: Vec<AssignTargetShapeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -198,6 +218,7 @@ pub fn serialize_to_msgpack(
         &expr_types,
         &method_call_receiver_kinds,
         &assign_target_kinds,
+        &assign_target_shapes,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -239,6 +260,7 @@ pub fn serialize_to_json(
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
+    assign_target_shapes: Vec<AssignTargetShapeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -255,6 +277,7 @@ pub fn serialize_to_json(
         &expr_types,
         &method_call_receiver_kinds,
         &assign_target_kinds,
+        &assign_target_shapes,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -547,6 +570,367 @@ pub fn build_assign_target_kind_entries(
         item: &Spanned<Item>,
         tco: &TypeCheckOutput,
         out: &mut Vec<AssignTargetKindEntry>,
+    ) {
+        match &item.0 {
+            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
+            Item::TypeDecl(type_decl) => {
+                for body_item in &type_decl.body {
+                    if let TypeBodyItem::Method(method) = body_item {
+                        collect_fn(method, tco, out);
+                    }
+                }
+            }
+            Item::Trait(trait_decl) => {
+                for trait_item in &trait_decl.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if let Some(body) = &method.body {
+                            collect_block(body, tco, out);
+                        }
+                    }
+                }
+            }
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    collect_fn(method, tco, out);
+                }
+            }
+            Item::Function(fn_decl) => collect_fn(fn_decl, tco, out),
+            Item::Actor(actor_decl) => {
+                if let Some(init) = &actor_decl.init {
+                    collect_block(&init.body, tco, out);
+                }
+                if let Some(terminate) = &actor_decl.terminate {
+                    collect_block(&terminate.body, tco, out);
+                }
+                for receive_fn in &actor_decl.receive_fns {
+                    collect_block(&receive_fn.body, tco, out);
+                }
+                for method in &actor_decl.methods {
+                    collect_fn(method, tco, out);
+                }
+            }
+            Item::Supervisor(supervisor_decl) => {
+                for child in &supervisor_decl.children {
+                    for arg in &child.args {
+                        collect_expr(arg, tco, out);
+                    }
+                }
+            }
+            Item::Machine(machine_decl) => {
+                for transition in &machine_decl.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&transition.body, tco, out);
+                }
+            }
+            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+        }
+    }
+
+    let mut entries = Vec::new();
+
+    for item in &program.items {
+        collect_item(item, tco, &mut entries);
+    }
+
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if module_id == &module_graph.root {
+                continue;
+            }
+            if let Some(module) = module_graph.modules.get(module_id) {
+                for item in &module.items {
+                    collect_item(item, tco, &mut entries);
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+/// Walk `program` and collect an [`AssignTargetShapeEntry`] for every
+/// `Stmt::Assign` whose target span has an entry in `tco.assign_target_shapes`.
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
+)]
+pub fn build_assign_target_shape_entries(
+    program: &hew_parser::ast::Program,
+    tco: &TypeCheckOutput,
+) -> Vec<AssignTargetShapeEntry> {
+    fn shape_for_span(
+        span: &std::ops::Range<usize>,
+        tco: &TypeCheckOutput,
+    ) -> Option<AssignTargetShapeEntry> {
+        let key = SpanKey::from(span);
+        let shape = tco.assign_target_shapes.get(&key)?;
+        Some(AssignTargetShapeEntry {
+            start: key.start,
+            end: key.end,
+            is_unsigned: shape.is_unsigned,
+        })
+    }
+
+    fn collect_stmt(
+        stmt: &Spanned<Stmt>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<AssignTargetShapeEntry>,
+    ) {
+        match &stmt.0 {
+            Stmt::Assign { target, value, .. } => {
+                if let Some(entry) = shape_for_span(&target.1, tco) {
+                    out.push(entry);
+                }
+                collect_expr(target, tco, out);
+                collect_expr(value, tco, out);
+            }
+            Stmt::Let { value, .. }
+            | Stmt::Var { value, .. }
+            | Stmt::Break { value, .. }
+            | Stmt::Return(value) => {
+                if let Some(value) = value {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                collect_expr(condition, tco, out);
+                collect_block(then_block, tco, out);
+                if let Some(else_block) = else_block {
+                    match (else_block.if_stmt.as_ref(), else_block.block.as_ref()) {
+                        (Some(if_stmt), _) => collect_stmt(if_stmt, tco, out),
+                        (None, Some(block)) => collect_block(block, tco, out),
+                        (None, None) => {}
+                    }
+                }
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+                if let Some(else_body) = else_body {
+                    collect_block(else_body, tco, out);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_expr(scrutinee, tco, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&arm.body, tco, out);
+                }
+            }
+            Stmt::Loop { body, .. } => collect_block(body, tco, out),
+            Stmt::For { iterable, body, .. } => {
+                collect_expr(iterable, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                collect_expr(condition, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::Defer(expr) => collect_expr(expr, tco, out),
+            Stmt::Expression(expr) => collect_expr(expr, tco, out),
+            Stmt::Continue { .. } => {}
+        }
+    }
+
+    fn collect_block(block: &Block, tco: &TypeCheckOutput, out: &mut Vec<AssignTargetShapeEntry>) {
+        for stmt in &block.stmts {
+            collect_stmt(stmt, tco, out);
+        }
+        if let Some(trailing) = &block.trailing_expr {
+            collect_expr(trailing, tco, out);
+        }
+    }
+
+    fn collect_call_args(
+        args: &[CallArg],
+        tco: &TypeCheckOutput,
+        out: &mut Vec<AssignTargetShapeEntry>,
+    ) {
+        for arg in args {
+            collect_expr(arg.expr(), tco, out);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
+    )]
+    fn collect_expr(
+        expr: &Spanned<Expr>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<AssignTargetShapeEntry>,
+    ) {
+        match &expr.0 {
+            Expr::Binary { left, right, .. } => {
+                collect_expr(left, tco, out);
+                collect_expr(right, tco, out);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Cast { expr: operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Await(operand) => collect_expr(operand, tco, out),
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+                for elem in exprs {
+                    collect_expr(elem, tco, out);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                collect_expr(value, tco, out);
+                collect_expr(count, tco, out);
+            }
+            Expr::MapLiteral { entries } => {
+                for (key, value) in entries {
+                    collect_expr(key, tco, out);
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::Block(block)
+            | Expr::Unsafe(block)
+            | Expr::ScopeLaunch(block)
+            | Expr::ScopeSpawn(block) => {
+                collect_block(block, tco, out);
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                collect_expr(condition, tco, out);
+                collect_expr(then_block, tco, out);
+                if let Some(else_block) = else_block {
+                    collect_expr(else_block, tco, out);
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+                if let Some(else_body) = else_body {
+                    collect_block(else_body, tco, out);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                collect_expr(scrutinee, tco, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&arm.body, tco, out);
+                }
+            }
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                collect_expr(body, tco, out);
+            }
+            Expr::Spawn { target, args } => {
+                collect_expr(target, tco, out);
+                for (_, arg) in args {
+                    collect_expr(arg, tco, out);
+                }
+            }
+            Expr::Scope { body, .. } => collect_block(body, tco, out),
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr(expr) = part {
+                        collect_expr(expr, tco, out);
+                    }
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                collect_expr(function, tco, out);
+                collect_call_args(args, tco, out);
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                collect_expr(receiver, tco, out);
+                collect_call_args(args, tco, out);
+            }
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::Send { target, message } => {
+                collect_expr(target, tco, out);
+                collect_expr(message, tco, out);
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    collect_expr(&arm.source, tco, out);
+                    collect_expr(&arm.body, tco, out);
+                }
+                if let Some(timeout) = timeout {
+                    collect_expr(&timeout.duration, tco, out);
+                    collect_expr(&timeout.body, tco, out);
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                collect_expr(expr, tco, out);
+                collect_expr(duration, tco, out);
+            }
+            Expr::Yield(value) => {
+                if let Some(value) = value {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::FieldAccess { object, .. } => collect_expr(object, tco, out),
+            Expr::Index { object, index } => {
+                collect_expr(object, tco, out);
+                collect_expr(index, tco, out);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    collect_expr(start, tco, out);
+                }
+                if let Some(end) = end {
+                    collect_expr(end, tco, out);
+                }
+            }
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::ScopeCancel
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
+    fn collect_fn(
+        fn_decl: &hew_parser::ast::FnDecl,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<AssignTargetShapeEntry>,
+    ) {
+        collect_block(&fn_decl.body, tco, out);
+    }
+
+    fn collect_item(
+        item: &Spanned<Item>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<AssignTargetShapeEntry>,
     ) {
         match &item.0 {
             Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
@@ -1060,6 +1444,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1128,6 +1513,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1150,6 +1536,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1227,6 +1614,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1245,6 +1633,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1281,6 +1670,7 @@ mod tests {
                     type_name: "Widget".to_string(),
                 },
             }],
+            vec![],
             vec![],
             vec![],
             HashMap::new(),
@@ -1324,6 +1714,7 @@ mod tests {
                 end: 20,
                 kind: AssignTargetKindData::LocalVar,
             }],
+            vec![],
             vec![],
             HashMap::new(),
             vec![],
@@ -1412,6 +1803,7 @@ mod tests {
                 ),
             ]),
             assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
@@ -1489,6 +1881,7 @@ mod tests {
                 },
                 AssignTargetKind::LocalVar,
             )]),
+            assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
@@ -1580,6 +1973,7 @@ mod tests {
                 },
             )]),
             assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
@@ -1618,6 +2012,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1644,5 +2039,210 @@ mod tests {
         // is extra metadata that Program doesn't carry, so it's silently ignored).
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
+    }
+
+    /// Verify that `build_assign_target_shape_entries` populates `is_unsigned`
+    /// correctly for a single assignment whose target is an unsigned integer.
+    #[test]
+    fn build_assign_target_shape_entries_unsigned_target() {
+        use hew_parser::ast::{Block, Expr, FnDecl, Stmt, Visibility};
+        use hew_types::check::{AssignTargetKind, AssignTargetShape, SpanKey, TypeCheckOutput};
+        use std::collections::{HashMap, HashSet};
+
+        let assign_target_span = 5..10;
+
+        // Build a minimal AST: fn f() { <target>[5..10] = rhs }
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "f".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Assign {
+                                target: (Expr::Identifier("x".into()), assign_target_span.clone()),
+                                op: None,
+                                value: (Expr::Identifier("v".into()), 12..13),
+                            },
+                            assign_target_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let key = SpanKey {
+            start: assign_target_span.start,
+            end: assign_target_span.end,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
+            assign_target_shapes: HashMap::from([(
+                key.clone(),
+                AssignTargetShape { is_unsigned: true },
+            )]),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_assign_target_shape_entries(&program, &tco);
+        assert_eq!(entries.len(), 1, "expected one shape entry");
+        assert_eq!(entries[0].start, assign_target_span.start);
+        assert_eq!(entries[0].end, assign_target_span.end);
+        assert!(
+            entries[0].is_unsigned,
+            "expected is_unsigned = true for unsigned target"
+        );
+    }
+
+    /// Verify that `build_assign_target_shape_entries` records `is_unsigned = false`
+    /// for a signed integer target.
+    #[test]
+    fn build_assign_target_shape_entries_signed_target() {
+        use hew_parser::ast::{Block, Expr, FnDecl, Stmt, Visibility};
+        use hew_types::check::{AssignTargetKind, AssignTargetShape, SpanKey, TypeCheckOutput};
+        use std::collections::{HashMap, HashSet};
+
+        let assign_target_span = 5..10;
+
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "f".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Assign {
+                                target: (Expr::Identifier("x".into()), assign_target_span.clone()),
+                                op: None,
+                                value: (Expr::Identifier("v".into()), 12..13),
+                            },
+                            assign_target_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let key = SpanKey {
+            start: assign_target_span.start,
+            end: assign_target_span.end,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
+            assign_target_shapes: HashMap::from([(
+                key.clone(),
+                AssignTargetShape { is_unsigned: false },
+            )]),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_assign_target_shape_entries(&program, &tco);
+        assert_eq!(entries.len(), 1, "expected one shape entry");
+        assert!(!entries[0].is_unsigned, "expected is_unsigned = false");
+    }
+
+    /// Verify round-trip: serialize shape entries to msgpack and check that
+    /// `assign_target_shapes` is present with the correct `is_unsigned` flag.
+    #[test]
+    fn assign_target_shapes_msgpack_roundtrip() {
+        let shapes = vec![
+            AssignTargetShapeEntry {
+                start: 5,
+                end: 10,
+                is_unsigned: true,
+            },
+            AssignTargetShapeEntry {
+                start: 20,
+                end: 25,
+                is_unsigned: false,
+            },
+        ];
+
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            shapes.clone(),
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+
+        // Deserialize to untyped map and inspect the assign_target_shapes array.
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize to generic value");
+        let obj = value.as_object().expect("top-level should be a map");
+        let arr = obj
+            .get("assign_target_shapes")
+            .expect("assign_target_shapes key should be present");
+        let arr = arr
+            .as_array()
+            .expect("assign_target_shapes should be array");
+        assert_eq!(arr.len(), 2, "expected 2 shape entries");
+
+        // First entry: unsigned
+        assert_eq!(arr[0]["start"], 5u64);
+        assert_eq!(arr[0]["end"], 10u64);
+        assert_eq!(arr[0]["is_unsigned"], true);
+
+        // Second entry: signed
+        assert_eq!(arr[1]["start"], 20u64);
+        assert_eq!(arr[1]["end"], 25u64);
+        assert_eq!(arr[1]["is_unsigned"], false);
     }
 }

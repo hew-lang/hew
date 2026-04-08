@@ -16,6 +16,12 @@ pub struct TypeCheckOutput {
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
+    /// Checker-resolved assignment target type-shape metadata keyed by the
+    /// target expression span.  Populated alongside `assign_target_kinds` for
+    /// every accepted assignment.  MLIR lowering consumes this fail-closed to
+    /// determine signedness of compound-assignment arithmetic instead of
+    /// re-deriving it from the AST.
+    pub assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
     pub type_defs: HashMap<String, TypeDef>,
@@ -44,6 +50,24 @@ pub enum AssignTargetKind {
     FieldAccess,
     /// `expr[idx] = rhs` — target is an indexed collection element.
     Index,
+}
+
+/// Checker-owned type-shape annotation for an assignment target.
+///
+/// Populated alongside [`AssignTargetKind`] for every `Stmt::Assign` accepted
+/// by the checker.  Missing entry means the checker rejected the target; MLIR
+/// lowering must fail closed on both maps.
+///
+/// This captures the information MLIR needs for compound-assignment arithmetic
+/// signedness so it does not need to re-derive it from the AST or from the
+/// `expr_types` side-table (which may be absent when a resolved type is
+/// unavailable at lowering time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignTargetShape {
+    /// `true` when the assignment target has an unsigned integer type
+    /// (`u8` / `u16` / `u32` / `u64`).  `false` for signed integers, floats,
+    /// booleans, and all non-numeric types.
+    pub is_unsigned: bool,
 }
 
 /// Span used as map key (byte offsets).
@@ -232,6 +256,7 @@ pub struct Checker {
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
+    pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
@@ -371,6 +396,7 @@ impl Checker {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             type_def_inference_holes: HashMap::new(),

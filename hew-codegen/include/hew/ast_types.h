@@ -1035,6 +1035,20 @@ struct AssignTargetKindEntry {
   AssignTargetKindData kind;
 };
 
+/// Checker-owned type-shape annotation for an assignment target.
+///
+/// Carries the signedness flag MLIR lowering needs for compound-assignment
+/// arithmetic, eliminating the `resolvedTypeOf` re-derivation path and its
+/// silent `isUnsigned = false` fallback when the resolved type is absent.
+struct AssignTargetShapeEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  /// `true` when the assignment target has an unsigned integer type
+  /// (u8/u16/u32/u64).  `false` for signed integers, floats, and all other
+  /// non-numeric types.
+  bool is_unsigned = false;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1049,6 +1063,9 @@ struct Program {
   /// Checker-resolved assignment target classification (keyed by target span).
   /// Missing entry means checker rejected the target; MLIR lowering must fail closed.
   std::vector<AssignTargetKindEntry> assign_target_kinds;
+  /// Checker-resolved assignment target type-shape metadata (keyed by target span).
+  /// Consumed fail-closed by MLIR lowering to determine compound-assignment signedness.
+  std::vector<AssignTargetShapeEntry> assign_target_shapes;
   /// Known handle type names (e.g., "http.Server", "json.Value").
   /// Populated from the Rust type checker's handle type registry.
   std::vector<std::string> handle_types;

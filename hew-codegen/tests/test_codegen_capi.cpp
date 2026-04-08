@@ -653,6 +653,30 @@ static void test_len_free_call_lowers_via_codegen_dispatch() {
   PASS();
 }
 
+static void test_len_free_call_on_rc_fails_closed() {
+  TEST(len_free_call_on_rc_fails_closed);
+  auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); println(len(rc)); }");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 1) {
+    FAIL("len(Rc<T>) should fail closed");
+    hew_codegen_buffer_free(buf);
+    return;
+  }
+  const char *err = hew_codegen_last_error();
+  if (!strstr(err, "len")) {
+    FAIL("expected len-related diagnostic for len(Rc<T>)");
+    return;
+  }
+  PASS();
+}
+
 static void test_rc_outlive_block_drop_registered() {
   TEST(rc_outlive_block_drop_registered);
   // Rc alias escaping a block as trailing expression must still get
@@ -1013,6 +1037,7 @@ int main() {
   test_collection_clone_methods_lower_to_runtime_calls();
   test_collection_clone_receiver_temporaries_drop();
   test_len_free_call_lowers_via_codegen_dispatch();
+  test_len_free_call_on_rc_fails_closed();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
   test_rc_call_boundary_borrow_no_clone();

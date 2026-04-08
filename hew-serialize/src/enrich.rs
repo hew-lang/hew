@@ -2681,6 +2681,7 @@ mod tests {
     fn empty_tco() -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),

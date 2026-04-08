@@ -562,6 +562,11 @@ private:
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::MethodCallReceiverKindEntry *,
                      SpanHash>
       methodCallReceiverKindMap;
+  /// Lookup map from assignment target span → assign-target-kind entry.
+  /// Built once in `generate`; used by `assignTargetKindOf` /
+  /// `requireAssignTargetKindOf`.
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::AssignTargetKindEntry *, SpanHash>
+      assignTargetKindMap;
 
   /// Look up the resolved type for an expression by its source span.
   const ast::TypeExpr *resolvedTypeOf(const ast::Span &span) const {
@@ -576,6 +581,12 @@ private:
       return it->second;
     return nullptr;
   }
+  const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
+    auto it = assignTargetKindMap.find({span.start, span.end});
+    if (it != assignTargetKindMap.end())
+      return it->second;
+    return nullptr;
+  }
   /// Like resolvedTypeOf(), but emits a fail-closed diagnostic when the
   /// type-checker metadata entry is missing.
   const ast::TypeExpr *requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
@@ -583,6 +594,9 @@ private:
   const ast::MethodCallReceiverKindEntry *
   requireMethodCallReceiverKindOf(const ast::Span &span, llvm::StringRef context,
                                   std::optional<mlir::Location> errorLoc = std::nullopt);
+  const ast::AssignTargetKindEntry *
+  requireAssignTargetKindOf(const ast::Span &span, llvm::StringRef context,
+                            std::optional<mlir::Location> errorLoc = std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can

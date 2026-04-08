@@ -13,6 +13,9 @@ use std::path::PathBuf;
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    /// Checker-resolved assignment target classification keyed by the target
+    /// expression span. Missing entry means the checker rejected the target.
+    pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
     pub type_defs: HashMap<String, TypeDef>,
@@ -24,6 +27,23 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+}
+
+/// Checker-owned classification of an assignment target.
+///
+/// Populated once during `check_stmt` for `Stmt::Assign` and threaded through
+/// the serialisation boundary so MLIR lowering can consume it fail-closed
+/// instead of re-examining the AST expression kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignTargetKind {
+    /// `name = rhs` — target resolved to a mutable local variable in scope.
+    LocalVar,
+    /// `field = rhs` — bare field name inside an actor body targeting actor state.
+    ActorField,
+    /// `expr.field = rhs` — target is a struct/actor field access.
+    FieldAccess,
+    /// `expr[idx] = rhs` — target is an indexed collection element.
+    Index,
 }
 
 /// Span used as map key (byte offsets).
@@ -211,6 +231,7 @@ pub struct Checker {
     pub(super) warnings: Vec<TypeError>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
@@ -349,6 +370,7 @@ impl Checker {
             warnings: Vec::new(),
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             type_def_inference_holes: HashMap::new(),

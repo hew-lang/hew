@@ -387,6 +387,36 @@ impl Checker {
                         }
                     }
                 }
+                // Classify the assignment target for the side-table before synthesising
+                // so that the entry is always emitted whenever the target is syntactically
+                // valid, regardless of whether subsequent type-checking finds errors.
+                let assign_target_kind: Option<AssignTargetKind> = match &target.0 {
+                    Expr::Identifier(name) => {
+                        if self.current_actor_fields.contains(name) {
+                            Some(AssignTargetKind::ActorField)
+                        } else if self.env.lookup_ref(name).is_some() {
+                            Some(AssignTargetKind::LocalVar)
+                        } else {
+                            None
+                        }
+                    }
+                    Expr::FieldAccess { .. } => Some(AssignTargetKind::FieldAccess),
+                    Expr::Index { .. } => Some(AssignTargetKind::Index),
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "invalid assignment target; expected identifier, field access, or \
+                             index"
+                                .to_string(),
+                        );
+                        None
+                    }
+                };
+                if let Some(kind) = assign_target_kind {
+                    self.assign_target_kinds
+                        .insert(SpanKey::from(&target.1), kind);
+                }
                 let target_ty = self.synthesize(&target.0, &target.1);
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(binding) = self.env.lookup_ref(name) {

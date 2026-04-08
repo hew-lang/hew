@@ -1393,6 +1393,13 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
 
 void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   auto location = currentLoc;
+
+  // Look up the checker-assigned kind fail-closed: if the checker rejected
+  // this target no entry is present, and we must not proceed.
+  const auto *kindEntry = requireAssignTargetKindOf(stmt.target.span, "assignment", location);
+  if (!kindEntry)
+    return;
+
   auto coerceAssignedValue = [&](mlir::Value value, mlir::Type targetType) -> mlir::Value {
     bool isUnsigned = false;
     if (mlir::isa<mlir::IntegerType>(targetType))
@@ -1402,7 +1409,14 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   };
 
   // Handle field assignment: self.field = value (pointer-based)
-  if (auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.target.value.kind)) {
+  if (std::holds_alternative<ast::AssignTargetKindFieldAccess>(kindEntry->kind)) {
+    auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.target.value.kind);
+    if (!fa) {
+      ++errorCount_;
+      emitError(location)
+          << "assign_target_kinds says FieldAccess but target is not ExprFieldAccess";
+      return;
+    }
     auto operandVal = generateExpression(fa->object->value);
     if (!operandVal)
       return;
@@ -1512,7 +1526,13 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   }
 
   // Handle indexed assignment: v[i] = x
-  if (auto *idx = std::get_if<ast::ExprIndex>(&stmt.target.value.kind)) {
+  if (std::holds_alternative<ast::AssignTargetKindIndex>(kindEntry->kind)) {
+    auto *idx = std::get_if<ast::ExprIndex>(&stmt.target.value.kind);
+    if (!idx) {
+      ++errorCount_;
+      emitError(location) << "assign_target_kinds says Index but target is not ExprIndex";
+      return;
+    }
     auto collectionVal = generateExpression(idx->object->value);
     auto indexVal = generateExpression(idx->index->value);
     mlir::Value rhsVal = generateExpression(stmt.value.value);
@@ -1589,10 +1609,11 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     return;
   }
 
-  // Get the target variable name
+  // LocalVar or ActorField — both require an ExprIdentifier target.
   auto *targetIdent = std::get_if<ast::ExprIdentifier>(&stmt.target.value.kind);
   if (!targetIdent) {
-    emitError(location) << "only simple identifier targets supported for assignment";
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says Identifier but target is not ExprIdentifier";
     return;
   }
 

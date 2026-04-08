@@ -1019,6 +1019,22 @@ struct MethodCallReceiverKindEntry {
   MethodCallReceiverKindData kind;
 };
 
+// ── Assign-target authority side table ────────────────────────────────────
+
+struct AssignTargetKindLocalVar {};
+struct AssignTargetKindActorField {};
+struct AssignTargetKindFieldAccess {};
+struct AssignTargetKindIndex {};
+
+using AssignTargetKindData = std::variant<AssignTargetKindLocalVar, AssignTargetKindActorField,
+                                          AssignTargetKindFieldAccess, AssignTargetKindIndex>;
+
+struct AssignTargetKindEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  AssignTargetKindData kind;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1030,6 +1046,9 @@ struct Program {
   std::vector<ExprTypeEntry> expr_types;
   /// Checker-resolved receiver classification for surviving method calls.
   std::vector<MethodCallReceiverKindEntry> method_call_receiver_kinds;
+  /// Checker-resolved assignment target classification (keyed by target span).
+  /// Missing entry means checker rejected the target; MLIR lowering must fail closed.
+  std::vector<AssignTargetKindEntry> assign_target_kinds;
   /// Known handle type names (e.g., "http.Server", "json.Value").
   /// Populated from the Rust type checker's handle type registry.
   std::vector<std::string> handle_types;

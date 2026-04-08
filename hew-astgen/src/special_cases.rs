@@ -80,6 +80,30 @@ pub fn expr_type_entry_parser() -> &'static str {
 }"#
 }
 
+/// Hard-coded parser for `MethodCallReceiverKindEntry` (C++-only type from serialization layer).
+pub fn method_call_receiver_kind_entry_parser() -> &'static str {
+    r#"static ast::MethodCallReceiverKindEntry
+parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
+  ast::MethodCallReceiverKindEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  auto kind = getString(mapReq(obj, "kind"));
+  if (kind == "named_type_instance") {
+    ast::MethodCallReceiverKindNamedTypeInstance data;
+    data.type_name = getString(mapReq(obj, "type_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
+  if (kind == "trait_object") {
+    ast::MethodCallReceiverKindTraitObject data;
+    data.trait_name = getString(mapReq(obj, "trait_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
+  fail("unknown method_call_receiver_kinds kind '" + kind + "'");
+}"#
+}
+
 /// Hard-coded parser for `ModuleId` to preserve string-key compatibility in
 /// `ModuleGraph.modules`.
 pub fn module_id_parser() -> &'static str {
@@ -209,6 +233,8 @@ pub fn program_parser() -> &'static str {
   if (md && !isNil(*md))
     prog.module_doc = getString(*md);
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
+  prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
+      mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =
@@ -1240,6 +1266,18 @@ mod tests {
     }
 
     #[test]
+    fn method_call_receiver_kind_entry_parser_reads_shape() {
+        let src = method_call_receiver_kind_entry_parser();
+        assert!(src.contains("parseMethodCallReceiverKindEntry("));
+        assert!(src.contains("entry.start"));
+        assert!(src.contains("entry.end"));
+        assert!(src.contains("named_type_instance"));
+        assert!(src.contains("trait_object"));
+        assert!(src.contains("type_name"));
+        assert!(src.contains("trait_name"));
+    }
+
+    #[test]
     fn module_graph_parser_iterates_modules_map() {
         let src = module_graph_parser();
         assert!(src.contains("parseModuleGraph("));
@@ -1271,6 +1309,7 @@ mod tests {
         assert!(src.contains("prog.items"));
         // Required metadata fields stay strict at the embedded boundary.
         assert!(src.contains("mapReq(obj, \"expr_types\")"));
+        assert!(src.contains("mapReq(obj, \"method_call_receiver_kinds\")"));
         assert!(src.contains("mapReq(obj, \"handle_types\")"));
         assert!(src.contains("mapReq(obj, \"handle_type_repr\")"));
         // Optional fields checked with mapGet

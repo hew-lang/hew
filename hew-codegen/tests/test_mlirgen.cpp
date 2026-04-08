@@ -568,9 +568,10 @@ makeIdentifierAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKi
   mainItem.kind = std::move(mainFn);
 
   Program program;
-  program.schema_version = 4;
+  program.schema_version = 5;
   program.items.push_back({std::move(mainItem), mkSpan()});
   program.assign_target_kinds.push_back({targetSpan.start, targetSpan.end, std::move(targetKind)});
+  program.assign_target_shapes.push_back({targetSpan.start, targetSpan.end, /*is_unsigned=*/false});
   return program;
 }
 
@@ -653,10 +654,11 @@ makeActorFieldAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKi
   mainItem.kind = std::move(mainFn);
 
   Program program;
-  program.schema_version = 4;
+  program.schema_version = 5;
   program.items.push_back({std::move(actorItem), mkSpan()});
   program.items.push_back({std::move(mainItem), mkSpan()});
   program.assign_target_kinds.push_back({targetSpan.start, targetSpan.end, std::move(targetKind)});
+  program.assign_target_shapes.push_back({targetSpan.start, targetSpan.end, /*is_unsigned=*/false});
   return program;
 }
 

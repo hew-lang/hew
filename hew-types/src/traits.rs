@@ -233,6 +233,7 @@ impl TraitRegistry {
             | Ty::I16
             | Ty::I32
             | Ty::I64
+            | Ty::IntLiteral
             | Ty::U8
             | Ty::U16
             | Ty::U32
@@ -245,7 +246,7 @@ impl TraitRegistry {
             | Ty::Never => true,
 
             // Floats: most traits but NOT Eq, Ord, Hash (NaN issues)
-            Ty::F32 | Ty::F64 => !matches!(
+            Ty::F32 | Ty::F64 | Ty::FloatLiteral => !matches!(
                 marker,
                 MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash
             ),

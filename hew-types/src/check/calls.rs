@@ -4,7 +4,188 @@
 )]
 use super::*;
 
+fn constructor_names_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let a_qualified = a.contains('.');
+    let b_qualified = b.contains('.');
+    if a_qualified && b_qualified {
+        return false;
+    }
+    let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
+    let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
+    a_bare == b_bare
+}
+
 impl Checker {
+    fn lookup_variant_constructor(
+        &self,
+        func_name: &str,
+    ) -> Option<(String, Vec<Ty>, Vec<String>)> {
+        if let Some(pos) = func_name.rfind("::") {
+            let type_prefix = &func_name[..pos];
+            let variant_name = &func_name[pos + 2..];
+            self.type_defs.get(type_prefix).and_then(|td| {
+                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                    return None;
+                }
+                td.variants.get(variant_name).and_then(|variant| {
+                    let params = match variant {
+                        VariantDef::Unit => Vec::new(),
+                        VariantDef::Tuple(p) => p.clone(),
+                        VariantDef::Struct(_) => return None,
+                    };
+                    Some((type_prefix.to_string(), params, td.type_params.clone()))
+                })
+            })
+        } else {
+            self.type_defs
+                .iter()
+                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
+                .find_map(|(type_name, td)| {
+                    td.variants.get(func_name).and_then(|variant| {
+                        let params = match variant {
+                            VariantDef::Unit => Vec::new(),
+                            VariantDef::Tuple(p) => p.clone(),
+                            VariantDef::Struct(_) => return None,
+                        };
+                        Some((type_name.clone(), params, td.type_params.clone()))
+                    })
+                })
+        }
+    }
+
+    fn expected_constructor_type_args(
+        expected: &Ty,
+        type_name: &str,
+        arity: usize,
+    ) -> Option<Vec<Ty>> {
+        match expected {
+            Ty::Named { name, args }
+                if constructor_names_match(name, type_name) && args.len() == arity =>
+            {
+                Some(args.clone())
+            }
+            Ty::Machine { name } if constructor_names_match(name, type_name) && arity == 0 => {
+                Some(vec![])
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
+        let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        if concrete
+            .iter()
+            .all(|ty| !ty_has_unresolved_inference_var(ty))
+        {
+            self.call_type_args.insert(SpanKey::from(span), concrete);
+        }
+    }
+
+    fn record_builtin_result_call_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
+        let key = SpanKey::from(span);
+        self.call_type_args
+            .insert(key.clone(), vec![ok_ty.clone(), err_ty.clone()]);
+        self.builtin_result_call_spans.insert(key);
+    }
+
+    pub(super) fn check_call_against_expected_constructor(
+        &mut self,
+        func: &Spanned<Expr>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        if type_args.is_some() {
+            return None;
+        }
+
+        let func_name = match &func.0 {
+            Expr::Identifier(name) => name.clone(),
+            Expr::FieldAccess { object, field } => {
+                let Expr::Identifier(obj_name) = &object.0 else {
+                    return None;
+                };
+                format!("{obj_name}::{field}")
+            }
+            _ => return None,
+        };
+
+        let resolved_expected = self.subst.resolve(expected);
+
+        if let Some((type_name, expected_params, type_params)) =
+            self.lookup_variant_constructor(&func_name)
+        {
+            let mut inferred_args = Self::expected_constructor_type_args(
+                &resolved_expected,
+                &type_name,
+                type_params.len(),
+            )?;
+            self.check_arity(args, expected_params.len(), "this function", span);
+            for (i, arg) in args.iter().enumerate() {
+                if let Some(param_ty) = expected_params.get(i) {
+                    let (expr, arg_span) = arg.expr();
+                    let mut expected_ty = param_ty.clone();
+                    for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
+                        expected_ty = self.substitute_named_param(&expected_ty, param, replacement);
+                    }
+                    self.check_against(expr, arg_span, &expected_ty);
+                }
+            }
+            let result_ty = Ty::normalize_named(
+                type_name,
+                inferred_args
+                    .drain(..)
+                    .map(|ty| self.subst.resolve(&ty))
+                    .collect(),
+            );
+            self.record_type(span, &result_ty);
+            return Some(result_ty);
+        }
+
+        match func_name.as_str() {
+            "Some" => {
+                let inner_ty = resolved_expected.as_option()?.clone();
+                self.check_arity(args, 1, "`Some`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, &inner_ty);
+                }
+                let result_ty = Ty::option(self.subst.resolve(&inner_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            "Ok" => {
+                let (ok_ty, err_ty) = resolved_expected.as_result()?;
+                self.check_arity(args, 1, "`Ok`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, ok_ty);
+                }
+                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
+                let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            "Err" => {
+                let (ok_ty, err_ty) = resolved_expected.as_result()?;
+                self.check_arity(args, 1, "`Err`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, err_ty);
+                }
+                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
+                let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn warn_if_wasm_incompatible_call(&mut self, func_name: &str, span: &Span) {
         if !self.wasm_target {
             return;
@@ -94,37 +275,7 @@ impl Checker {
         // to avoid cloning the entire type_defs map.
         //
         // Handle both unqualified (`Circle(5)`) and qualified (`Shape::Circle(5)`) forms.
-        let constructor_match = if let Some(pos) = func_name.rfind("::") {
-            let type_prefix = &func_name[..pos];
-            let variant_name = &func_name[pos + 2..];
-            self.type_defs.get(type_prefix).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
-                    return None;
-                }
-                td.variants.get(variant_name).and_then(|variant| {
-                    let params = match variant {
-                        VariantDef::Unit => Vec::new(),
-                        VariantDef::Tuple(p) => p.clone(),
-                        VariantDef::Struct(_) => return None,
-                    };
-                    Some((type_prefix.to_string(), params, td.type_params.clone()))
-                })
-            })
-        } else {
-            self.type_defs
-                .iter()
-                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
-                .find_map(|(type_name, td)| {
-                    td.variants.get(&func_name).and_then(|variant| {
-                        let params = match variant {
-                            VariantDef::Unit => Vec::new(),
-                            VariantDef::Tuple(p) => p.clone(),
-                            VariantDef::Struct(_) => return None,
-                        };
-                        Some((type_name.clone(), params, td.type_params.clone()))
-                    })
-                })
-        };
+        let constructor_match = self.lookup_variant_constructor(&func_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
             let type_param_count = type_params.len();
             if type_param_count == 0 {
@@ -203,21 +354,25 @@ impl Checker {
             }
             "Ok" => {
                 self.check_arity(args, 1, "`Ok`", span);
-                let t = Ty::Var(TypeVar::fresh());
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &t);
+                    self.check_against(expr, sp, &ok_ty);
                 }
-                return Ty::result(t, Ty::Var(TypeVar::fresh()));
+                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                return Ty::result(ok_ty, err_ty);
             }
             "Err" => {
                 self.check_arity(args, 1, "`Err`", span);
-                let e = Ty::Var(TypeVar::fresh());
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &e);
+                    self.check_against(expr, sp, &err_ty);
                 }
-                return Ty::result(Ty::Var(TypeVar::fresh()), e);
+                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                return Ty::result(ok_ty, err_ty);
             }
             "close" => {
                 if !self.check_arity(args, 1, "`close`", span) {
@@ -388,14 +543,7 @@ impl Checker {
             // inferred type variables to concrete types and record them so the
             // enrichment layer can fill them in before serialization.
             if type_args.is_none() && !sig.type_params.is_empty() {
-                let concrete: Vec<Ty> = resolved_type_args
-                    .iter()
-                    .map(|ta| self.subst.resolve(ta))
-                    .collect();
-                // Only store if every type arg resolved to a concrete (non-Var) type.
-                if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
-                    self.call_type_args.insert(SpanKey::from(span), concrete);
-                }
+                self.record_concrete_call_type_args(span, &resolved_type_args);
             }
 
             return freshened_ret;
@@ -411,13 +559,9 @@ impl Checker {
             // before the AST is serialised for the codegen.
             if let Some(poly_vars) = self.lambda_poly_type_var_map.get(&func_name).cloned() {
                 if type_args.is_none() {
-                    let concrete: Vec<Ty> = poly_vars
-                        .iter()
-                        .map(|(_, tv)| self.subst.resolve(&Ty::Var(*tv)))
-                        .collect();
-                    if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
-                        self.call_type_args.insert(SpanKey::from(span), concrete);
-                    }
+                    let inferred_type_args: Vec<Ty> =
+                        poly_vars.iter().map(|(_, tv)| Ty::Var(*tv)).collect();
+                    self.record_concrete_call_type_args(span, &inferred_type_args);
                 }
             }
             return ret;
@@ -484,11 +628,13 @@ impl Checker {
                 }
                 *ret
             }
+            Ty::Unit => {
+                self.check_arity(args, 0, "this function", span);
+                Ty::Unit
+            }
             _ => {
                 // Don't cascade errors from already-failed expressions.
-                // Also allow Ty::Unit — keyword expressions like `cooperate` return
-                // Unit and can be called with `()` as a no-op.
-                if !matches!(resolved, Ty::Error | Ty::Var(_) | Ty::Unit) {
+                if !matches!(resolved, Ty::Error | Ty::Var(_)) {
                     self.report_error(
                         TypeErrorKind::Mismatch {
                             expected: "function".to_string(),
@@ -562,11 +708,19 @@ impl Checker {
         ty
     }
 
-    /// Validates that a `Receiver<T>` element type is supported for `for await`.
-    /// Emits `InvalidOperation` if the resolved type is unsupported (not String/int/unknown var).
+    /// Validates that a `Receiver<T>` element type is resolved and supported for
+    /// `for await`.
     pub(super) fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {
         let resolved = self.subst.resolve(inner);
-        if !matches!(resolved, Ty::Var(_) | Ty::String) && !resolved.is_integer() {
+        if ty_has_unresolved_inference_var(&resolved) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "`for await` over a channel receiver requires a resolved element type".to_string(),
+            );
+            return;
+        }
+        if !matches!(resolved, Ty::String) && !resolved.is_integer() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

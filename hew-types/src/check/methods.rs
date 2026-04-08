@@ -779,13 +779,7 @@ impl Checker {
                     self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
 
                     if !sig.type_params.is_empty() {
-                        let concrete: Vec<Ty> = resolved_type_args
-                            .iter()
-                            .map(|ta| self.subst.resolve(ta))
-                            .collect();
-                        if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
-                            self.call_type_args.insert(SpanKey::from(span), concrete);
-                        }
+                        self.record_concrete_call_type_args(span, &resolved_type_args);
                     }
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are

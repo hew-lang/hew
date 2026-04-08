@@ -101,6 +101,33 @@ fn names_match_qualified(a: &str, b: &str) -> bool {
     a_bare == b_bare
 }
 
+fn literal_kind_can_unify_with_concrete(literal: &Ty, concrete: &Ty) -> bool {
+    match literal {
+        Ty::IntLiteral => concrete.is_integer() || concrete.is_float(),
+        Ty::FloatLiteral => concrete.is_float(),
+        _ => false,
+    }
+}
+
+fn maybe_promote_literal_bound_var(
+    subst: &mut Substitution,
+    original: &Ty,
+    resolved: &Ty,
+    concrete: &Ty,
+) -> bool {
+    let Ty::Var(var) = original else {
+        return false;
+    };
+    if !resolved.is_numeric_literal() || concrete.is_numeric_literal() || !concrete.is_numeric() {
+        return false;
+    }
+    if !literal_kind_can_unify_with_concrete(resolved, concrete) {
+        return false;
+    }
+    subst.insert(*var, concrete.clone());
+    true
+}
+
 /// Unify two types, updating the substitution.
 ///
 /// This is the core algorithm that makes two types equal by finding
@@ -117,19 +144,37 @@ fn names_match_qualified(a: &str, b: &str) -> bool {
     reason = "keeping function/closure patterns visually distinct"
 )]
 pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
-    let a = subst.resolve(a);
-    let b = subst.resolve(b);
+    let a_resolved = subst.resolve(a);
+    let b_resolved = subst.resolve(b);
 
-    match (&a, &b) {
+    if maybe_promote_literal_bound_var(subst, a, &a_resolved, &b_resolved)
+        || maybe_promote_literal_bound_var(subst, b, &b_resolved, &a_resolved)
+    {
+        return Ok(());
+    }
+
+    match (&a_resolved, &b_resolved) {
         // Same type — trivial
-        _ if a == b => Ok(()),
+        _ if a_resolved == b_resolved => Ok(()),
 
         // Type variable on either side — bind
-        (Ty::Var(v), _) => bind(subst, *v, &b),
-        (_, Ty::Var(v)) => bind(subst, *v, &a),
+        (Ty::Var(v), _) => bind(subst, *v, &b_resolved),
+        (_, Ty::Var(v)) => bind(subst, *v, &a_resolved),
 
         // Error/Never type unifies with anything (recovery/diverging)
         (Ty::Error | Ty::Never, _) | (_, Ty::Error | Ty::Never) => Ok(()),
+
+        // Numeric literal kinds unify with compatible concrete numeric types.
+        (Ty::IntLiteral | Ty::FloatLiteral, concrete)
+            if literal_kind_can_unify_with_concrete(&a_resolved, concrete) =>
+        {
+            Ok(())
+        }
+        (concrete, Ty::IntLiteral | Ty::FloatLiteral)
+            if literal_kind_can_unify_with_concrete(&b_resolved, concrete) =>
+        {
+            Ok(())
+        }
 
         // Structural: tuples
         (Ty::Tuple(as_), Ty::Tuple(bs)) => {
@@ -149,8 +194,8 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
         (Ty::Array(a_elem, a_size), Ty::Array(b_elem, b_size)) => {
             if a_size != b_size {
                 return Err(UnifyError::Mismatch {
-                    expected: a,
-                    actual: b,
+                    expected: a_resolved.clone(),
+                    actual: b_resolved.clone(),
                 });
             }
             unify(subst, a_elem, b_elem)
@@ -304,8 +349,8 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
 
         // Mismatch
         _ => Err(UnifyError::Mismatch {
-            expected: a,
-            actual: b,
+            expected: a_resolved,
+            actual: b_resolved,
         }),
     }
 }
@@ -470,6 +515,40 @@ mod tests {
         let mut subst = Substitution::new();
         assert!(unify(&mut subst, &Ty::Error, &Ty::I32).is_ok());
         assert!(unify(&mut subst, &Ty::Bool, &Ty::Error).is_ok());
+    }
+
+    #[test]
+    fn test_unify_int_literal_with_concrete_numeric() {
+        let mut subst = Substitution::new();
+        assert!(unify(&mut subst, &Ty::IntLiteral, &Ty::I32).is_ok());
+        assert!(unify(&mut subst, &Ty::IntLiteral, &Ty::F32).is_ok());
+    }
+
+    #[test]
+    fn test_unify_float_literal_with_integer_mismatch() {
+        let mut subst = Substitution::new();
+        let result = unify(&mut subst, &Ty::FloatLiteral, &Ty::I32);
+        assert!(matches!(result, Err(UnifyError::Mismatch { .. })));
+    }
+
+    #[test]
+    fn test_unify_promotes_var_bound_to_int_literal() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v = TypeVar::fresh();
+        subst.insert(v, Ty::IntLiteral);
+        assert!(unify(&mut subst, &Ty::Var(v), &Ty::I32).is_ok());
+        assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I32);
+    }
+
+    #[test]
+    fn test_unify_promotes_var_bound_to_float_literal() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v = TypeVar::fresh();
+        subst.insert(v, Ty::FloatLiteral);
+        assert!(unify(&mut subst, &Ty::Var(v), &Ty::F32).is_ok());
+        assert_eq!(subst.resolve(&Ty::Var(v)), Ty::F32);
     }
 
     #[test]

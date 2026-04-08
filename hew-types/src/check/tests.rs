@@ -61,10 +61,10 @@ fn make_bool_literal(b: bool, span: Span) -> Spanned<Expr> {
 fn test_literal_types() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-    // Test integer literal (defaults to i64)
+    // Integer literals synthesize as a first-class literal kind.
     let int_expr = make_int_literal(42, 0..2);
     let int_ty = checker.synthesize(&int_expr.0, &int_expr.1);
-    assert_eq!(int_ty, Ty::I64);
+    assert_eq!(int_ty, Ty::IntLiteral);
 
     // Test boolean literal
     let bool_expr = make_bool_literal(true, 0..4);
@@ -245,6 +245,14 @@ fn typecheck_generic_call_with_inferred_type_args() {
         .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
         .collect();
     assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![Ty::I64]),
+        "expected inferred int literal type args to materialize at output boundary, got {:?}",
+        output.call_type_args
+    );
 }
 
 #[test]
@@ -522,7 +530,7 @@ fn test_float_literal_type() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let expr = (Expr::Literal(Literal::Float(3.14)), 0..4);
     let ty = checker.synthesize(&expr.0, &expr.1);
-    assert_eq!(ty, Ty::F64);
+    assert_eq!(ty, Ty::FloatLiteral);
 }
 
 #[test]
@@ -1128,6 +1136,171 @@ fn typecheck_generic_enum_constructor_infers_type_args() {
         "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
     ));
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+}
+
+#[test]
+fn generic_enum_constructor_expected_context_coerces_payload_literal() {
+    let source = concat!(
+        "enum Option<T> { Some(T); None; }\n",
+        "fn take_int(x: Option<int>) -> Option<int> { x }\n",
+        "fn main() { take_int(Some(42)); }\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((outer_call, _)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected outer call statement");
+    };
+    let Expr::Call {
+        args: outer_args, ..
+    } = outer_call
+    else {
+        panic!("expected outer call expression");
+    };
+    let (inner_call, inner_call_span) = outer_args[0].expr();
+    let Expr::Call {
+        args: inner_args, ..
+    } = inner_call
+    else {
+        panic!("expected inner constructor call");
+    };
+    let (_, literal_span) = inner_args[0].expr();
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(literal_span)),
+        Some(&Ty::I64),
+        "constructor payload literal should coerce to `int`: {:?}",
+        output.expr_types
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(inner_call_span)),
+        Some(&Ty::option(Ty::I64)),
+        "constructor call should resolve to `Option<int>`: {:?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn builtin_result_constructors_materialize_output_type_args() {
+    let source = concat!(
+        "fn main() -> int {\n",
+        "    Ok(7);\n",
+        "    Err(9);\n",
+        "    0\n",
+        "}\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((Expr::Call { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected first statement to be `Ok(...)`");
+    };
+    let Stmt::Expression((Expr::Call { .. }, err_call_span)) = &main_fn.body.stmts[1].0 else {
+        panic!("expected second statement to be `Err(...)`");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(ok_call_span)),
+        Some(&vec![Ty::I64, Ty::I64]),
+        "expected `Ok(7)` to persist concrete builtin result type args: {:?}",
+        output.call_type_args
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(err_call_span)),
+        Some(&vec![Ty::I64, Ty::I64]),
+        "expected `Err(9)` to persist concrete builtin result type args: {:?}",
+        output.call_type_args
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(ok_call_span)),
+        Some(&Ty::result(Ty::I64, Ty::I64)),
+        "expected `Ok(7)` output type to materialize fully before serialization: {:?}",
+        output.expr_types
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(err_call_span)),
+        Some(&Ty::result(Ty::I64, Ty::I64)),
+        "expected `Err(9)` output type to materialize fully before serialization: {:?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn cooperate_call_output_type_is_unit() {
+    let source = "fn main() { cooperate(); }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((Expr::Call { .. }, call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected cooperate call statement");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(call_span)),
+        Some(&Ty::Unit),
+        "expected `cooperate()` to remain unit-typed for serialization: {:?}",
+        output.expr_types
+    );
 }
 
 #[test]
@@ -4248,6 +4421,50 @@ fn let_bound_literal_overflow() {
     );
 }
 
+#[test]
+fn mutable_var_initializer_materializes_literal_default() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let var_stmt = Stmt::Var {
+        name: "n".to_string(),
+        ty: None,
+        value: Some(make_int_literal(5, 8..9)),
+    };
+    checker.check_stmt(&var_stmt, &(0..10));
+    let binding = checker
+        .env
+        .lookup_ref("n")
+        .expect("mutable binding should be defined");
+    assert_eq!(binding.ty, Ty::I64);
+    assert_eq!(
+        checker
+            .expr_types
+            .get(&SpanKey { start: 8, end: 9 })
+            .cloned(),
+        Some(Ty::I64)
+    );
+}
+
+#[test]
+fn typecheck_output_materializes_literal_kinds_for_unannotated_lets() {
+    let source = "fn main() { let x = 1; let y = 2.0; }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        !output.expr_types.values().any(Ty::is_numeric_literal),
+        "TypeCheckOutput should materialize surviving literal kinds before serialization: {:?}",
+        output.expr_types
+    );
+    assert!(output.expr_types.values().any(|ty| ty == &Ty::I64));
+    assert!(output.expr_types.values().any(|ty| ty == &Ty::F64));
+}
+
 // ── Struct init literal coercion tests ─────────────────────────────
 
 fn register_generic_wrapper(checker: &mut Checker) {
@@ -4305,7 +4522,8 @@ fn struct_init_infers_type_param_from_literal() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     register_generic_wrapper(&mut checker);
 
-    // Wrapper { value: 42 } without expected type — should infer Wrapper<i64>
+    // Wrapper { value: 42 } without expected type keeps the literal kind until
+    // a later coercion/defaulting boundary.
     let init = (
         Expr::StructInit {
             name: "Wrapper".to_string(),
@@ -4318,7 +4536,7 @@ fn struct_init_infers_type_param_from_literal() {
         ty,
         Ty::Named {
             name: "Wrapper".to_string(),
-            args: vec![Ty::I64],
+            args: vec![Ty::IntLiteral],
         }
     );
     assert!(

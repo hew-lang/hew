@@ -46,6 +46,28 @@ use self::util::{
     ty_has_unresolved_inference_var,
 };
 
+fn resolve_builtin_result_output_type_args(args: Vec<Ty>) -> Option<Vec<Ty>> {
+    if args.len() != 2 {
+        return None;
+    }
+    let ok_unresolved = ty_has_unresolved_inference_var(&args[0]);
+    let err_unresolved = ty_has_unresolved_inference_var(&args[1]);
+    match (ok_unresolved, err_unresolved) {
+        (false, false) => Some(args),
+        (false, true) => Some(vec![args[0].clone(), args[0].clone()]),
+        (true, false) => Some(vec![args[1].clone(), args[1].clone()]),
+        (true, true) => None,
+    }
+}
+
+fn patch_builtin_result_output_type(ty: Ty, type_args: &[Ty]) -> Ty {
+    if type_args.len() == 2 {
+        Ty::result(type_args[0].clone(), type_args[1].clone())
+    } else {
+        ty
+    }
+}
+
 impl Checker {
     /// Log function names that accept keyword arguments for structured fields.
     const LOG_KWARGS_FUNCTIONS: &'static [&'static str] = &[
@@ -168,24 +190,47 @@ impl Checker {
         // (resolved after inference + defaulting) and validate fits.
         self.apply_deferred_range_bound_types(&mut expr_types);
 
-        // Move data out of Checker — it is not used after check_program.
-        // Resolve any remaining type variables in expr_types via the
-        // substitution so the enrichment layer sees concrete types.
-        let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
-            .into_iter()
-            .map(|(k, v)| (k, self.subst.resolve(&v)))
-            .collect();
+        let builtin_result_call_spans = std::mem::take(&mut self.builtin_result_call_spans);
 
         // Also resolve inferred call type args so the enrichment layer can
         // fill in explicit type annotations for the codegen.
         let resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
             std::mem::take(&mut self.call_type_args)
                 .into_iter()
-                .map(|(k, args)| {
-                    let resolved = args.iter().map(|a| self.subst.resolve(a)).collect();
-                    (k, resolved)
+                .filter_map(|(k, args)| {
+                    let resolved: Vec<Ty> = args
+                        .iter()
+                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .collect();
+                    if builtin_result_call_spans.contains(&k) {
+                        resolve_builtin_result_output_type_args(resolved).map(|args| (k, args))
+                    } else if resolved
+                        .iter()
+                        .all(|ty| !ty_has_unresolved_inference_var(ty))
+                    {
+                        Some((k, resolved))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
+
+        // Move data out of Checker — it is not used after check_program.
+        // Resolve any remaining type variables in expr_types via the
+        // substitution so the enrichment layer sees concrete types, then
+        // materialize surviving literal kinds at the checked-output boundary.
+        let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
+            .into_iter()
+            .map(|(k, v)| {
+                let mut resolved = self.subst.resolve(&v).materialize_literal_defaults();
+                if builtin_result_call_spans.contains(&k) {
+                    if let Some(type_args) = resolved_call_type_args.get(&k) {
+                        resolved = patch_builtin_result_output_type(resolved, type_args);
+                    }
+                }
+                (k, resolved)
+            })
+            .collect();
 
         let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
             .into_iter()

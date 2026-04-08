@@ -68,6 +68,10 @@ pub enum Ty {
     F32,
     /// 64-bit floating point
     F64,
+    /// Integer literal kind awaiting contextual coercion/defaulting
+    IntLiteral,
+    /// Floating-point literal kind awaiting contextual coercion/defaulting
+    FloatLiteral,
     /// Boolean
     Bool,
     /// Unicode character
@@ -268,7 +272,12 @@ impl Ty {
         clippy::too_many_lines,
         reason = "type display covers all type variants recursively"
     )]
-    fn fmt_with_i64_name(&self, f: &mut fmt::Formatter<'_>, i64_name: &str) -> fmt::Result {
+    fn fmt_with_numeric_names(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        i64_name: &str,
+        f64_name: &str,
+    ) -> fmt::Result {
         match self {
             Ty::I8 => write!(f, "i8"),
             Ty::I16 => write!(f, "i16"),
@@ -279,7 +288,9 @@ impl Ty {
             Ty::U32 => write!(f, "u32"),
             Ty::U64 => write!(f, "u64"),
             Ty::F32 => write!(f, "f32"),
-            Ty::F64 => write!(f, "f64"),
+            Ty::F64 => write!(f, "{f64_name}"),
+            Ty::IntLiteral => write!(f, "<int literal>"),
+            Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
             Ty::String => write!(f, "String"),
@@ -294,18 +305,18 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    elem.fmt_with_i64_name(f, i64_name)?;
+                    elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ")")
             }
             Ty::Array(elem, size) => {
                 write!(f, "[")?;
-                elem.fmt_with_i64_name(f, i64_name)?;
+                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "; {size}]")
             }
             Ty::Slice(elem) => {
                 write!(f, "[")?;
-                elem.fmt_with_i64_name(f, i64_name)?;
+                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
             Ty::Named { name, args } => {
@@ -316,7 +327,7 @@ impl Ty {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        arg.fmt_with_i64_name(f, i64_name)?;
+                        arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                     }
                     write!(f, ">")?;
                 }
@@ -328,10 +339,10 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    param.fmt_with_i64_name(f, i64_name)?;
+                    param.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ") -> ")?;
-                ret.fmt_with_i64_name(f, i64_name)
+                ret.fmt_with_numeric_names(f, i64_name, f64_name)
             }
             Ty::Pointer {
                 is_mutable,
@@ -342,7 +353,7 @@ impl Ty {
                 } else {
                     write!(f, "*const ")?;
                 }
-                pointee.fmt_with_i64_name(f, i64_name)
+                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
             }
             Ty::TraitObject { traits } => {
                 write!(f, "dyn ")?;
@@ -355,7 +366,7 @@ impl Ty {
                             if i > 0 {
                                 write!(f, ", ")?;
                             }
-                            arg.fmt_with_i64_name(f, i64_name)?;
+                            arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                         }
                         write!(f, ">")?;
                     }
@@ -372,7 +383,7 @@ impl Ty {
                                 if j > 0 {
                                     write!(f, ", ")?;
                                 }
-                                arg.fmt_with_i64_name(f, i64_name)?;
+                                arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                             }
                             write!(f, ">")?;
                         }
@@ -603,6 +614,35 @@ impl Ty {
         self.is_integer() || self.is_float()
     }
 
+    /// Check if this is a numeric literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_numeric_literal(&self) -> bool {
+        matches!(self, Ty::IntLiteral | Ty::FloatLiteral)
+    }
+
+    /// Check if this is an integer literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_integer_literal(&self) -> bool {
+        matches!(self, Ty::IntLiteral)
+    }
+
+    /// Check if this is a float literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_float_literal(&self) -> bool {
+        matches!(self, Ty::FloatLiteral)
+    }
+
+    /// Materialize any remaining numeric literal kinds to their canonical
+    /// concrete defaults for downstream consumers that require fixed widths.
+    #[must_use]
+    pub fn materialize_literal_defaults(&self) -> Ty {
+        match self {
+            Ty::IntLiteral => Ty::I64,
+            Ty::FloatLiteral => Ty::F64,
+            _ => self.map_children(&|child| child.materialize_literal_defaults()),
+        }
+    }
+
     /// Check if this is the bytes type.
     #[must_use]
     pub fn is_bytes(&self) -> bool {
@@ -620,14 +660,22 @@ impl Ty {
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64
+            Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::U64
+                | Ty::IntLiteral
         )
     }
 
     /// Check if this is a floating-point type.
     #[must_use]
     pub fn is_float(&self) -> bool {
-        matches!(self, Ty::F32 | Ty::F64)
+        matches!(self, Ty::F32 | Ty::F64 | Ty::FloatLiteral)
     }
 
     /// Check if this is a primitive type.
@@ -748,19 +796,20 @@ impl Ty {
     }
 }
 
-/// User-facing type wrapper that preserves `int` spelling for canonical `Ty::I64`.
+/// User-facing type wrapper that preserves Hew numeric spellings.
 #[derive(Debug)]
 pub struct UserFacingTy<'a>(&'a Ty);
 
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_i64_name(f, "i64")
+        self.fmt_with_numeric_names(f, "i64", "f64")
     }
 }
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt_with_i64_name(f, "int")
+        let materialized = self.0.materialize_literal_defaults();
+        materialized.fmt_with_numeric_names(f, "int", "float")
     }
 }
 
@@ -779,6 +828,8 @@ mod tests {
     fn test_is_numeric() {
         assert!(Ty::I32.is_numeric());
         assert!(Ty::F64.is_numeric());
+        assert!(Ty::IntLiteral.is_numeric());
+        assert!(Ty::FloatLiteral.is_numeric());
         assert!(!Ty::Bool.is_numeric());
         assert!(!Ty::String.is_numeric());
     }
@@ -787,6 +838,7 @@ mod tests {
     fn test_is_copy() {
         assert!(Ty::I32.is_copy());
         assert!(Ty::Bool.is_copy());
+        assert!(Ty::IntLiteral.is_copy());
         assert!(!Ty::String.is_copy());
         assert!(Ty::Tuple(vec![Ty::I32, Ty::Bool]).is_copy());
         assert!(!Ty::Tuple(vec![Ty::I32, Ty::String]).is_copy());
@@ -836,8 +888,21 @@ mod tests {
     }
 
     #[test]
-    fn test_user_facing_display_preserves_int_alias() {
+    fn test_user_facing_display_preserves_numeric_aliases() {
         assert_eq!(Ty::I64.user_facing().to_string(), "int");
+        assert_eq!(Ty::F64.user_facing().to_string(), "float");
+    }
+
+    #[test]
+    fn test_user_facing_display_materializes_literal_kinds() {
+        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "int");
+        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "float");
+    }
+
+    #[test]
+    fn test_canonical_lowering_name_rejects_literal_kinds() {
+        assert_eq!(Ty::IntLiteral.canonical_lowering_name(), None);
+        assert_eq!(Ty::FloatLiteral.canonical_lowering_name(), None);
     }
 
     #[test]
@@ -879,6 +944,7 @@ mod tests {
         assert!(Ty::U16.is_integer());
         assert!(Ty::U32.is_integer());
         assert!(Ty::U64.is_integer());
+        assert!(Ty::IntLiteral.is_integer());
         assert!(!Ty::F32.is_integer());
         assert!(!Ty::F64.is_integer());
         assert!(!Ty::Bool.is_integer());
@@ -888,8 +954,30 @@ mod tests {
     fn test_is_float() {
         assert!(Ty::F32.is_float());
         assert!(Ty::F64.is_float());
+        assert!(Ty::FloatLiteral.is_float());
         assert!(!Ty::I32.is_float());
         assert!(!Ty::Bool.is_float());
+    }
+
+    #[test]
+    fn test_materialize_literal_defaults() {
+        let ty = Ty::Tuple(vec![
+            Ty::IntLiteral,
+            Ty::Named {
+                name: "Option".to_string(),
+                args: vec![Ty::FloatLiteral],
+            },
+        ]);
+        assert_eq!(
+            ty.materialize_literal_defaults(),
+            Ty::Tuple(vec![
+                Ty::I64,
+                Ty::Named {
+                    name: "Option".to_string(),
+                    args: vec![Ty::F64],
+                },
+            ])
+        );
     }
 
     #[test]

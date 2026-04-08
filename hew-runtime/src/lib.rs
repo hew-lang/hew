@@ -27,6 +27,8 @@
 //! - `encryption` — Noise protocol encryption via `snow`
 //! - `profiler` — built-in profiler dashboard and pprof export
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
 
@@ -76,6 +78,54 @@ macro_rules! cabi_guard {
 }
 
 pub(crate) mod util;
+
+#[cfg(test)]
+pub(crate) struct RuntimeTestGuard {
+    _lock_guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RUNTIME_TEST_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Drop for RuntimeTestGuard {
+    fn drop(&mut self) {
+        RUNTIME_TEST_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current.saturating_sub(1));
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = LOCK.get_or_init(|| std::sync::Mutex::new(()));
+
+    let held = RUNTIME_TEST_LOCK_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current > 0
+    });
+
+    if held {
+        RuntimeTestGuard { _lock_guard: None }
+    } else {
+        // Recover from poisoned lock (a previous test panicked while
+        // holding it). This matches the old per-module lock_or_recover()
+        // behaviour and prevents a cascade where every subsequent test
+        // on this thread skips lock acquisition due to a stuck depth
+        // counter.
+        let guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        RuntimeTestGuard {
+            _lock_guard: Some(guard),
+        }
+    }
+}
 
 // Profiler (must be declared before other modules so the global
 // allocator is installed before any allocations occur).

@@ -810,15 +810,9 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 mod tests {
     use super::*;
     use std::ptr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::internal::types::HewError;
-
-    /// Serialize all tests in this module since they share `static mut`
-    /// global state. Rust's test harness runs tests in parallel by
-    /// default; without this lock, concurrent mutation of the globals
-    /// causes undefined behaviour.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// Build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
@@ -1059,7 +1053,7 @@ mod tests {
 
     #[test]
     fn init_and_shutdown_dont_panic() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
 
@@ -1080,7 +1074,7 @@ mod tests {
 
     #[test]
     fn double_init_is_noop() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
 
@@ -1097,7 +1091,7 @@ mod tests {
 
     #[test]
     fn enqueue_and_run_with_null_mailbox() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // An actor with no mailbox (null) should transition from
         // Runnable -> Running -> Idle after activation.
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
@@ -1134,7 +1128,7 @@ mod tests {
 
     #[test]
     fn activate_skips_stopped_actor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1159,7 +1153,7 @@ mod tests {
 
     #[test]
     fn activate_skips_crashed_actor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1184,7 +1178,7 @@ mod tests {
 
     #[test]
     fn activate_skips_idle_actor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1210,7 +1204,7 @@ mod tests {
 
     #[test]
     fn metrics_counters_increment() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1233,7 +1227,7 @@ mod tests {
 
     #[test]
     fn metrics_reset() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1260,7 +1254,7 @@ mod tests {
 
     #[test]
     fn global_queue_len_reflects_enqueued_actors() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1346,7 +1340,7 @@ mod tests {
     /// so self APIs always saw null / returned -1.
     #[test]
     fn self_api_sees_current_actor_during_dispatch() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1425,7 +1419,7 @@ mod tests {
     /// dispatch with a null current actor.
     #[test]
     fn nested_activation_preserves_outer_actor() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1483,7 +1477,7 @@ mod tests {
 
     #[test]
     fn bounded_wasm_ask_does_not_drain_other_actors() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1558,7 +1552,7 @@ mod tests {
 
     #[test]
     fn bounded_wasm_ask_timeout_cancels_before_target_activation() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1616,7 +1610,7 @@ mod tests {
 
     #[test]
     fn zero_timeout_wasm_ask_unblocks_promptly_and_mailbox_cleanup_releases_channel() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1689,7 +1683,7 @@ mod tests {
 
     #[test]
     fn unbounded_wasm_ask_cancels_when_no_runnable_work_remains() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1761,7 +1755,7 @@ mod tests {
 
     #[test]
     fn ask_with_channel_internal_enqueues_idle_actor_and_preserves_reply_channel() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1857,7 +1851,7 @@ mod tests {
 
     #[test]
     fn ask_with_channel_internal_releases_retained_reply_ref_on_send_failure() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -1971,7 +1965,7 @@ mod tests {
 
     #[test]
     fn self_stop_closes_mailbox_and_wakes_actor_group_waiters() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2046,7 +2040,7 @@ mod tests {
     /// `cleanup_all_actors` / process exit (parity with native scheduler).
     #[test]
     fn terminate_fn_fires_on_stopping_to_stopped_scheduler_path() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         TERMINATE_COUNT.store(0, Ordering::Relaxed);
@@ -2099,7 +2093,7 @@ mod tests {
     /// (or any other cleanup path) runs after the scheduler already fired it.
     #[test]
     fn terminate_fn_not_double_invoked_by_cleanup_after_scheduler_stop() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         TERMINATE_COUNT.store(0, Ordering::Relaxed);
@@ -2145,7 +2139,7 @@ mod tests {
     /// `terminate_fn`, exactly as the native scheduler does on the same path.
     #[test]
     fn terminate_fn_fires_on_closed_mailbox_idle_to_stopped() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         TERMINATE_COUNT.store(0, Ordering::Relaxed);
@@ -2201,7 +2195,7 @@ mod tests {
 
     #[test]
     fn actor_group_wait_timeout_wakes_on_closed_mailbox_idle_to_stopped() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2264,7 +2258,7 @@ mod tests {
     /// cleanup path runs after the close-path already fired it.
     #[test]
     fn terminate_fn_not_double_invoked_by_cleanup_after_closed_mailbox_stop() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         TERMINATE_COUNT.store(0, Ordering::Relaxed);
@@ -2333,7 +2327,7 @@ mod tests {
             ARENA_DURING_DISPATCH.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
         }
 
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2401,7 +2395,7 @@ mod tests {
             unsafe { crate::arena::hew_arena_malloc(64) };
         }
 
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2496,7 +2490,7 @@ mod tests {
             unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
         }
 
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2559,7 +2553,7 @@ mod tests {
     /// arena lifecycle but must not leave any arena installed.
     #[test]
     fn null_arena_activation_leaves_no_arena_installed() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2602,7 +2596,7 @@ mod tests {
     // harness gains wasm32 test execution support.
     #[test]
     fn wasm_ask_with_generous_timeout_returns_reply_when_actor_is_fast() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access to shared globals.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2720,7 +2714,7 @@ mod tests {
     /// messages per activation, leaving 2 in the mailbox.
     #[test]
     fn budget_enforces_message_cap_per_activation() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2772,7 +2766,7 @@ mod tests {
     /// must dispatch 8 messages per activation.
     #[test]
     fn high_priority_doubles_effective_budget() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2816,7 +2810,7 @@ mod tests {
     /// must dispatch 2 messages per activation.
     #[test]
     fn low_priority_halves_effective_budget() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2860,7 +2854,7 @@ mod tests {
     /// `max(1÷2, 1) = 1`, so exactly 1 message is dispatched.
     #[test]
     fn low_priority_budget_floor_is_one() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2903,7 +2897,7 @@ mod tests {
     /// than 256 messages must be fully drained in a single activation.
     #[test]
     fn zero_budget_falls_back_to_default_msg_budget() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -2949,7 +2943,7 @@ mod tests {
     // execution support (same limitation as `wasm_ask_with_generous_timeout_…`).
     #[test]
     fn reductions_reset_to_default_per_dispatch() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();

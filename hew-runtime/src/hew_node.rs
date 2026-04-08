@@ -1943,8 +1943,6 @@ mod tests {
     use std::net::TcpListener;
     use std::time::Duration;
 
-    static NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     struct ResetCurrentNode(usize);
 
     impl Drop for ResetCurrentNode {
@@ -1993,7 +1991,7 @@ mod tests {
 
     #[test]
     fn node_lifecycle_start_stop() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this test.
@@ -2017,7 +2015,7 @@ mod tests {
 
     #[test]
     fn local_registry_register_and_lookup() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         crate::registry::hew_registry_clear();
 
@@ -2054,7 +2052,7 @@ mod tests {
 
     #[test]
     fn actor_free_unregisters_named_actor_and_emits_gossip_remove() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         crate::registry::hew_registry_clear();
 
@@ -2105,7 +2103,7 @@ mod tests {
 
     #[test]
     fn node_stop_unregisters_local_names() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         crate::registry::hew_registry_clear();
 
@@ -2147,7 +2145,7 @@ mod tests {
 
     #[test]
     fn two_node_connect_and_handshake() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         crate::registry::hew_registry_clear();
 
@@ -2211,7 +2209,7 @@ mod tests {
 
     #[test]
     fn membership_left_prunes_remote_names_for_departed_node() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         let registry = HewRegistry::default();
         {
@@ -2276,7 +2274,7 @@ mod tests {
 
     #[test]
     fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
 
         let saved_current_node = {
             let mut current = CURRENT_NODE.write_or_recover();
@@ -2621,7 +2619,7 @@ mod tests {
     fn remote_lookup_via_registry_gossip() {
         // Verify that a registry gossip callback populates remote_names
         // and that hew_node_lookup falls through to it.
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
@@ -2672,7 +2670,7 @@ mod tests {
     #[test]
     fn register_emits_gossip_event() {
         // Verify that hew_node_register queues a gossip event in the cluster.
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
@@ -2710,7 +2708,7 @@ mod tests {
     //    over the real transport: node1 sends an ask, node2's actor replies,
     //    and node1 receives the reply.
     //
-    // Both tests run under NODE_TEST_LOCK to ensure CURRENT_NODE / LOCAL_NODE_ID
+    // Both tests run under the shared runtime test lock to ensure CURRENT_NODE / LOCAL_NODE_ID
     // state is not perturbed by concurrent node tests.
 
     use std::sync::atomic::AtomicU32;
@@ -2774,7 +2772,7 @@ mod tests {
 
     #[test]
     fn two_node_remote_send_delivery() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 301.
@@ -2914,7 +2912,7 @@ mod tests {
 
     #[test]
     fn two_node_remote_void_ask_returns_sentinel() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -2978,7 +2976,7 @@ mod tests {
 
     #[test]
     fn two_node_remote_ask_reply() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
@@ -3074,7 +3072,7 @@ mod tests {
 
     #[test]
     fn two_node_remote_nonvoid_empty_reply_returns_null() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3143,7 +3141,7 @@ mod tests {
 
     #[test]
     fn node_stop_wakes_pending_remote_ask() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3243,7 +3241,7 @@ mod tests {
 
     #[test]
     fn connection_drop_wakes_pending_remote_ask() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3369,7 +3367,7 @@ mod tests {
 
     #[test]
     fn secondary_node_stop_does_not_fail_current_node_pending_asks() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3420,7 +3418,7 @@ mod tests {
 
     #[test]
     fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let bind_addr = CString::new("127.0.0.1:0").unwrap();
@@ -3450,14 +3448,14 @@ mod tests {
     // The mechanism prevents a remote peer from exhausting OS thread count or
     // virtual memory by flooding inbound asks.
     //
-    // All of these tests acquire NODE_TEST_LOCK so they serialize with any
+    // All of these tests acquire the shared runtime test lock so they serialize with any
     // other test that runs a node or manipulates INBOUND_ASK_ACTIVE.
 
     /// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` exactly once on drop,
     /// including when the enclosing scope exits via panic.
     #[test]
     fn inbound_ask_guard_decrements_on_drop() {
-        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let _lock = crate::runtime_test_guard();
         // Reset to a known value; restore on exit.
         let saved = INBOUND_ASK_ACTIVE.swap(1, Ordering::AcqRel);
         {
@@ -3480,7 +3478,7 @@ mod tests {
     /// Two guards decrement independently (one per spawned thread).
     #[test]
     fn inbound_ask_guard_pair_decrements_twice() {
-        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let _lock = crate::runtime_test_guard();
         let saved = INBOUND_ASK_ACTIVE.swap(2, Ordering::AcqRel);
         let g1 = InboundAskGuard;
         let g2 = InboundAskGuard;
@@ -3506,7 +3504,7 @@ mod tests {
     /// `node_inbound_router` without needing a live transport.
     #[test]
     fn inbound_ask_worker_limit_rejects_at_capacity() {
-        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let _lock = crate::runtime_test_guard();
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
 
         // Simulate what node_inbound_router does for an inbound ask.
@@ -3533,7 +3531,7 @@ mod tests {
     /// When `INBOUND_ASK_ACTIVE` is one below the limit, a new ask is accepted.
     #[test]
     fn inbound_ask_worker_limit_accepts_below_capacity() {
-        let _lock = NODE_TEST_LOCK.lock_or_recover();
+        let _lock = crate::runtime_test_guard();
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT - 1, Ordering::AcqRel);
 
         let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
@@ -3559,7 +3557,7 @@ mod tests {
     /// counter returns to its pre-ask value.
     #[test]
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3669,7 +3667,7 @@ mod tests {
     /// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
     #[test]
     fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();
@@ -3747,7 +3745,7 @@ mod tests {
     /// payload path, not `ConnectionDropped`, and not a spurious success).
     #[test]
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
-        let _guard = NODE_TEST_LOCK.lock_or_recover();
+        let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
         let (node2_port, port_guard) = reserve_tcp_port();

@@ -1735,6 +1735,12 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 #[cfg(any(target_arch = "wasm32", test))]
 const HEW_WASM_ASK_TICK_ACTIVATIONS: i32 = 1;
 
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn is_terminal(state: i32) -> bool {
+    state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn wake_wasm_actor(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
@@ -2526,6 +2532,79 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 ) -> *mut c_void {
     // SAFETY: same preconditions as actor_ask_wasm_impl.
     unsafe { actor_ask_wasm_impl(actor, msg_type, data, size, Some(timeout_ms)) }
+}
+
+/// Cooperative await: pump the scheduler until the actor reaches a terminal
+/// state (WASM).
+///
+/// Returns the actor error code (0 for clean stop, non-zero for crash).
+/// Returns `-1` for null actor pointers.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer returned by a spawn function.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_await(actor: *mut HewActor) -> i32 {
+    if actor.is_null() {
+        return -1;
+    }
+
+    // SAFETY: caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+    if is_terminal(a.actor_state.load(Ordering::Acquire)) {
+        return a.error_code.load(Ordering::Acquire);
+    }
+
+    loop {
+        // SAFETY: scheduler must be initialized by the runtime/host.
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
+        if is_terminal(a.actor_state.load(Ordering::Acquire)) {
+            return a.error_code.load(Ordering::Acquire);
+        }
+        if remaining == 0 {
+            return HewError::ErrTimeout as i32;
+        }
+    }
+}
+
+/// Cooperative await-all: wait for all provided actors to reach terminal
+/// states by pumping the WASM scheduler.
+///
+/// Returns `0` if every actor stopped normally, or the first non-zero
+/// error code encountered. Returns `-1` on null/invalid arguments.
+///
+/// # Safety
+///
+/// - `actors` must point to an array of at least `count` valid
+///   `*mut HewActor` pointers (null entries are skipped).
+/// - `count` must be non-negative.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count: i64) -> i32 {
+    if actors.is_null() || count < 0 {
+        return -1;
+    }
+
+    let mut first_error = 0;
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "count >= 0 checked above; practical array sizes fit in usize"
+    )]
+    for i in 0..count as usize {
+        // SAFETY: caller guarantees the array is valid for `count` elements.
+        let actor = unsafe { *actors.add(i) };
+        if actor.is_null() {
+            continue;
+        }
+        // SAFETY: actor pointer validity follows the caller contract.
+        let rc = unsafe { hew_actor_await(actor) };
+        if first_error == 0 && rc != 0 {
+            first_error = rc;
+        }
+    }
+    first_error
 }
 
 /// Close an actor, rejecting new messages (WASM).

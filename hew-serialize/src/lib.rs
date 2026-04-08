@@ -4,8 +4,8 @@ pub mod enrich;
 pub mod msgpack;
 
 pub use enrich::{
-    build_expr_type_map, enrich_program, normalize_items_types, rewrite_builtin_calls,
-    EnrichProgramDiagnostics, ExprTypeMapBuild, TypeExprConversionError, TypeExprConversionKind,
+    build_expr_type_map, enrich_program, normalize_items_types, EnrichProgramDiagnostics,
+    ExprTypeMapBuild, TypeExprConversionError, TypeExprConversionKind,
 };
 pub use msgpack::{
     build_assign_target_kind_entries, build_assign_target_shape_entries,

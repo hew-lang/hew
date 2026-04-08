@@ -667,26 +667,25 @@ static void test_len_free_call_on_rc_fails_closed() {
   auto stderrText =
       captureStderr([&] { rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf); });
 
-  if (rc == 1) {
-    const char *err = hew_codegen_last_error();
-    if (!strstr(err, "len")) {
-      FAIL("expected len-related diagnostic for len(Rc<T>)");
-      if (buf.data != nullptr) {
-        hew_codegen_buffer_free(buf);
-      }
-      return;
+  if (rc != 1) {
+    FAIL("len(Rc<T>) should fail closed");
+    if (buf.data != nullptr) {
+      hew_codegen_buffer_free(buf);
     }
-  } else if (rc == 0) {
-    if (stderrText.find("len(...) is not supported for pointer-backed receiver types") ==
-        std::string::npos) {
-      FAIL("expected fail-closed len(Rc<T>) diagnostic");
-      if (buf.data != nullptr) {
-        hew_codegen_buffer_free(buf);
-      }
-      return;
+    return;
+  }
+
+  const char *err = hew_codegen_last_error();
+  if (!strstr(err, "MLIR generation failed")) {
+    FAIL("expected MLIR generation failure");
+    if (buf.data != nullptr) {
+      hew_codegen_buffer_free(buf);
     }
-  } else {
-    FAIL("unexpected return code for len(Rc<T>)");
+    return;
+  }
+  if (stderrText.find("len(...) is not supported for pointer-backed receiver types") ==
+      std::string::npos) {
+    FAIL("expected fail-closed len(Rc<T>) diagnostic");
     if (buf.data != nullptr) {
       hew_codegen_buffer_free(buf);
     }

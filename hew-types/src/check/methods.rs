@@ -1362,6 +1362,12 @@ impl Checker {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::NamedTypeInstance {
+                                type_name: name.clone(),
+                            },
+                        );
                         return sig.return_type.clone();
                     }
                 }
@@ -1439,6 +1445,12 @@ impl Checker {
                                     self.check_against(expr, sp, param_ty);
                                 }
                             }
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::NamedTypeInstance {
+                                    type_name: name.clone(),
+                                },
+                            );
                             return trait_sig.return_type;
                         }
                     }

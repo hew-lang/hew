@@ -2317,6 +2317,8 @@ mod tests {
     /// After a successful ask the error slot must be cleared to `None`.
     #[test]
     fn ask_error_slot_cleared_after_successful_local_ask() {
+        let _guard = crate::runtime_test_guard();
+
         // Poison the slot with a stale error, then perform a local ask.
         LAST_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
 
@@ -2371,6 +2373,8 @@ mod tests {
     /// A connection-dropped failure (via `fail_connection`) must report `ConnectionDropped`.
     #[test]
     fn reply_table_fail_connection_sets_connection_dropped_status() {
+        let _guard = crate::runtime_test_guard();
+
         let key = ConnectionKey {
             conn_mgr: 77,
             conn_id: 11,
@@ -2408,6 +2412,8 @@ mod tests {
     /// `fail_all` wakes every pending reply with `Failed` status.
     #[test]
     fn reply_table_fail_all_wakes_all_pending() {
+        let _guard = crate::runtime_test_guard();
+
         let key_a = ConnectionKey {
             conn_mgr: 55,
             conn_id: 1,

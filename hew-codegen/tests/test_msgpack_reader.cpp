@@ -134,17 +134,18 @@ static void test_single_byte_garbage_rejects() {
 // Error handling: structurally valid msgpack, semantically wrong AST
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Helper: pack a map with schema_version = 4 and the given extra fields
+// Helper: pack a map with schema_version = 5 and the given extra fields
 static std::vector<uint8_t>
 packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFields,
                int extraCount) {
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   // Required top-level fields: schema_version, items, expr_types,
-  // method_call_receiver_kinds, assign_target_kinds, handle_types, handle_type_repr
-  pk.pack_map(7 + extraCount);
+  // method_call_receiver_kinds, assign_target_kinds, assign_target_shapes,
+  // handle_types, handle_type_repr
+  pk.pack_map(8 + extraCount);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(4));
+  pk.pack(static_cast<uint64_t>(5));
   pk.pack(std::string("items"));
   pk.pack_array(0); // empty array
   pk.pack(std::string("expr_types"));
@@ -152,6 +153,8 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -202,8 +205,8 @@ static void test_minimal_valid_program_parses() {
   auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.schema_version != 4) {
-      FAIL("schema_version should be 4");
+    if (prog.schema_version != 5) {
+      FAIL("schema_version should be 5");
       return;
     }
     if (!prog.items.empty()) {
@@ -225,9 +228,9 @@ static void test_drop_funcs_roundtrip() {
   // Build a minimal program payload that includes a drop_funcs array.
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(8); // 7 required + drop_funcs
+  pk.pack_map(9); // 8 required + drop_funcs
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(4));
+  pk.pack(static_cast<uint64_t>(5));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -235,6 +238,8 @@ static void test_drop_funcs_roundtrip() {
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -312,9 +317,9 @@ static void test_method_call_receiver_kinds_roundtrip() {
   TEST(method_call_receiver_kinds_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(7);
+  pk.pack_map(8);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(4));
+  pk.pack(static_cast<uint64_t>(5));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -343,6 +348,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("Greeter"));
 
   pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -377,6 +384,80 @@ static void test_method_call_receiver_kinds_roundtrip() {
   PASS();
 }
 
+// ─── assign_target_shapes parsing ───────────────────────────────────────────
+
+static void test_assign_target_shapes_roundtrip() {
+  TEST(assign_target_shapes_roundtrip);
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  // 8 required fields + assign_target_shapes has 2 entries (overrides the empty one)
+  pk.pack_map(8);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  // Two assign_target_shapes entries: one unsigned, one signed
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(2);
+  // Entry 0: unsigned (u8 target)
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("is_unsigned"));
+  pk.pack(true);
+  // Entry 1: signed (i32 target)
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(20));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(30));
+  pk.pack(std::string("is_unsigned"));
+  pk.pack(false);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.assign_target_shapes.size() != 2) {
+      FAIL("expected 2 assign_target_shapes entries");
+      return;
+    }
+    if (prog.assign_target_shapes[0].start != 5 || prog.assign_target_shapes[0].end != 10) {
+      FAIL("first shape entry span wrong");
+      return;
+    }
+    if (!prog.assign_target_shapes[0].is_unsigned) {
+      FAIL("first shape entry should be unsigned");
+      return;
+    }
+    if (prog.assign_target_shapes[1].start != 20 || prog.assign_target_shapes[1].end != 30) {
+      FAIL("second shape entry span wrong");
+      return;
+    }
+    if (prog.assign_target_shapes[1].is_unsigned) {
+      FAIL("second shape entry should be signed (is_unsigned=false)");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Entry point
 // ═══════════════════════════════════════════════════════════════════════════
@@ -401,6 +482,9 @@ int main() {
   test_drop_funcs_roundtrip();
   test_drop_funcs_absent_gives_empty_map();
   test_drop_funcs_wrong_type_rejects();
+
+  // assign_target_shapes field
+  test_assign_target_shapes_roundtrip();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

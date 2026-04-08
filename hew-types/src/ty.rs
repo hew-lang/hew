@@ -672,6 +672,12 @@ impl Ty {
         )
     }
 
+    /// Check if this is an unsigned integer type.
+    #[must_use]
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64)
+    }
+
     /// Check if this is a floating-point type.
     #[must_use]
     pub fn is_float(&self) -> bool {

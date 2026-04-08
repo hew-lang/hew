@@ -567,6 +567,11 @@ private:
   /// `requireAssignTargetKindOf`.
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::AssignTargetKindEntry *, SpanHash>
       assignTargetKindMap;
+  /// Lookup map from assignment target span → assign-target-shape entry.
+  /// Built once in `generate`; consumed fail-closed by compound-assignment
+  /// lowering to determine signedness without re-deriving from the AST.
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::AssignTargetShapeEntry *, SpanHash>
+      assignTargetShapeMap;
 
   /// Look up the resolved type for an expression by its source span.
   const ast::TypeExpr *resolvedTypeOf(const ast::Span &span) const {
@@ -587,6 +592,12 @@ private:
       return it->second;
     return nullptr;
   }
+  const ast::AssignTargetShapeEntry *assignTargetShapeOf(const ast::Span &span) const {
+    auto it = assignTargetShapeMap.find({span.start, span.end});
+    if (it != assignTargetShapeMap.end())
+      return it->second;
+    return nullptr;
+  }
   /// Like resolvedTypeOf(), but emits a fail-closed diagnostic when the
   /// type-checker metadata entry is missing.
   const ast::TypeExpr *requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
@@ -597,6 +608,11 @@ private:
   const ast::AssignTargetKindEntry *
   requireAssignTargetKindOf(const ast::Span &span, llvm::StringRef context,
                             std::optional<mlir::Location> errorLoc = std::nullopt);
+  /// Like requireAssignTargetKindOf(), but for the shape side-table.
+  /// Emits a fail-closed diagnostic and returns nullptr when the entry is missing.
+  const ast::AssignTargetShapeEntry *
+  requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef context,
+                             std::optional<mlir::Location> errorLoc = std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can

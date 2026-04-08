@@ -148,7 +148,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 4;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 5;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1753,6 +1753,14 @@ static ast::AssignTargetKindEntry parseAssignTargetKindEntry(const msgpack::obje
   return entry;
 }
 
+static ast::AssignTargetShapeEntry parseAssignTargetShapeEntry(const msgpack::object &obj) {
+  ast::AssignTargetShapeEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.is_unsigned = getBool(mapReq(obj, "is_unsigned"));
+  return entry;
+}
+
 static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   ast::ExprTypeEntry entry;
   entry.start = getUint(mapReq(obj, "start"));
@@ -1806,6 +1814,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
+  prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(
+      mapReq(obj, "assign_target_shapes"), parseAssignTargetShapeEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =

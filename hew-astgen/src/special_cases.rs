@@ -107,6 +107,17 @@ pub fn assign_target_kind_entry_parser() -> &'static str {
 }"#
 }
 
+/// Hard-coded parser for `AssignTargetShapeEntry` (C++-only type from serialization layer).
+pub fn assign_target_shape_entry_parser() -> &'static str {
+    r#"static ast::AssignTargetShapeEntry parseAssignTargetShapeEntry(const msgpack::object &obj) {
+  ast::AssignTargetShapeEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.is_unsigned = getBool(mapReq(obj, "is_unsigned"));
+  return entry;
+}"#
+}
+
 /// Hard-coded parser for `MethodCallReceiverKindEntry` (C++-only type from serialization layer).
 pub fn method_call_receiver_kind_entry_parser() -> &'static str {
     r#"static ast::MethodCallReceiverKindEntry
@@ -264,6 +275,8 @@ pub fn program_parser() -> &'static str {
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
+  prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(
+      mapReq(obj, "assign_target_shapes"), parseAssignTargetShapeEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =

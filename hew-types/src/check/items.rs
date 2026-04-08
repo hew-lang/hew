@@ -12,7 +12,8 @@ impl Checker {
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
             Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
-            _ => {} // Imports, types, traits, extern — already collected
+            Item::Trait(td) => self.check_trait_defaults(td),
+            _ => {} // Imports, types, extern — already collected
         }
     }
 
@@ -110,6 +111,37 @@ impl Checker {
             self.env.pop_scope();
         }
         self.emit_scope_warnings();
+    }
+
+    /// Check trait default method bodies to populate authority side-tables
+    /// (e.g. `assign_target_kinds`) for assignments in those bodies.
+    /// Trait default methods are not re-checked per impl; they are checked
+    /// once here so every assignment target in a default body gets classified.
+    pub(super) fn check_trait_defaults(&mut self, td: &TraitDecl) {
+        use hew_parser::ast::Visibility;
+        for trait_item in &td.items {
+            if let TraitItem::Method(method) = trait_item {
+                if let Some(body) = &method.body {
+                    let fn_decl = FnDecl {
+                        attributes: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        visibility: Visibility::Private,
+                        is_pure: method.is_pure,
+                        name: method.name.clone(),
+                        type_params: method.type_params.clone(),
+                        params: method.params.clone(),
+                        return_type: method.return_type.clone(),
+                        where_clause: method.where_clause.clone(),
+                        body: body.clone(),
+                        doc_comment: None,
+                        decl_span: 0..0,
+                    };
+                    let qualified = format!("{}::{}", td.name, method.name);
+                    self.check_function_as(&fn_decl, &qualified);
+                }
+            }
+        }
     }
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {

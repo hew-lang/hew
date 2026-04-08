@@ -200,7 +200,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *un = std::get_if<ast::ExprUnary>(&expr.kind))
     return generateUnaryExpr(*un);
   if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
-    return generateCallExpr(*call);
+    return generateCallExpr(*call, expr.span);
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
@@ -1406,7 +1406,7 @@ mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
   return ifOp.getResult(0);
 }
 
-mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
+mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span &exprSpan) {
   auto location = currentLoc;
 
   // Check if the callee is a simple identifier (direct call)
@@ -1817,9 +1817,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (!argVal)
           return nullptr;
         mlir::Type optType;
-        if (pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
+        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+          auto converted = convertType(*resolvedType);
+          if (converted && mlir::isa<hew::OptionEnumType>(converted))
+            optType = converted;
+        }
+        if (!optType && pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
           optType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (!optType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
           optType = currentFunction.getResultTypes()[0];
         if (!optType)
@@ -1847,12 +1852,18 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (!argVal)
           return nullptr;
         mlir::Type resultType;
-        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
+        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+          auto converted = convertType(*resolvedType);
+          if (converted && mlir::isa<hew::ResultEnumType>(converted))
+            resultType = converted;
+        }
+        if (!resultType && pendingDeclaredType &&
+            mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (!resultType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
-        else {
+        if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);
@@ -1878,12 +1889,18 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (!argVal)
           return nullptr;
         mlir::Type resultType;
-        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
+        if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+          auto converted = convertType(*resolvedType);
+          if (converted && mlir::isa<hew::ResultEnumType>(converted))
+            resultType = converted;
+        }
+        if (!resultType && pendingDeclaredType &&
+            mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
           resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+        else if (!resultType && currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
           resultType = currentFunction.getResultTypes()[0];
-        else {
+        if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }
         if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType);

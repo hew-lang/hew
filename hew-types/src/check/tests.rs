@@ -1201,7 +1201,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
 }
 
 #[test]
-fn builtin_result_constructors_materialize_output_type_args() {
+fn builtin_result_constructors_materialize_output_types_without_call_type_args() {
     let source = concat!(
         "fn main() -> int {\n",
         "    Ok(7);\n",
@@ -1239,16 +1239,18 @@ fn builtin_result_constructors_materialize_output_type_args() {
         "unexpected errors: {:?}",
         output.errors
     );
-    assert_eq!(
-        output.call_type_args.get(&SpanKey::from(ok_call_span)),
-        Some(&vec![Ty::I64, Ty::I64]),
-        "expected `Ok(7)` to persist concrete builtin result type args: {:?}",
+    assert!(
+        !output
+            .call_type_args
+            .contains_key(&SpanKey::from(ok_call_span)),
+        "builtin `Ok(...)` should not be serialized as a generic call: {:?}",
         output.call_type_args
     );
-    assert_eq!(
-        output.call_type_args.get(&SpanKey::from(err_call_span)),
-        Some(&vec![Ty::I64, Ty::I64]),
-        "expected `Err(9)` to persist concrete builtin result type args: {:?}",
+    assert!(
+        !output
+            .call_type_args
+            .contains_key(&SpanKey::from(err_call_span)),
+        "builtin `Err(...)` should not be serialized as a generic call: {:?}",
         output.call_type_args
     );
     assert_eq!(
@@ -1261,6 +1263,74 @@ fn builtin_result_constructors_materialize_output_type_args() {
         output.expr_types.get(&SpanKey::from(err_call_span)),
         Some(&Ty::result(Ty::I64, Ty::I64)),
         "expected `Err(9)` output type to materialize fully before serialization: {:?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
+    let source = concat!(
+        "fn main() -> int {\n",
+        "    Ok(Some(7));\n",
+        "    Err(Some(9));\n",
+        "    0\n",
+        "}\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((Expr::Call { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected first statement to be `Ok(...)`");
+    };
+    let Stmt::Expression((Expr::Call { .. }, err_call_span)) = &main_fn.body.stmts[1].0 else {
+        panic!("expected second statement to be `Err(...)`");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .call_type_args
+            .contains_key(&SpanKey::from(ok_call_span)),
+        "builtin `Ok(...)` should not be serialized as a generic call: {:?}",
+        output.call_type_args
+    );
+    assert!(
+        !output
+            .call_type_args
+            .contains_key(&SpanKey::from(err_call_span)),
+        "builtin `Err(...)` should not be serialized as a generic call: {:?}",
+        output.call_type_args
+    );
+    let expected = Ty::result(Ty::option(Ty::I64), Ty::option(Ty::I64));
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(ok_call_span)),
+        Some(&expected),
+        "expected `Ok(Some(7))` output type to preserve composite fallback: {:?}",
+        output.expr_types
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(err_call_span)),
+        Some(&expected),
+        "expected `Err(Some(9))` output type to preserve composite fallback: {:?}",
         output.expr_types
     );
 }

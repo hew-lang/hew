@@ -46,26 +46,19 @@ use self::util::{
     ty_has_unresolved_inference_var,
 };
 
-fn resolve_builtin_result_output_type_args(args: Vec<Ty>) -> Option<Vec<Ty>> {
-    if args.len() != 2 {
-        return None;
-    }
-    let ok_unresolved = ty_has_unresolved_inference_var(&args[0]);
-    let err_unresolved = ty_has_unresolved_inference_var(&args[1]);
+fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {
+    let ok_unresolved = ty_has_unresolved_inference_var(&ok_ty);
+    let err_unresolved = ty_has_unresolved_inference_var(&err_ty);
     match (ok_unresolved, err_unresolved) {
-        (false, false) => Some(args),
-        (false, true) => Some(vec![args[0].clone(), args[0].clone()]),
-        (true, false) => Some(vec![args[1].clone(), args[1].clone()]),
+        (false, false) => Some((ok_ty, err_ty)),
+        (false, true) => Some((ok_ty.clone(), ok_ty)),
+        (true, false) => Some((err_ty.clone(), err_ty)),
         (true, true) => None,
     }
 }
 
-fn patch_builtin_result_output_type(ty: Ty, type_args: &[Ty]) -> Ty {
-    if type_args.len() == 2 {
-        Ty::result(type_args[0].clone(), type_args[1].clone())
-    } else {
-        ty
-    }
+fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
+    Ty::result(ok_ty.clone(), err_ty.clone())
 }
 
 impl Checker {
@@ -190,7 +183,15 @@ impl Checker {
         // (resolved after inference + defaulting) and validate fits.
         self.apply_deferred_range_bound_types(&mut expr_types);
 
-        let builtin_result_call_spans = std::mem::take(&mut self.builtin_result_call_spans);
+        let resolved_builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)> =
+            std::mem::take(&mut self.builtin_result_output_type_args)
+                .into_iter()
+                .filter_map(|(k, (ok_ty, err_ty))| {
+                    let ok_ty = self.subst.resolve(&ok_ty).materialize_literal_defaults();
+                    let err_ty = self.subst.resolve(&err_ty).materialize_literal_defaults();
+                    resolve_builtin_result_output_type_args(ok_ty, err_ty).map(|args| (k, args))
+                })
+                .collect();
 
         // Also resolve inferred call type args so the enrichment layer can
         // fill in explicit type annotations for the codegen.
@@ -202,9 +203,7 @@ impl Checker {
                         .iter()
                         .map(|a| self.subst.resolve(a).materialize_literal_defaults())
                         .collect();
-                    if builtin_result_call_spans.contains(&k) {
-                        resolve_builtin_result_output_type_args(resolved).map(|args| (k, args))
-                    } else if resolved
+                    if resolved
                         .iter()
                         .all(|ty| !ty_has_unresolved_inference_var(ty))
                     {
@@ -223,10 +222,8 @@ impl Checker {
             .into_iter()
             .map(|(k, v)| {
                 let mut resolved = self.subst.resolve(&v).materialize_literal_defaults();
-                if builtin_result_call_spans.contains(&k) {
-                    if let Some(type_args) = resolved_call_type_args.get(&k) {
-                        resolved = patch_builtin_result_output_type(resolved, type_args);
-                    }
+                if let Some((ok_ty, err_ty)) = resolved_builtin_result_output_type_args.get(&k) {
+                    resolved = patch_builtin_result_output_type(resolved, ok_ty, err_ty);
                 }
                 (k, resolved)
             })

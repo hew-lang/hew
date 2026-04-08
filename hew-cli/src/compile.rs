@@ -631,13 +631,11 @@ fn enrich_program_ast(
                     root_module.items.clone_from(&program.items);
                 }
             }
-            // Normalize types and walk builtin-call syntax in non-root modules
-            // so TypeExpr::Named("Option", ..) → TypeExpr::Option(..) stays in
-            // sync with the root enrichment path.
+            // Normalize types in non-root modules so imported items use the
+            // serializer-ready TypeExpr forms during codegen.
             for (id, module) in &mut mg.modules {
                 if *id != mg.root {
                     hew_serialize::normalize_items_types(&mut module.items, module_registry);
-                    hew_serialize::rewrite_builtin_calls(&mut module.items);
                 }
             }
         }

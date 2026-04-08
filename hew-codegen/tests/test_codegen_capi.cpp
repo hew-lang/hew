@@ -604,6 +604,101 @@ static void test_collection_clone_receiver_temporaries_drop() {
   PASS();
 }
 
+static void test_len_free_call_lowers_via_codegen_dispatch() {
+  TEST(len_free_call_lowers_via_codegen_dispatch);
+  auto ast = hewToMsgpack("fn main() { "
+                          "  let s = \"abc\"; "
+                          "  let v: Vec<int> = Vec::new(); "
+                          "  let m: HashMap<String, int> = HashMap::new(); "
+                          "  let h: HashSet<String> = HashSet::new(); "
+                          "  println(len(s)); "
+                          "  println(len(v)); "
+                          "  println(len(m)); "
+                          "  println(len(h)); "
+                          "  println(string_length(s)); "
+                          "}");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) {
+    FAIL(hew_codegen_last_error());
+    return;
+  }
+
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  if (mlir.find("hew.vec.len") == std::string::npos) {
+    FAIL("len(v) should lower to hew.vec.len");
+    return;
+  }
+  if (mlir.find("hew.hashmap.len") == std::string::npos) {
+    FAIL("len(m) should lower to hew.hashmap.len");
+    return;
+  }
+  if (mlir.find("hew_hashset_len") == std::string::npos) {
+    FAIL("len(h) should lower to hew_hashset_len");
+    return;
+  }
+  if (countOccurrences(mlir, "hew.string_method \"length\"") < 2) {
+    FAIL("len(String) and string_length(String) should both lower to string length calls");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_len_free_call_on_rc_fails_closed() {
+  TEST(len_free_call_on_rc_fails_closed);
+  auto ast = hewToMsgpack("fn main() { let rc: Rc<int> = Rc::new(42); println(len(rc)); }");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = 0;
+  auto stderrText =
+      captureStderr([&] { rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf); });
+
+  if (rc == 1) {
+    const char *err = hew_codegen_last_error();
+    if (!strstr(err, "len")) {
+      FAIL("expected len-related diagnostic for len(Rc<T>)");
+      if (buf.data != nullptr) {
+        hew_codegen_buffer_free(buf);
+      }
+      return;
+    }
+  } else if (rc == 0) {
+    if (stderrText.find("len(...) is not supported for pointer-backed receiver types") ==
+        std::string::npos) {
+      FAIL("expected fail-closed len(Rc<T>) diagnostic");
+      if (buf.data != nullptr) {
+        hew_codegen_buffer_free(buf);
+      }
+      return;
+    }
+  } else {
+    FAIL("unexpected return code for len(Rc<T>)");
+    if (buf.data != nullptr) {
+      hew_codegen_buffer_free(buf);
+    }
+    return;
+  }
+
+  if (buf.data != nullptr) {
+    hew_codegen_buffer_free(buf);
+  }
+  PASS();
+}
+
 static void test_rc_outlive_block_drop_registered() {
   TEST(rc_outlive_block_drop_registered);
   // Rc alias escaping a block as trailing expression must still get
@@ -963,6 +1058,8 @@ int main() {
   test_rc_method_clone_emits_clone_and_drop();
   test_collection_clone_methods_lower_to_runtime_calls();
   test_collection_clone_receiver_temporaries_drop();
+  test_len_free_call_lowers_via_codegen_dispatch();
+  test_len_free_call_on_rc_fails_closed();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
   test_rc_call_boundary_borrow_no_clone();

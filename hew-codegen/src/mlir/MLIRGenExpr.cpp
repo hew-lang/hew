@@ -1418,6 +1418,31 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
 
   const auto &calleeName = calleeIdentExpr->name;
 
+  // Preserve free-call builtin syntax: len(x) lowers through the same method
+  // dispatcher path as x.len() without relying on earlier AST rewrites.
+  if (calleeName == "len") {
+    if (call.args.size() != 1) {
+      emitError(location) << "len expects exactly 1 argument";
+      return nullptr;
+    }
+    const auto &receiverArg = ast::callArgExpr(call.args[0]);
+    auto receiver = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!receiver)
+      return nullptr;
+    if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiver.getType())) {
+      emitError(location) << "len(...) is not supported for pointer-backed receiver types";
+      return nullptr;
+    }
+    ast::ExprMethodCall methodCall;
+    methodCall.receiver = std::make_unique<ast::Spanned<ast::Expr>>(ast::Spanned<ast::Expr>{
+        ast::Expr{ast::ExprIdentifier{"__len_receiver"}, receiverArg.span}, receiverArg.span});
+    methodCall.method = "len";
+    if (auto result = generateBuiltinMethodCall(methodCall, receiver, location))
+      return *result;
+    emitError(location) << "len(...) is only supported for builtin collection and string types";
+    return nullptr;
+  }
+
   // ── Intercept enriched log calls ─────────────────────────────────────
   // The enrich.rs step rewrites log.setup()/log.info()/etc. into direct
   // calls to hew_log_init/hew_log_info/etc. before codegen sees them.
@@ -2942,6 +2967,8 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
 std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMethodCall &mc,
                                                               mlir::Value receiver,
                                                               mlir::Location location) {
+  if (!mc.receiver)
+    return std::nullopt;
   auto receiverType = receiver.getType();
   const auto &methodName = mc.method;
   auto i32Type = builder.getI32Type();

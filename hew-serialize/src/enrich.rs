@@ -1439,6 +1439,14 @@ fn enrich_method_call(
         }
     }
 
+    let method_call_key = SpanKey::from(&expr.1);
+    if tco
+        .method_call_receiver_kinds
+        .contains_key(&method_call_key)
+    {
+        return;
+    }
+
     // Rewrite handle method calls to C function calls.
     // The receiver type is looked up from the type checker output;
     // if it's a handle type (e.g. http.Request), the method call is
@@ -2875,6 +2883,45 @@ mod tests {
             }
             other => panic!("expected Call expr, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_enrich_preserves_method_call_with_receiver_kind_metadata() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey { start: 0, end: 2 },
+            hew_types::Ty::Named {
+                name: "json.Value".to_string(),
+                args: vec![],
+            },
+        );
+        tco.method_call_receiver_kinds.insert(
+            hew_types::check::SpanKey { start: 0, end: 10 },
+            hew_types::check::MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Value".to_string(),
+            },
+        );
+        let registry = test_registry_with(&["std::encoding::json"]);
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("v".to_string()), 0..2)),
+                method: "type_of".to_string(),
+                args: vec![],
+            },
+            0..10,
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert!(
+            matches!(expr.0, Expr::MethodCall { .. }),
+            "method call with receiver-kind metadata should not be rewritten"
+        );
     }
 
     #[test]

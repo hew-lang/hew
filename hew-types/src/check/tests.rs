@@ -7903,4 +7903,28 @@ mod module_body_diagnostic_envelope {
             );
         }
     }
+
+    #[test]
+    fn assign_target_shapes_populated_for_while_loop_with_import() {
+        // Reproduces the eval_large_stderr CI failure:
+        // synthesized source for `fn spam_err` eval step with `import std::io`
+        let source = "import std::io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(
+            crate::module_registry::build_module_search_paths(),
+        ));
+        let tco = checker.check_program(&parse_result.program);
+        // `i` in `i = i + 1` must appear in assign_target_shapes
+        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 109);
+        assert!(
+            has_shape,
+            "assign_target_shapes missing entry for i at ~109; got: {:?}",
+            tco.assign_target_shapes.keys().collect::<Vec<_>>()
+        );
+    }
 }

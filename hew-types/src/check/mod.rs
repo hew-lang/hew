@@ -315,6 +315,16 @@ impl Checker {
             let resolved = self.subst.resolve(&site.ty);
             collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
         }
+        // Let-bound generic lambdas use fresh type vars as polymorphic
+        // placeholders until a later call site instantiates them. Those vars
+        // are not checker-output leaks and should not trigger the fail-closed
+        // boundary fallback when the lambda remains unused.
+        for poly_vars in self.lambda_poly_type_var_map.values() {
+            for (_, poly_var) in poly_vars {
+                let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
+                collect_unresolved_inference_vars(&resolved_poly, &mut covered_inference_vars);
+            }
+        }
         let mut seen_inference_spans: HashSet<SpanKey> = self
             .errors
             .iter()

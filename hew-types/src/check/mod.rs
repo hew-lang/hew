@@ -1,5 +1,6 @@
 //! Bidirectional type checker for Hew programs.
 
+use crate::builtin_names::builtin_named_type;
 use crate::error::{TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::traits::MarkerTrait;
@@ -59,6 +60,66 @@ fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty,
 
 fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
     Ty::result(ok_ty.clone(), err_ty.clone())
+}
+
+fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Named { name, args } => {
+            let normalized_args: Vec<Ty> = args
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect();
+            if matches!(
+                builtin_named_type(name.as_str()),
+                Some(kind) if kind.is_channel_handle()
+            ) && matches!(normalized_args.as_slice(), [Ty::Var(_)])
+            {
+                return Ty::normalize_named(name.clone(), vec![]);
+            }
+            Ty::normalize_named(name.clone(), normalized_args)
+        }
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+        ),
+        Ty::Array(elem, size) => Ty::Array(
+            Box::new(normalize_synthetic_channel_handle_expr_type(elem)),
+            *size,
+        ),
+        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_expr_type(elem))),
+        Ty::Function { params, ret } => Ty::Function {
+            params: params
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+        },
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => Ty::Closure {
+            params: params
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+            captures: captures
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+        },
+        Ty::Pointer {
+            is_mutable,
+            pointee,
+        } => Ty::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(normalize_synthetic_channel_handle_expr_type(pointee)),
+        },
+        _ => ty.clone(),
+    }
 }
 
 impl Checker {
@@ -218,7 +279,7 @@ impl Checker {
         // Resolve any remaining type variables in expr_types via the
         // substitution so the enrichment layer sees concrete types, then
         // materialize surviving literal kinds at the checked-output boundary.
-        let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
+        let mut resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
             .into_iter()
             .map(|(k, v)| {
                 let mut resolved = self.subst.resolve(&v).materialize_literal_defaults();
@@ -228,6 +289,85 @@ impl Checker {
                 (k, resolved)
             })
             .collect();
+
+        // Fail-closed boundary: unresolved inference vars must not cross from
+        // type-checking into serialized expr type metadata.
+        // When another inference diagnostic path already covers the same hole
+        // vars, suppress the fallback boundary error so we keep the more
+        // specific message/span/source-module envelope.
+        let mut covered_inference_vars = HashSet::new();
+        for hole_vars in self
+            .type_def_inference_holes
+            .values()
+            .chain(self.fn_sig_inference_holes.values())
+            .chain(
+                self.deferred_inference_holes
+                    .iter()
+                    .map(|hole| &hole.hole_vars),
+            )
+        {
+            for hole_var in hole_vars {
+                let resolved_hole = self.subst.resolve(&Ty::Var(*hole_var));
+                collect_unresolved_inference_vars(&resolved_hole, &mut covered_inference_vars);
+            }
+        }
+        for site in &self.deferred_monomorphic_sites {
+            let resolved = self.subst.resolve(&site.ty);
+            collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
+        }
+        // Let-bound generic lambdas use fresh type vars as polymorphic
+        // placeholders until a later call site instantiates them. Those vars
+        // are not checker-output leaks and should not trigger the fail-closed
+        // boundary fallback when the lambda remains unused.
+        for poly_vars in self.lambda_poly_type_var_map.values() {
+            for (_, poly_var) in poly_vars {
+                let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
+                collect_unresolved_inference_vars(&resolved_poly, &mut covered_inference_vars);
+            }
+        }
+        let mut seen_inference_spans: HashSet<SpanKey> = self
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+            .map(|e| SpanKey::from(&e.span))
+            .collect();
+        let mut leaked_expr_type_spans = Vec::new();
+        for (span, ty) in &mut resolved_expr_types {
+            let mut unresolved = HashSet::new();
+            collect_unresolved_inference_vars(ty, &mut unresolved);
+            if unresolved.is_empty() {
+                continue;
+            }
+            if !unresolved.is_subset(&covered_inference_vars) {
+                let normalized = normalize_synthetic_channel_handle_expr_type(ty);
+                if normalized != *ty {
+                    let mut normalized_unresolved = HashSet::new();
+                    collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
+                    if normalized_unresolved.is_empty() {
+                        *ty = normalized;
+                        continue;
+                    }
+                }
+            }
+            leaked_expr_type_spans.push(span.clone());
+            if unresolved.is_subset(&covered_inference_vars) {
+                continue;
+            }
+            if seen_inference_spans.insert(span.clone()) {
+                let mut err = TypeError::inference_failed(
+                    Span {
+                        start: span.start,
+                        end: span.end,
+                    },
+                    "expression type at checker output boundary",
+                );
+                err.source_module = self.expr_type_source_modules.get(span).cloned().flatten();
+                self.errors.push(err);
+            }
+        }
+        for span in leaked_expr_type_spans {
+            resolved_expr_types.remove(&span);
+        }
 
         let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
             .into_iter()

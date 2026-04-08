@@ -41,6 +41,64 @@ fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_typ
     );
 }
 
+fn ty_contains_unresolved_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_unresolved_var),
+        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_unresolved_var(elem),
+        Ty::Named { args, .. } => args.iter().any(ty_contains_unresolved_var),
+        Ty::Function { params, ret } => {
+            params.iter().any(ty_contains_unresolved_var) || ty_contains_unresolved_var(ret)
+        }
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params.iter().any(ty_contains_unresolved_var)
+                || ty_contains_unresolved_var(ret)
+                || captures.iter().any(ty_contains_unresolved_var)
+        }
+        Ty::Pointer { pointee, .. } => ty_contains_unresolved_var(pointee),
+        Ty::TraitObject { traits } => traits
+            .iter()
+            .flat_map(|bound| bound.args.iter())
+            .any(ty_contains_unresolved_var),
+        Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::F32
+        | Ty::F64
+        | Ty::IntLiteral
+        | Ty::FloatLiteral
+        | Ty::Bool
+        | Ty::Char
+        | Ty::String
+        | Ty::Bytes
+        | Ty::Duration
+        | Ty::Unit
+        | Ty::Never
+        | Ty::Machine { .. }
+        | Ty::Error => false,
+    }
+}
+
+fn assert_expr_type_output_has_no_unresolved_ty_vars(output: &hew_types::TypeCheckOutput) {
+    assert!(
+        output
+            .expr_types
+            .values()
+            .all(|ty| !ty_contains_unresolved_var(ty)),
+        "expr_types leaked unresolved Ty::Var: {:?}",
+        output.expr_types
+    );
+}
+
 // ── 1. MutabilityError — assign to a `let` binding ──────────────────
 
 #[test]
@@ -927,6 +985,69 @@ fn inference_hole_function_parameter_signature_is_rejected() {
             .any(|e| e.kind == TypeErrorKind::InferenceFailed),
         "Expected InferenceFailed, got errors: {:?}",
         output.errors
+    );
+}
+
+#[test]
+fn checker_output_does_not_expose_unresolved_ty_var_survivors() {
+    let output = typecheck(
+        r"
+        fn helper() {
+            let x: _ = None;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert_expr_type_output_has_no_unresolved_ty_vars(&output);
+}
+
+#[test]
+fn checker_output_success_path_contains_no_unresolved_ty_var() {
+    let output = typecheck(
+        r"
+        type Box<T> { value: T; }
+
+        fn id<T>(x: T) -> _ { x }
+
+        fn main() {
+            let v = id(1);
+            let _w = v;
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected successful typecheck, got errors: {:?}",
+        output.errors
+    );
+    assert_expr_type_output_has_no_unresolved_ty_vars(&output);
+    let sig = output
+        .fn_sigs
+        .get("id")
+        .unwrap_or_else(|| panic!("expected function signature for id"));
+    assert!(
+        sig.params.iter().all(|ty| !ty_contains_unresolved_var(ty))
+            && !ty_contains_unresolved_var(&sig.return_type),
+        "signature id leaked unresolved Ty::Var: {sig:?}"
+    );
+    let ty_def = output
+        .type_defs
+        .get("Box")
+        .unwrap_or_else(|| panic!("expected type def for Box"));
+    assert!(
+        ty_def
+            .fields
+            .values()
+            .all(|ty| !ty_contains_unresolved_var(ty)),
+        "Box fields leaked unresolved Ty::Var: {:?}",
+        ty_def.fields
     );
 }
 

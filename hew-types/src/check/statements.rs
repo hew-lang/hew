@@ -3,7 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::builtin_names::{builtin_named_type, BuiltinNamedType};
+use crate::builtin_names::BuiltinNamedType;
 
 impl Checker {
     pub(super) fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {

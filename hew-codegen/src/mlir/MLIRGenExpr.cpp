@@ -1422,6 +1422,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   // dispatcher path as x.len() without relying on earlier AST rewrites.
   if (calleeName == "len") {
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "len expects exactly 1 argument";
       return nullptr;
     }
@@ -1430,6 +1431,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     if (!receiver)
       return nullptr;
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiver.getType())) {
+      ++errorCount_;
       emitError(location) << "len(...) is not supported for pointer-backed receiver types";
       return nullptr;
     }
@@ -1439,6 +1441,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     methodCall.method = "len";
     if (auto result = generateBuiltinMethodCall(methodCall, receiver, location))
       return *result;
+    ++errorCount_;
     emitError(location) << "len(...) is only supported for builtin collection and string types";
     return nullptr;
   }

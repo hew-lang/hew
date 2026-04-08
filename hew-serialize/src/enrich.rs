@@ -196,6 +196,36 @@ fn ty_element_name(ty: &Ty) -> Option<&str> {
     }
 }
 
+fn is_quic_handle_type(
+    receiver_ty: Option<&Ty>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> bool {
+    fn is_quic_handle_name(name: &str) -> bool {
+        matches!(
+            name,
+            "QUICEndpoint"
+                | "QUICConnection"
+                | "QUICStream"
+                | "QUICEvent"
+                | "quic.QUICEndpoint"
+                | "quic.QUICConnection"
+                | "quic.QUICStream"
+                | "quic.QUICEvent"
+        )
+    }
+
+    let Some(Ty::Named { name, .. }) = receiver_ty else {
+        return false;
+    };
+    // QUIC handle methods still need the pre-#829 direct-call rewrite so probe
+    // programs keep lowering through the stable `hew_quic_*` surface instead of
+    // switching to generic named-type impl dispatch.
+    is_quic_handle_name(name)
+        || registry
+            .qualify_handle_type(name)
+            .is_some_and(|qualified| is_quic_handle_name(&qualified))
+}
+
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
     ty.canonical_lowering_name()
@@ -1439,10 +1469,16 @@ fn enrich_method_call(
         }
     }
 
+    let key = SpanKey {
+        start: receiver.1.start,
+        end: receiver.1.end,
+    };
+    let receiver_ty = tco.expr_types.get(&key);
     let method_call_key = SpanKey::from(&expr.1);
     if tco
         .method_call_receiver_kinds
         .contains_key(&method_call_key)
+        && !is_quic_handle_type(receiver_ty, registry)
     {
         return;
     }
@@ -1452,11 +1488,7 @@ fn enrich_method_call(
     // if it's a handle type (e.g. http.Request), the method call is
     // rewritten to a plain function call with the receiver prepended
     // as the first argument.
-    let key = SpanKey {
-        start: receiver.1.start,
-        end: receiver.1.end,
-    };
-    let c_fn: Option<String> = match tco.expr_types.get(&key) {
+    let c_fn: Option<String> = match receiver_ty {
         Some(Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
             let elem = args.first().and_then(ty_element_name);
             hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from)
@@ -2880,6 +2912,116 @@ mod tests {
                     other => panic!("expected Identifier, got {other:?}"),
                 }
                 assert_eq!(args.len(), 1, "observe() should prepend the receiver");
+            }
+            other => panic!("expected Call expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_is_quic_handle_type_accepts_unqualified_name_without_qualification() {
+        let registry = test_registry_with(&[]);
+        let receiver_ty = hew_types::Ty::Named {
+            name: "QUICEvent".to_string(),
+            args: vec![],
+        };
+
+        assert!(
+            is_quic_handle_type(Some(&receiver_ty), &registry),
+            "bare QUIC handle name should still trigger the QUIC rewrite exception"
+        );
+    }
+
+    #[test]
+    fn test_enrich_quic_on_event_with_receiver_kind_metadata_uses_runtime_fn() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey { start: 0, end: 2 },
+            hew_types::Ty::Named {
+                name: "quic.QUICEndpoint".to_string(),
+                args: vec![],
+            },
+        );
+        tco.method_call_receiver_kinds.insert(
+            hew_types::check::SpanKey { start: 0, end: 10 },
+            hew_types::check::MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "quic.QUICEndpoint".to_string(),
+            },
+        );
+        let registry = test_registry_with(&["std::net::quic"]);
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("ep".to_string()), 0..2)),
+                method: "on_event".to_string(),
+                args: vec![],
+            },
+            0..10,
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Call { function, args, .. } => {
+                match &function.0 {
+                    Expr::Identifier(name) => {
+                        assert_eq!(name, "hew_quic_endpoint_on_event");
+                    }
+                    other => panic!("expected Identifier, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "on_event() should prepend the receiver");
+            }
+            other => panic!("expected Call expr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enrich_quic_event_free_with_receiver_kind_metadata_uses_runtime_fn() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey { start: 0, end: 3 },
+            hew_types::Ty::Named {
+                name: "QUICEvent".to_string(),
+                args: vec![],
+            },
+        );
+        tco.method_call_receiver_kinds.insert(
+            hew_types::check::SpanKey { start: 0, end: 9 },
+            hew_types::check::MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "QUICEvent".to_string(),
+            },
+        );
+        let registry = test_registry_with(&["std::net::quic"]);
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("evt".to_string()), 0..3)),
+                method: "free".to_string(),
+                args: vec![],
+            },
+            0..9,
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Call { function, args, .. } => {
+                match &function.0 {
+                    Expr::Identifier(name) => {
+                        assert_eq!(name, "hew_quic_event_free");
+                    }
+                    other => panic!("expected Identifier, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "free() should prepend the receiver");
             }
             other => panic!("expected Call expr, got {other:?}"),
         }

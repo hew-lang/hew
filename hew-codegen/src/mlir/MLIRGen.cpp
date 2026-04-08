@@ -645,6 +645,13 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
     }
     return mlir::NoneType::get(&context);
   }
+
+  if (std::holds_alternative<ast::TypeInfer>(type.kind)) {
+    ++errorCount_;
+    emitError(diagLoc) << "unresolved inferred type (`_`) reached MLIR codegen boundary";
+    return mlir::NoneType::get(&context);
+  }
+
   // Tuple types
   if (auto *tuple = std::get_if<ast::TypeTuple>(&type.kind)) {
     if (tuple->elements.empty())

@@ -2988,12 +2988,16 @@ mod tests {
         let source = "fn main() { let f = (x) => x; }";
         let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
 
-        assert!(matches!(
-            tco.expr_types.get(&SpanKey::from(&expr.1)),
-            Some(Ty::Function { params, ret })
-                if matches!(params.as_slice(), [Ty::Var(_)])
-                    && matches!(ret.as_ref(), Ty::Var(_))
-        ));
+        assert!(
+            !tco.expr_types.contains_key(&SpanKey::from(&expr.1)),
+            "checker boundary should strip unresolved lambda type from expr_types"
+        );
+        assert!(
+            tco.errors
+                .iter()
+                .any(|error| error.kind == hew_types::error::TypeErrorKind::InferenceFailed),
+            "checker boundary should report InferenceFailed for unresolved lambda hole"
+        );
 
         let mut diagnostics = Vec::new();
         enrich_expr_with_diagnostics(
@@ -3004,13 +3008,8 @@ mod tests {
         )
         .unwrap();
         assert!(
-            diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind() == TypeExprConversionKind::UnresolvedVar
-                    && diagnostic
-                        .to_string()
-                        .contains("lambda parameter `x` inferred type")
-            }),
-            "expected unresolved lambda parameter diagnostic, got: {diagnostics:?}"
+            diagnostics.is_empty(),
+            "checker boundary should prevent unresolved serializer diagnostics, got: {diagnostics:?}"
         );
 
         match &expr.0 {

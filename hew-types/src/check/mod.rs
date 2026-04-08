@@ -218,7 +218,7 @@ impl Checker {
         // Resolve any remaining type variables in expr_types via the
         // substitution so the enrichment layer sees concrete types, then
         // materialize surviving literal kinds at the checked-output boundary.
-        let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
+        let mut resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
             .into_iter()
             .map(|(k, v)| {
                 let mut resolved = self.subst.resolve(&v).materialize_literal_defaults();
@@ -228,6 +228,36 @@ impl Checker {
                 (k, resolved)
             })
             .collect();
+
+        // Fail-closed boundary: unresolved inference vars must not cross from
+        // type-checking into serialized expr type metadata.
+        let mut seen_inference_spans: HashSet<SpanKey> = self
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+            .map(|e| SpanKey::from(&e.span))
+            .collect();
+        let mut leaked_expr_type_spans = Vec::new();
+        for (span, ty) in &resolved_expr_types {
+            let mut unresolved = HashSet::new();
+            collect_unresolved_inference_vars(ty, &mut unresolved);
+            if unresolved.is_empty() {
+                continue;
+            }
+            leaked_expr_type_spans.push(span.clone());
+            if seen_inference_spans.insert(span.clone()) {
+                self.errors.push(TypeError::inference_failed(
+                    Span {
+                        start: span.start,
+                        end: span.end,
+                    },
+                    "expression type at checker output boundary",
+                ));
+            }
+        }
+        for span in leaked_expr_type_spans {
+            resolved_expr_types.remove(&span);
+        }
 
         let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
             .into_iter()

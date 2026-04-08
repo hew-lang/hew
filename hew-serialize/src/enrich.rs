@@ -5,9 +5,11 @@
 //! explicit annotations. The result is a fully-typed AST that the C++ backend
 //! can consume without its own type inference.
 
+#[cfg(test)]
+use hew_parser::ast::CallArg;
 use hew_parser::ast::{
-    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
-    Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, Block, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span, Spanned,
+    Stmt, TraitBound, TypeExpr,
 };
 use hew_types::builtin_names::{
     QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
@@ -584,11 +586,10 @@ pub fn normalize_items_types(
     }
 }
 
-/// Rewrite builtin free-function calls to forms the C++ codegen already
-/// handles. Currently rewrites `len(x)` → `x.len()` (method call).
+/// Walk builtin-call syntax in every module (root and imported).
 ///
-/// This must run on every module (root and imported) since the enrichment
-/// pass only processes root items.
+/// This must run on every module since the enrichment pass only processes
+/// root items.
 pub fn rewrite_builtin_calls(items: &mut [Spanned<Item>]) {
     for (item, _span) in items {
         rewrite_builtin_calls_in_item(item);
@@ -931,24 +932,6 @@ impl AstVisitor for RewriteVisitor {
     }
 }
 
-/// Rewrite `len(x)` calls to `x.len()` method calls.
-fn try_rewrite_len_call(function: &Expr, args: &mut Vec<CallArg>) -> Option<Expr> {
-    if let Expr::Identifier(name) = function {
-        if name == "len" && args.len() == 1 {
-            let receiver = match std::mem::take(args).remove(0) {
-                CallArg::Positional(e) => e,
-                CallArg::Named { value, .. } => value,
-            };
-            return Some(Expr::MethodCall {
-                receiver: Box::new(receiver),
-                method: "len".to_string(),
-                args: Vec::new(),
-            });
-        }
-    }
-    None
-}
-
 fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
         Expr::Call { function, args, .. } => {
@@ -956,9 +939,6 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(arg.expr_mut());
             }
             rewrite_builtin_calls_in_expr(function);
-            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
-                expr.0 = rewritten;
-            }
         }
         Expr::MethodCall { receiver, args, .. } => {
             rewrite_builtin_calls_in_expr(receiver);
@@ -1577,10 +1557,6 @@ fn enrich_expr_with_diagnostics_inner(
                         Err(err) => diagnostics.push(err.with_span(expr.1.clone())),
                     }
                 }
-            }
-
-            if let Some(rewritten) = try_rewrite_len_call(&function.0, args) {
-                expr.0 = rewritten;
             }
         }
         Expr::Lambda { params, body, .. } => {
@@ -3261,7 +3237,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // rewrite_builtin_calls — coverage for len(x) → x.len() rewriting
+    // rewrite_builtin_calls — coverage for preserving len(x) free calls
     // -----------------------------------------------------------------------
 
     /// Helper: build a `len(arg)` call expression.
@@ -3332,9 +3308,38 @@ mod tests {
         if let Item::Function(f) = &items[0].0 {
             if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
                 assert!(
-                    matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"),
-                    "len(xs) should be rewritten to xs.len()"
+                    matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len")),
+                    "len(xs) should remain a free call"
                 );
+            } else {
+                panic!("expected expression statement");
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_preserves_other_builtins() {
+        let call = (
+            Expr::Call {
+                function: Box::new(make_ident("string_length")),
+                args: vec![CallArg::Positional(make_ident("s"))],
+                type_args: None,
+                is_tail_call: false,
+            },
+            0..16,
+        );
+        let mut items = vec![make_fn_item("test_fn", make_block_with_expr(call))];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                assert!(matches!(
+                    &expr.0,
+                    Expr::Call { function, .. }
+                        if matches!(&function.0, Expr::Identifier(name) if name == "string_length")
+                ));
             } else {
                 panic!("expected expression statement");
             }
@@ -3382,11 +3387,15 @@ mod tests {
         if let Item::Actor(actor) = &items[0].0 {
             // Check init block
             if let Stmt::Expression(expr) = &actor.init.as_ref().unwrap().body.stmts[0].0 {
-                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+                assert!(
+                    matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
             // Check receive fn
             if let Stmt::Expression(expr) = &actor.receive_fns[0].body.stmts[0].0 {
-                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+                assert!(
+                    matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -3414,7 +3423,7 @@ mod tests {
 
         if let Item::Machine(m) = &items[0].0 {
             assert!(
-                matches!(&m.transitions[0].body.0, Expr::MethodCall { method, .. } if method == "len")
+                matches!(&m.transitions[0].body.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
             );
         }
     }
@@ -3457,7 +3466,9 @@ mod tests {
 
         if let Item::Impl(imp) = &items[0].0 {
             if let Stmt::Expression(expr) = &imp.methods[0].body.stmts[0].0 {
-                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+                assert!(
+                    matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -3491,7 +3502,9 @@ mod tests {
         if let Item::Trait(t) = &items[0].0 {
             if let hew_parser::ast::TraitItem::Method(m) = &t.items[0] {
                 if let Stmt::Expression(expr) = &m.body.as_ref().unwrap().stmts[0].0 {
-                    assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+                    assert!(
+                        matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                    );
                 }
             }
         }
@@ -3518,7 +3531,9 @@ mod tests {
         rewrite_builtin_calls(&mut items);
 
         if let Item::Const(c) = &items[0].0 {
-            assert!(matches!(&c.value.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(
+                matches!(&c.value.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3558,7 +3573,9 @@ mod tests {
         if let Item::TypeDecl(td) = &items[0].0 {
             if let hew_parser::ast::TypeBodyItem::Method(m) = &td.body[0] {
                 if let Stmt::Expression(expr) = &m.body.stmts[0].0 {
-                    assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+                    assert!(
+                        matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                    );
                 }
             }
         }
@@ -3587,7 +3604,7 @@ mod tests {
 
         if let Item::Supervisor(sup) = &items[0].0 {
             assert!(
-                matches!(&sup.children[0].args[0].0, Expr::MethodCall { method, .. } if method == "len")
+                matches!(&sup.children[0].args[0].0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
             );
         }
     }
@@ -3613,9 +3630,11 @@ mod tests {
             ..
         } = &expr.0
         {
-            assert!(matches!(&condition.0, Expr::MethodCall { method, .. } if method == "len"));
             assert!(
-                matches!(&else_block.as_ref().unwrap().0, Expr::MethodCall { method, .. } if method == "len")
+                matches!(&condition.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
+            assert!(
+                matches!(&else_block.as_ref().unwrap().0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
             );
         }
     }
@@ -3632,8 +3651,12 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut binary);
         if let Expr::Binary { left, right, .. } = &binary.0 {
-            assert!(matches!(&left.0, Expr::MethodCall { method, .. } if method == "len"));
-            assert!(matches!(&right.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(
+                matches!(&left.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
+            assert!(
+                matches!(&right.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
 
         let mut unary: Spanned<Expr> = (
@@ -3645,7 +3668,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut unary);
         if let Expr::Unary { operand, .. } = &unary.0 {
-            assert!(matches!(&operand.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(
+                matches!(&operand.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3667,12 +3692,16 @@ mod tests {
             scrutinee, arms, ..
         } = &expr.0
         {
-            assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&scrutinee.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
             assert!(matches!(
                 &arms[0].guard.as_ref().unwrap().0,
-                Expr::MethodCall { .. }
+                Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len")
             ));
-            assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&arms[0].body.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3690,7 +3719,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::Lambda { body, .. } = &expr.0 {
-            assert!(matches!(&body.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(
+                matches!(&body.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3699,13 +3730,17 @@ mod tests {
         let mut arr: Spanned<Expr> = (Expr::Array(vec![make_len_call(make_ident("a"))]), 0..10);
         rewrite_builtin_calls_in_expr(&mut arr);
         if let Expr::Array(elems) = &arr.0 {
-            assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&elems[0].0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
 
         let mut tup: Spanned<Expr> = (Expr::Tuple(vec![make_len_call(make_ident("b"))]), 0..10);
         rewrite_builtin_calls_in_expr(&mut tup);
         if let Expr::Tuple(elems) = &tup.0 {
-            assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&elems[0].0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3722,8 +3757,12 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::MapLiteral { entries } = &expr.0 {
-            assert!(matches!(&entries[0].0 .0, Expr::MethodCall { .. }));
-            assert!(matches!(&entries[0].1 .0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&entries[0].0 .0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
+            assert!(
+                matches!(&entries[0].1 .0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3738,7 +3777,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::StructInit { fields, .. } = &expr.0 {
-            assert!(matches!(&fields[0].1 .0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&fields[0].1 .0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3753,7 +3794,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut idx);
         if let Expr::Index { index, .. } = &idx.0 {
-            assert!(matches!(&index.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&index.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
 
         let mut fa: Spanned<Expr> = (
@@ -3765,7 +3808,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut fa);
         if let Expr::FieldAccess { object, .. } = &fa.0 {
-            assert!(matches!(&object.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&object.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3786,7 +3831,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::Cast { expr: inner, .. } = &expr.0 {
-            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&inner.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3801,7 +3848,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut spawn);
         if let Expr::Spawn { args, .. } = &spawn.0 {
-            assert!(matches!(&args[0].1 .0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&args[0].1 .0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
 
         let mut send: Spanned<Expr> = (
@@ -3813,7 +3862,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut send);
         if let Expr::Send { message, .. } = &send.0 {
-            assert!(matches!(&message.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&message.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3831,9 +3882,11 @@ mod tests {
         if let Expr::Range { start, end, .. } = &expr.0 {
             assert!(matches!(
                 &start.as_ref().unwrap().0,
-                Expr::MethodCall { .. }
+                Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len")
             ));
-            assert!(matches!(&end.as_ref().unwrap().0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&end.as_ref().unwrap().0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3848,7 +3901,9 @@ mod tests {
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::InterpolatedString(parts) = &expr.0 {
             if let hew_parser::ast::StringPart::Expr(e) = &parts[0] {
-                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -3864,8 +3919,12 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::ArrayRepeat { value, count } = &expr.0 {
-            assert!(matches!(&value.0, Expr::MethodCall { .. }));
-            assert!(matches!(&count.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&value.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
+            assert!(
+                matches!(&count.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -3903,10 +3962,14 @@ mod tests {
 
         if let Item::Function(f) = &items[0].0 {
             if let Stmt::Let { value: Some(v), .. } = &f.body.stmts[0].0 {
-                assert!(matches!(&v.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&v.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
             if let Stmt::Var { value: Some(v), .. } = &f.body.stmts[1].0 {
-                assert!(matches!(&v.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&v.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -3943,13 +4006,19 @@ mod tests {
 
         if let Item::Function(f) = &items[0].0 {
             if let Stmt::For { iterable, body, .. } = &f.body.stmts[0].0 {
-                assert!(matches!(&iterable.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&iterable.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
                 if let Stmt::Expression(e) = &body.stmts[0].0 {
-                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                    assert!(
+                        matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                    );
                 }
             }
             if let Stmt::While { condition, .. } = &f.body.stmts[1].0 {
-                assert!(matches!(&condition.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&condition.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -3983,10 +4052,14 @@ mod tests {
                 ..
             } = &f.body.stmts[0].0
             {
-                assert!(matches!(&condition.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&condition.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
                 let eb = else_block.as_ref().unwrap();
                 if let Stmt::Expression(e) = &eb.block.as_ref().unwrap().stmts[0].0 {
-                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                    assert!(
+                        matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                    );
                 }
             }
         }
@@ -4018,12 +4091,16 @@ mod tests {
                 scrutinee, arms, ..
             } = &f.body.stmts[0].0
             {
-                assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&scrutinee.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
                 assert!(matches!(
                     &arms[0].guard.as_ref().unwrap().0,
-                    Expr::MethodCall { .. }
+                    Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len")
                 ));
-                assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&arms[0].body.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -4061,10 +4138,14 @@ mod tests {
 
         if let Item::Function(f) = &items[0].0 {
             if let Stmt::Assign { value, .. } = &f.body.stmts[0].0 {
-                assert!(matches!(&value.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&value.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
             if let Stmt::Defer(e) = &f.body.stmts[1].0 {
-                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
     }
@@ -4093,9 +4174,13 @@ mod tests {
                 expr, else_body, ..
             } = &f.body.stmts[0].0
             {
-                assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
                 if let Stmt::Expression(e) = &else_body.as_ref().unwrap().stmts[0].0 {
-                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                    assert!(
+                        matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                    );
                 }
             }
         }
@@ -4114,7 +4199,9 @@ mod tests {
         rewrite_builtin_calls_in_expr(&mut block_expr);
         if let Expr::Block(block) = &block_expr.0 {
             if let Stmt::Expression(e) = &block.stmts[0].0 {
-                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                assert!(
+                    matches!(&e.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+                );
             }
         }
 
@@ -4129,7 +4216,9 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut iflet);
         if let Expr::IfLet { expr, .. } = &iflet.0 {
-            assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&expr.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 
@@ -4141,14 +4230,18 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut try_expr);
         if let Expr::PostfixTry(inner) = &try_expr.0 {
-            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&inner.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
 
         let mut await_expr: Spanned<Expr> =
             (Expr::Await(Box::new(make_len_call(make_ident("f")))), 0..10);
         rewrite_builtin_calls_in_expr(&mut await_expr);
         if let Expr::Await(inner) = &await_expr.0 {
-            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+            assert!(
+                matches!(&inner.0, Expr::Call { function, .. } if matches!(&function.0, Expr::Identifier(name) if name == "len"))
+            );
         }
     }
 

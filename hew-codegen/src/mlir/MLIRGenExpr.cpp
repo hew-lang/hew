@@ -1418,6 +1418,24 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
 
   const auto &calleeName = calleeIdentExpr->name;
 
+  // Preserve free-call builtin syntax: len(x) lowers through the same method
+  // dispatcher path as x.len() without relying on earlier AST rewrites.
+  if (calleeName == "len") {
+    if (call.args.size() != 1) {
+      emitError(location) << "len expects exactly 1 argument";
+      return nullptr;
+    }
+    auto receiver = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!receiver)
+      return nullptr;
+    ast::ExprMethodCall methodCall;
+    methodCall.method = "len";
+    if (auto result = generateBuiltinMethodCall(methodCall, receiver, location))
+      return *result;
+    emitError(location) << "len(...) is only supported for builtin collection and string types";
+    return nullptr;
+  }
+
   // ── Intercept enriched log calls ─────────────────────────────────────
   // The enrich.rs step rewrites log.setup()/log.info()/etc. into direct
   // calls to hew_log_init/hew_log_info/etc. before codegen sees them.

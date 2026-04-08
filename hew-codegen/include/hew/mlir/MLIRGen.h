@@ -243,7 +243,7 @@ private:
   mlir::Value generateBlockExpr(const ast::Block &block);
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr, const ast::Span &exprSpan);
-  mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
+  mlir::Value generateMethodCall(const ast::ExprMethodCall &expr, const ast::Span &exprSpan);
   std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::ExprIdentifier &ident,
                                                       mlir::Location location);
@@ -559,6 +559,9 @@ private:
     }
   };
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::TypeExpr *, SpanHash> exprTypeMap;
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::MethodCallReceiverKindEntry *,
+                     SpanHash>
+      methodCallReceiverKindMap;
 
   /// Look up the resolved type for an expression by its source span.
   const ast::TypeExpr *resolvedTypeOf(const ast::Span &span) const {
@@ -567,10 +570,19 @@ private:
       return it->second;
     return nullptr;
   }
+  const ast::MethodCallReceiverKindEntry *methodCallReceiverKindOf(const ast::Span &span) const {
+    auto it = methodCallReceiverKindMap.find({span.start, span.end});
+    if (it != methodCallReceiverKindMap.end())
+      return it->second;
+    return nullptr;
+  }
   /// Like resolvedTypeOf(), but emits a fail-closed diagnostic when the
   /// type-checker metadata entry is missing.
   const ast::TypeExpr *requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
                                              std::optional<mlir::Location> errorLoc = std::nullopt);
+  const ast::MethodCallReceiverKindEntry *
+  requireMethodCallReceiverKindOf(const ast::Span &span, llvm::StringRef context,
+                                  std::optional<mlir::Location> errorLoc = std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can

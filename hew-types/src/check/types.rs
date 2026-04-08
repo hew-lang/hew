@@ -12,6 +12,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
     pub type_defs: HashMap<String, TypeDef>,
@@ -39,6 +40,12 @@ impl From<&Span> for SpanKey {
             end: s.end,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MethodCallReceiverKind {
+    NamedTypeInstance { type_name: String },
+    TraitObject { trait_name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -203,6 +210,7 @@ pub struct Checker {
     pub(super) errors: Vec<TypeError>,
     pub(super) warnings: Vec<TypeError>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
@@ -338,6 +346,7 @@ impl Checker {
             errors: Vec::new(),
             warnings: Vec::new(),
             expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             type_def_inference_holes: HashMap::new(),

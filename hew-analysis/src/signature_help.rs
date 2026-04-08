@@ -206,6 +206,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
         }
     }
 
@@ -341,6 +342,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -400,6 +402,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

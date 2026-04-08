@@ -527,7 +527,13 @@ fn enrich_program_ast(
     module_registry: &hew_types::module_registry::ModuleRegistry,
     source: &str,
     input: &str,
-) -> Result<Vec<hew_serialize::ExprTypeEntry>, String> {
+) -> Result<
+    (
+        Vec<hew_serialize::ExprTypeEntry>,
+        Vec<hew_serialize::MethodCallReceiverKindEntry>,
+    ),
+    String,
+> {
     let root_module_item_count = program
         .module_graph
         .as_ref()
@@ -538,7 +544,7 @@ fn enrich_program_ast(
     // and enrich_fn_decl process the imported functions too.
     let imported_item_sources = flatten_import_items(program);
 
-    let expr_type_map = if let Some(tco) = tco {
+    let (expr_type_map, method_call_receiver_kinds) = if let Some(tco) = tco {
         let mut seen_inferred_type_diagnostics = HashSet::new();
         let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
@@ -588,6 +594,8 @@ fn enrich_program_ast(
             }
         }
         let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
+        let method_call_receiver_kinds =
+            hew_serialize::build_method_call_receiver_kind_entries(program, tco);
 
         for diagnostic in collect_new_inferred_type_diagnostics(
             expr_type_map_build.diagnostics(),
@@ -606,16 +614,16 @@ fn enrich_program_ast(
                 diagnostic,
             );
         }
-        expr_type_map_build.entries
+        (expr_type_map_build.entries, method_call_receiver_kinds)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     // Mark tail calls (purely syntactic, must run after enrichment so that
     // MethodCall→Call rewrites are already in place).
     hew_parser::tail_call::mark_tail_calls(program);
 
-    Ok(expr_type_map)
+    Ok((expr_type_map, method_call_receiver_kinds))
 }
 
 /// **Stage 6 — Codegen metadata.** Build handle type metadata for C++ codegen
@@ -760,7 +768,7 @@ pub fn compile(
     }
 
     // 5. Enrich AST with inferred types, flatten imports, mark tail calls
-    let expr_type_map = enrich_program_ast(
+    let (expr_type_map, method_call_receiver_kinds) = enrich_program_ast(
         &mut program,
         tco.as_ref(),
         &module_registry,
@@ -783,6 +791,7 @@ pub fn compile(
         let json = hew_serialize::serialize_to_json(
             &program,
             expr_type_map,
+            method_call_receiver_kinds,
             meta.handle_types,
             meta.handle_type_repr,
             meta.drop_funcs,
@@ -796,6 +805,7 @@ pub fn compile(
     let ast_data = hew_serialize::serialize_to_msgpack(
         &program,
         expr_type_map,
+        method_call_receiver_kinds,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -888,7 +898,7 @@ pub(crate) fn compile_from_source_checked(
     } = typecheck_program(&program, source, source_label, &target, options)?;
 
     // Stage 5 — enrich AST with inferred types, flatten imports, mark tail calls.
-    let expr_type_map = enrich_program_ast(
+    let (expr_type_map, method_call_receiver_kinds) = enrich_program_ast(
         &mut program,
         tco.as_ref(),
         &module_registry,
@@ -903,6 +913,7 @@ pub(crate) fn compile_from_source_checked(
     let ast_data = hew_serialize::serialize_to_msgpack(
         &program,
         expr_type_map,
+        method_call_receiver_kinds,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -1782,6 +1793,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
         }
     }
 
@@ -2043,7 +2055,7 @@ fn main() {
             Ty::Var(hew_types::ty::TypeVar(7)),
         );
 
-        let expr_type_map = enrich_program_ast(
+        let (expr_type_map, method_call_receiver_kinds) = enrich_program_ast(
             &mut program,
             Some(&tco),
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
@@ -2055,6 +2067,10 @@ fn main() {
         assert!(
             expr_type_map.is_empty(),
             "unresolved best-effort expr types should be omitted from serialized metadata"
+        );
+        assert!(
+            method_call_receiver_kinds.is_empty(),
+            "unresolved best-effort method-call receiver kinds should stay absent"
         );
         let Item::Function(function) = &program.items[0].0 else {
             panic!("expected function");

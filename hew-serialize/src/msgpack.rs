@@ -6,8 +6,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use hew_parser::ast::{Spanned, TypeExpr};
+use hew_parser::ast::{
+    Block, CallArg, Expr, Item, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem, TypeExpr,
+};
 use hew_parser::module::{Module, ModuleId};
+use hew_types::check::{
+    MethodCallReceiverKind as CheckedMethodCallReceiverKind, SpanKey, TypeCheckOutput,
+};
 use serde::{Deserialize, Serialize};
 
 /// Schema version for the msgpack AST boundary.
@@ -16,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -33,6 +38,21 @@ pub struct ExprTypeEntry {
     pub ty: Spanned<TypeExpr>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MethodCallReceiverKindData {
+    NamedTypeInstance { type_name: String },
+    TraitObject { trait_name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MethodCallReceiverKindEntry {
+    pub start: usize,
+    pub end: usize,
+    #[serde(flatten)]
+    pub kind: MethodCallReceiverKindData,
+}
+
 /// Top-level serialization wrapper: the program AST plus type-checker and
 /// source metadata used by C++ codegen.
 ///
@@ -41,6 +61,7 @@ pub struct ExprTypeEntry {
 /// - `"items"`
 /// - `"module_doc"`
 /// - `"expr_types"`
+/// - `"method_call_receiver_kinds"`
 /// - `"handle_types"`
 /// - `"handle_type_repr"`
 /// - `"drop_funcs"`
@@ -56,6 +77,8 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     module_doc: &'a Option<String>,
     /// Resolved types for every expression the type checker annotated.
     expr_types: &'a [ExprTypeEntry],
+    /// Checker-resolved receiver classification for surviving method calls.
+    method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
     /// Names of all known handle types (e.g., `"http.Server"`, `"json.Value"`).
     /// Flows type metadata to C++ codegen so it doesn't need hardcoded type lists.
     handle_types: Vec<String>,
@@ -91,6 +114,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
     fn new(
         program: &'a hew_parser::ast::Program,
         expr_types: &'a [ExprTypeEntry],
+        method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
         handle_types: Vec<String>,
         handle_type_repr: HashMap<String, String>,
         drop_funcs: Vec<(String, String)>,
@@ -103,6 +127,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             items: &program.items,
             module_doc: &program.module_doc,
             expr_types,
+            method_call_receiver_kinds,
             handle_types,
             handle_type_repr,
             drop_funcs,
@@ -126,11 +151,13 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
 #[expect(
     clippy::needless_pass_by_value,
     clippy::implicit_hasher,
+    clippy::too_many_arguments,
     reason = "serialization consumes the map"
 )]
 pub fn serialize_to_msgpack(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
+    method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -140,6 +167,7 @@ pub fn serialize_to_msgpack(
     let typed = TypedProgram::new(
         program,
         &expr_types,
+        &method_call_receiver_kinds,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -173,11 +201,13 @@ struct ModuleGraphJson<'a> {
 #[expect(
     clippy::needless_pass_by_value,
     clippy::implicit_hasher,
+    clippy::too_many_arguments,
     reason = "serialization consumes the map"
 )]
 pub fn serialize_to_json(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
+    method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -192,6 +222,7 @@ pub fn serialize_to_json(
     let typed = TypedProgram::new(
         program,
         &expr_types,
+        &method_call_receiver_kinds,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -214,13 +245,382 @@ pub fn deserialize_from_msgpack(
     rmp_serde::from_slice(data)
 }
 
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
+)]
+pub fn build_method_call_receiver_kind_entries(
+    program: &hew_parser::ast::Program,
+    tco: &TypeCheckOutput,
+) -> Vec<MethodCallReceiverKindEntry> {
+    fn entry_for_span(
+        span: &std::ops::Range<usize>,
+        tco: &TypeCheckOutput,
+    ) -> Option<MethodCallReceiverKindEntry> {
+        let key = SpanKey::from(span);
+        let kind = tco.method_call_receiver_kinds.get(&key)?;
+        Some(MethodCallReceiverKindEntry {
+            start: key.start,
+            end: key.end,
+            kind: match kind {
+                CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                    MethodCallReceiverKindData::NamedTypeInstance {
+                        type_name: type_name.clone(),
+                    }
+                }
+                CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
+                    MethodCallReceiverKindData::TraitObject {
+                        trait_name: trait_name.clone(),
+                    }
+                }
+            },
+        })
+    }
+
+    fn collect_fn(
+        fn_decl: &hew_parser::ast::FnDecl,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        collect_block(&fn_decl.body, tco, out);
+    }
+
+    fn collect_block(
+        block: &Block,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        for stmt in &block.stmts {
+            collect_stmt(stmt, tco, out);
+        }
+        if let Some(trailing) = &block.trailing_expr {
+            collect_expr(trailing, tco, out);
+        }
+    }
+
+    fn collect_call_args(
+        args: &[CallArg],
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        for arg in args {
+            collect_expr(arg.expr(), tco, out);
+        }
+    }
+
+    fn collect_stmt(
+        stmt: &Spanned<Stmt>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        match &stmt.0 {
+            Stmt::Let { value, .. }
+            | Stmt::Var { value, .. }
+            | Stmt::Break { value, .. }
+            | Stmt::Return(value) => {
+                if let Some(value) = value {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                collect_expr(target, tco, out);
+                collect_expr(value, tco, out);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                collect_expr(condition, tco, out);
+                if let Some(else_block) = else_block {
+                    match (else_block.if_stmt.as_ref(), else_block.block.as_ref()) {
+                        (Some(if_stmt), _) => collect_stmt(if_stmt, tco, out),
+                        (None, Some(block)) => collect_block(block, tco, out),
+                        (None, None) => {}
+                    }
+                }
+                collect_block(then_block, tco, out);
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+                if let Some(else_body) = else_body {
+                    collect_block(else_body, tco, out);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_expr(scrutinee, tco, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&arm.body, tco, out);
+                }
+            }
+            Stmt::Loop { body, .. } => collect_block(body, tco, out),
+            Stmt::For { iterable, body, .. } => {
+                collect_expr(iterable, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                collect_expr(condition, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+            }
+            Stmt::Defer(expr) => collect_expr(expr, tco, out),
+            Stmt::Expression(expr) => collect_expr(expr, tco, out),
+            Stmt::Continue { .. } => {}
+        }
+    }
+
+    fn collect_expr(
+        expr: &Spanned<Expr>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        if let Expr::MethodCall { receiver, args, .. } = &expr.0 {
+            if let Some(entry) = entry_for_span(&expr.1, tco) {
+                out.push(entry);
+            }
+            collect_expr(receiver, tco, out);
+            collect_call_args(args, tco, out);
+            return;
+        }
+
+        match &expr.0 {
+            Expr::Binary { left, right, .. } => {
+                collect_expr(left, tco, out);
+                collect_expr(right, tco, out);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Cast { expr: operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Await(operand) => collect_expr(operand, tco, out),
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+                for elem in exprs {
+                    collect_expr(elem, tco, out);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                collect_expr(value, tco, out);
+                collect_expr(count, tco, out);
+            }
+            Expr::MapLiteral { entries } => {
+                for (key, value) in entries {
+                    collect_expr(key, tco, out);
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::Block(block)
+            | Expr::Unsafe(block)
+            | Expr::ScopeLaunch(block)
+            | Expr::ScopeSpawn(block) => {
+                collect_block(block, tco, out);
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                collect_expr(condition, tco, out);
+                collect_expr(then_block, tco, out);
+                if let Some(else_block) = else_block {
+                    collect_expr(else_block, tco, out);
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_expr(expr, tco, out);
+                collect_block(body, tco, out);
+                if let Some(else_body) = else_body {
+                    collect_block(else_body, tco, out);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                collect_expr(scrutinee, tco, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&arm.body, tco, out);
+                }
+            }
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                collect_expr(body, tco, out);
+            }
+            Expr::Spawn { target, args } => {
+                collect_expr(target, tco, out);
+                for (_, arg) in args {
+                    collect_expr(arg, tco, out);
+                }
+            }
+            Expr::Scope { body, .. } => collect_block(body, tco, out),
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr(expr) = part {
+                        collect_expr(expr, tco, out);
+                    }
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                collect_expr(function, tco, out);
+                collect_call_args(args, tco, out);
+            }
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::Send { target, message } => {
+                collect_expr(target, tco, out);
+                collect_expr(message, tco, out);
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    collect_expr(&arm.source, tco, out);
+                    collect_expr(&arm.body, tco, out);
+                }
+                if let Some(timeout) = timeout {
+                    collect_expr(&timeout.duration, tco, out);
+                    collect_expr(&timeout.body, tco, out);
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                collect_expr(expr, tco, out);
+                collect_expr(duration, tco, out);
+            }
+            Expr::Yield(value) => {
+                if let Some(value) = value {
+                    collect_expr(value, tco, out);
+                }
+            }
+            Expr::FieldAccess { object, .. } => collect_expr(object, tco, out),
+            Expr::Index { object, index } => {
+                collect_expr(object, tco, out);
+                collect_expr(index, tco, out);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    collect_expr(start, tco, out);
+                }
+                if let Some(end) = end {
+                    collect_expr(end, tco, out);
+                }
+            }
+            Expr::MethodCall { .. } => unreachable!("method calls are handled before recursion"),
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::ScopeCancel
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
+    fn collect_item(
+        item: &Spanned<Item>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<MethodCallReceiverKindEntry>,
+    ) {
+        match &item.0 {
+            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
+            Item::TypeDecl(type_decl) => {
+                for body_item in &type_decl.body {
+                    if let TypeBodyItem::Method(method) = body_item {
+                        collect_fn(method, tco, out);
+                    }
+                }
+            }
+            Item::Trait(trait_decl) => {
+                for trait_item in &trait_decl.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if let Some(body) = &method.body {
+                            collect_block(body, tco, out);
+                        }
+                    }
+                }
+            }
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    collect_fn(method, tco, out);
+                }
+            }
+            Item::Function(fn_decl) => collect_fn(fn_decl, tco, out),
+            Item::Actor(actor_decl) => {
+                if let Some(init) = &actor_decl.init {
+                    collect_block(&init.body, tco, out);
+                }
+                if let Some(terminate) = &actor_decl.terminate {
+                    collect_block(&terminate.body, tco, out);
+                }
+                for receive_fn in &actor_decl.receive_fns {
+                    collect_block(&receive_fn.body, tco, out);
+                }
+                for method in &actor_decl.methods {
+                    collect_fn(method, tco, out);
+                }
+            }
+            Item::Supervisor(supervisor_decl) => {
+                for child in &supervisor_decl.children {
+                    for arg in &child.args {
+                        collect_expr(arg, tco, out);
+                    }
+                }
+            }
+            Item::Machine(machine_decl) => {
+                for transition in &machine_decl.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_expr(guard, tco, out);
+                    }
+                    collect_expr(&transition.body, tco, out);
+                }
+            }
+            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+        }
+    }
+
+    let mut entries = Vec::new();
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if let Some(module) = module_graph.modules.get(module_id) {
+                for item in &module.items {
+                    collect_item(item, tco, &mut entries);
+                }
+            }
+        }
+    } else {
+        for item in &program.items {
+            collect_item(item, tco, &mut entries);
+        }
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use hew_parser::ast::{
-        Block, Expr, FnDecl, IntRadix, Item, Literal, MachineDecl, MachineEvent, MachineState,
-        MachineTransition, Program, Stmt, Visibility,
+        FnDecl, IntRadix, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition,
+        Program, Visibility,
     };
+    use std::collections::HashSet;
 
     /// Round-trip: serialize → deserialize should produce an identical AST.
     #[test]
@@ -260,8 +660,16 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes =
-            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -319,8 +727,16 @@ mod tests {
             module_graph: Some(graph),
         };
 
-        let bytes =
-            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -336,8 +752,16 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes =
-            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
     }
@@ -400,8 +824,16 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes =
-            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -415,6 +847,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             HashMap::new(),
@@ -431,6 +864,233 @@ mod tests {
         }
     }
 
+    #[test]
+    fn method_call_receiver_kinds_serialize_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![MethodCallReceiverKindEntry {
+                start: 10,
+                end: 20,
+                kind: MethodCallReceiverKindData::NamedTypeInstance {
+                    type_name: "Widget".to_string(),
+                },
+            }],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let kinds = value
+            .get("method_call_receiver_kinds")
+            .and_then(serde_json::Value::as_array)
+            .expect("method_call_receiver_kinds should be present on the wire");
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(
+            kinds[0].get("kind").and_then(serde_json::Value::as_str),
+            Some("named_type_instance")
+        );
+        assert_eq!(
+            kinds[0]
+                .get("type_name")
+                .and_then(serde_json::Value::as_str),
+            Some("Widget")
+        );
+    }
+
+    #[test]
+    fn build_method_call_receiver_kind_entries_only_emits_surviving_method_calls() {
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Expression((
+                                Expr::Call {
+                                    function: Box::new((Expr::Identifier("helper".into()), 30..36)),
+                                    type_args: None,
+                                    args: vec![],
+                                    is_tail_call: false,
+                                },
+                                30..38,
+                            )),
+                            30..38,
+                        )],
+                        trailing_expr: Some(Box::new((
+                            Expr::MethodCall {
+                                receiver: Box::new((Expr::Identifier("widget".into()), 10..16)),
+                                method: "value_plus_one".into(),
+                                args: vec![CallArg::Positional((
+                                    Expr::Literal(Literal::Integer {
+                                        value: 1,
+                                        radix: IntRadix::Decimal,
+                                    }),
+                                    17..18,
+                                ))],
+                            },
+                            10..28,
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::from([
+                (
+                    SpanKey { start: 10, end: 28 },
+                    CheckedMethodCallReceiverKind::NamedTypeInstance {
+                        type_name: "Widget".to_string(),
+                    },
+                ),
+                (
+                    SpanKey { start: 30, end: 38 },
+                    CheckedMethodCallReceiverKind::TraitObject {
+                        trait_name: "Stale".to_string(),
+                    },
+                ),
+            ]),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_method_call_receiver_kind_entries(&program, &tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start, 10);
+        assert_eq!(entries[0].end, 28);
+        assert_eq!(
+            entries[0].kind,
+            MethodCallReceiverKindData::NamedTypeInstance {
+                type_name: "Widget".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn build_method_call_receiver_kind_entries_follow_module_graph_items() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let root = ModuleId::root();
+        let imported = ModuleId::new(vec!["std".into(), "json".into()]);
+        let method_call_span = 10..28;
+
+        let imported_fn = (
+            Item::Function(FnDecl {
+                attributes: vec![],
+                is_async: false,
+                is_generator: false,
+                visibility: Visibility::Private,
+                is_pure: false,
+                name: "helper".into(),
+                type_params: None,
+                params: vec![],
+                return_type: None,
+                where_clause: None,
+                body: Block {
+                    stmts: vec![(
+                        Stmt::Expression((
+                            Expr::MethodCall {
+                                receiver: Box::new((Expr::Identifier("value".into()), 10..15)),
+                                method: "stringify".into(),
+                                args: vec![],
+                            },
+                            method_call_span.clone(),
+                        )),
+                        method_call_span.clone(),
+                    )],
+                    trailing_expr: None,
+                },
+                doc_comment: None,
+                decl_span: 0..0,
+            }),
+            0..30,
+        );
+
+        let mut module_graph = ModuleGraph::new(root.clone());
+        module_graph.add_module(Module {
+            id: root.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        });
+        module_graph.add_module(Module {
+            id: imported.clone(),
+            items: vec![imported_fn],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        });
+        module_graph.topo_order = vec![root, imported];
+
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: Some(module_graph),
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::from([(
+                SpanKey {
+                    start: method_call_span.start,
+                    end: method_call_span.end,
+                },
+                CheckedMethodCallReceiverKind::NamedTypeInstance {
+                    type_name: "json.Value".to_string(),
+                },
+            )]),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_method_call_receiver_kind_entries(&program, &tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start, method_call_span.start);
+        assert_eq!(entries[0].end, method_call_span.end);
+        assert_eq!(
+            entries[0].kind,
+            MethodCallReceiverKindData::NamedTypeInstance {
+                type_name: "json.Value".to_string()
+            }
+        );
+    }
+
     /// Verify that the serialized msgpack contains a `schema_version` field
     /// set to `SCHEMA_VERSION`, and that a round-trip still produces an
     /// identical `Program` (the version field is metadata, not part of `Program`).
@@ -442,8 +1102,16 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes =
-            serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), vec![], None, None);
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
 
         // Deserialize into a serde_json::Value to inspect the schema_version field.
         // rmp_serde can deserialize msgpack into any Deserialize type, and

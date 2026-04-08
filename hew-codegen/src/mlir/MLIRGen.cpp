@@ -747,6 +747,19 @@ const ast::TypeExpr *MLIRGen::requireResolvedTypeOf(const ast::Span &span, llvm:
   return nullptr;
 }
 
+const ast::MethodCallReceiverKindEntry *
+MLIRGen::requireMethodCallReceiverKindOf(const ast::Span &span, llvm::StringRef context,
+                                         std::optional<mlir::Location> errorLoc) {
+  if (const auto *kind = methodCallReceiverKindOf(span))
+    return kind;
+
+  ++errorCount_;
+  emitError(errorLoc.value_or(currentLoc))
+      << "missing method_call_receiver_kinds entry for " << context << " at span [" << span.start
+      << ", " << span.end << ")";
+  return nullptr;
+}
+
 // ============================================================================
 // Type coercion
 // ============================================================================
@@ -2409,6 +2422,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   // Build the expression type lookup map from the serialized type checker data.
   for (const auto &entry : program.expr_types) {
     exprTypeMap[{entry.start, entry.end}] = &entry.ty.value;
+  }
+  for (const auto &entry : program.method_call_receiver_kinds) {
+    methodCallReceiverKindMap[{entry.start, entry.end}] = &entry;
   }
 
   // Populate handle type metadata from the Rust type checker.

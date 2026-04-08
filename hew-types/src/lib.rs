@@ -17,6 +17,6 @@ pub mod traits;
 pub mod ty;
 pub mod unify;
 
-pub use check::{Checker, TypeCheckOutput, VariantDef};
+pub use check::{Checker, MethodCallReceiverKind, TypeCheckOutput, VariantDef};
 pub use error::TypeError;
 pub use ty::{TraitObjectBound, Ty};

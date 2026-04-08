@@ -2628,6 +2628,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
         }
     }
 

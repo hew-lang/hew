@@ -517,6 +517,19 @@ static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast
   return program.expr_types.size() != oldSize;
 }
 
+static bool eraseMethodCallReceiverKindEntryForSpan(hew::ast::Program &program,
+                                                    const hew::ast::Span &span) {
+  auto oldSize = program.method_call_receiver_kinds.size();
+  program.method_call_receiver_kinds.erase(
+      std::remove_if(program.method_call_receiver_kinds.begin(),
+                     program.method_call_receiver_kinds.end(),
+                     [&](const hew::ast::MethodCallReceiverKindEntry &entry) {
+                       return entry.start == span.start && entry.end == span.end;
+                     }),
+      program.method_call_receiver_kinds.end());
+  return program.method_call_receiver_kinds.size() != oldSize;
+}
+
 static std::optional<hew::ast::Span> restoreReturnedHandleMethodCall(hew::ast::FnDecl &fn,
                                                                      llvm::StringRef callee,
                                                                      llvm::StringRef methodName) {
@@ -585,6 +598,25 @@ static std::optional<hew::ast::Span> findMethodReceiverSpanInStmt(const hew::ast
   return std::nullopt;
 }
 
+static std::optional<hew::ast::Span> findMethodCallSpanInStmt(const hew::ast::Stmt &stmt,
+                                                              const std::string &methodName) {
+  auto methodCallSpanForExpr =
+      [&](const hew::ast::Spanned<hew::ast::Expr> &expr) -> std::optional<hew::ast::Span> {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&expr.value.kind);
+    if (!methodCall || methodCall->method != methodName)
+      return std::nullopt;
+    return expr.span;
+  };
+
+  if (auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt.kind))
+    return retStmt->value ? methodCallSpanForExpr(*retStmt->value) : std::nullopt;
+
+  if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt.kind))
+    return methodCallSpanForExpr(exprStmt->expr);
+
+  return std::nullopt;
+}
+
 static std::optional<hew::ast::Span> findFunctionMethodReceiverSpan(const hew::ast::FnDecl &fn,
                                                                     const std::string &methodName) {
   for (const auto &stmt : fn.body.stmts)
@@ -595,6 +627,21 @@ static std::optional<hew::ast::Span> findFunctionMethodReceiverSpan(const hew::a
     auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&fn.body.trailing_expr->value.kind);
     if (methodCall && methodCall->method == methodName)
       return methodCall->receiver->span;
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<hew::ast::Span> findFunctionMethodCallSpan(const hew::ast::FnDecl &fn,
+                                                                const std::string &methodName) {
+  for (const auto &stmt : fn.body.stmts)
+    if (auto span = findMethodCallSpanInStmt(stmt->value, methodName))
+      return span;
+
+  if (fn.body.trailing_expr) {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&fn.body.trailing_expr->value.kind);
+    if (methodCall && methodCall->method == methodName)
+      return fn.body.trailing_expr->span;
   }
 
   return std::nullopt;
@@ -5953,16 +6000,15 @@ fn main() {}
 }
 
 // ============================================================================
-// Test: trait dispatch requires a resolved receiver type annotation.
+// Test: trait dispatch requires a checker-carried receiver-kind entry.
 //
-// When the receiver's expr_types entry is removed, the dynTraitVarTypes
-// identifier fallback no longer exists. A dyn-trait method call with no
-// dispatch-site type annotation must fail closed instead of silently emitting
-// wrong code.
+// The checker now records trait-object method dispatch in
+// method_call_receiver_kinds. If that entry is removed, codegen must fail
+// closed instead of re-discovering trait dispatch structurally.
 // ============================================================================
 
-static void test_trait_dispatch_requires_resolved_type() {
-  TEST(trait_dispatch_requires_resolved_type);
+static void test_trait_dispatch_requires_receiver_kind() {
+  TEST(trait_dispatch_requires_receiver_kind);
 
   hew::ast::Program program;
   if (!loadProgramFromSource(R"(
@@ -5997,15 +6043,11 @@ fn main() {}
     return;
   }
 
-  auto receiverSpan = findFunctionMethodReceiverSpan(*useGreeter, "greet");
-  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
-    FAIL("failed to remove trait receiver expr_types entry");
+  auto methodCallSpan = findFunctionMethodCallSpan(*useGreeter, "greet");
+  if (!methodCallSpan || !eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove trait method_call_receiver_kinds entry");
     return;
   }
-
-  // Simulate absent type-checker metadata at the dispatch site: the old
-  // dynTraitVarTypes fallback would have rescued this call; after its
-  // removal, codegen must fail.
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -6014,13 +6056,75 @@ fn main() {}
   auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
 
   if (module) {
-    FAIL("expected codegen to fail for trait dispatch without resolved type annotation");
+    FAIL("expected codegen to fail for trait dispatch without receiver-kind metadata");
     module.getOperation()->destroy();
     return;
   }
 
-  if (stderrText.find("method call on non-struct/enum type") == std::string::npos) {
-    FAIL("expected 'method call on non-struct/enum type' diagnostic for unresolved trait dispatch");
+  if (stderrText.find("missing method_call_receiver_kinds entry for trait object method call") ==
+      std::string::npos) {
+    FAIL("expected missing method_call_receiver_kinds diagnostic for trait dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+
+static void test_named_type_dispatch_requires_receiver_kind() {
+  TEST(named_type_dispatch_requires_receiver_kind);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Widget {
+    value: i64;
+}
+
+impl Widget {
+    fn value_plus_one(w: Widget) -> i64 {
+        w.value + 1
+    }
+}
+
+fn use_widget(w: Widget) -> i64 {
+    return w.value_plus_one();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run named-type dispatch negative test");
+    return;
+  }
+
+  auto *useWidget = findFunctionDecl(program, "use_widget");
+  if (!useWidget) {
+    FAIL("failed to find use_widget function for named-type dispatch negative test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useWidget, "value_plus_one");
+  if (!methodCallSpan || !eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove named-type method_call_receiver_kinds entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for named-type dispatch without receiver-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing method_call_receiver_kinds entry for named-type method call") ==
+      std::string::npos) {
+    FAIL("expected missing method_call_receiver_kinds diagnostic for named-type dispatch");
     return;
   }
 
@@ -6628,7 +6732,8 @@ int main() {
   test_handle_alias_call_receiver_is_recognized();
   test_handle_dispatch_requires_resolved_type();
   test_actor_dispatch_requires_resolved_type();
-  test_trait_dispatch_requires_resolved_type();
+  test_trait_dispatch_requires_receiver_kind();
+  test_named_type_dispatch_requires_receiver_kind();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();
   test_for_await_receiver_alias_inferred_binding_uses_resolved_type();

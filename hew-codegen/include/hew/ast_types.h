@@ -564,7 +564,8 @@ struct StmtExpression {
 
 struct Stmt {
   std::variant<StmtLet, StmtVar, StmtAssign, StmtIf, StmtIfLet, StmtMatch, StmtLoop, StmtFor,
-               StmtWhile, StmtWhileLet, StmtBreak, StmtContinue, StmtReturn, StmtDefer, StmtExpression>
+               StmtWhile, StmtWhileLet, StmtBreak, StmtContinue, StmtReturn, StmtDefer,
+               StmtExpression>
       kind;
   Span span; // Copied from Spanned<Stmt> wrapper for codegen convenience
 };
@@ -1001,6 +1002,23 @@ struct ExprTypeEntry {
   Spanned<TypeExpr> ty;
 };
 
+struct MethodCallReceiverKindNamedTypeInstance {
+  std::string type_name;
+};
+
+struct MethodCallReceiverKindTraitObject {
+  std::string trait_name;
+};
+
+using MethodCallReceiverKindData =
+    std::variant<MethodCallReceiverKindNamedTypeInstance, MethodCallReceiverKindTraitObject>;
+
+struct MethodCallReceiverKindEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  MethodCallReceiverKindData kind;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1010,6 +1028,8 @@ struct Program {
   std::optional<std::string> module_doc;
   /// Resolved expression types from the type checker (indexed by span).
   std::vector<ExprTypeEntry> expr_types;
+  /// Checker-resolved receiver classification for surviving method calls.
+  std::vector<MethodCallReceiverKindEntry> method_call_receiver_kinds;
   /// Known handle type names (e.g., "http.Server", "json.Value").
   /// Populated from the Rust type checker's handle type registry.
   std::vector<std::string> handle_types;

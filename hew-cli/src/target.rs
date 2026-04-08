@@ -90,6 +90,33 @@ impl TargetSpec {
         self.os == TargetOs::Wasi
     }
 
+    /// Returns the clang-compatible target triple for the linker `-target` flag.
+    ///
+    /// On Darwin, clang expects a deployment-target form like
+    /// `aarch64-apple-macosx13.0` rather than the bare vendor triple
+    /// `aarch64-apple-darwin`.  The deployment target is read from the
+    /// `MACOSX_DEPLOYMENT_TARGET` environment variable and defaults to `"13.0"`
+    /// (macOS 13 / Ventura — the project's stated minimum; see Makefile and
+    /// PR #771).
+    ///
+    /// All other platforms use the normalized triple directly.
+    pub fn linker_triple(&self) -> String {
+        if self.os == TargetOs::Darwin {
+            let arch = match self.arch {
+                TargetArch::Aarch64 => "aarch64",
+                TargetArch::X86_64 => "x86_64",
+                TargetArch::Wasm32 => "wasm32",
+            };
+            let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "13.0".to_string());
+            format!("{arch}-apple-macosx{deployment}")
+        } else {
+            self.normalized_triple.clone()
+        }
+    }
+
     pub fn can_run_on_host(&self) -> bool {
         !self.is_wasm() && self.matches_host_environment()
     }
@@ -299,7 +326,13 @@ fn host_env() -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::TargetSpec;
+
+    // Serialize env-var–mutating tests: `std::env::set_var` / `remove_var` are
+    // not thread-safe when multiple tests share the same process.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn normalizes_arm64_apple_darwin() {
@@ -321,5 +354,45 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
         assert_eq!(spec.normalized_triple(), "wasm32-wasip1");
         assert_eq!(spec.executable_suffix(), ".wasm");
+    }
+
+    // ── linker_triple ──────────────────────────────────────────────────
+
+    #[test]
+    fn darwin_linker_triple_uses_deployment_target_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let spec = TargetSpec::from_requested(Some("arm64-apple-darwin")).expect("target");
+        std::env::set_var("MACOSX_DEPLOYMENT_TARGET", "14.0");
+        let triple = spec.linker_triple();
+        std::env::remove_var("MACOSX_DEPLOYMENT_TARGET");
+        assert_eq!(triple, "aarch64-apple-macosx14.0");
+    }
+
+    #[test]
+    fn darwin_linker_triple_defaults_to_13_0_when_env_absent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let spec = TargetSpec::from_requested(Some("aarch64-apple-darwin")).expect("target");
+        std::env::remove_var("MACOSX_DEPLOYMENT_TARGET");
+        let triple = spec.linker_triple();
+        assert_eq!(triple, "aarch64-apple-macosx13.0");
+    }
+
+    #[test]
+    fn darwin_linker_triple_defaults_to_13_0_when_env_empty() {
+        // An explicitly-empty MACOSX_DEPLOYMENT_TARGET (e.g. `export
+        // MACOSX_DEPLOYMENT_TARGET=`) must not produce a versionless triple
+        // like `aarch64-apple-macosx` that clang rejects.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let spec = TargetSpec::from_requested(Some("arm64-apple-darwin")).expect("target");
+        std::env::set_var("MACOSX_DEPLOYMENT_TARGET", "");
+        let triple = spec.linker_triple();
+        std::env::remove_var("MACOSX_DEPLOYMENT_TARGET");
+        assert_eq!(triple, "aarch64-apple-macosx13.0");
+    }
+
+    #[test]
+    fn linux_linker_triple_passes_normalized_triple_unchanged() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        assert_eq!(spec.linker_triple(), "x86_64-unknown-linux-gnu");
     }
 }

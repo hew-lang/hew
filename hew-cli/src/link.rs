@@ -28,7 +28,7 @@ pub fn link_executable(
         return Err(target.unsupported_native_link_error());
     }
 
-    let hew_lib = find_hew_lib(target.hew_lib_name())?;
+    let hew_lib = find_hew_lib(target.hew_lib_name(), target.normalized_triple())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
     let safe_output = if output_path.starts_with('-') {
@@ -59,6 +59,12 @@ pub fn link_executable(
         cmd.arg("-fuse-ld=lld-link");
     }
 
+    // Wire the explicit target triple so clang uses the right ABI, calling
+    // convention, and SDK rather than inferring from the host environment.
+    // On Darwin this becomes e.g. `aarch64-apple-macosx13.0`; on Linux the
+    // normalized triple is passed unchanged.
+    cmd.arg("-target").arg(target.linker_triple());
+
     cmd.arg(object_path).arg(&hew_lib);
 
     cmd.arg("-o").arg(&safe_output);
@@ -82,6 +88,13 @@ pub fn link_executable(
         cmd.arg("-Wl,-dead_strip");
         if !debug {
             cmd.arg("-Wl,-x");
+        }
+        // Anchor the SDK path explicitly so the linker finds system frameworks
+        // even when invoked from a non-standard PATH (e.g. in CI or from a PATH
+        // that does not include the Xcode toolchain root).  Failure is
+        // non-fatal: clang will fall back to its own SDK search heuristics.
+        if let Some(sdk) = find_macos_sdk() {
+            cmd.arg("-isysroot").arg(sdk);
         }
     }
 
@@ -295,11 +308,15 @@ fn find_wasi_libc(target: &str) -> Option<String> {
     }
 }
 
-fn find_hew_lib(name: &str) -> Result<String, String> {
+fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
 
     let candidates = [
+        // Per-triple path first: supports Phase 2 pre-built libs per target
+        // and lets `make assemble` wire the host triple without disturbing the
+        // generic fallback path.  Mirrors the `lib/wasm32-wasip1/` pattern.
+        exe_dir.join(format!("../lib/{triple}")).join(name),
         exe_dir.join("../lib").join(name),
         exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/ (Debian/Ubuntu)
         exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/ (Fedora/RHEL)
@@ -445,6 +462,28 @@ fn find_wasm_ld() -> Result<String, String> {
     }
 
     Err("Error: cannot find wasm-ld. Install LLVM or add wasm-ld to PATH".into())
+}
+
+/// Query `xcrun` for the path to the current Xcode SDK.
+///
+/// Returns `None` if `xcrun` is not available or the command fails; the
+/// linker will still attempt to locate the SDK through its own search
+/// heuristics in that case.
+#[cfg(target_os = "macos")]
+fn find_macos_sdk() -> Option<String> {
+    let output = std::process::Command::new("xcrun")
+        .arg("--show-sdk-path")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 fn has_tool(name: &str) -> bool {
@@ -669,7 +708,7 @@ mod tests {
 
     #[test]
     fn find_hew_lib_nonexistent_returns_error() {
-        let result = find_hew_lib("nonexistent_lib_xyz.a");
+        let result = find_hew_lib("nonexistent_lib_xyz.a", "aarch64-apple-darwin");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cannot find nonexistent_lib_xyz.a"));

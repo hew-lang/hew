@@ -171,3 +171,64 @@ fn run_and_debug_reject_foreign_targets_before_execution() {
         assert!(stderr.contains("--emit-obj"), "{command} stderr: {stderr}");
     }
 }
+
+/// On macOS arm64, `hew build --target arm64-apple-darwin` must produce a
+/// runnable native Mach-O arm64 executable — not just an object file.
+///
+/// This is the same-arch integration smoke test for the target-aware native-link
+/// slice (issue #254).  It verifies:
+///   1. The build exits 0.
+///   2. The output is a Mach-O arm64 binary.
+///   3. The binary executes without error on this host.
+///   4. No deployment-target mismatch linker warning is emitted (completing
+///      the fix started in PR #771 for the debug/`hew build` code path).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn native_link_same_arch_explicit_target_produces_runnable_binary() {
+    let dir = workspace();
+    let source = write_main(dir.path());
+    let output_path = dir.path().join("hello-arm64");
+
+    let result = Command::new(hew_binary())
+        .args([
+            "build",
+            source.to_str().expect("source path"),
+            "--target",
+            "arm64-apple-darwin",
+            "-o",
+            output_path.to_str().expect("output path"),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        result.status.success(),
+        "hew build --target arm64-apple-darwin failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    assert!(output_path.exists(), "output binary not created");
+
+    // Verify binary format and architecture.
+    let data = std::fs::read(&output_path).expect("read binary");
+    let obj = object::File::parse(data.as_slice()).expect("parse binary");
+    assert_eq!(obj.format(), BinaryFormat::MachO, "expected Mach-O binary");
+    assert_eq!(obj.architecture(), Architecture::Aarch64, "expected arm64");
+
+    // The binary must execute without error on this host.
+    let run = Command::new(&output_path).output().expect("run binary");
+    assert!(
+        run.status.success(),
+        "linked binary exited non-zero: {:?}\nstderr: {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr),
+    );
+
+    // No deployment-target mismatch warnings in the linker output.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !stderr.contains("newer macOS version"),
+        "deployment-target mismatch warning in linker output:\n{stderr}",
+    );
+}

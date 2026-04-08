@@ -2558,9 +2558,12 @@ pub unsafe extern "C" fn hew_actor_await(actor: *mut HewActor) -> i32 {
 
     loop {
         // SAFETY: scheduler must be initialized by the runtime/host.
-        let _remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
+        let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
         if is_terminal(a.actor_state.load(Ordering::Acquire)) {
             return a.error_code.load(Ordering::Acquire);
+        }
+        if remaining == 0 {
+            return HewError::ErrTimeout as i32;
         }
     }
 }

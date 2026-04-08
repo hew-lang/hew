@@ -286,7 +286,7 @@ mod tests {
         };
         let text = format_type_def_hover(&td);
         assert!(text.contains("type Point"));
-        assert!(text.contains("f64"), "should contain field types");
+        assert!(text.contains("float"), "should contain field types");
     }
 
     #[test]

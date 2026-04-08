@@ -80,6 +80,33 @@ pub fn expr_type_entry_parser() -> &'static str {
 }"#
 }
 
+/// Hard-coded parser for the serialized assignment-target kind tag.
+pub fn assign_target_kind_data_parser() -> &'static str {
+    r#"static ast::AssignTargetKindData parseAssignTargetKindData(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "local_var")
+    return ast::AssignTargetKindLocalVar{};
+  if (kind == "actor_field")
+    return ast::AssignTargetKindActorField{};
+  if (kind == "field_access")
+    return ast::AssignTargetKindFieldAccess{};
+  if (kind == "index")
+    return ast::AssignTargetKindIndex{};
+  fail("unknown AssignTargetKindData variant: " + kind);
+}"#
+}
+
+/// Hard-coded parser for `AssignTargetKindEntry` (C++-only type from serialization layer).
+pub fn assign_target_kind_entry_parser() -> &'static str {
+    r#"static ast::AssignTargetKindEntry parseAssignTargetKindEntry(const msgpack::object &obj) {
+  ast::AssignTargetKindEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.kind = parseAssignTargetKindData(mapReq(obj, "kind"));
+  return entry;
+}"#
+}
+
 /// Hard-coded parser for `MethodCallReceiverKindEntry` (C++-only type from serialization layer).
 pub fn method_call_receiver_kind_entry_parser() -> &'static str {
     r#"static ast::MethodCallReceiverKindEntry
@@ -235,6 +262,8 @@ pub fn program_parser() -> &'static str {
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
   prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
+  prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
+      mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =
@@ -1278,6 +1307,25 @@ mod tests {
     }
 
     #[test]
+    fn assign_target_kind_data_parser_handles_all_variants() {
+        let src = assign_target_kind_data_parser();
+        assert!(src.contains("local_var"));
+        assert!(src.contains("actor_field"));
+        assert!(src.contains("field_access"));
+        assert!(src.contains("index"));
+    }
+
+    #[test]
+    fn assign_target_kind_entry_parser_reads_kind_tag() {
+        let src = assign_target_kind_entry_parser();
+        assert!(src.contains("parseAssignTargetKindEntry("));
+        assert!(src.contains("entry.start"));
+        assert!(src.contains("entry.end"));
+        assert!(src.contains("mapReq(obj, \"kind\")"));
+        assert!(src.contains("parseAssignTargetKindData"));
+    }
+
+    #[test]
     fn module_graph_parser_iterates_modules_map() {
         let src = module_graph_parser();
         assert!(src.contains("parseModuleGraph("));
@@ -1310,6 +1358,7 @@ mod tests {
         // Required metadata fields stay strict at the embedded boundary.
         assert!(src.contains("mapReq(obj, \"expr_types\")"));
         assert!(src.contains("mapReq(obj, \"method_call_receiver_kinds\")"));
+        assert!(src.contains("mapReq(obj, \"assign_target_kinds\")"));
         assert!(src.contains("mapReq(obj, \"handle_types\")"));
         assert!(src.contains("mapReq(obj, \"handle_type_repr\")"));
         // Optional fields checked with mapGet

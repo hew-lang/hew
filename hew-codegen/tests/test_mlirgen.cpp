@@ -506,6 +506,160 @@ static hew::ast::StmtFor *findFirstForStmt(hew::ast::FnDecl &fn) {
   return nullptr;
 }
 
+static hew::ast::Program
+makeIdentifierAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKind) {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 920000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name.str(), std::nullopt};
+    auto span = mkSpan();
+    return {std::move(typeExpr), span};
+  };
+  auto mkIntExpr = [&](int64_t value) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprLiteral{LitInteger{value}};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprIdentifier{name.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    auto span = mkSpan();
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    stmt.span = span;
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span});
+  };
+
+  StmtVar varStmt;
+  varStmt.name = "local";
+  varStmt.ty = mkType("int");
+  varStmt.value = mkIntExpr(0);
+
+  StmtAssign assignStmt;
+  assignStmt.target = mkIdentExpr("local");
+  auto targetSpan = assignStmt.target.span;
+  assignStmt.value = mkIntExpr(1);
+
+  FnDecl mainFn;
+  mainFn.is_async = false;
+  mainFn.is_generator = false;
+  mainFn.is_pure = false;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(mkStmt(std::move(varStmt)));
+  mainFn.body.stmts.push_back(mkStmt(std::move(assignStmt)));
+  mainFn.body.trailing_expr = std::make_unique<Spanned<Expr>>(mkIntExpr(0));
+
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+
+  Program program;
+  program.schema_version = 4;
+  program.items.push_back({std::move(mainItem), mkSpan()});
+  program.assign_target_kinds.push_back({targetSpan.start, targetSpan.end, std::move(targetKind)});
+  return program;
+}
+
+static hew::ast::Program
+makeActorFieldAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKind) {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 930000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name.str(), std::nullopt};
+    auto span = mkSpan();
+    return {std::move(typeExpr), span};
+  };
+  auto mkIntExpr = [&](int64_t value) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprLiteral{LitInteger{value}};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprIdentifier{name.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    auto span = mkSpan();
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    stmt.span = span;
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span});
+  };
+
+  FieldDecl field;
+  field.name = "total";
+  field.ty = mkType("int");
+
+  Param valueParam;
+  valueParam.name = "v";
+  valueParam.ty = mkType("int");
+  valueParam.is_mutable = false;
+
+  StmtAssign assignStmt;
+  assignStmt.target = mkIdentExpr("total");
+  auto targetSpan = assignStmt.target.span;
+  assignStmt.value = mkIdentExpr("v");
+
+  ReceiveFnDecl receive;
+  receive.is_generator = false;
+  receive.is_pure = false;
+  receive.name = "set";
+  receive.params.push_back(std::move(valueParam));
+  receive.body.stmts.push_back(mkStmt(std::move(assignStmt)));
+  receive.span = mkSpan();
+
+  ActorDecl actor;
+  actor.name = "Counter";
+  actor.fields.push_back(std::move(field));
+  actor.receive_fns.push_back(std::move(receive));
+
+  FnDecl mainFn;
+  mainFn.is_async = false;
+  mainFn.is_generator = false;
+  mainFn.is_pure = false;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.trailing_expr = std::make_unique<Spanned<Expr>>(mkIntExpr(0));
+
+  Item actorItem;
+  actorItem.kind = std::move(actor);
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+
+  Program program;
+  program.schema_version = 4;
+  program.items.push_back({std::move(actorItem), mkSpan()});
+  program.items.push_back({std::move(mainItem), mkSpan()});
+  program.assign_target_kinds.push_back({targetSpan.start, targetSpan.end, std::move(targetKind)});
+  return program;
+}
+
 static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast::Span &span) {
   auto oldSize = program.expr_types.size();
   program.expr_types.erase(std::remove_if(program.expr_types.begin(), program.expr_types.end(),
@@ -3458,6 +3612,70 @@ fn main() -> int {
   }
 
   module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_identifier_local_assignment_kind_mismatch_fails_closed() {
+  TEST(identifier_local_assignment_kind_mismatch_fails_closed);
+
+  auto program = makeIdentifierAssignmentAuthorityProgram(hew::ast::AssignTargetKindActorField{});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when local assignment metadata is rewritten");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("assign_target_kinds says ActorField but assignment is not inside an actor "
+                      "body") == std::string::npos) {
+    FAIL("expected local-assignment authority mismatch fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for local assignment authority mismatch");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_identifier_actor_field_assignment_kind_mismatch_fails_closed() {
+  TEST(identifier_actor_field_assignment_kind_mismatch_fails_closed);
+
+  auto program = makeActorFieldAssignmentAuthorityProgram(hew::ast::AssignTargetKindLocalVar{});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when actor-field metadata is rewritten");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("assign_target_kinds says LocalVar but no local binding named 'total' is "
+                      "available for assignment") == std::string::npos) {
+    FAIL("expected actor-field authority mismatch fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for actor-field authority mismatch");
+    return;
+  }
+
   PASS();
 }
 
@@ -6700,6 +6918,8 @@ int main() {
   test_logical_ops();
   test_unary_ops();
   test_compound_assignment();
+  test_identifier_local_assignment_kind_mismatch_fails_closed();
+  test_identifier_actor_field_assignment_kind_mismatch_fails_closed();
   test_function_calls();
   test_void_function();
   test_void_trailing_if_match_stmt_lowering();

@@ -2694,6 +2694,9 @@ impl Checker {
 
     /// Check if an expression is typically used for side effects (not for its return value).
     pub(super) fn record_type(&mut self, span: &Span, ty: &Ty) {
-        self.expr_types.insert(SpanKey::from(span), ty.clone());
+        let key = SpanKey::from(span);
+        self.expr_type_source_modules
+            .insert(key.clone(), self.current_module.clone());
+        self.expr_types.insert(key, ty.clone());
     }
 }

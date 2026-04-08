@@ -231,6 +231,29 @@ impl Checker {
 
         // Fail-closed boundary: unresolved inference vars must not cross from
         // type-checking into serialized expr type metadata.
+        // When another inference diagnostic path already covers the same hole
+        // vars, suppress the fallback boundary error so we keep the more
+        // specific message/span/source-module envelope.
+        let mut covered_inference_vars = HashSet::new();
+        for hole_vars in self
+            .type_def_inference_holes
+            .values()
+            .chain(self.fn_sig_inference_holes.values())
+            .chain(
+                self.deferred_inference_holes
+                    .iter()
+                    .map(|hole| &hole.hole_vars),
+            )
+        {
+            for hole_var in hole_vars {
+                let resolved_hole = self.subst.resolve(&Ty::Var(*hole_var));
+                collect_unresolved_inference_vars(&resolved_hole, &mut covered_inference_vars);
+            }
+        }
+        for site in &self.deferred_monomorphic_sites {
+            let resolved = self.subst.resolve(&site.ty);
+            collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
+        }
         let mut seen_inference_spans: HashSet<SpanKey> = self
             .errors
             .iter()
@@ -245,14 +268,19 @@ impl Checker {
                 continue;
             }
             leaked_expr_type_spans.push(span.clone());
+            if unresolved.is_subset(&covered_inference_vars) {
+                continue;
+            }
             if seen_inference_spans.insert(span.clone()) {
-                self.errors.push(TypeError::inference_failed(
+                let mut err = TypeError::inference_failed(
                     Span {
                         start: span.start,
                         end: span.end,
                     },
                     "expression type at checker output boundary",
-                ));
+                );
+                err.source_module = self.expr_type_source_modules.get(span).cloned().flatten();
+                self.errors.push(err);
             }
         }
         for span in leaked_expr_type_spans {

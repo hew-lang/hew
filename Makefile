@@ -93,6 +93,9 @@ RELEASE_DIR := target/release
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
+# Host triple used to populate lib/<triple>/ for target-aware lib lookup.
+HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
+
 # Sanitizer targets mirror .github/workflows/nightly-sanitizers.yml as closely
 # as possible while remaining usable as local entrypoints.
 SANITIZER_LLVM_VERSION ?= 22
@@ -287,6 +290,13 @@ assemble: | hew adze runtime stdlib
 		ln -sfn ../../../$(WASM_DEBUG_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
+	@# Native per-triple lib symlink — mirrors the wasm32-wasip1 pattern and
+	@# primes find_hew_lib() for target-aware path lookups (issue #254).
+	@if [ -n "$(HOST_TRIPLE)" ]; then \
+		mkdir -p $(BUILD_DIR)/lib/$(HOST_TRIPLE); \
+		ln -sfn ../../../$(DEBUG_DIR)/libhew.a \
+			$(BUILD_DIR)/lib/$(HOST_TRIPLE)/libhew.a; \
+	fi
 	@# Standard library stubs (one symlink per file so the dir stays flat)
 	@for f in std/*.hew; do \
 		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
@@ -333,6 +343,12 @@ assemble-release:
 		mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
 		ln -sfn ../../../$(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
+	fi
+	@# Native per-triple lib symlink — mirrors the wasm32-wasip1 pattern.
+	@if [ -n "$(HOST_TRIPLE)" ]; then \
+		mkdir -p $(BUILD_DIR)/lib/$(HOST_TRIPLE); \
+		ln -sfn ../../../$(RELEASE_DIR)/libhew.a \
+			$(BUILD_DIR)/lib/$(HOST_TRIPLE)/libhew.a; \
 	fi
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std

@@ -74,6 +74,23 @@ impl Checker {
         }
     }
 
+    pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
+        let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        if concrete
+            .iter()
+            .all(|ty| !ty_has_unresolved_inference_var(ty))
+        {
+            self.call_type_args.insert(SpanKey::from(span), concrete);
+        }
+    }
+
+    fn record_builtin_result_call_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
+        let key = SpanKey::from(span);
+        self.call_type_args
+            .insert(key.clone(), vec![ok_ty.clone(), err_ty.clone()]);
+        self.builtin_result_call_spans.insert(key);
+    }
+
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
         func: &Spanned<Expr>,
@@ -137,6 +154,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, &inner_ty);
                 }
+                self.record_concrete_call_type_args(span, std::slice::from_ref(&inner_ty));
                 let result_ty = Ty::option(self.subst.resolve(&inner_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -148,6 +166,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, ok_ty);
                 }
+                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -159,6 +178,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, err_ty);
                 }
+                self.record_builtin_result_call_type_args(span, ok_ty, err_ty);
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -327,6 +347,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &t);
                 }
+                self.record_concrete_call_type_args(span, std::slice::from_ref(&t));
                 return Ty::option(t);
             }
             "None" => {
@@ -335,21 +356,25 @@ impl Checker {
             }
             "Ok" => {
                 self.check_arity(args, 1, "`Ok`", span);
-                let t = Ty::Var(TypeVar::fresh());
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &t);
+                    self.check_against(expr, sp, &ok_ty);
                 }
-                return Ty::result(t, Ty::Var(TypeVar::fresh()));
+                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                return Ty::result(ok_ty, err_ty);
             }
             "Err" => {
                 self.check_arity(args, 1, "`Err`", span);
-                let e = Ty::Var(TypeVar::fresh());
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &e);
+                    self.check_against(expr, sp, &err_ty);
                 }
-                return Ty::result(Ty::Var(TypeVar::fresh()), e);
+                self.record_builtin_result_call_type_args(span, &ok_ty, &err_ty);
+                return Ty::result(ok_ty, err_ty);
             }
             "close" => {
                 if !self.check_arity(args, 1, "`close`", span) {
@@ -520,14 +545,7 @@ impl Checker {
             // inferred type variables to concrete types and record them so the
             // enrichment layer can fill them in before serialization.
             if type_args.is_none() && !sig.type_params.is_empty() {
-                let concrete: Vec<Ty> = resolved_type_args
-                    .iter()
-                    .map(|ta| self.subst.resolve(ta))
-                    .collect();
-                // Only store if every type arg resolved to a concrete (non-Var) type.
-                if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
-                    self.call_type_args.insert(SpanKey::from(span), concrete);
-                }
+                self.record_concrete_call_type_args(span, &resolved_type_args);
             }
 
             return freshened_ret;
@@ -543,13 +561,9 @@ impl Checker {
             // before the AST is serialised for the codegen.
             if let Some(poly_vars) = self.lambda_poly_type_var_map.get(&func_name).cloned() {
                 if type_args.is_none() {
-                    let concrete: Vec<Ty> = poly_vars
-                        .iter()
-                        .map(|(_, tv)| self.subst.resolve(&Ty::Var(*tv)))
-                        .collect();
-                    if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
-                        self.call_type_args.insert(SpanKey::from(span), concrete);
-                    }
+                    let inferred_type_args: Vec<Ty> =
+                        poly_vars.iter().map(|(_, tv)| Ty::Var(*tv)).collect();
+                    self.record_concrete_call_type_args(span, &inferred_type_args);
                 }
             }
             return ret;
@@ -616,11 +630,13 @@ impl Checker {
                 }
                 *ret
             }
+            Ty::Unit => {
+                self.check_arity(args, 0, "this function", span);
+                Ty::Unit
+            }
             _ => {
                 // Don't cascade errors from already-failed expressions.
-                // Also allow Ty::Unit — keyword expressions like `cooperate` return
-                // Unit and can be called with `()` as a no-op.
-                if !matches!(resolved, Ty::Error | Ty::Var(_) | Ty::Unit) {
+                if !matches!(resolved, Ty::Error | Ty::Var(_)) {
                     self.report_error(
                         TypeErrorKind::Mismatch {
                             expected: "function".to_string(),
@@ -694,11 +710,19 @@ impl Checker {
         ty
     }
 
-    /// Validates that a `Receiver<T>` element type is supported for `for await`.
-    /// Emits `InvalidOperation` if the resolved type is unsupported (not String/int/unknown var).
+    /// Validates that a `Receiver<T>` element type is resolved and supported for
+    /// `for await`.
     pub(super) fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {
         let resolved = self.subst.resolve(inner);
-        if !matches!(resolved, Ty::Var(_) | Ty::String) && !resolved.is_integer() {
+        if ty_has_unresolved_inference_var(&resolved) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "`for await` over a channel receiver requires a resolved element type".to_string(),
+            );
+            return;
+        }
+        if !matches!(resolved, Ty::String) && !resolved.is_integer() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

@@ -342,6 +342,33 @@ fn for_await_receiver_int_ok() {
     );
 }
 
+/// `for await _ in rx` over a bare `Receiver` annotation must fail closed
+/// before serializer-time unresolved-type handling.
+#[test]
+fn for_await_receiver_missing_element_type_errors() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
+            tx.close();
+            for await _ in rx {
+                println(0);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("requires a resolved element type")
+        ),
+        "expected unresolved Receiver<T> for-await error, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in rx` over `Receiver<Foo>` (unsupported struct) must error.
 #[test]
 fn for_await_receiver_unsupported_type_errors() {

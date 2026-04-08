@@ -1201,6 +1201,109 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
 }
 
 #[test]
+fn builtin_result_constructors_materialize_output_type_args() {
+    let source = concat!(
+        "fn main() -> int {\n",
+        "    Ok(7);\n",
+        "    Err(9);\n",
+        "    0\n",
+        "}\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((Expr::Call { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected first statement to be `Ok(...)`");
+    };
+    let Stmt::Expression((Expr::Call { .. }, err_call_span)) = &main_fn.body.stmts[1].0 else {
+        panic!("expected second statement to be `Err(...)`");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(ok_call_span)),
+        Some(&vec![Ty::I64, Ty::I64]),
+        "expected `Ok(7)` to persist concrete builtin result type args: {:?}",
+        output.call_type_args
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(err_call_span)),
+        Some(&vec![Ty::I64, Ty::I64]),
+        "expected `Err(9)` to persist concrete builtin result type args: {:?}",
+        output.call_type_args
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(ok_call_span)),
+        Some(&Ty::result(Ty::I64, Ty::I64)),
+        "expected `Ok(7)` output type to materialize fully before serialization: {:?}",
+        output.expr_types
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(err_call_span)),
+        Some(&Ty::result(Ty::I64, Ty::I64)),
+        "expected `Err(9)` output type to materialize fully before serialization: {:?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn cooperate_call_output_type_is_unit() {
+    let source = "fn main() { cooperate(); }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::Expression((Expr::Call { .. }, call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected cooperate call statement");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(call_span)),
+        Some(&Ty::Unit),
+        "expected `cooperate()` to remain unit-typed for serialization: {:?}",
+        output.expr_types
+    );
+}
+
+#[test]
 fn warn_unused_variable() {
     let source = "fn main() { let unused_var = 42; }";
     let result = hew_parser::parse(source);

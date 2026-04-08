@@ -23,14 +23,17 @@ use crate::msgpack::ExprTypeEntry;
 ///
 /// - `UnresolvedVar` — a `Ty::Var` escaped type-checking unresolved; this is a
 ///   compiler bug and must be treated as a hard error.
-/// - `ErrorSentinel` — a `Ty::Error` reached the serializer; type-checking
-///   already emitted the real diagnostic so this should be silently suppressed.
+/// - `ErrorSentinel` — a `Ty::Error` reached the serializer after type-checking;
+///   this should abort codegen rather than being silently dropped.
+/// - `LiteralKind` — a numeric literal kind survived to serialization without
+///   being finalized at a real coercion/defaulting site.
 /// - `Unsupported` — the type is structurally valid but not yet representable
 ///   (e.g. generator types); callers may choose to warn and continue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeExprConversionKind {
     UnresolvedVar,
     ErrorSentinel,
+    LiteralKind,
     Unsupported,
 }
 
@@ -74,13 +77,16 @@ impl TypeExprConversionError {
     /// - [`TypeExprConversionKind::UnresolvedVar`] when the originating type is
     ///   `Ty::Var`; callers should treat this as a hard error.
     /// - [`TypeExprConversionKind::ErrorSentinel`] when it is `Ty::Error`;
-    ///   callers should silently suppress it (type-check already reported it).
+    ///   callers should treat this as a hard error if it ever escapes.
+    /// - [`TypeExprConversionKind::LiteralKind`] when a numeric literal kind
+    ///   reached serialization before explicit finalization.
     /// - [`TypeExprConversionKind::Unsupported`] for all other types.
     #[must_use]
     pub fn kind(&self) -> TypeExprConversionKind {
         match &self.ty {
             Ty::Var(_) => TypeExprConversionKind::UnresolvedVar,
             Ty::Error => TypeExprConversionKind::ErrorSentinel,
+            Ty::IntLiteral | Ty::FloatLiteral => TypeExprConversionKind::LiteralKind,
             _ => TypeExprConversionKind::Unsupported,
         }
     }
@@ -327,6 +333,12 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
                 TypeExpr::TraitObject(bounds)
+            }
+            Ty::IntLiteral | Ty::FloatLiteral => {
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "numeric literal kind reached serializer without explicit coercion",
+                ));
             }
             Ty::Var(_) => {
                 return Err(TypeExprConversionError::unsupported(
@@ -1551,10 +1563,18 @@ fn enrich_expr_with_diagnostics_inner(
             if type_args.is_none() {
                 let call_span_key = SpanKey::from(&expr.1);
                 if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
-                    let converted: Result<Vec<_>, _> =
-                        inferred.iter().map(ty_to_type_expr).collect();
-                    if let Ok(ta) = converted {
-                        *type_args = Some(ta);
+                    let converted: Result<Vec<_>, _> = inferred
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            require_converted(ty, format!("inferred call type argument {index}"))
+                        })
+                        .collect();
+                    match converted {
+                        Ok(ta) => {
+                            *type_args = Some(ta);
+                        }
+                        Err(err) => diagnostics.push(err.with_span(expr.1.clone())),
                     }
                 }
             }
@@ -1579,8 +1599,14 @@ fn enrich_expr_with_diagnostics_inner(
             } {
                 for (param, inferred_ty) in params.iter_mut().zip(inferred_params.iter()) {
                     if param.ty.is_none() {
-                        if let Ok(inferred_param_ty) = ty_to_type_expr(inferred_ty) {
-                            param.ty = Some(inferred_param_ty);
+                        match require_converted(
+                            inferred_ty,
+                            format!("lambda parameter `{}` inferred type", param.name),
+                        ) {
+                            Ok(inferred_param_ty) => {
+                                param.ty = Some(inferred_param_ty);
+                            }
+                            Err(err) => diagnostics.push(err.with_span(expr.1.clone())),
                         }
                     }
                 }
@@ -2361,17 +2387,33 @@ mod tests {
     }
 
     #[test]
+    fn test_ty_to_type_expr_literal_kind_returns_literal_kind() {
+        let err = unwrap_err(ty_to_type_expr(&Ty::IntLiteral));
+        assert!(
+            err.to_string()
+                .contains("numeric literal kind reached serializer without explicit coercion"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(err.kind(), TypeExprConversionKind::LiteralKind);
+    }
+
+    #[test]
     fn test_kind_discriminants_are_distinct() {
         use hew_types::ty::TypeVar;
         let var_err = unwrap_err(ty_to_type_expr(&Ty::Var(TypeVar(1))));
         let sentinel_err = unwrap_err(ty_to_type_expr(&Ty::Error));
         let unsupported_err = unwrap_err(ty_to_type_expr(&Ty::generator(Ty::I32, Ty::String)));
+        let literal_err = unwrap_err(ty_to_type_expr(&Ty::IntLiteral));
         assert_eq!(var_err.kind(), TypeExprConversionKind::UnresolvedVar);
         assert_eq!(sentinel_err.kind(), TypeExprConversionKind::ErrorSentinel);
         assert_eq!(unsupported_err.kind(), TypeExprConversionKind::Unsupported);
+        assert_eq!(literal_err.kind(), TypeExprConversionKind::LiteralKind);
         assert_ne!(var_err.kind(), sentinel_err.kind());
         assert_ne!(var_err.kind(), unsupported_err.kind());
+        assert_ne!(var_err.kind(), literal_err.kind());
         assert_ne!(sentinel_err.kind(), unsupported_err.kind());
+        assert_ne!(sentinel_err.kind(), literal_err.kind());
+        assert_ne!(unsupported_err.kind(), literal_err.kind());
     }
 
     #[test]
@@ -2387,6 +2429,24 @@ mod tests {
             expr_types.entries[0].ty.0,
             TypeExpr::Tuple(ref elems) if elems.is_empty()
         ));
+    }
+
+    #[test]
+    fn test_build_expr_type_map_rejects_literal_kind_entries() {
+        let mut tco = empty_tco();
+        tco.expr_types
+            .insert(SpanKey { start: 5, end: 7 }, Ty::FloatLiteral);
+
+        let result = build_expr_type_map(&tco);
+        assert!(result.entries.is_empty());
+        assert_eq!(result.diagnostics().len(), 1);
+        assert!(
+            result.diagnostics()[0]
+                .to_string()
+                .contains("numeric literal kind reached serializer without explicit coercion"),
+            "unexpected diagnostics: {:?}",
+            result.diagnostics()
+        );
     }
 
     #[test]
@@ -2929,24 +2989,29 @@ mod tests {
         )
         .unwrap();
         assert!(
-            diagnostics.is_empty(),
-            "unexpected enrichment diagnostics: {diagnostics:?}"
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind() == TypeExprConversionKind::LiteralKind
+                    && diagnostic
+                        .to_string()
+                        .contains("lambda parameter `x` inferred type")
+            }),
+            "expected literal-kind lambda diagnostic, got: {diagnostics:?}"
         );
 
         match &expr.0 {
             Expr::Lambda { params, .. } => {
                 assert_eq!(params.len(), 1);
-                assert!(matches!(
-                    params[0].ty.as_ref().map(|(ty, _)| ty),
-                    Some(TypeExpr::Named { name, type_args: None }) if name == "i64"
-                ));
+                assert!(
+                    params[0].ty.is_none(),
+                    "literal-kind params must stay implicit"
+                );
             }
             other => panic!("expected lambda expr, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_enrich_lambda_params_leave_unresolved_types_untouched() {
+    fn test_enrich_lambda_params_report_unresolved_types() {
         let source = "fn main() { let f = (x) => x; }";
         let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
 
@@ -2966,8 +3031,13 @@ mod tests {
         )
         .unwrap();
         assert!(
-            diagnostics.is_empty(),
-            "unresolved lambda param enrichment should stay silent: {diagnostics:?}"
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind() == TypeExprConversionKind::UnresolvedVar
+                    && diagnostic
+                        .to_string()
+                        .contains("lambda parameter `x` inferred type")
+            }),
+            "expected unresolved lambda parameter diagnostic, got: {diagnostics:?}"
         );
 
         match &expr.0 {
@@ -2977,6 +3047,54 @@ mod tests {
             }
             other => panic!("expected lambda expr, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_enrich_inferred_call_type_args_report_literal_kind() {
+        let mut expr: Spanned<Expr> = (
+            Expr::Call {
+                function: Box::new((Expr::Identifier("identity".to_string()), 0..8)),
+                type_args: None,
+                args: vec![hew_parser::ast::CallArg::Positional((
+                    Expr::Literal(hew_parser::ast::Literal::Integer {
+                        value: 42,
+                        radix: hew_parser::ast::IntRadix::Decimal,
+                    }),
+                    9..11,
+                ))],
+                is_tail_call: false,
+            },
+            0..11,
+        );
+        let mut tco = empty_tco();
+        tco.call_type_args
+            .insert(SpanKey::from(&expr.1), vec![Ty::IntLiteral]);
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(
+            &mut expr,
+            &tco,
+            &mut diagnostics,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+
+        let Expr::Call { type_args, .. } = &expr.0 else {
+            panic!("expected call expr");
+        };
+        assert!(
+            type_args.is_none(),
+            "literal-kind type args must stay implicit"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind() == TypeExprConversionKind::LiteralKind
+                    && diagnostic
+                        .to_string()
+                        .contains("inferred call type argument 0")
+            }),
+            "expected inferred call type-arg diagnostic, got: {diagnostics:?}"
+        );
     }
 
     #[test]

@@ -434,7 +434,7 @@ impl Checker {
         }
     }
 
-    /// Default unconstrained Range type variables to i64.  When both range
+    /// Default unconstrained Range type variables to i64. When both range
     /// bounds are coercible integer literals (e.g. `0..10`) the type checker
     /// creates `Range<fresh_var>`.  If nothing constrains the variable it
     /// reaches the serializer unresolved.  Bind those to i64 so both the
@@ -463,16 +463,20 @@ impl Checker {
     /// complete (including `default_unconstrained_range_types`), this pass
     /// resolves each `TypeVar` to a concrete integer type, validates that the
     /// literal fits, and re-records the span so codegen generates the constant
-    /// with the correct width (e.g. `i32` instead of the synthesis default of
+    /// with the correct width (e.g. `i32` instead of the output-defaulted
     /// `i64`).
     pub(super) fn apply_deferred_range_bound_types(
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
         for (span, var, maybe_value) in std::mem::take(&mut self.deferred_range_bounds) {
-            let resolved = self.subst.resolve(&Ty::Var(var));
-            // If still unresolved or non-integer, the i64 recorded by synthesize
-            // is already correct — nothing to do.
+            let resolved = self
+                .subst
+                .resolve(&Ty::Var(var))
+                .materialize_literal_defaults();
+            // If still unresolved or non-integer, leave the original recorded
+            // type alone; later output materialization will fall back to the
+            // canonical default if needed.
             if matches!(resolved, Ty::Var(_) | Ty::Error) || !resolved.is_integer() {
                 continue;
             }

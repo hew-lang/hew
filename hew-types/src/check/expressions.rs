@@ -49,7 +49,7 @@ impl Checker {
         self.maybe_warn_wasm_expr(expr, span);
         let ty = match expr {
             // Literals
-            Expr::Literal(Literal::Float(_)) => Ty::F64,
+            Expr::Literal(Literal::Float(_)) => Ty::FloatLiteral,
             Expr::Literal(Literal::String(_)) => Ty::String,
             Expr::RegexLiteral(_) => {
                 // The implicit `use std::text::regex` injected by the CLI is the
@@ -72,7 +72,7 @@ impl Checker {
             }
             Expr::Literal(Literal::Bool(_)) => Ty::Bool,
             Expr::Literal(Literal::Char(_)) => Ty::Char,
-            Expr::Literal(Literal::Integer { .. }) => Ty::I64,
+            Expr::Literal(Literal::Integer { .. }) => Ty::IntLiteral,
             Expr::Literal(Literal::Duration(_)) => Ty::Duration,
 
             // Identifier lookup — None bypasses record_type (fresh type var each usage)
@@ -356,18 +356,37 @@ impl Checker {
         start: Option<&Spanned<Expr>>,
         end: Option<&Spanned<Expr>>,
     ) -> Ty {
-        let ty = if let Some(s) = start {
-            let start_ty = self.synthesize(&s.0, &s.1);
-            if let Some(e) = end {
-                self.check_against(&e.0, &e.1, &start_ty);
+        match (start, end) {
+            (Some(s), Some(e)) => {
+                let start_ty = self.synthesize(&s.0, &s.1);
+                let end_ty = self.synthesize(&e.0, &e.1);
+                let start_resolved = self.subst.resolve(&start_ty);
+                let end_resolved = self.subst.resolve(&end_ty);
+
+                if start_resolved.is_integer() && end_resolved.is_integer() {
+                    if let Some(common_ty) = common_integer_type(&start_resolved, &end_resolved) {
+                        Ty::range(common_ty)
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &s.1,
+                            format!(
+                                "range bounds require compatible integer types; found `{}` and `{}`",
+                                start_resolved.user_facing(),
+                                end_resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                } else {
+                    self.expect_type(&start_ty, &end_ty, &e.1);
+                    Ty::range(start_ty)
+                }
             }
-            start_ty
-        } else if let Some(e) = end {
-            self.synthesize(&e.0, &e.1)
-        } else {
-            Ty::I64
-        };
-        Ty::range(ty)
+            (Some(s), None) => Ty::range(self.synthesize(&s.0, &s.1)),
+            (None, Some(e)) => Ty::range(self.synthesize(&e.0, &e.1)),
+            (None, None) => Ty::range(Ty::I64),
+        }
     }
 
     pub(super) fn synthesize_cast(
@@ -1024,29 +1043,31 @@ impl Checker {
 
             // Integer literal can coerce to any integer type (with range check)
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
-                if let Some(value) = extract_integer_literal_value(expr) {
-                    if value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed) {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "negative literal `{value}` cannot be assigned to unsigned type `{}`",
-                                expected.user_facing()
-                            ),
-                        );
-                        return Ty::Error;
-                    }
-                    if !integer_fits_type(value, expected) {
-                        let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "integer literal `{value}` does not fit in `{}` (range {lo}..={hi})",
-                                expected.user_facing()
-                            ),
-                        );
-                        return Ty::Error;
+                if !expected.is_numeric_literal() {
+                    if let Some(value) = extract_integer_literal_value(expr) {
+                        if value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed) {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "negative literal `{value}` cannot be assigned to unsigned type `{}`",
+                                    expected.user_facing()
+                                ),
+                            );
+                            return Ty::Error;
+                        }
+                        if !integer_fits_type(value, expected) {
+                            let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "integer literal `{value}` does not fit in `{}` (range {lo}..={hi})",
+                                    expected.user_facing()
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                     }
                 }
                 self.record_type(span, expected);
@@ -1061,17 +1082,19 @@ impl Checker {
 
             // Float literal can coerce to any float type (with range check)
             (expr, ty) if is_float_literal(expr) && ty.is_float() => {
-                if let Some(value) = extract_float_literal_value(expr) {
-                    if !float_fits_type(value, expected) {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "float literal `{value}` does not fit in `{}`",
-                                expected.user_facing()
-                            ),
-                        );
-                        return Ty::Error;
+                if !expected.is_numeric_literal() {
+                    if let Some(value) = extract_float_literal_value(expr) {
+                        if !float_fits_type(value, expected) {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "float literal `{value}` does not fit in `{}`",
+                                    expected.user_facing()
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                     }
                 }
                 self.record_type(span, expected);
@@ -1127,34 +1150,38 @@ impl Checker {
                 expected.clone()
             }
 
-            // Untyped const identifier can coerce to compatible numeric types
+            // Known compile-time numeric literal identifiers can coerce to
+            // compatible numeric types using the same literal-kind rules.
             (Expr::Identifier(name), ty) if ty.is_numeric() => {
                 if let Some(cv) = self.const_values.get(name).cloned() {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
-                            if *value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed)
-                            {
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "constant `{name}` (value {value}) cannot be assigned to unsigned type `{}`",
-                                        expected.user_facing()
-                                    ),
-                                );
-                                return Ty::Error;
-                            }
-                            if !integer_fits_type(*value, expected) {
-                                let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "constant `{name}` (value {value}) does not fit in `{}` (range {lo}..={hi})",
-                                        expected.user_facing()
-                                    ),
-                                );
-                                return Ty::Error;
+                            if !expected.is_numeric_literal() {
+                                if *value < 0
+                                    && !integer_type_info(expected).is_some_and(|i| i.signed)
+                                {
+                                    self.report_error(
+                                        TypeErrorKind::InvalidOperation,
+                                        span,
+                                        format!(
+                                            "constant `{name}` (value {value}) cannot be assigned to unsigned type `{}`",
+                                            expected.user_facing()
+                                        ),
+                                    );
+                                    return Ty::Error;
+                                }
+                                if !integer_fits_type(*value, expected) {
+                                    let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                                    self.report_error(
+                                        TypeErrorKind::InvalidOperation,
+                                        span,
+                                        format!(
+                                            "constant `{name}` (value {value}) does not fit in `{}` (range {lo}..={hi})",
+                                            expected.user_facing()
+                                        ),
+                                    );
+                                    return Ty::Error;
+                                }
                             }
                             // Mark the identifier as used
                             let _ = self.env.lookup(name);
@@ -1167,7 +1194,8 @@ impl Checker {
                             return expected.clone();
                         }
                         (ConstValue::Float(value), ty) if ty.is_float() => {
-                            if !float_fits_type(*value, expected) {
+                            if !expected.is_numeric_literal() && !float_fits_type(*value, expected)
+                            {
                                 self.report_error(
                                     TypeErrorKind::InvalidOperation,
                                     span,
@@ -1290,6 +1318,35 @@ impl Checker {
                 }
             }
 
+            (
+                Expr::Call {
+                    function,
+                    type_args,
+                    args,
+                    is_tail_call: _,
+                },
+                _,
+            ) => {
+                if let Some(actual) = self.check_call_against_expected_constructor(
+                    function,
+                    type_args.as_deref(),
+                    args,
+                    expected,
+                    span,
+                ) {
+                    actual
+                } else {
+                    let actual = self.synthesize(expr, span);
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
+                }
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -1318,9 +1375,9 @@ impl Checker {
         let left_is_coercible = self.is_coercible_numeric(&left.0);
         let right_is_coercible = self.is_coercible_numeric(&right.0);
 
-        // When one side is a numeric literal (or untyped const) and the other
-        // is a concrete numeric type, use check_against so the literal adopts
-        // the non-literal's type instead of defaulting to i64/f64.
+        // When one side is a numeric literal (or literal-backed const) and the
+        // other is a concrete numeric type, use check_against so the literal
+        // adopts the non-literal's type instead of defaulting immediately.
         let (left_ty, right_ty) = if left_is_coercible && !right_is_coercible {
             let rt = self.synthesize(&right.0, &right.1);
             let rt_resolved = self.subst.resolve(&rt);

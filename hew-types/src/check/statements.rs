@@ -101,10 +101,10 @@ impl Checker {
                 });
             }
             // When the block has a known expected type, use check_against so that
-            // integer/float literals coerce to the target width instead of defaulting
-            // to i64/f64 and causing a spurious type mismatch.  For all other
-            // expressions check_against falls through to synthesize + expect_type,
-            // producing the same result as before.
+            // numeric literals coerce to the target width before any fallback
+            // materialization. For all other expressions check_against falls
+            // through to synthesize + expect_type, producing the same result as
+            // before.
             if let Some(exp) = expected {
                 self.check_against(&expr.0, &expr.1, exp)
             } else {
@@ -277,8 +277,12 @@ impl Checker {
                         });
                     }
                     self.check_shadowing(name, &pattern.1);
-                    self.env
-                        .define_with_span(name.clone(), val_ty, false, pattern.1.clone());
+                    self.env.define_with_span(
+                        name.clone(),
+                        val_ty.clone(),
+                        false,
+                        pattern.1.clone(),
+                    );
                     // Register generic lambda binding for call-site inference.
                     // Both guards must hold: the scratch field was populated
                     // AND the let value is itself (not just contains) a generic
@@ -288,17 +292,21 @@ impl Checker {
                             self.lambda_poly_type_var_map.insert(name.clone(), gvars);
                         }
                     }
-                    // Track let-bound literals for numeric coercion at use sites.
-                    // Only when there's no explicit type annotation (the value
-                    // defaulted to i64/f64 from synthesis), so the literal can
-                    // be coerced to other numeric types like const values.
+                    // Track let-bound numeric literals for later coercion at use
+                    // sites. Only unannotated immutable bindings preserve the
+                    // literal kind/value; explicit annotations and mutable vars
+                    // materialize immediately.
                     if ty.is_none() {
                         if let Some((val, _)) = value {
-                            if let Some(v) = extract_integer_literal_value(val) {
-                                self.const_values
-                                    .insert(name.clone(), ConstValue::Integer(v));
-                            } else if let Some(v) = extract_float_literal_value(val) {
-                                self.const_values.insert(name.clone(), ConstValue::Float(v));
+                            if val_ty.is_integer_literal() {
+                                if let Some(v) = extract_integer_literal_value(val) {
+                                    self.const_values
+                                        .insert(name.clone(), ConstValue::Integer(v));
+                                }
+                            } else if val_ty.is_float_literal() {
+                                if let Some(v) = extract_float_literal_value(val) {
+                                    self.const_values.insert(name.clone(), ConstValue::Float(v));
+                                }
                             }
                         }
                     }
@@ -324,6 +332,14 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                let val_ty = if ty.is_none() {
+                    val_ty.materialize_literal_defaults()
+                } else {
+                    val_ty
+                };
+                if let Some((_, vs)) = value {
+                    self.record_type(vs, &val_ty);
+                }
                 let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
                     matches!(
                         val,

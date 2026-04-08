@@ -408,11 +408,12 @@ impl Checker {
         let expected =
             self.resolve_annotation_with_holes(&cd.ty, format!("constant `{}`", cd.name));
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);
-        // Store compile-time value for untyped consts (declared as Int/Float default)
-        // so they can be coerced to other numeric types at use sites.
-        let is_default_int = matches!(actual, Ty::I64)
+        // Store compile-time values for default-width numeric consts so later
+        // coercion sites can reuse the original literal kind/value instead of
+        // depending on synthesis-time i64/f64 defaults.
+        let is_default_int = expected == Ty::I64
             && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Int" || name == "int" || name == "i64");
-        let is_default_float = matches!(actual, Ty::F64)
+        let is_default_float = expected == Ty::F64
             && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Float" || name == "float" || name == "f64");
         if is_default_int {
             if let Some(v) = extract_integer_literal_value(&cd.value.0) {

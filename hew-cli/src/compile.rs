@@ -163,7 +163,13 @@ fn render_inferred_type_serialization_diagnostic(
     filename: &str,
     imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
     error: &hew_serialize::TypeExprConversionError,
+    fatal: bool,
 ) {
+    let headline = if fatal {
+        "cannot serialize inferred type for code generation"
+    } else {
+        "cannot serialize inferred type for code generation; omitting inferred serializer data"
+    };
     if let Some(span) = error.span() {
         let detail = error.to_string();
         let notes = [super::diagnostic::DiagnosticNote {
@@ -171,42 +177,84 @@ fn render_inferred_type_serialization_diagnostic(
             message: detail.as_str(),
         }];
         let suggestions = [String::from(
-            "extend the Ty -> TypeExpr conversion in hew-serialize/src/enrich.rs instead of silently dropping this inferred type",
+            "extend the Ty -> TypeExpr conversion in hew-serialize/src/enrich.rs or add an explicit type/coercion before codegen",
         )];
         match diagnostic_source_hint(span, imported_item_sources) {
             DiagnosticSourceHint::Imported(path) => match std::fs::read_to_string(&path) {
-                Ok(imported_source) => super::diagnostic::render_warning(
-                    &imported_source,
-                    &path.display().to_string(),
-                    span,
-                    "cannot serialize inferred type for code generation; omitting inferred serializer data",
-                    &notes,
-                    &suggestions,
-                ),
+                Ok(imported_source) => {
+                    if fatal {
+                        super::diagnostic::render_diagnostic(
+                            &imported_source,
+                            &path.display().to_string(),
+                            span,
+                            headline,
+                            &notes,
+                            &suggestions,
+                        );
+                    } else {
+                        super::diagnostic::render_warning(
+                            &imported_source,
+                            &path.display().to_string(),
+                            span,
+                            headline,
+                            &notes,
+                            &suggestions,
+                        );
+                    }
+                }
                 Err(_) => eprintln!(
-                    "warning: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
+                    "{}: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
+                    if fatal { "error" } else { "warning" },
                     path.display(),
                     span.start,
                     span.end
                 ),
             },
             DiagnosticSourceHint::UnknownImported => eprintln!(
-                "warning: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
+                "{}: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
+                if fatal { "error" } else { "warning" },
                 span.start,
                 span.end
             ),
-            DiagnosticSourceHint::Root => super::diagnostic::render_warning(
-                source,
-                filename,
-                span,
-                "cannot serialize inferred type for code generation; omitting inferred serializer data",
-                &notes,
-                &suggestions,
-            ),
+            DiagnosticSourceHint::Root => {
+                if fatal {
+                    super::diagnostic::render_diagnostic(
+                        source,
+                        filename,
+                        span,
+                        headline,
+                        &notes,
+                        &suggestions,
+                    );
+                } else {
+                    super::diagnostic::render_warning(
+                        source,
+                        filename,
+                        span,
+                        headline,
+                        &notes,
+                        &suggestions,
+                    );
+                }
+            }
         }
     } else {
-        eprintln!("warning: cannot serialize inferred type for code generation: {error}");
+        eprintln!(
+            "{}: cannot serialize inferred type for code generation: {error}",
+            if fatal { "error" } else { "warning" }
+        );
     }
+}
+
+fn inferred_type_serialization_diagnostic_is_fatal(
+    error: &hew_serialize::TypeExprConversionError,
+) -> bool {
+    matches!(
+        error.kind(),
+        hew_serialize::TypeExprConversionKind::UnresolvedVar
+            | hew_serialize::TypeExprConversionKind::ErrorSentinel
+            | hew_serialize::TypeExprConversionKind::LiteralKind
+    )
 }
 
 enum DiagnosticSourceHint {
@@ -546,27 +594,27 @@ fn enrich_program_ast(
 
     let (expr_type_map, method_call_receiver_kinds) = if let Some(tco) = tco {
         let mut seen_inferred_type_diagnostics = HashSet::new();
+        let mut fatal_inferred_type_diagnostic = false;
         let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
 
-        // These diagnostics come from best-effort inferred-type enrichment.
-        // Keep unresolved locals non-fatal here: required serializer contracts
-        // still fail closed via `Err`, while optional metadata is omitted.
+        // These diagnostics come from inferred-type enrichment and serializer
+        // preparation. Unresolved/error/literal-kind leaks are fatal because
+        // codegen must not guess or silently default them late.
         for diagnostic in collect_new_inferred_type_diagnostics(
             enrich_diagnostics.diagnostics(),
             input,
             &imported_item_sources,
             &mut seen_inferred_type_diagnostics,
         ) {
-            // ErrorSentinel: type-check already reported it; suppress duplicate.
-            if diagnostic.kind() == hew_serialize::TypeExprConversionKind::ErrorSentinel {
-                continue;
-            }
+            let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
+            fatal_inferred_type_diagnostic |= fatal;
             render_inferred_type_serialization_diagnostic(
                 source,
                 input,
                 &imported_item_sources,
                 diagnostic,
+                fatal,
             );
         }
         // Sync enriched items back to module graph root so C++ codegen uses
@@ -603,16 +651,18 @@ fn enrich_program_ast(
             &imported_item_sources,
             &mut seen_inferred_type_diagnostics,
         ) {
-            // ErrorSentinel: suppress duplicate, type-check already reported it.
-            if diagnostic.kind() == hew_serialize::TypeExprConversionKind::ErrorSentinel {
-                continue;
-            }
+            let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
+            fatal_inferred_type_diagnostic |= fatal;
             render_inferred_type_serialization_diagnostic(
                 source,
                 input,
                 &imported_item_sources,
                 diagnostic,
+                fatal,
             );
+        }
+        if fatal_inferred_type_diagnostic {
+            return Err("inferred type serialization failed".into());
         }
         (expr_type_map_build.entries, method_call_receiver_kinds)
     } else {
@@ -2012,7 +2062,7 @@ fn main() {
     }
 
     #[test]
-    fn unresolved_best_effort_inferred_types_do_not_abort_serialization() {
+    fn unresolved_inferred_types_abort_serialization() {
         let expr_span = 10..18;
         let mut program = Program {
             items: vec![(
@@ -2055,32 +2105,109 @@ fn main() {
             Ty::Var(hew_types::ty::TypeVar(7)),
         );
 
-        let (expr_type_map, method_call_receiver_kinds) = enrich_program_ast(
+        let result = enrich_program_ast(
             &mut program,
             Some(&tco),
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
             "fn foo() { let value = input; }",
             "main.hew",
-        )
-        .expect("best-effort inferred-type omissions should stay non-fatal");
+        );
 
         assert!(
-            expr_type_map.is_empty(),
-            "unresolved best-effort expr types should be omitted from serialized metadata"
+            matches!(result, Err(ref err) if err.contains("inferred type serialization failed")),
+            "unresolved inferred types must abort serialization, got: {result:?}"
         );
-        assert!(
-            method_call_receiver_kinds.is_empty(),
-            "unresolved best-effort method-call receiver kinds should stay absent"
+    }
+
+    #[test]
+    fn literal_kind_inferred_types_abort_serialization() {
+        let expr_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
+                                ty: None,
+                                value: Some((
+                                    Expr::Literal(hew_parser::ast::Literal::Integer {
+                                        value: 1,
+                                        radix: hew_parser::ast::IntRadix::Decimal,
+                                    }),
+                                    expr_span.clone(),
+                                )),
+                            },
+                            expr_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::IntLiteral,
         );
-        let Item::Function(function) = &program.items[0].0 else {
-            panic!("expected function");
-        };
-        let Stmt::Let { ty, .. } = &function.body.stmts[0].0 else {
-            panic!("expected let statement");
-        };
+
+        let result = enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            "fn foo() { let value = 1; }",
+            "main.hew",
+        );
+
         assert!(
-            ty.is_none(),
-            "unresolved best-effort binding types should stay implicit"
+            matches!(result, Err(ref err) if err.contains("inferred type serialization failed")),
+            "literal-kind inferred types must abort serialization, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn option_constructor_expected_context_serializes_after_literal_coercion() {
+        let source = "fn make() -> Option<int> { Some(42) }\n";
+        let mut program = parse_source(source, "main.hew").expect("source should parse");
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "typecheck should succeed before enrichment: {:?}",
+            tco.errors
+        );
+
+        let module_registry = checker.into_module_registry();
+        let result = enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &module_registry,
+            source,
+            "main.hew",
+        );
+
+        assert!(
+            result.is_ok(),
+            "expected constructor literal coercion to survive enrichment, got: {result:?}"
         );
     }
 

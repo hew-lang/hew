@@ -16,6 +16,13 @@ pub(super) fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool 
 }
 
 pub(super) fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
+    match (a, b) {
+        (Ty::IntLiteral, Ty::IntLiteral) => return Some(Ty::IntLiteral),
+        (Ty::IntLiteral, ty) | (ty, Ty::IntLiteral) if integer_type_info(ty).is_some() => {
+            return Some(ty.clone());
+        }
+        _ => {}
+    }
     let a_info = integer_type_info(a)?;
     let b_info = integer_type_info(b)?;
     if a_info.signed != b_info.signed {
@@ -32,13 +39,23 @@ pub(super) fn common_numeric_type(a: &Ty, b: &Ty) -> Option<Ty> {
     if a.is_float() && b.is_float() {
         if *a == Ty::F64 || *b == Ty::F64 {
             Some(Ty::F64)
-        } else {
+        } else if *a == Ty::F32 || *b == Ty::F32 {
             Some(Ty::F32)
+        } else {
+            Some(Ty::FloatLiteral)
         }
     } else if a.is_float() && b.is_integer() {
-        Some(a.clone())
+        if a.is_float_literal() {
+            Some(Ty::FloatLiteral)
+        } else {
+            Some(a.clone())
+        }
     } else if a.is_integer() && b.is_float() {
-        Some(b.clone())
+        if b.is_float_literal() {
+            Some(Ty::FloatLiteral)
+        } else {
+            Some(b.clone())
+        }
     } else {
         common_integer_type(a, b)
     }
@@ -74,8 +91,15 @@ impl Checker {
         if *then_ty == Ty::Unit || *else_ty == Ty::Unit {
             return Ty::Unit;
         }
+        let then_resolved = self.subst.resolve(then_ty);
+        let else_resolved = self.subst.resolve(else_ty);
+        if then_resolved.is_numeric() && else_resolved.is_numeric() {
+            if let Some(common_ty) = common_numeric_type(&then_resolved, &else_resolved) {
+                return common_ty;
+            }
+        }
         self.expect_type(then_ty, else_ty, span);
-        then_ty.clone()
+        self.subst.resolve(then_ty)
     }
 
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {

@@ -301,7 +301,7 @@ pub struct Checker {
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     pub(super) current_machine_transition: Option<(String, String, String)>,
-    /// Compile-time known values for untyped constants (for literal coercion).
+    /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<String, ConstValue>,
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
@@ -314,11 +314,10 @@ pub struct Checker {
     /// (one with non-empty `type_params`).  Consumed immediately in the
     /// enclosing `Stmt::Let` handler to populate `lambda_poly_type_var_map`.
     pub(super) last_lambda_generic_vars: Option<Vec<(String, TypeVar)>>,
-    /// Range bounds that were recorded with a coercible default (i64) during
-    /// synthesis but whose actual element type may be narrowed by body
-    /// inference.  Each entry is (span, element-TypeVar, literal-value-if-any).
+    /// Range bounds whose element type is deferred until surrounding inference
+    /// settles. Each entry is (span, element-TypeVar, literal-value-if-any).
     /// Processed in `apply_deferred_range_bound_types` after all inference and
-    /// type defaulting is complete.
+    /// literal defaulting is complete.
     pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>)>,
 }
 
@@ -328,7 +327,7 @@ pub(super) struct IntegerTypeInfo {
     pub(super) signed: bool,
 }
 
-/// Known compile-time constant value (for untyped const coercion).
+/// Known compile-time numeric literal value (for later coercion checks).
 #[derive(Debug, Clone)]
 pub(super) enum ConstValue {
     Integer(i64),

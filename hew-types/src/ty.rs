@@ -68,6 +68,10 @@ pub enum Ty {
     F32,
     /// 64-bit floating point
     F64,
+    /// Integer literal kind awaiting contextual coercion/defaulting
+    IntLiteral,
+    /// Floating-point literal kind awaiting contextual coercion/defaulting
+    FloatLiteral,
     /// Boolean
     Bool,
     /// Unicode character
@@ -280,6 +284,8 @@ impl Ty {
             Ty::U64 => write!(f, "u64"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
+            Ty::IntLiteral => write!(f, "<int literal>"),
+            Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
             Ty::String => write!(f, "String"),
@@ -603,6 +609,35 @@ impl Ty {
         self.is_integer() || self.is_float()
     }
 
+    /// Check if this is a numeric literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_numeric_literal(&self) -> bool {
+        matches!(self, Ty::IntLiteral | Ty::FloatLiteral)
+    }
+
+    /// Check if this is an integer literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_integer_literal(&self) -> bool {
+        matches!(self, Ty::IntLiteral)
+    }
+
+    /// Check if this is a float literal kind awaiting coercion/defaulting.
+    #[must_use]
+    pub fn is_float_literal(&self) -> bool {
+        matches!(self, Ty::FloatLiteral)
+    }
+
+    /// Materialize any remaining numeric literal kinds to their canonical
+    /// concrete defaults for downstream consumers that require fixed widths.
+    #[must_use]
+    pub fn materialize_literal_defaults(&self) -> Ty {
+        match self {
+            Ty::IntLiteral => Ty::I64,
+            Ty::FloatLiteral => Ty::F64,
+            _ => self.map_children(&|child| child.materialize_literal_defaults()),
+        }
+    }
+
     /// Check if this is the bytes type.
     #[must_use]
     pub fn is_bytes(&self) -> bool {
@@ -620,14 +655,22 @@ impl Ty {
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64
+            Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::U64
+                | Ty::IntLiteral
         )
     }
 
     /// Check if this is a floating-point type.
     #[must_use]
     pub fn is_float(&self) -> bool {
-        matches!(self, Ty::F32 | Ty::F64)
+        matches!(self, Ty::F32 | Ty::F64 | Ty::FloatLiteral)
     }
 
     /// Check if this is a primitive type.
@@ -779,6 +822,8 @@ mod tests {
     fn test_is_numeric() {
         assert!(Ty::I32.is_numeric());
         assert!(Ty::F64.is_numeric());
+        assert!(Ty::IntLiteral.is_numeric());
+        assert!(Ty::FloatLiteral.is_numeric());
         assert!(!Ty::Bool.is_numeric());
         assert!(!Ty::String.is_numeric());
     }
@@ -787,6 +832,7 @@ mod tests {
     fn test_is_copy() {
         assert!(Ty::I32.is_copy());
         assert!(Ty::Bool.is_copy());
+        assert!(Ty::IntLiteral.is_copy());
         assert!(!Ty::String.is_copy());
         assert!(Ty::Tuple(vec![Ty::I32, Ty::Bool]).is_copy());
         assert!(!Ty::Tuple(vec![Ty::I32, Ty::String]).is_copy());
@@ -841,6 +887,12 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_lowering_name_rejects_literal_kinds() {
+        assert_eq!(Ty::IntLiteral.canonical_lowering_name(), None);
+        assert_eq!(Ty::FloatLiteral.canonical_lowering_name(), None);
+    }
+
+    #[test]
     fn test_user_facing_display_formats_nested_types() {
         let ty = Ty::Function {
             params: vec![
@@ -879,6 +931,7 @@ mod tests {
         assert!(Ty::U16.is_integer());
         assert!(Ty::U32.is_integer());
         assert!(Ty::U64.is_integer());
+        assert!(Ty::IntLiteral.is_integer());
         assert!(!Ty::F32.is_integer());
         assert!(!Ty::F64.is_integer());
         assert!(!Ty::Bool.is_integer());
@@ -888,8 +941,30 @@ mod tests {
     fn test_is_float() {
         assert!(Ty::F32.is_float());
         assert!(Ty::F64.is_float());
+        assert!(Ty::FloatLiteral.is_float());
         assert!(!Ty::I32.is_float());
         assert!(!Ty::Bool.is_float());
+    }
+
+    #[test]
+    fn test_materialize_literal_defaults() {
+        let ty = Ty::Tuple(vec![
+            Ty::IntLiteral,
+            Ty::Named {
+                name: "Option".to_string(),
+                args: vec![Ty::FloatLiteral],
+            },
+        ]);
+        assert_eq!(
+            ty.materialize_literal_defaults(),
+            Ty::Tuple(vec![
+                Ty::I64,
+                Ty::Named {
+                    name: "Option".to_string(),
+                    args: vec![Ty::F64],
+                },
+            ])
+        );
     }
 
     #[test]

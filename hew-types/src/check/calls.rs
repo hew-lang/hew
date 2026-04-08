@@ -4,7 +4,169 @@
 )]
 use super::*;
 
+fn constructor_names_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let a_qualified = a.contains('.');
+    let b_qualified = b.contains('.');
+    if a_qualified && b_qualified {
+        return false;
+    }
+    let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
+    let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
+    a_bare == b_bare
+}
+
 impl Checker {
+    fn lookup_variant_constructor(
+        &self,
+        func_name: &str,
+    ) -> Option<(String, Vec<Ty>, Vec<String>)> {
+        if let Some(pos) = func_name.rfind("::") {
+            let type_prefix = &func_name[..pos];
+            let variant_name = &func_name[pos + 2..];
+            self.type_defs.get(type_prefix).and_then(|td| {
+                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                    return None;
+                }
+                td.variants.get(variant_name).and_then(|variant| {
+                    let params = match variant {
+                        VariantDef::Unit => Vec::new(),
+                        VariantDef::Tuple(p) => p.clone(),
+                        VariantDef::Struct(_) => return None,
+                    };
+                    Some((type_prefix.to_string(), params, td.type_params.clone()))
+                })
+            })
+        } else {
+            self.type_defs
+                .iter()
+                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
+                .find_map(|(type_name, td)| {
+                    td.variants.get(func_name).and_then(|variant| {
+                        let params = match variant {
+                            VariantDef::Unit => Vec::new(),
+                            VariantDef::Tuple(p) => p.clone(),
+                            VariantDef::Struct(_) => return None,
+                        };
+                        Some((type_name.clone(), params, td.type_params.clone()))
+                    })
+                })
+        }
+    }
+
+    fn expected_constructor_type_args(
+        expected: &Ty,
+        type_name: &str,
+        arity: usize,
+    ) -> Option<Vec<Ty>> {
+        match expected {
+            Ty::Named { name, args }
+                if constructor_names_match(name, type_name) && args.len() == arity =>
+            {
+                Some(args.clone())
+            }
+            Ty::Machine { name } if constructor_names_match(name, type_name) && arity == 0 => {
+                Some(vec![])
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn check_call_against_expected_constructor(
+        &mut self,
+        func: &Spanned<Expr>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        if type_args.is_some() {
+            return None;
+        }
+
+        let func_name = match &func.0 {
+            Expr::Identifier(name) => name.clone(),
+            Expr::FieldAccess { object, field } => {
+                let Expr::Identifier(obj_name) = &object.0 else {
+                    return None;
+                };
+                format!("{obj_name}::{field}")
+            }
+            _ => return None,
+        };
+
+        let resolved_expected = self.subst.resolve(expected);
+
+        if let Some((type_name, expected_params, type_params)) =
+            self.lookup_variant_constructor(&func_name)
+        {
+            let mut inferred_args = Self::expected_constructor_type_args(
+                &resolved_expected,
+                &type_name,
+                type_params.len(),
+            )?;
+            self.check_arity(args, expected_params.len(), "this function", span);
+            for (i, arg) in args.iter().enumerate() {
+                if let Some(param_ty) = expected_params.get(i) {
+                    let (expr, arg_span) = arg.expr();
+                    let mut expected_ty = param_ty.clone();
+                    for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
+                        expected_ty = self.substitute_named_param(&expected_ty, param, replacement);
+                    }
+                    self.check_against(expr, arg_span, &expected_ty);
+                }
+            }
+            let result_ty = Ty::normalize_named(
+                type_name,
+                inferred_args
+                    .drain(..)
+                    .map(|ty| self.subst.resolve(&ty))
+                    .collect(),
+            );
+            self.record_type(span, &result_ty);
+            return Some(result_ty);
+        }
+
+        match func_name.as_str() {
+            "Some" => {
+                let inner_ty = resolved_expected.as_option()?.clone();
+                self.check_arity(args, 1, "`Some`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, &inner_ty);
+                }
+                let result_ty = Ty::option(self.subst.resolve(&inner_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            "Ok" => {
+                let (ok_ty, err_ty) = resolved_expected.as_result()?;
+                self.check_arity(args, 1, "`Ok`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, ok_ty);
+                }
+                let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            "Err" => {
+                let (ok_ty, err_ty) = resolved_expected.as_result()?;
+                self.check_arity(args, 1, "`Err`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    self.check_against(expr, arg_span, err_ty);
+                }
+                let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
+                self.record_type(span, &result_ty);
+                Some(result_ty)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn warn_if_wasm_incompatible_call(&mut self, func_name: &str, span: &Span) {
         if !self.wasm_target {
             return;
@@ -94,37 +256,7 @@ impl Checker {
         // to avoid cloning the entire type_defs map.
         //
         // Handle both unqualified (`Circle(5)`) and qualified (`Shape::Circle(5)`) forms.
-        let constructor_match = if let Some(pos) = func_name.rfind("::") {
-            let type_prefix = &func_name[..pos];
-            let variant_name = &func_name[pos + 2..];
-            self.type_defs.get(type_prefix).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
-                    return None;
-                }
-                td.variants.get(variant_name).and_then(|variant| {
-                    let params = match variant {
-                        VariantDef::Unit => Vec::new(),
-                        VariantDef::Tuple(p) => p.clone(),
-                        VariantDef::Struct(_) => return None,
-                    };
-                    Some((type_prefix.to_string(), params, td.type_params.clone()))
-                })
-            })
-        } else {
-            self.type_defs
-                .iter()
-                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
-                .find_map(|(type_name, td)| {
-                    td.variants.get(&func_name).and_then(|variant| {
-                        let params = match variant {
-                            VariantDef::Unit => Vec::new(),
-                            VariantDef::Tuple(p) => p.clone(),
-                            VariantDef::Struct(_) => return None,
-                        };
-                        Some((type_name.clone(), params, td.type_params.clone()))
-                    })
-                })
-        };
+        let constructor_match = self.lookup_variant_constructor(&func_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
             let type_param_count = type_params.len();
             if type_param_count == 0 {

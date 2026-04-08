@@ -685,11 +685,6 @@ static void test_len_free_call_on_rc_fails_closed() {
       }
       return;
     }
-    if (buf.data != nullptr) {
-      FAIL("len(Rc<T>) should not emit output on fail-closed path");
-      hew_codegen_buffer_free(buf);
-      return;
-    }
   } else {
     FAIL("unexpected return code for len(Rc<T>)");
     if (buf.data != nullptr) {

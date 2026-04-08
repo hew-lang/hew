@@ -9,6 +9,11 @@ use crate::method_resolution::{
 };
 
 impl Checker {
+    fn record_method_call_receiver_kind(&mut self, span: &Span, kind: MethodCallReceiverKind) {
+        self.method_call_receiver_kinds
+            .insert(SpanKey::from(span), kind);
+    }
+
     pub(super) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
         if self.modules.contains(&name[..dot]) {
@@ -85,6 +90,14 @@ impl Checker {
         type_display_name: &str,
     ) -> Ty {
         if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
+            if let Ty::Named { name, .. } = receiver_ty {
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::NamedTypeInstance {
+                        type_name: name.clone(),
+                    },
+                );
+            }
             return ty;
         }
 
@@ -1349,6 +1362,12 @@ impl Checker {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::NamedTypeInstance {
+                                type_name: name.clone(),
+                            },
+                        );
                         return sig.return_type.clone();
                     }
                 }
@@ -1379,6 +1398,12 @@ impl Checker {
                             self.check_against(expr, sp, param_ty);
                         }
                     }
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::NamedTypeInstance {
+                            type_name: name.clone(),
+                        },
+                    );
                     return sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
@@ -1420,6 +1445,12 @@ impl Checker {
                                     self.check_against(expr, sp, param_ty);
                                 }
                             }
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::NamedTypeInstance {
+                                    type_name: name.clone(),
+                                },
+                            );
                             return trait_sig.return_type;
                         }
                     }
@@ -1450,6 +1481,14 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
+                    if let Some(bound) = found_bound {
+                        self.record_method_call_receiver_kind(
+                            span,
+                            MethodCallReceiverKind::TraitObject {
+                                trait_name: bound.trait_name.clone(),
+                            },
+                        );
+                    }
                     // Apply type substitutions from bound's type arguments
                     if let Some(bound) = found_bound {
                         if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {

@@ -75,6 +75,86 @@ fn assert_inline_typechecks_cleanly(source: &str, context: &str) {
     );
 }
 
+#[test]
+fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
+    let output = typecheck_inline(
+        r"
+type Widget {
+    value: int;
+}
+
+impl Widget {
+    fn value_plus_one(w: Widget) -> int {
+        w.value + 1
+    }
+}
+
+fn use_widget(w: Widget) -> int {
+    w.value_plus_one()
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_receiver_kinds
+            .values()
+            .any(|kind| matches!(
+                kind,
+                hew_types::MethodCallReceiverKind::NamedTypeInstance { type_name }
+                    if type_name == "Widget"
+            )),
+        "expected named-type method call receiver metadata, got: {:?}",
+        output.method_call_receiver_kinds
+    );
+}
+
+#[test]
+fn method_call_receiver_kinds_record_trait_object_dispatch() {
+    let output = typecheck_inline(
+        r"
+trait Greeter {
+    fn greet(g: Self) -> String;
+}
+
+type Bot {
+    name: String;
+}
+
+impl Greeter for Bot {
+    fn greet(bot: Bot) -> String {
+        bot.name
+    }
+}
+
+fn use_greeter(g: dyn Greeter) -> String {
+    g.greet()
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_receiver_kinds
+            .values()
+            .any(|kind| matches!(
+                kind,
+                hew_types::MethodCallReceiverKind::TraitObject { trait_name }
+                    if trait_name == "Greeter"
+            )),
+        "expected trait-object method call receiver metadata, got: {:?}",
+        output.method_call_receiver_kinds
+    );
+}
+
 fn test_directory(dir: &Path, label: &str) {
     let mut parse_ok = 0;
     let mut parse_fail = 0;

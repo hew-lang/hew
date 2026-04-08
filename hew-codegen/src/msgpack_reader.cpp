@@ -148,7 +148,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 3;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 4;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1740,6 +1740,27 @@ static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   return entry;
 }
 
+static ast::MethodCallReceiverKindEntry
+parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
+  ast::MethodCallReceiverKindEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  auto kind = getString(mapReq(obj, "kind"));
+  if (kind == "named_type_instance") {
+    ast::MethodCallReceiverKindNamedTypeInstance data;
+    data.type_name = getString(mapReq(obj, "type_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
+  if (kind == "trait_object") {
+    ast::MethodCallReceiverKindTraitObject data;
+    data.trait_name = getString(mapReq(obj, "trait_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
+  fail("unknown method_call_receiver_kinds kind '" + kind + "'");
+}
+
 static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
 
@@ -1760,6 +1781,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   if (md && !isNil(*md))
     prog.module_doc = getString(*md);
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
+  prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
+      mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =

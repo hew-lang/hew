@@ -30,7 +30,10 @@ mod tests;
 mod types;
 mod util;
 
-pub use self::types::{Checker, FnSig, SpanKey, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef};
+pub use self::types::{
+    Checker, FnSig, MethodCallReceiverKind, SpanKey, TypeCheckOutput, TypeDef, TypeDefKind,
+    VariantDef,
+};
 use self::types::{
     ConstValue, DeferredCastCheck, DeferredInferenceHole, DeferredMonomorphicSite, ImplAliasEntry,
     ImplAliasScope, IntegerTypeInfo, TraitAssociatedTypeInfo, TraitInfo, WasmUnsupportedFeature,
@@ -199,6 +202,7 @@ impl Checker {
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             type_defs: resolved_type_defs,

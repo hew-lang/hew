@@ -254,7 +254,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind))
     return generateStructInit(*si, expr.span);
   if (auto *mc = std::get_if<ast::ExprMethodCall>(&expr.kind))
-    return generateMethodCall(*mc);
+    return generateMethodCall(*mc, expr.span);
   if (auto *tup = std::get_if<ast::ExprTuple>(&expr.kind))
     return generateTupleExpr(*tup);
   if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind))
@@ -4555,7 +4555,7 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
   return std::nullopt;
 }
 
-mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
+mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast::Span &exprSpan) {
   auto location = currentLoc;
   const auto &methodName = mc.method;
   auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
@@ -4578,11 +4578,184 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     if (recvMethod->method == "clone")
       materializeTemporary(receiver, mc.receiver->value);
 
+  auto receiverType = receiver.getType();
+  auto isRuntimeSpecialHandleType = [](llvm::StringRef handleType) {
+    return handleType == "http.Server" || handleType == "http.Request" ||
+           handleType == "regex.Pattern" || handleType == "process.Child";
+  };
+  bool isGenericHandleImplReceiver = false;
+  if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
+    auto handleType = handleTy.getHandleKind().str();
+    isGenericHandleImplReceiver =
+        knownHandleTypes.count(handleType) && !isRuntimeSpecialHandleType(handleType);
+  }
+  auto generateTraitObjectDispatch = [&](llvm::StringRef traitName) -> mlir::Value {
+    auto dispIt = traitDispatchRegistry.find(traitName.str());
+    if (dispIt == traitDispatchRegistry.end() || dispIt->second.impls.empty()) {
+      emitError(location) << "no implementations for trait '" << traitName << "'";
+      return nullptr;
+    }
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+
+    auto dataPtr = hew::TraitObjectDataOp::create(builder, location, ptrType, receiver);
+    auto vtablePtr = hew::TraitObjectTagOp::create(builder, location, ptrType, receiver);
+
+    llvm::SmallVector<mlir::Value, 4> extraArgs;
+    for (const auto &arg : mc.args) {
+      auto val = generateExpression(ast::callArgExpr(arg).value);
+      if (!val)
+        return nullptr;
+      extraArgs.push_back(val);
+    }
+
+    auto traitIt = traitRegistry.find(traitName.str());
+    mlir::Type returnType;
+    unsigned methodIdx = 0;
+    if (traitIt != traitRegistry.end()) {
+      auto idxIt = traitIt->second.methodIndex.find(methodName);
+      if (idxIt != traitIt->second.methodIndex.end())
+        methodIdx = idxIt->second;
+      for (const auto *tm : traitIt->second.methods) {
+        if (tm->name == methodName && tm->return_type.has_value()) {
+          returnType = convertType(tm->return_type->value);
+          break;
+        }
+      }
+    }
+
+    auto methodIndexAttr = builder.getI64IntegerAttr(methodIdx);
+    if (!returnType) {
+      hew::TraitDispatchOp::create(
+          builder, location, mlir::Type{}, builder.getStringAttr(traitName),
+          builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr);
+      return nullptr;
+    }
+
+    return hew::TraitDispatchOp::create(
+               builder, location, returnType, builder.getStringAttr(traitName),
+               builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr)
+        .getResult();
+  };
+  auto generateNamedTypeDispatch = [&](llvm::StringRef fallbackTypeName) -> mlir::Value {
+    auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
+    std::string resolvedTypeName;
+    if (structType && structType.isIdentified()) {
+      resolvedTypeName = structType.getName().str();
+    } else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
+      resolvedTypeName = handleTy.getHandleKind().str();
+    } else {
+      resolvedTypeName = fallbackTypeName.str();
+    }
+    if (resolvedTypeName.empty()) {
+      emitError(location) << "method call on non-struct/enum type"
+                          << " (method='" << methodName << "'"
+                          << ", receiver type: " << receiverType << ")";
+      return nullptr;
+    }
+
+    // Machine step() — mutates the receiver variable in place.
+    // The generated step function still returns the new machine value; the
+    // call site stores it back into the receiver's mutable-variable slot.
+    if (methodName == "step" && structType) {
+      auto enumIt = enumTypes.find(resolvedTypeName);
+      if (enumIt != enumTypes.end()) {
+        std::string funcName = mangleName(currentModulePath, resolvedTypeName, "step");
+        auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+        if (!callee)
+          callee = lookupImportedFunc(resolvedTypeName, "step");
+        if (callee) {
+          llvm::SmallVector<mlir::Value, 4> args;
+          args.push_back(receiver);
+          for (const auto &arg : mc.args) {
+            auto val = generateExpression(ast::callArgExpr(arg).value);
+            if (!val)
+              return nullptr;
+            args.push_back(val);
+          }
+          auto ft = callee.getFunctionType();
+          for (size_t i = 0; i < args.size() && i < ft.getNumInputs(); ++i) {
+            if (args[i].getType() != ft.getInput(i)) {
+              args[i] = coerceType(args[i], ft.getInput(i), location);
+              if (!args[i])
+                return nullptr;
+            }
+          }
+          auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
+          if (callOp.getNumResults() > 0) {
+            if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+              storeVariable(ident->name, callOp.getResult(0));
+          }
+          return nullptr;
+        }
+      }
+    }
+
+    std::string funcName = mangleName(currentModulePath, resolvedTypeName, methodName);
+
+    llvm::SmallVector<mlir::Value, 4> args;
+    args.push_back(receiver);
+    for (const auto &arg : mc.args) {
+      auto val = generateExpression(ast::callArgExpr(arg).value);
+      if (!val)
+        return nullptr;
+      args.push_back(val);
+    }
+
+    auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    if (!callee)
+      callee = lookupImportedFunc(resolvedTypeName, methodName);
+    if (!callee && structType) {
+      auto originIt = structTypeOrigin.find(resolvedTypeName);
+      if (originIt != structTypeOrigin.end()) {
+        const auto &[baseName, typeArgs] = originIt->second;
+        callee = specializeGenericImplMethod(baseName, typeArgs, methodName);
+      }
+    }
+    if (!callee) {
+      if (encodeEligibleStructs_.count(resolvedTypeName)) {
+        static const std::unordered_map<std::string, std::pair<bool, std::string>>
+            kStructSerialMethods = {
+                {"to_json", {true, "json"}}, {"from_json", {false, "json"}},
+                {"to_yaml", {true, "yaml"}}, {"from_yaml", {false, "yaml"}},
+                {"to_toml", {true, "toml"}}, {"from_toml", {false, "toml"}},
+            };
+        auto it = kStructSerialMethods.find(methodName);
+        if (it != kStructSerialMethods.end()) {
+          const auto &[isTo, format] = it->second;
+          if (isTo)
+            generateStructToSerial(resolvedTypeName, format);
+          else
+            generateStructFromSerial(resolvedTypeName, format);
+          callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+        }
+      }
+    }
+    if (!callee) {
+      emitError(location) << "undefined method '" << methodName << "' on type '" << resolvedTypeName
+                          << "'";
+      return nullptr;
+    }
+
+    auto funcType = callee.getFunctionType();
+    for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
+      if (args[i].getType() != funcType.getInput(i)) {
+        args[i] = coerceType(args[i], funcType.getInput(i), location);
+        if (!args[i])
+          return nullptr;
+      }
+    }
+
+    auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
+    if (callOp.getNumResults() > 0)
+      return callOp.getResult(0);
+    return nullptr;
+  };
+
   // Handle type dispatch (http.Server, net.Connection, etc.)
   if (auto result = generateHandleMethodCall(mc, receiver, location))
     return *result;
 
-  auto receiverType = receiver.getType();
   auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
     return method == "accept" || method == "close" || method == "read" || method == "read_string" ||
            method == "write" || method == "write_string" || method == "set_read_timeout" ||
@@ -4597,6 +4770,25 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // Actor / generator dispatch
   if (auto result = generateActorMethodCall(mc, receiver, location))
     return *result;
+  if (mlir::isa<hew::ActorRefType, hew::TypedActorRefType>(receiverType)) {
+    emitError(location) << "method call on non-struct/enum type"
+                        << " (method='" << methodName << "'"
+                        << ", receiver type: " << receiverType << ")";
+    return nullptr;
+  }
+
+  if (!isGenericHandleImplReceiver) {
+    if (auto *receiverKind = methodCallReceiverKindOf(exprSpan)) {
+      if (auto *named =
+              std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind))
+        return generateNamedTypeDispatch(named->type_name);
+      if (auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
+        return generateTraitObjectDispatch(trait->trait_name);
+      ++errorCount_;
+      emitError(location) << "unsupported method_call_receiver_kinds variant";
+      return nullptr;
+    }
+  }
 
   // Trait object dispatch — requires a resolved dyn Trait type from the checker.
   // Note: alias-to-dyn-trait is intentionally out of scope until typeExprTraitName()
@@ -4606,54 +4798,18 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
       traitName = typeExprTraitName(*typeExpr);
     if (!traitName.empty()) {
-      auto dispIt = traitDispatchRegistry.find(traitName);
-      if (dispIt == traitDispatchRegistry.end() || dispIt->second.impls.empty()) {
-        emitError(location) << "no implementations for trait '" << traitName << "'";
+      auto *receiverKind =
+          requireMethodCallReceiverKindOf(exprSpan, "trait object method call", location);
+      if (!receiverKind)
+        return nullptr;
+      auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind);
+      if (!trait) {
+        ++errorCount_;
+        emitError(location)
+            << "unexpected method_call_receiver_kinds kind for trait object method call";
         return nullptr;
       }
-
-      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-
-      auto dataPtr = hew::TraitObjectDataOp::create(builder, location, ptrType, receiver);
-      auto vtablePtr = hew::TraitObjectTagOp::create(builder, location, ptrType, receiver);
-
-      llvm::SmallVector<mlir::Value, 4> extraArgs;
-      for (const auto &arg : mc.args) {
-        auto val = generateExpression(ast::callArgExpr(arg).value);
-        if (!val)
-          return nullptr;
-        extraArgs.push_back(val);
-      }
-
-      auto traitIt = traitRegistry.find(traitName);
-      mlir::Type returnType;
-      unsigned methodIdx = 0;
-      if (traitIt != traitRegistry.end()) {
-        auto idxIt = traitIt->second.methodIndex.find(methodName);
-        if (idxIt != traitIt->second.methodIndex.end())
-          methodIdx = idxIt->second;
-        for (const auto *tm : traitIt->second.methods) {
-          if (tm->name == methodName && tm->return_type.has_value()) {
-            returnType = convertType(tm->return_type->value);
-            break;
-          }
-        }
-      }
-
-      auto methodIndexAttr = builder.getI64IntegerAttr(methodIdx);
-
-      // Emit hew.trait_dispatch (vtable-based O(1) dispatch)
-      if (!returnType) {
-        hew::TraitDispatchOp::create(
-            builder, location, mlir::Type{}, builder.getStringAttr(traitName),
-            builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr);
-        return nullptr;
-      }
-
-      return hew::TraitDispatchOp::create(
-                 builder, location, returnType, builder.getStringAttr(traitName),
-                 builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr)
-          .getResult();
+      return generateTraitObjectDispatch(trait->trait_name);
     }
   }
 
@@ -4661,132 +4817,41 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (auto result = generateBuiltinMethodCall(mc, receiver, location))
     return *result;
 
-  // Determine type name from the receiver's MLIR type (struct/enum or handle).
+  // Generic handle-backed impl methods (e.g. json.Value.type_of()) still rely
+  // on the existing handle-kind structural path until they carry stable
+  // receiver authority without regressing the #812 parse-wrapper flow.
+  if (isGenericHandleImplReceiver)
+    return generateNamedTypeDispatch("");
+
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
-  std::string resolvedTypeName;
+  std::string structuralTypeName;
   if (structType && structType.isIdentified()) {
-    resolvedTypeName = structType.getName().str();
+    structuralTypeName = structType.getName().str();
   } else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
-    // Handle types (json.Value, ws.Conn, etc.) can have trait impl methods
-    // registered under their handle kind name (e.g. "json.Value").
-    resolvedTypeName = handleTy.getHandleKind().str();
+    structuralTypeName = handleTy.getHandleKind().str();
   } else if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
     auto candidate = typeExprToTypeName(*typeExpr, resolveAliasExpr);
     if (!candidate.empty() && (structTypes.count(candidate) || enumTypes.count(candidate)))
-      resolvedTypeName = candidate;
+      structuralTypeName = candidate;
   }
-  if (resolvedTypeName.empty()) {
+  if (structuralTypeName.empty()) {
     emitError(location) << "method call on non-struct/enum type"
                         << " (method='" << methodName << "'"
                         << ", receiver type: " << receiverType << ")";
     return nullptr;
   }
 
-  // Machine step() — mutates the receiver variable in place.
-  // The generated step function still returns the new machine value; the
-  // call site stores it back into the receiver's mutable-variable slot.
-  if (methodName == "step" && structType) {
-    auto enumIt = enumTypes.find(resolvedTypeName);
-    if (enumIt != enumTypes.end()) {
-      std::string funcName = mangleName(currentModulePath, resolvedTypeName, "step");
-      auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-      if (!callee)
-        callee = lookupImportedFunc(resolvedTypeName, "step");
-      if (callee) {
-        llvm::SmallVector<mlir::Value, 4> args;
-        args.push_back(receiver);
-        for (const auto &arg : mc.args) {
-          auto val = generateExpression(ast::callArgExpr(arg).value);
-          if (!val)
-            return nullptr;
-          args.push_back(val);
-        }
-        auto ft = callee.getFunctionType();
-        for (size_t i = 0; i < args.size() && i < ft.getNumInputs(); ++i) {
-          if (args[i].getType() != ft.getInput(i)) {
-            args[i] = coerceType(args[i], ft.getInput(i), location);
-            if (!args[i])
-              return nullptr;
-          }
-        }
-        auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
-        // Store result back into the receiver variable
-        if (callOp.getNumResults() > 0) {
-          if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
-            storeVariable(ident->name, callOp.getResult(0));
-        }
-        return nullptr; // step() returns void to the caller
-      }
-    }
-  }
-
-  std::string funcName = mangleName(currentModulePath, resolvedTypeName, methodName);
-
-  llvm::SmallVector<mlir::Value, 4> args;
-  args.push_back(receiver);
-  for (const auto &arg : mc.args) {
-    auto val = generateExpression(ast::callArgExpr(arg).value);
-    if (!val)
-      return nullptr;
-    args.push_back(val);
-  }
-
-  auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-  // If not found in current module, try imported module paths.
-  // This handles cross-module struct methods (e.g. bench.Suite.add defined
-  // in std::bench but called from bench_basic).
-  if (!callee)
-    callee = lookupImportedFunc(resolvedTypeName, methodName);
-  // Try specializing a generic impl method (e.g. impl<T> Box<T> { fn unwrap … }).
-  if (!callee && structType) {
-    auto originIt = structTypeOrigin.find(resolvedTypeName);
-    if (originIt != structTypeOrigin.end()) {
-      const auto &[baseName, typeArgs] = originIt->second;
-      callee = specializeGenericImplMethod(baseName, typeArgs, methodName);
-    }
-  }
-  if (!callee) {
-    // Demand-gated struct encode/decode wrappers on the instance path:
-    // p.to_json(), p.to_yaml(), p.to_toml(), p.from_json(...), etc.
-    // Mirror the same gate used in generateModuleMethodCall for the
-    // static-dispatch path (TypeName.to_json(p)).
-    if (encodeEligibleStructs_.count(resolvedTypeName)) {
-      static const std::unordered_map<std::string, std::pair<bool, std::string>>
-          kStructSerialMethods = {
-              {"to_json", {true, "json"}}, {"from_json", {false, "json"}},
-              {"to_yaml", {true, "yaml"}}, {"from_yaml", {false, "yaml"}},
-              {"to_toml", {true, "toml"}}, {"from_toml", {false, "toml"}},
-          };
-      auto it = kStructSerialMethods.find(methodName);
-      if (it != kStructSerialMethods.end()) {
-        const auto &[isTo, format] = it->second;
-        if (isTo)
-          generateStructToSerial(resolvedTypeName, format);
-        else
-          generateStructFromSerial(resolvedTypeName, format);
-        callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-      }
-    }
-  }
-  if (!callee) {
-    emitError(location) << "undefined method '" << methodName << "' on type '" << resolvedTypeName
-                        << "'";
+  auto *receiverKind =
+      requireMethodCallReceiverKindOf(exprSpan, "named-type method call", location);
+  if (!receiverKind)
+    return nullptr;
+  auto *named = std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind);
+  if (!named) {
+    ++errorCount_;
+    emitError(location) << "unexpected method_call_receiver_kinds kind for named-type method call";
     return nullptr;
   }
-
-  auto funcType = callee.getFunctionType();
-  for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
-    if (args[i].getType() != funcType.getInput(i)) {
-      args[i] = coerceType(args[i], funcType.getInput(i), location);
-      if (!args[i])
-        return nullptr;
-    }
-  }
-
-  auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
-  if (callOp.getNumResults() > 0)
-    return callOp.getResult(0);
-  return nullptr;
+  return generateNamedTypeDispatch(named->type_name);
 }
 
 // ============================================================================

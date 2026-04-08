@@ -3,7 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::builtin_names::{builtin_named_type, BuiltinNamedType};
+use crate::builtin_names::BuiltinNamedType;
 use crate::method_resolution::{
     lookup_builtin_method_sig, lookup_named_method_sig as shared_lookup_named_method_sig,
 };

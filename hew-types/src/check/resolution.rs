@@ -4,7 +4,6 @@ use super::coerce::cast_is_valid;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::builtin_names::builtin_named_type;
 
 impl Checker {
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {

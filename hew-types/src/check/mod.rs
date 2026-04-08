@@ -1,5 +1,6 @@
 //! Bidirectional type checker for Hew programs.
 
+use crate::builtin_names::builtin_named_type;
 use crate::error::{TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::traits::MarkerTrait;
@@ -59,6 +60,66 @@ fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty,
 
 fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
     Ty::result(ok_ty.clone(), err_ty.clone())
+}
+
+fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Named { name, args } => {
+            let normalized_args: Vec<Ty> = args
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect();
+            if matches!(
+                builtin_named_type(name.as_str()),
+                Some(kind) if kind.is_channel_handle()
+            ) && matches!(normalized_args.as_slice(), [Ty::Var(_)])
+            {
+                return Ty::normalize_named(name.clone(), vec![]);
+            }
+            Ty::normalize_named(name.clone(), normalized_args)
+        }
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+        ),
+        Ty::Array(elem, size) => Ty::Array(
+            Box::new(normalize_synthetic_channel_handle_expr_type(elem)),
+            *size,
+        ),
+        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_expr_type(elem))),
+        Ty::Function { params, ret } => Ty::Function {
+            params: params
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+        },
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => Ty::Closure {
+            params: params
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+            captures: captures
+                .iter()
+                .map(normalize_synthetic_channel_handle_expr_type)
+                .collect(),
+        },
+        Ty::Pointer {
+            is_mutable,
+            pointee,
+        } => Ty::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(normalize_synthetic_channel_handle_expr_type(pointee)),
+        },
+        _ => ty.clone(),
+    }
 }
 
 impl Checker {
@@ -261,11 +322,22 @@ impl Checker {
             .map(|e| SpanKey::from(&e.span))
             .collect();
         let mut leaked_expr_type_spans = Vec::new();
-        for (span, ty) in &resolved_expr_types {
+        for (span, ty) in &mut resolved_expr_types {
             let mut unresolved = HashSet::new();
             collect_unresolved_inference_vars(ty, &mut unresolved);
             if unresolved.is_empty() {
                 continue;
+            }
+            if !unresolved.is_subset(&covered_inference_vars) {
+                let normalized = normalize_synthetic_channel_handle_expr_type(ty);
+                if normalized != *ty {
+                    let mut normalized_unresolved = HashSet::new();
+                    collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
+                    if normalized_unresolved.is_empty() {
+                        *ty = normalized;
+                        continue;
+                    }
+                }
             }
             leaked_expr_type_spans.push(span.clone());
             if unresolved.is_subset(&covered_inference_vars) {

@@ -245,6 +245,14 @@ fn typecheck_generic_call_with_inferred_type_args() {
         .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
         .collect();
     assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![Ty::I64]),
+        "expected inferred int literal type args to materialize at output boundary, got {:?}",
+        output.call_type_args
+    );
 }
 
 #[test]
@@ -4334,7 +4342,7 @@ fn mutable_var_initializer_materializes_literal_default() {
 }
 
 #[test]
-fn typecheck_output_preserves_literal_kinds_for_unannotated_lets() {
+fn typecheck_output_materializes_literal_kinds_for_unannotated_lets() {
     let source = "fn main() { let x = 1; let y = 2.0; }";
     let result = hew_parser::parse(source);
     assert!(
@@ -4346,13 +4354,12 @@ fn typecheck_output_preserves_literal_kinds_for_unannotated_lets() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(
-        output
-            .expr_types
-            .values()
-            .any(Ty::is_numeric_literal),
-        "TypeCheckOutput should preserve surviving literal kinds for fail-closed serialization: {:?}",
+        !output.expr_types.values().any(Ty::is_numeric_literal),
+        "TypeCheckOutput should materialize surviving literal kinds before serialization: {:?}",
         output.expr_types
     );
+    assert!(output.expr_types.values().any(|ty| ty == &Ty::I64));
+    assert!(output.expr_types.values().any(|ty| ty == &Ty::F64));
 }
 
 // ── Struct init literal coercion tests ─────────────────────────────

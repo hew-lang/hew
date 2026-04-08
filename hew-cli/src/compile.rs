@@ -2212,6 +2212,39 @@ fn main() {
     }
 
     #[test]
+    fn unannotated_immutable_literal_bindings_serialize_after_output_materialization() {
+        let source = "fn main() { let whole = 1; let frac = 2.0; }\n";
+        let mut program = parse_source(source, "main.hew").expect("source should parse");
+
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "typecheck should succeed before enrichment: {:?}",
+            tco.errors
+        );
+        assert!(
+            !tco.expr_types.values().any(Ty::is_numeric_literal),
+            "checked output should materialize literal kinds before enrichment: {:?}",
+            tco.expr_types
+        );
+
+        let module_registry = checker.into_module_registry();
+        let result = enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &module_registry,
+            source,
+            "main.hew",
+        );
+
+        assert!(
+            result.is_ok(),
+            "expected materialized literal bindings to survive enrichment, got: {result:?}"
+        );
+    }
+
+    #[test]
     fn typecheck_rejects_unresolved_inferred_binding_before_enrichment() {
         let source = "fn main() {\n    let f = (x) => x;\n}\n";
         let program = parse_source(source, "main.hew").expect("source should parse");

@@ -272,7 +272,12 @@ impl Ty {
         clippy::too_many_lines,
         reason = "type display covers all type variants recursively"
     )]
-    fn fmt_with_i64_name(&self, f: &mut fmt::Formatter<'_>, i64_name: &str) -> fmt::Result {
+    fn fmt_with_numeric_names(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        i64_name: &str,
+        f64_name: &str,
+    ) -> fmt::Result {
         match self {
             Ty::I8 => write!(f, "i8"),
             Ty::I16 => write!(f, "i16"),
@@ -283,7 +288,7 @@ impl Ty {
             Ty::U32 => write!(f, "u32"),
             Ty::U64 => write!(f, "u64"),
             Ty::F32 => write!(f, "f32"),
-            Ty::F64 => write!(f, "f64"),
+            Ty::F64 => write!(f, "{f64_name}"),
             Ty::IntLiteral => write!(f, "<int literal>"),
             Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
@@ -300,18 +305,18 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    elem.fmt_with_i64_name(f, i64_name)?;
+                    elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ")")
             }
             Ty::Array(elem, size) => {
                 write!(f, "[")?;
-                elem.fmt_with_i64_name(f, i64_name)?;
+                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "; {size}]")
             }
             Ty::Slice(elem) => {
                 write!(f, "[")?;
-                elem.fmt_with_i64_name(f, i64_name)?;
+                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
             Ty::Named { name, args } => {
@@ -322,7 +327,7 @@ impl Ty {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        arg.fmt_with_i64_name(f, i64_name)?;
+                        arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                     }
                     write!(f, ">")?;
                 }
@@ -334,10 +339,10 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    param.fmt_with_i64_name(f, i64_name)?;
+                    param.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ") -> ")?;
-                ret.fmt_with_i64_name(f, i64_name)
+                ret.fmt_with_numeric_names(f, i64_name, f64_name)
             }
             Ty::Pointer {
                 is_mutable,
@@ -348,7 +353,7 @@ impl Ty {
                 } else {
                     write!(f, "*const ")?;
                 }
-                pointee.fmt_with_i64_name(f, i64_name)
+                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
             }
             Ty::TraitObject { traits } => {
                 write!(f, "dyn ")?;
@@ -361,7 +366,7 @@ impl Ty {
                             if i > 0 {
                                 write!(f, ", ")?;
                             }
-                            arg.fmt_with_i64_name(f, i64_name)?;
+                            arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                         }
                         write!(f, ">")?;
                     }
@@ -378,7 +383,7 @@ impl Ty {
                                 if j > 0 {
                                     write!(f, ", ")?;
                                 }
-                                arg.fmt_with_i64_name(f, i64_name)?;
+                                arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
                             }
                             write!(f, ">")?;
                         }
@@ -791,19 +796,20 @@ impl Ty {
     }
 }
 
-/// User-facing type wrapper that preserves `int` spelling for canonical `Ty::I64`.
+/// User-facing type wrapper that preserves Hew numeric spellings.
 #[derive(Debug)]
 pub struct UserFacingTy<'a>(&'a Ty);
 
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_i64_name(f, "i64")
+        self.fmt_with_numeric_names(f, "i64", "f64")
     }
 }
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt_with_i64_name(f, "int")
+        let materialized = self.0.materialize_literal_defaults();
+        materialized.fmt_with_numeric_names(f, "int", "float")
     }
 }
 
@@ -882,8 +888,15 @@ mod tests {
     }
 
     #[test]
-    fn test_user_facing_display_preserves_int_alias() {
+    fn test_user_facing_display_preserves_numeric_aliases() {
         assert_eq!(Ty::I64.user_facing().to_string(), "int");
+        assert_eq!(Ty::F64.user_facing().to_string(), "float");
+    }
+
+    #[test]
+    fn test_user_facing_display_materializes_literal_kinds() {
+        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "int");
+        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "float");
     }
 
     #[test]

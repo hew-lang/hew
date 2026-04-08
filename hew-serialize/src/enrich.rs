@@ -2960,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enrich_lambda_params_from_inferred_closure_type() {
+    fn test_enrich_lambda_params_from_materialized_closure_type() {
         let source = concat!(
             "fn main() {\n",
             "    let offset = 1;\n",
@@ -2989,22 +2989,17 @@ mod tests {
         )
         .unwrap();
         assert!(
-            diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind() == TypeExprConversionKind::LiteralKind
-                    && diagnostic
-                        .to_string()
-                        .contains("lambda parameter `x` inferred type")
-            }),
-            "expected literal-kind lambda diagnostic, got: {diagnostics:?}"
+            diagnostics.is_empty(),
+            "unexpected enrichment diagnostics: {diagnostics:?}"
         );
 
         match &expr.0 {
             Expr::Lambda { params, .. } => {
                 assert_eq!(params.len(), 1);
-                assert!(
-                    params[0].ty.is_none(),
-                    "literal-kind params must stay implicit"
-                );
+                assert!(matches!(
+                    params[0].ty.as_ref().map(|(ty, _)| ty),
+                    Some(TypeExpr::Named { name, type_args: None }) if name == "i64"
+                ));
             }
             other => panic!("expected lambda expr, got {other:?}"),
         }

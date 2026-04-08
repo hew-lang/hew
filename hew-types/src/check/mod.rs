@@ -170,10 +170,11 @@ impl Checker {
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
-        // substitution so the enrichment layer sees concrete types.
+        // substitution so the enrichment layer sees concrete types, then
+        // materialize surviving literal kinds at the checked-output boundary.
         let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
             .into_iter()
-            .map(|(k, v)| (k, self.subst.resolve(&v)))
+            .map(|(k, v)| (k, self.subst.resolve(&v).materialize_literal_defaults()))
             .collect();
 
         // Also resolve inferred call type args so the enrichment layer can
@@ -182,7 +183,10 @@ impl Checker {
             std::mem::take(&mut self.call_type_args)
                 .into_iter()
                 .map(|(k, args)| {
-                    let resolved = args.iter().map(|a| self.subst.resolve(a)).collect();
+                    let resolved = args
+                        .iter()
+                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .collect();
                     (k, resolved)
                 })
                 .collect();

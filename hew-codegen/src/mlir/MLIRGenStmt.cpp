@@ -1400,6 +1400,27 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (!kindEntry)
     return;
 
+  // Early authority mismatch checks for identifier assignments: fire the
+  // mismatch diagnostic before requiring the shape entry so the real error is
+  // reported rather than a spurious "missing assign_target_shapes" message.
+  if (std::holds_alternative<ast::AssignTargetKindActorField>(kindEntry->kind) &&
+      currentActorName.empty()) {
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says ActorField but assignment is not inside an "
+                           "actor body";
+    return;
+  }
+  if (std::holds_alternative<ast::AssignTargetKindLocalVar>(kindEntry->kind)) {
+    if (auto *ti = std::get_if<ast::ExprIdentifier>(&stmt.target.value.kind)) {
+      if (!lookupVariable(ti->name)) {
+        ++errorCount_;
+        emitError(location) << "assign_target_kinds says LocalVar but no local binding named '"
+                            << ti->name << "' is available for assignment";
+        return;
+      }
+    }
+  }
+
   // Look up the checker-assigned type-shape fail-closed: the shape entry
   // carries the signedness flag for compound-assignment arithmetic so that
   // MLIR lowering does not need to re-derive it from the AST or fall back to

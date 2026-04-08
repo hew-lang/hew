@@ -6132,6 +6132,65 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: generic handle-backed impl dispatch requires receiver-kind metadata.
+//
+// Before this fix, json.Value method calls bypassed the authority table and
+// used the MLIR handle-kind string as a heuristic. Now they must go through
+// method_call_receiver_kinds, and missing metadata must fail closed.
+// ============================================================================
+
+static void test_generic_handle_impl_dispatch_requires_receiver_kind() {
+  TEST(generic_handle_impl_dispatch_requires_receiver_kind);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::encoding::json;
+
+fn use_value(v: json.Value) -> i32 {
+    return v.type_of();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable or std::encoding::json not found; skipping");
+    return;
+  }
+
+  auto *useValue = findFunctionDecl(program, "use_value");
+  if (!useValue) {
+    FAIL("failed to find use_value function");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "type_of");
+  if (!methodCallSpan || !eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove method_call_receiver_kinds entry for json.Value.type_of()");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL(
+        "expected codegen to fail for generic handle impl dispatch without receiver-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing method_call_receiver_kinds entry") == std::string::npos) {
+    FAIL("expected missing method_call_receiver_kinds diagnostic for generic handle impl dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 
 static void test_remote_actor_alias_ask_is_recognized() {
   TEST(remote_actor_alias_ask_is_recognized);
@@ -6734,6 +6793,7 @@ int main() {
   test_actor_dispatch_requires_resolved_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_requires_receiver_kind();
+  test_generic_handle_impl_dispatch_requires_receiver_kind();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();
   test_for_await_receiver_alias_inferred_binding_uses_resolved_type();

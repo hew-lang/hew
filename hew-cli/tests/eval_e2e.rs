@@ -668,6 +668,71 @@ fn eval_repl_load_parse_errors_render_cli_diagnostics() {
     assert!(stderr.contains("1 | fn broken("), "stderr: {stderr}");
 }
 
+#[test]
+fn eval_repl_load_valid_file_succeeds() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("load_ok.hew");
+    std::fs::write(&path, "fn answer() -> i64 {\n    42\n}\n").unwrap();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        &format!(":load {}\nanswer()\n:quit\n", path.display()),
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Loaded {}", path.display())),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
+    if !require_codegen() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        nested.join("lib.hew"),
+        "pub fn answer() -> i64 {\n    42\n}\n",
+    )
+    .unwrap();
+
+    let path = nested.join("load_main.hew");
+    std::fs::write(&path, "import \"lib.hew\";\n\nanswer()\n").unwrap();
+
+    let output = run_eval_with_stdin(&["eval"], &format!(":load {}\n:quit\n", path.display()));
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("Loaded {}", path.display())),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+}
+
 /// `:clear` must emit "Session cleared." to stdout regardless of whether the
 /// codegen backend is available — it is a pure session-state operation.
 #[test]

@@ -38,10 +38,7 @@ pub enum CliEvalError {
 #[derive(Debug)]
 enum LoadFileError {
     Message(String),
-    Parse {
-        source: String,
-        errors: Vec<hew_parser::ParseError>,
-    },
+    DiagnosticsRendered,
 }
 
 impl fmt::Display for CliEvalError {
@@ -59,13 +56,7 @@ impl fmt::Display for LoadFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Message(message) => f.write_str(message),
-            Self::Parse { errors, .. } => f.write_str(
-                &errors
-                    .iter()
-                    .map(|error| error.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
+            Self::DiagnosticsRendered => f.write_str("diagnostics already rendered"),
         }
     }
 }
@@ -584,31 +575,13 @@ impl ReplSession {
         let source = std::fs::read_to_string(path)
             .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
 
-        // Parse the file to extract items and statements.
-        let parse_result = hew_parser::parse(&source);
-        if !parse_result.errors.is_empty() {
-            return Err(LoadFileError::Parse {
-                source,
-                errors: parse_result.errors,
-            });
-        }
+        self.eval_source_file_cli(&source, path, path)
+            .map_err(|error| match error {
+                CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
+                CliEvalError::Message(message) => LoadFileError::Message(message),
+            })?;
 
-        // Add all non-main items from the file.
-        let mut loaded_count = 0usize;
-        for (item, span) in &parse_result.program.items {
-            let item_source = &source[span.start..span.end];
-            match item {
-                hew_parser::ast::Item::Function(f) if f.name == "main" => {
-                    // Skip main — the REPL generates its own.
-                }
-                _ => {
-                    self.session.add_item(item_source);
-                    loaded_count += 1;
-                }
-            }
-        }
-
-        Ok(format!("Loaded {loaded_count} items from {path}"))
+        Ok(format!("Loaded {path}"))
     }
 
     /// Reset the session.
@@ -625,10 +598,7 @@ impl ReplSession {
             ReplCommand::Type(expr) => self.eval_type_command_cli(expr, input_name),
             ReplCommand::Load(path) if !path.is_empty() => match self.load_file(path) {
                 Ok(message) => Ok(format!("{message}\n")),
-                Err(LoadFileError::Parse { source, errors }) => {
-                    crate::diagnostic::render_parse_diagnostics(&source, path, &errors);
-                    Err(CliEvalError::DiagnosticsRendered)
-                }
+                Err(LoadFileError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
                 Err(error) => Err(CliEvalError::Message(error.to_string())),
             },
             _ => {
@@ -753,6 +723,56 @@ impl ReplSession {
             InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
             InputKind::Expression | InputKind::Command(_) => {}
         }
+    }
+
+    fn eval_source_file_cli(
+        &mut self,
+        source: &str,
+        input_name: &str,
+        source_label: &str,
+    ) -> Result<(), CliEvalError> {
+        let mut buffer = String::new();
+
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if (trimmed.is_empty() || trimmed.starts_with("//")) && buffer.is_empty() {
+                continue;
+            }
+
+            if !buffer.is_empty() {
+                buffer.push('\n');
+            }
+            buffer.push_str(line);
+
+            if matches!(
+                classify::input_completeness(&buffer),
+                InputCompleteness::Incomplete
+            ) {
+                continue;
+            }
+
+            let input = buffer.trim();
+            if input.is_empty() {
+                buffer.clear();
+                continue;
+            }
+
+            let output = self.eval_file_cli(input, input_name, source_label)?;
+            if !output.is_empty() {
+                print!("{output}");
+            }
+            buffer.clear();
+        }
+
+        let input = buffer.trim();
+        if !input.is_empty() {
+            let output = self.eval_file_cli(input, input_name, source_label)?;
+            if !output.is_empty() {
+                print!("{output}");
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1098,47 +1118,7 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
     };
 
     let mut session = ReplSession::with_timeout(timeout);
-    let mut buffer = String::new();
-
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if (trimmed.is_empty() || trimmed.starts_with("//")) && buffer.is_empty() {
-            continue;
-        }
-
-        if !buffer.is_empty() {
-            buffer.push('\n');
-        }
-        buffer.push_str(line);
-
-        if matches!(
-            classify::input_completeness(&buffer),
-            InputCompleteness::Incomplete
-        ) {
-            continue;
-        }
-
-        let input = buffer.trim();
-        if input.is_empty() {
-            buffer.clear();
-            continue;
-        }
-
-        let output = session.eval_file_cli(input, &input_name, &input_name)?;
-        if !output.is_empty() {
-            print!("{output}");
-        }
-        buffer.clear();
-    }
-
-    // Evaluate any remaining buffered input.
-    let input = buffer.trim();
-    if !input.is_empty() {
-        let output = session.eval_file_cli(input, &input_name, &input_name)?;
-        if !output.is_empty() {
-            print!("{output}");
-        }
-    }
+    session.eval_source_file_cli(&source, &input_name, &input_name)?;
 
     Ok(())
 }

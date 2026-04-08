@@ -1241,12 +1241,6 @@ pub unsafe extern "C" fn hew_remote_sup_free(sup: *mut HewRemoteSupervisor) {
 mod tests {
     use super::*;
     use std::ffi::CString;
-
-    fn remote_sup_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn reset_membership_callback_pause_states() {
         let (pause_lock, pause_condvar) = membership_callback_pause_state();
         *pause_lock.lock_or_recover() = MembershipCallbackPauseState::default();
@@ -1268,12 +1262,12 @@ mod tests {
     /// Serialize tests that spin up real nodes because the runtime exposes a
     /// single process-global active node slot.
     struct RemoteSupTestGuard {
-        _lock_guard: std::sync::MutexGuard<'static, ()>,
+        _lock_guard: crate::RuntimeTestGuard,
     }
 
     impl RemoteSupTestGuard {
         fn acquire() -> Self {
-            let guard = remote_sup_test_lock().lock_or_recover();
+            let guard = crate::runtime_test_guard();
             reset_membership_callback_pause_states();
             reap_retired_callback_contexts();
             assert!(

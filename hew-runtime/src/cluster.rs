@@ -416,7 +416,10 @@ impl HewCluster {
             state,
             incarnation,
             addr: [0u8; 128],
-            last_seen_ms: 0,
+            // Initialise to the current monotonic time so the first tick does
+            // not immediately mark a brand-new member as suspect.
+            // SAFETY: hew_now_ms has no preconditions.
+            last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
         };
         let len = addr.len().min(127);
         member.addr[..len].copy_from_slice(&addr[..len]);

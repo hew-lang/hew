@@ -2671,7 +2671,6 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 mod tests {
     use super::*;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
     static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
         AtomicPtr::new(ptr::null_mut());
 
@@ -2906,7 +2905,7 @@ mod tests {
 
     #[test]
     fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
-        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let _guard = crate::runtime_test_guard();
         let runtime = NativeSchedulerGuard::new();
 
         assert_eq!(reply_channel::active_channel_count(), 0);
@@ -3002,7 +3001,7 @@ mod tests {
 
     #[test]
     fn native_ask_successful_reply_returns_value_without_duplicate_cleanup() {
-        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let _guard = crate::runtime_test_guard();
         let runtime = NativeSchedulerGuard::new();
 
         assert_eq!(reply_channel::active_channel_count(), 0);
@@ -3036,7 +3035,7 @@ mod tests {
 
     #[test]
     fn native_ask_timeout_rejects_late_reply_after_blocking_dispatch() {
-        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let _guard = crate::runtime_test_guard();
         let runtime = NativeSchedulerGuard::new();
 
         assert_eq!(reply_channel::active_channel_count(), 0);
@@ -3076,7 +3075,7 @@ mod tests {
 
     #[test]
     fn native_ask_reply_then_trap_returns_value_without_duplicate_crash_reply() {
-        let _guard = TEST_LOCK.lock().expect("native ask tests should serialize");
+        let _guard = crate::runtime_test_guard();
         let runtime = NativeSchedulerGuard::new();
 
         assert_eq!(reply_channel::active_channel_count(), 0);
@@ -3402,6 +3401,7 @@ mod tests {
 
     #[test]
     fn wasm_free_waits_for_quiescent_actor_state_before_freeing() {
+        let _guard = crate::runtime_test_guard();
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Runnable);
 
         let start = std::time::Instant::now();
@@ -3498,8 +3498,6 @@ mod tests {
 mod wasm_tests {
     use super::*;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     unsafe extern "C" fn self_stop_without_reply_dispatch(
         _state: *mut c_void,
         _msg_type: i32,
@@ -3546,7 +3544,7 @@ mod wasm_tests {
 
     #[test]
     fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
 
         unsafe {
             crate::scheduler_wasm::hew_sched_init();
@@ -3580,7 +3578,7 @@ mod wasm_tests {
 
     #[test]
     fn ask_successful_reply_returns_value_without_duplicate_cleanup() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
 
         unsafe {
             crate::scheduler_wasm::hew_sched_init();
@@ -3610,7 +3608,7 @@ mod wasm_tests {
 
     #[test]
     fn wasm_ask_timeout_rejects_late_reply_after_blocking_tick() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
 
         unsafe {
             crate::scheduler_wasm::hew_sched_init();

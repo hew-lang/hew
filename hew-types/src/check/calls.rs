@@ -154,7 +154,6 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.check_against(expr, arg_span, &inner_ty);
                 }
-                self.record_concrete_call_type_args(span, std::slice::from_ref(&inner_ty));
                 let result_ty = Ty::option(self.subst.resolve(&inner_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
@@ -347,7 +346,6 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &t);
                 }
-                self.record_concrete_call_type_args(span, std::slice::from_ref(&t));
                 return Ty::option(t);
             }
             "None" => {

@@ -695,4 +695,4 @@ After `#805` merged (primitive alias unification), three worktrees (`resolved-re
 
 ## macOS CI reruns are a normal first step, not a last resort
 
-Several PRs in the #795–#806 range were blocked solely by flaky or first-run macOS CI failures on the codegen stack. In every case a plain rerun cleared the failure without any code change. Schedule the rerun immediately; do not treat it as evidence of a code regression until the rerun also fails.
+Several PRs in the #796–#806 recovered wave were blocked solely by flaky or first-run macOS CI failures on the codegen stack. In every case a plain rerun cleared the failure without any code change. Schedule the rerun immediately; do not treat it as evidence of a code regression until the rerun also fails.

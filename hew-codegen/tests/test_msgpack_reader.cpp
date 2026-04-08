@@ -141,8 +141,8 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   // Required top-level fields: schema_version, items, expr_types,
-  // method_call_receiver_kinds, handle_types, handle_type_repr
-  pk.pack_map(6 + extraCount);
+  // method_call_receiver_kinds, assign_target_kinds, handle_types, handle_type_repr
+  pk.pack_map(7 + extraCount);
   pk.pack(std::string("schema_version"));
   pk.pack(static_cast<uint64_t>(4));
   pk.pack(std::string("items"));
@@ -150,6 +150,8 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -223,7 +225,7 @@ static void test_drop_funcs_roundtrip() {
   // Build a minimal program payload that includes a drop_funcs array.
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(7); // 6 required + drop_funcs
+  pk.pack_map(8); // 7 required + drop_funcs
   pk.pack(std::string("schema_version"));
   pk.pack(static_cast<uint64_t>(4));
   pk.pack(std::string("items"));
@@ -231,6 +233,8 @@ static void test_drop_funcs_roundtrip() {
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -308,7 +312,7 @@ static void test_method_call_receiver_kinds_roundtrip() {
   TEST(method_call_receiver_kinds_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(6);
+  pk.pack_map(7);
   pk.pack(std::string("schema_version"));
   pk.pack(static_cast<uint64_t>(4));
   pk.pack(std::string("items"));
@@ -338,6 +342,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("trait_name"));
   pk.pack(std::string("Greeter"));
 
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
   pk.pack(std::string("handle_type_repr"));

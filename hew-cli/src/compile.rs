@@ -836,12 +836,16 @@ pub fn compile(
 
     // 6. Build codegen metadata and serialize
     let meta = build_codegen_metadata(&module_registry, input, &project.source, options);
+    let assign_target_kinds = tco.as_ref().map_or_else(Vec::new, |tco| {
+        hew_serialize::build_assign_target_kind_entries(&program, tco)
+    });
 
     if options.codegen_mode == CodegenMode::EmitJson {
         let json = hew_serialize::serialize_to_json(
             &program,
             expr_type_map,
             method_call_receiver_kinds,
+            assign_target_kinds,
             meta.handle_types,
             meta.handle_type_repr,
             meta.drop_funcs,
@@ -856,6 +860,7 @@ pub fn compile(
         &program,
         expr_type_map,
         method_call_receiver_kinds,
+        assign_target_kinds,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -958,12 +963,16 @@ pub(crate) fn compile_from_source_checked(
 
     // Stage 6 — build codegen metadata.
     let meta = build_codegen_metadata(&module_registry, source_label, source, options);
+    let assign_target_kinds = tco.as_ref().map_or_else(Vec::new, |tco| {
+        hew_serialize::build_assign_target_kind_entries(&program, tco)
+    });
 
     // Serialize to msgpack.
     let ast_data = hew_serialize::serialize_to_msgpack(
         &program,
         expr_type_map,
         method_call_receiver_kinds,
+        assign_target_kinds,
         meta.handle_types,
         meta.handle_type_repr,
         meta.drop_funcs,
@@ -1836,6 +1845,7 @@ mod tests {
     fn empty_tco() -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),

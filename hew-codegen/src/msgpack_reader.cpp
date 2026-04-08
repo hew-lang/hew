@@ -1732,6 +1732,27 @@ static ast::ModuleGraph parseModuleGraph(const msgpack::object &obj) {
 
 // ── Program (top-level) ─────────────────────────────────────────────────────
 
+static ast::AssignTargetKindData parseAssignTargetKindData(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "local_var")
+    return ast::AssignTargetKindLocalVar{};
+  if (kind == "actor_field")
+    return ast::AssignTargetKindActorField{};
+  if (kind == "field_access")
+    return ast::AssignTargetKindFieldAccess{};
+  if (kind == "index")
+    return ast::AssignTargetKindIndex{};
+  fail("unknown AssignTargetKindData variant: " + kind);
+}
+
+static ast::AssignTargetKindEntry parseAssignTargetKindEntry(const msgpack::object &obj) {
+  ast::AssignTargetKindEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.kind = parseAssignTargetKindData(mapReq(obj, "kind"));
+  return entry;
+}
+
 static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   ast::ExprTypeEntry entry;
   entry.start = getUint(mapReq(obj, "start"));
@@ -1783,6 +1804,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
   prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
+  prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
+      mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =

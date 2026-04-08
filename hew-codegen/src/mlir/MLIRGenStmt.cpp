@@ -1393,6 +1393,13 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
 
 void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   auto location = currentLoc;
+
+  // Look up the checker-assigned kind fail-closed: if the checker rejected
+  // this target no entry is present, and we must not proceed.
+  const auto *kindEntry = requireAssignTargetKindOf(stmt.target.span, "assignment", location);
+  if (!kindEntry)
+    return;
+
   auto coerceAssignedValue = [&](mlir::Value value, mlir::Type targetType) -> mlir::Value {
     bool isUnsigned = false;
     if (mlir::isa<mlir::IntegerType>(targetType))
@@ -1402,7 +1409,14 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   };
 
   // Handle field assignment: self.field = value (pointer-based)
-  if (auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.target.value.kind)) {
+  if (std::holds_alternative<ast::AssignTargetKindFieldAccess>(kindEntry->kind)) {
+    auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.target.value.kind);
+    if (!fa) {
+      ++errorCount_;
+      emitError(location)
+          << "assign_target_kinds says FieldAccess but target is not ExprFieldAccess";
+      return;
+    }
     auto operandVal = generateExpression(fa->object->value);
     if (!operandVal)
       return;
@@ -1512,7 +1526,13 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   }
 
   // Handle indexed assignment: v[i] = x
-  if (auto *idx = std::get_if<ast::ExprIndex>(&stmt.target.value.kind)) {
+  if (std::holds_alternative<ast::AssignTargetKindIndex>(kindEntry->kind)) {
+    auto *idx = std::get_if<ast::ExprIndex>(&stmt.target.value.kind);
+    if (!idx) {
+      ++errorCount_;
+      emitError(location) << "assign_target_kinds says Index but target is not ExprIndex";
+      return;
+    }
     auto collectionVal = generateExpression(idx->object->value);
     auto indexVal = generateExpression(idx->index->value);
     mlir::Value rhsVal = generateExpression(stmt.value.value);
@@ -1589,10 +1609,22 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     return;
   }
 
-  // Get the target variable name
+  // LocalVar or ActorField — both require an ExprIdentifier target.
   auto *targetIdent = std::get_if<ast::ExprIdentifier>(&stmt.target.value.kind);
   if (!targetIdent) {
-    emitError(location) << "only simple identifier targets supported for assignment";
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says Identifier but target is not ExprIdentifier";
+    return;
+  }
+
+  const bool expectsLocalVar =
+      std::holds_alternative<ast::AssignTargetKindLocalVar>(kindEntry->kind);
+  const bool expectsActorField =
+      std::holds_alternative<ast::AssignTargetKindActorField>(kindEntry->kind);
+  if (!expectsLocalVar && !expectsActorField) {
+    ++errorCount_;
+    emitError(location)
+        << "assign_target_kinds says non-identifier kind but target is ExprIdentifier";
     return;
   }
 
@@ -1602,10 +1634,18 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (!rhs)
     return;
 
-  // Check local variables first — mirrors the read path in MLIRGenExpr so that
-  // reads and writes target the same storage when a local shadows a field.
-  auto existingVar = lookupVariable(name);
-  if (existingVar) {
+  // The checker-owned assign_target_kinds metadata is authoritative for bare
+  // identifier assignments; do not fall through between local and actor-field
+  // storage based on runtime lookup alone.
+  if (expectsLocalVar) {
+    auto existingVar = lookupVariable(name);
+    if (!existingVar) {
+      ++errorCount_;
+      emitError(location) << "assign_target_kinds says LocalVar but no local binding named '"
+                          << name << "' is available for assignment";
+      return;
+    }
+
     // Assign to local variable
     if (stmt.op) {
       rhs = coerceAssignedValue(rhs, existingVar.getType());
@@ -1632,50 +1672,69 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     return;
   }
 
-  // Inside actor init/receive, bare field names (e.g. `handle = ...`) fall
-  // through to actor state fields via GEP into the actor state struct.
-  if (!currentActorName.empty()) {
-    auto selfVal = lookupVariable("self");
-    if (selfVal) {
-      auto actorIt = structTypes.find(currentActorName);
-      if (actorIt != structTypes.end()) {
-        auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorIt->second.mlirType);
-        if (structType) {
-          for (const auto &field : actorIt->second.fields) {
-            if (field.name == name) {
-              auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-              auto fieldPtr = mlir::LLVM::GEPOp::create(
-                  builder, location, ptrType, structType, selfVal,
-                  llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
-              if (stmt.op) {
-                auto current =
-                    mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
-                rhs = coerceAssignedValue(rhs, field.type);
-                bool isFloat = llvm::isa<mlir::FloatType>(field.type);
-                bool isUnsigned = false;
-                if (mlir::isa<mlir::IntegerType>(field.type))
-                  if (auto *ty = resolvedTypeOf(stmt.target.span))
-                    isUnsigned = isUnsignedTypeExpr(*ty);
-                rhs = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
-                if (!rhs)
-                  return;
-              }
-              rhs = coerceAssignedValue(rhs, field.type);
-              mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
-              // Ownership transfer: the RHS is now owned by the actor
-              // state.  Unregister any drop for the source variable so
-              // the handler exit doesn't free the actor's field.
-              if (auto *rhsIdent = std::get_if<ast::ExprIdentifier>(&stmt.value.value.kind))
-                unregisterDroppable(rhsIdent->name);
-              return;
-            }
-          }
-        }
+  if (currentActorName.empty()) {
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says ActorField but assignment is not inside an "
+                           "actor body";
+    return;
+  }
+
+  auto selfVal = lookupVariable("self");
+  if (!selfVal) {
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says ActorField but `self` is unavailable";
+    return;
+  }
+
+  auto actorIt = structTypes.find(currentActorName);
+  if (actorIt == structTypes.end()) {
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says ActorField but actor state type '"
+                        << currentActorName << "' is not registered";
+    return;
+  }
+
+  auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorIt->second.mlirType);
+  if (!structType) {
+    ++errorCount_;
+    emitError(location) << "assign_target_kinds says ActorField but actor state type '"
+                        << currentActorName << "' is not an LLVM struct";
+    return;
+  }
+
+  for (const auto &field : actorIt->second.fields) {
+    if (field.name == name) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto fieldPtr = mlir::LLVM::GEPOp::create(
+          builder, location, ptrType, structType, selfVal,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
+      if (stmt.op) {
+        auto current =
+            mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
+        rhs = coerceAssignedValue(rhs, field.type);
+        bool isFloat = llvm::isa<mlir::FloatType>(field.type);
+        bool isUnsigned = false;
+        if (mlir::isa<mlir::IntegerType>(field.type))
+          if (auto *ty = resolvedTypeOf(stmt.target.span))
+            isUnsigned = isUnsignedTypeExpr(*ty);
+        rhs = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
+        if (!rhs)
+          return;
       }
+      rhs = coerceAssignedValue(rhs, field.type);
+      mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
+      // Ownership transfer: the RHS is now owned by the actor
+      // state.  Unregister any drop for the source variable so
+      // the handler exit doesn't free the actor's field.
+      if (auto *rhsIdent = std::get_if<ast::ExprIdentifier>(&stmt.value.value.kind))
+        unregisterDroppable(rhsIdent->name);
+      return;
     }
   }
 
-  emitError(location) << "undefined variable '" << name << "' in assignment";
+  ++errorCount_;
+  emitError(location) << "assign_target_kinds says ActorField but no actor field named '" << name
+                      << "' exists on '" << currentActorName << "'";
 }
 
 void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {

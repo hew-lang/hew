@@ -155,6 +155,79 @@ fn use_greeter(g: dyn Greeter) -> String {
     );
 }
 
+#[test]
+fn assign_target_kinds_record_assignment_target_authority() {
+    let output = typecheck_inline(
+        r"
+type Boxed {
+    value: int;
+}
+
+fn mutate() {
+    var local = 0;
+    local = 1;
+
+    var boxed = Boxed { value: 0 };
+    boxed.value = 2;
+
+    var nums = [1, 2];
+    nums[0] = 3;
+}
+
+actor Counter {
+    let total: int;
+
+    receive fn set(v: int) {
+        total = v;
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.assign_target_kinds.len(),
+        4,
+        "expected four classified assignment targets, got: {:?}",
+        output.assign_target_kinds
+    );
+    assert!(
+        output
+            .assign_target_kinds
+            .values()
+            .any(|kind| *kind == hew_types::check::AssignTargetKind::LocalVar),
+        "expected local-variable assignment metadata, got: {:?}",
+        output.assign_target_kinds
+    );
+    assert!(
+        output
+            .assign_target_kinds
+            .values()
+            .any(|kind| *kind == hew_types::check::AssignTargetKind::ActorField),
+        "expected actor-field assignment metadata, got: {:?}",
+        output.assign_target_kinds
+    );
+    assert!(
+        output
+            .assign_target_kinds
+            .values()
+            .any(|kind| *kind == hew_types::check::AssignTargetKind::FieldAccess),
+        "expected field-access assignment metadata, got: {:?}",
+        output.assign_target_kinds
+    );
+    assert!(
+        output
+            .assign_target_kinds
+            .values()
+            .any(|kind| *kind == hew_types::check::AssignTargetKind::Index),
+        "expected indexed assignment metadata, got: {:?}",
+        output.assign_target_kinds
+    );
+}
+
 fn test_directory(dir: &Path, label: &str) {
     let mut parse_ok = 0;
     let mut parse_fail = 0;

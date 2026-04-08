@@ -199,6 +199,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
@@ -335,6 +336,7 @@ mod tests {
 
         let tc = TypeCheckOutput {
             expr_types,
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs,
@@ -395,6 +397,7 @@ mod tests {
 
         let tc = TypeCheckOutput {
             expr_types,
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs,

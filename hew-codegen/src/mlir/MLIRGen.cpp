@@ -760,6 +760,18 @@ MLIRGen::requireMethodCallReceiverKindOf(const ast::Span &span, llvm::StringRef 
   return nullptr;
 }
 
+const ast::AssignTargetKindEntry *
+MLIRGen::requireAssignTargetKindOf(const ast::Span &span, llvm::StringRef context,
+                                   std::optional<mlir::Location> errorLoc) {
+  if (const auto *kind = assignTargetKindOf(span))
+    return kind;
+
+  ++errorCount_;
+  emitError(errorLoc.value_or(currentLoc)) << "missing assign_target_kinds entry for " << context
+                                           << " at span [" << span.start << ", " << span.end << ")";
+  return nullptr;
+}
+
 // ============================================================================
 // Type coercion
 // ============================================================================
@@ -2425,6 +2437,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   }
   for (const auto &entry : program.method_call_receiver_kinds) {
     methodCallReceiverKindMap[{entry.start, entry.end}] = &entry;
+  }
+  for (const auto &entry : program.assign_target_kinds) {
+    assignTargetKindMap[{entry.start, entry.end}] = &entry;
   }
 
   // Populate handle type metadata from the Rust type checker.

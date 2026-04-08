@@ -8,6 +8,7 @@ pub use enrich::{
     EnrichProgramDiagnostics, ExprTypeMapBuild, TypeExprConversionError, TypeExprConversionKind,
 };
 pub use msgpack::{
-    build_method_call_receiver_kind_entries, serialize_to_json, serialize_to_msgpack,
-    ExprTypeEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
+    build_assign_target_kind_entries, build_method_call_receiver_kind_entries, serialize_to_json,
+    serialize_to_msgpack, AssignTargetKindData, AssignTargetKindEntry, ExprTypeEntry,
+    MethodCallReceiverKindData, MethodCallReceiverKindEntry,
 };

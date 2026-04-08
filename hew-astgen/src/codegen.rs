@@ -160,10 +160,14 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
     out.push_str(special_cases::module_graph_parser());
     out.push_str("\n\n");
 
-    // Program & ExprTypeEntry (special cases)
+    // Program metadata side-tables & Program (special cases)
     out.push_str(
         "// ── Program (top-level) ─────────────────────────────────────────────────────\n\n",
     );
+    out.push_str(special_cases::assign_target_kind_data_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::assign_target_kind_entry_parser());
+    out.push_str("\n\n");
     out.push_str(special_cases::expr_type_entry_parser());
     out.push_str("\n\n");
     out.push_str(special_cases::method_call_receiver_kind_entry_parser());

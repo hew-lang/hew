@@ -455,6 +455,7 @@ mod tests {
         );
         TypeCheckOutput {
             expr_types,
+            assign_target_kinds: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),

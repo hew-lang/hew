@@ -791,6 +791,211 @@ MLIRGen::requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef conte
   return nullptr;
 }
 
+std::optional<MLIRGen::StreamHandleInfo>
+MLIRGen::streamHandleInfoFromTypeExpr(const ast::TypeExpr &typeExpr) const {
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+  auto kind = typeExprStreamKind(typeExpr, resolveAliasExpr);
+  if (kind.empty())
+    return std::nullopt;
+  return StreamHandleInfo{kind, typeExprStreamElement(typeExpr, resolveAliasExpr)};
+}
+
+const MLIRGen::StreamHandleInfo *
+MLIRGen::lookupTrackedStreamHandleInfo(llvm::StringRef name) const {
+  if (auto bindingIdentity = const_cast<MLIRGen *>(this)->resolveCurrentBindingIdentity(name)) {
+    auto bindingIt = streamHandleBindingTypes.find(bindingIdentity);
+    return bindingIt == streamHandleBindingTypes.end() ? nullptr : &bindingIt->second;
+  }
+
+  auto it = streamHandleVarTypes.find(name.str());
+  return it == streamHandleVarTypes.end() ? nullptr : &it->second;
+}
+
+void MLIRGen::rememberTrackedStreamHandleInfo(const std::string &name,
+                                              const StreamHandleInfo &info) {
+  if (!info.isTracked())
+    return;
+
+  auto mergeInto = [](StreamHandleInfo &dst, const StreamHandleInfo &src) {
+    if (dst.kind.empty())
+      dst.kind = src.kind;
+    if (dst.kind == src.kind && dst.elementType.empty() && !src.elementType.empty())
+      dst.elementType = src.elementType;
+  };
+
+  if (auto bindingIdentity = resolveCurrentBindingIdentity(name)) {
+    auto [bindingIt, inserted] = streamHandleBindingTypes.try_emplace(bindingIdentity, info);
+    if (!inserted)
+      mergeInto(bindingIt->second, info);
+    return;
+  }
+
+  auto [it, inserted] = streamHandleVarTypes.try_emplace(name, info);
+  if (!inserted)
+    mergeInto(it->second, info);
+}
+
+std::optional<MLIRGen::StreamHandleInfo>
+MLIRGen::resolveKnownCallStreamHandleInfo(const ast::ExprCall &call) const {
+  if (!call.function)
+    return std::nullopt;
+
+  auto *calleeIdent = std::get_if<ast::ExprIdentifier>(&call.function->value.kind);
+  if (!calleeIdent)
+    return std::nullopt;
+
+  auto preserveArg0StreamInfo = [&]() -> std::optional<StreamHandleInfo> {
+    if (call.args.empty())
+      return StreamHandleInfo{"Stream", ""};
+    const auto &argExpr = ast::callArgExpr(call.args[0]);
+    auto streamInfo = resolveStreamHandleInfo(argExpr.value, &argExpr.span);
+    if (!streamInfo || streamInfo->kind != "Stream")
+      return StreamHandleInfo{"Stream", ""};
+    return StreamHandleInfo{"Stream", streamInfo->elementType};
+  };
+
+  if (calleeIdent->name == "hew_stream_channel")
+    return StreamHandleInfo{"Pair", ""};
+  if (calleeIdent->name == "hew_stream_pair_sink")
+    return StreamHandleInfo{"Sink", "string"};
+  if (calleeIdent->name == "hew_stream_pair_stream")
+    return StreamHandleInfo{"Stream", "string"};
+  if (calleeIdent->name == "hew_stream_pair_sink_bytes")
+    return StreamHandleInfo{"Sink", "bytes"};
+  if (calleeIdent->name == "hew_stream_pair_stream_bytes")
+    return StreamHandleInfo{"Stream", "bytes"};
+  if (calleeIdent->name == "hew_stream_from_file_read" || calleeIdent->name == "hew_stream_lines" ||
+      calleeIdent->name == "hew_stream_chunks" || calleeIdent->name == "hew_stream_map_string" ||
+      calleeIdent->name == "hew_stream_filter_string")
+    return StreamHandleInfo{"Stream", "string"};
+  if (calleeIdent->name == "hew_stream_map_bytes" || calleeIdent->name == "hew_stream_filter_bytes")
+    return StreamHandleInfo{"Stream", "bytes"};
+  if (calleeIdent->name == "hew_stream_take")
+    return preserveArg0StreamInfo();
+  if (calleeIdent->name == "hew_stream_from_file_write" ||
+      calleeIdent->name == "hew_http_respond_stream")
+    return StreamHandleInfo{"Sink", "string"};
+
+  return std::nullopt;
+}
+
+std::optional<MLIRGen::StreamHandleInfo>
+MLIRGen::resolveChainedStreamHandleInfo(const ast::ExprMethodCall &methodCall) const {
+  if (!methodCall.receiver)
+    return std::nullopt;
+
+  auto receiverInfo =
+      resolveStreamHandleInfo(methodCall.receiver->value, &methodCall.receiver->span);
+  if (!receiverInfo || receiverInfo->kind != "Stream")
+    return std::nullopt;
+
+  if (methodCall.method == "map" || methodCall.method == "filter" || methodCall.method == "take")
+    return StreamHandleInfo{"Stream", receiverInfo->elementType};
+  if (methodCall.method == "lines" || methodCall.method == "chunks")
+    return StreamHandleInfo{"Stream", "string"};
+
+  return std::nullopt;
+}
+
+std::optional<MLIRGen::StreamHandleInfo>
+MLIRGen::resolveStreamHandleInfo(const ast::Expr &expr, const ast::Span *span) const {
+  auto mergeInfo = [](std::optional<StreamHandleInfo> primary,
+                      std::optional<StreamHandleInfo> fallback) -> std::optional<StreamHandleInfo> {
+    if (!primary)
+      return fallback;
+    if (!fallback)
+      return primary;
+    if (primary->kind.empty())
+      return fallback;
+    if (primary->kind == fallback->kind && primary->elementType.empty() &&
+        !fallback->elementType.empty())
+      primary->elementType = fallback->elementType;
+    return primary;
+  };
+
+  std::optional<StreamHandleInfo> resolvedInfo;
+  if (span) {
+    if (const auto *resolvedType = resolvedTypeOf(*span))
+      resolvedInfo = streamHandleInfoFromTypeExpr(*resolvedType);
+  }
+
+  if (auto *methodCall = std::get_if<ast::ExprMethodCall>(&expr.kind)) {
+    auto chainedInfo = resolveChainedStreamHandleInfo(*methodCall);
+    if (!chainedInfo)
+      return std::nullopt;
+    return mergeInfo(std::move(resolvedInfo), std::move(chainedInfo));
+  }
+
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+    if (const auto *trackedInfo = lookupTrackedStreamHandleInfo(ident->name))
+      return mergeInfo(std::move(resolvedInfo), *trackedInfo);
+    return resolvedInfo;
+  }
+
+  if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
+    return mergeInfo(std::move(resolvedInfo), resolveKnownCallStreamHandleInfo(*call));
+
+  return resolvedInfo;
+}
+
+std::vector<MLIRGen::StreamHandleInfo>
+MLIRGen::resolveTuplePatternStreamHandleInfos(const ast::StmtLet &stmt) const {
+  auto *tuplePattern = std::get_if<ast::PatTuple>(&stmt.pattern.value.kind);
+  if (!tuplePattern)
+    return {};
+
+  std::vector<StreamHandleInfo> infos(tuplePattern->elements.size());
+  auto mergeSlot = [](StreamHandleInfo &dst, const StreamHandleInfo &src, bool overwrite) {
+    if (overwrite || dst.kind.empty())
+      dst.kind = src.kind;
+    if (overwrite || dst.elementType.empty())
+      dst.elementType = src.elementType;
+  };
+  auto populateFromTupleType = [&](const ast::TypeExpr &typeExpr, bool overwrite) -> bool {
+    auto *tupleType = std::get_if<ast::TypeTuple>(&typeExpr.kind);
+    if (!tupleType)
+      return false;
+
+    for (size_t i = 0; i < tuplePattern->elements.size() && i < tupleType->elements.size(); ++i) {
+      if (auto streamInfo = streamHandleInfoFromTypeExpr(tupleType->elements[i].value))
+        mergeSlot(infos[i], *streamInfo, overwrite);
+    }
+    return true;
+  };
+  auto populateFromKnownProducer = [&](const ast::Expr &expr, bool overwrite) -> bool {
+    auto *methodCall = std::get_if<ast::ExprMethodCall>(&expr.kind);
+    if (!methodCall || !methodCall->receiver || infos.size() < 2)
+      return false;
+    auto *receiverIdent = std::get_if<ast::ExprIdentifier>(&methodCall->receiver->value.kind);
+    if (!receiverIdent || receiverIdent->name != "stream")
+      return false;
+
+    if (methodCall->method == "pipe") {
+      mergeSlot(infos[0], StreamHandleInfo{"Sink", "string"}, overwrite);
+      mergeSlot(infos[1], StreamHandleInfo{"Stream", "string"}, overwrite);
+      return true;
+    }
+    if (methodCall->method == "bytes_pipe") {
+      mergeSlot(infos[0], StreamHandleInfo{"Sink", "bytes"}, overwrite);
+      mergeSlot(infos[1], StreamHandleInfo{"Stream", "bytes"}, overwrite);
+      return true;
+    }
+    return false;
+  };
+
+  if (stmt.ty && populateFromTupleType(stmt.ty->value, /*overwrite=*/true))
+    return infos;
+
+  if (stmt.value) {
+    populateFromKnownProducer(stmt.value->value, /*overwrite=*/true);
+
+    if (const auto *resolvedType = resolvedTypeOf(stmt.value->span))
+      populateFromTupleType(*resolvedType, /*overwrite=*/false);
+  }
+
+  return infos;
+}
+
 // ============================================================================
 // Type coercion
 // ============================================================================
@@ -4405,6 +4610,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))
         annotatedHandleTypes[bindingIdentity] = &param.ty.value;
     }
+    if (auto streamInfo = streamHandleInfoFromTypeExpr(param.ty.value))
+      rememberTrackedStreamHandleInfo(param.name, *streamInfo);
     ++paramIdx;
   }
 
@@ -4606,6 +4813,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
         if (auto bindingIdentity = resolveCurrentBindingIdentity(paramName))
           annotatedHandleTypes[bindingIdentity] = &paramTy;
       }
+      if (auto streamInfo = streamHandleInfoFromTypeExpr(paramTy))
+        rememberTrackedStreamHandleInfo(paramName, *streamInfo);
       auto actorName = typeExprToActorName(paramTy, resolveAliasExpr);
       if (!actorName.empty() && actorRegistry.count(actorName))
         actorVarTypes[paramName] = actorName;
@@ -5082,6 +5291,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
         if (auto bindingIdentity = resolveCurrentBindingIdentity(param.name))
           annotatedHandleTypes[bindingIdentity] = &param.ty.value;
       }
+      if (auto streamInfo = streamHandleInfoFromTypeExpr(param.ty.value))
+        rememberTrackedStreamHandleInfo(param.name, *streamInfo);
       ++paramIdx;
     }
 

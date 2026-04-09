@@ -724,6 +724,30 @@ static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast
   return program.expr_types.size() != oldSize;
 }
 
+static bool replaceStreamElementExprTypeForSpan(hew::ast::Program &program,
+                                                const hew::ast::Span &span,
+                                                llvm::StringRef elementTypeName) {
+  bool replacedAny = false;
+  for (auto &entry : program.expr_types) {
+    if (entry.start != span.start || entry.end != span.end)
+      continue;
+
+    auto *streamType = std::get_if<hew::ast::TypeNamed>(&entry.ty.value.kind);
+    if (!streamType || !streamType->type_args || streamType->type_args->size() != 1)
+      continue;
+
+    auto *elementType =
+        std::get_if<hew::ast::TypeNamed>(&streamType->type_args->front().value.kind);
+    if (!elementType)
+      continue;
+
+    elementType->name = elementTypeName.str();
+    elementType->type_args = std::nullopt;
+    replacedAny = true;
+  }
+  return replacedAny;
+}
+
 static bool eraseMethodCallReceiverKindEntryForSpan(hew::ast::Program &program,
                                                     const hew::ast::Span &span) {
   auto oldSize = program.method_call_receiver_kinds.size();
@@ -4061,6 +4085,375 @@ fn drain(rx: channel.Receiver<String>) {
     return;
   }
 
+  PASS();
+}
+
+// ============================================================================
+// Test: bytes-stream let/var fallback preserves bytes ABI without expr_types
+// ============================================================================
+static void test_for_await_bytes_stream_binding_fallback_uses_bytes_abi() {
+  TEST(for_await_bytes_stream_binding_fallback_uses_bytes_abi);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::stream;
+
+fn main() -> int {
+    let (sink, input) = stream.bytes_pipe(8);
+    let alias = input;
+    var mapped = alias.map((b) => { b });
+    for await item in mapped {
+        return item.len();
+    }
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed bytes-stream binding fallback program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  auto *forStmt = fn ? findFirstForStmt(*fn) : nullptr;
+  if (!fn || !forStmt) {
+    FAIL("main or for-await statement missing in bytes-stream binding fallback test");
+    return;
+  }
+
+  auto findLetByName = [](hew::ast::FnDecl &fn, llvm::StringRef name) -> hew::ast::StmtLet * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *letStmt = std::get_if<hew::ast::StmtLet>(&stmt->value.kind);
+      if (!letStmt)
+        continue;
+      auto *ident = std::get_if<hew::ast::PatIdentifier>(&letStmt->pattern.value.kind);
+      if (ident && ident->name == name)
+        return letStmt;
+    }
+    return nullptr;
+  };
+  auto findVarByName = [](hew::ast::FnDecl &fn, llvm::StringRef name) -> hew::ast::StmtVar * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *varStmt = std::get_if<hew::ast::StmtVar>(&stmt->value.kind);
+      if (varStmt && varStmt->name == name)
+        return varStmt;
+    }
+    return nullptr;
+  };
+
+  auto *aliasLet = findLetByName(*fn, "alias");
+  auto *mappedVar = findVarByName(*fn, "mapped");
+  if (!aliasLet || !aliasLet->value || !mappedVar || !mappedVar->value) {
+    FAIL("expected alias let and mapped var in bytes-stream binding fallback test");
+    return;
+  }
+
+  auto *mapCall = std::get_if<hew::ast::ExprMethodCall>(&mappedVar->value->value.kind);
+  if (!mapCall || mapCall->method != "map" || !mapCall->receiver) {
+    FAIL("expected mapped var initializer to be alias.map(...)");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, aliasLet->value->span)) {
+    FAIL("failed to remove expr_types entry for alias binding input");
+    return;
+  }
+  if (!eraseExprTypeEntryForSpan(program, mapCall->receiver->span)) {
+    FAIL("failed to remove expr_types entry for map receiver alias");
+    return;
+  }
+  if (!eraseExprTypeEntryForSpan(program, forStmt->iterable.span)) {
+    FAIL("failed to remove expr_types entry for mapped iterable");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+  if (!module) {
+    FAIL("expected MLIR generation success for bytes-stream binding fallback");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found in bytes-stream binding fallback test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_map_bytes") != 1) {
+    FAIL("expected bytes-stream map fallback to lower to hew_stream_map_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_map_string") != 0) {
+    FAIL("unexpected string-stream map runtime call in bytes-stream binding fallback");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next_bytes") != 1) {
+    FAIL("expected bytes-stream iteration fallback to lower to hew_stream_next_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next") != 0) {
+    FAIL("unexpected string-stream next runtime call in bytes-stream binding fallback");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countDropOpsByDropFn(mainFn.getOperation(), "hew_vec_free", false) < 1) {
+    FAIL("expected bytes-stream iteration fallback to register hew_vec_free");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: bytes fallback beats conflicting string expr_types during alias tracking
+// ============================================================================
+static void test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type() {
+  TEST(for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::stream;
+
+fn main() -> int {
+    let (sink, input) = stream.bytes_pipe(8);
+    let alias = input;
+    var mapped = alias.map((b) => { b });
+    for await item in mapped {
+        return item.len();
+    }
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed bytes-stream conflicting expr_types program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  auto *forStmt = fn ? findFirstForStmt(*fn) : nullptr;
+  if (!fn || !forStmt) {
+    FAIL("main or for-await statement missing in conflicting expr_types test");
+    return;
+  }
+
+  auto findLetByName = [](hew::ast::FnDecl &fn, llvm::StringRef name) -> hew::ast::StmtLet * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *letStmt = std::get_if<hew::ast::StmtLet>(&stmt->value.kind);
+      if (!letStmt)
+        continue;
+      auto *ident = std::get_if<hew::ast::PatIdentifier>(&letStmt->pattern.value.kind);
+      if (ident && ident->name == name)
+        return letStmt;
+    }
+    return nullptr;
+  };
+  auto findVarByName = [](hew::ast::FnDecl &fn, llvm::StringRef name) -> hew::ast::StmtVar * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *varStmt = std::get_if<hew::ast::StmtVar>(&stmt->value.kind);
+      if (varStmt && varStmt->name == name)
+        return varStmt;
+    }
+    return nullptr;
+  };
+
+  auto *aliasLet = findLetByName(*fn, "alias");
+  auto *mappedVar = findVarByName(*fn, "mapped");
+  if (!aliasLet || !aliasLet->value || !mappedVar || !mappedVar->value) {
+    FAIL("expected alias let and mapped var in conflicting expr_types test");
+    return;
+  }
+
+  auto *mapCall = std::get_if<hew::ast::ExprMethodCall>(&mappedVar->value->value.kind);
+  if (!mapCall || mapCall->method != "map" || !mapCall->receiver) {
+    FAIL("expected mapped var initializer to be alias.map(...)");
+    return;
+  }
+
+  if (!replaceStreamElementExprTypeForSpan(program, aliasLet->value->span, "string")) {
+    FAIL("failed to replace expr_types entry for alias binding input with Stream<string>");
+    return;
+  }
+  size_t rewrittenAliasExprTypeCount = 0;
+  for (const auto &entry : program.expr_types) {
+    if (entry.start != aliasLet->value->span.start || entry.end != aliasLet->value->span.end)
+      continue;
+    auto *streamType = std::get_if<hew::ast::TypeNamed>(&entry.ty.value.kind);
+    auto *elementType =
+        streamType && streamType->type_args && streamType->type_args->size() == 1
+            ? std::get_if<hew::ast::TypeNamed>(&streamType->type_args->front().value.kind)
+            : nullptr;
+    if (!elementType || elementType->name != "string") {
+      FAIL("expected all alias binding expr_types entries to be rewritten to Stream<string>");
+      return;
+    }
+    ++rewrittenAliasExprTypeCount;
+  }
+  if (rewrittenAliasExprTypeCount == 0) {
+    FAIL("expected at least one rewritten expr_types entry for alias binding input");
+    return;
+  }
+  if (!eraseExprTypeEntryForSpan(program, mapCall->receiver->span)) {
+    FAIL("failed to remove expr_types entry for map receiver alias");
+    return;
+  }
+  if (!eraseExprTypeEntryForSpan(program, forStmt->iterable.span)) {
+    FAIL("failed to remove expr_types entry for mapped iterable");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+  if (!module) {
+    FAIL("expected MLIR generation success for conflicting expr_types fallback");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found in conflicting expr_types fallback test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_map_bytes") != 1) {
+    FAIL("expected recovered bytes fallback to lower map to hew_stream_map_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_map_string") != 0) {
+    FAIL("unexpected string-stream map runtime call after conflicting expr_types rewrite");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next_bytes") != 1) {
+    FAIL("expected recovered bytes fallback to lower iteration to hew_stream_next_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next") != 0) {
+    FAIL("unexpected string-stream next runtime call after conflicting expr_types rewrite");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countDropOpsByDropFn(mainFn.getOperation(), "hew_vec_free", false) < 1) {
+    FAIL("expected recovered bytes fallback to register hew_vec_free");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: inline bytes-stream filter fallback preserves bytes ABI without expr_types
+// ============================================================================
+static void test_for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi() {
+  TEST(for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::stream;
+
+fn main() -> int {
+    let (sink, input) = stream.bytes_pipe(8);
+    for await item in input.filter((b) => b.len() > 0) {
+        return item.len();
+    }
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed bytes-stream inline filter fallback program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  auto *forStmt = fn ? findFirstForStmt(*fn) : nullptr;
+  if (!fn || !forStmt) {
+    FAIL("main or for-await statement missing in bytes-stream inline filter fallback test");
+    return;
+  }
+
+  auto *filterCall = std::get_if<hew::ast::ExprMethodCall>(&forStmt->iterable.value.kind);
+  if (!filterCall || filterCall->method != "filter" || !filterCall->receiver) {
+    FAIL("expected iterable to be input.filter(...)");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, filterCall->receiver->span)) {
+    FAIL("failed to remove expr_types entry for filter receiver input");
+    return;
+  }
+  if (!eraseExprTypeEntryForSpan(program, forStmt->iterable.span)) {
+    FAIL("failed to remove expr_types entry for inline filter iterable");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+  if (!module) {
+    FAIL("expected MLIR generation success for bytes-stream inline filter fallback");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found in bytes-stream inline filter fallback test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int filterBytesCount =
+      countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_filter_bytes");
+  int filterStringCount =
+      countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_filter_string");
+  int nextBytesCount = countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next_bytes");
+  int nextStringCount = countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next");
+  int vecFreeCount = countDropOpsByDropFn(mainFn.getOperation(), "hew_vec_free", false);
+
+  if (filterBytesCount != 1) {
+    FAIL("expected bytes-stream filter fallback to lower to hew_stream_filter_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (filterStringCount != 0) {
+    FAIL("unexpected string-stream filter runtime call in bytes-stream inline filter fallback");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (nextBytesCount != 1) {
+    FAIL("expected bytes-stream inline filter iteration to lower to hew_stream_next_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (nextStringCount != 0) {
+    FAIL("unexpected string-stream next runtime call in bytes-stream inline filter fallback");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (vecFreeCount < 1) {
+    FAIL("expected bytes-stream inline filter fallback to register hew_vec_free");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
   PASS();
 }
 
@@ -7631,6 +8024,9 @@ int main() {
   test_println_int_missing_expr_type_fails_closed();
   test_int_to_string_missing_expr_type_fails_closed();
   test_for_await_receiver_missing_elem_type_fails_closed();
+  test_for_await_bytes_stream_binding_fallback_uses_bytes_abi();
+  test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type();
+  test_for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi();
   test_return_stmt();
   test_logical_ops();
   test_unary_ops();

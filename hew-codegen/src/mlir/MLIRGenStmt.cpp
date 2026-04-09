@@ -769,30 +769,12 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 
     // ── Track first-class Stream<T> / Sink<T> variables ─────────────────
     if (stmt.ty) {
-      auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
-      auto streamStr = typeExprStreamKind(stmt.ty->value, resolveAliasExpr);
-      if (!streamStr.empty())
-        streamHandleVarTypes[varName] = streamStr;
+      if (auto streamInfo = streamHandleInfoFromTypeExpr(stmt.ty->value))
+        rememberTrackedStreamHandleInfo(varName, *streamInfo);
     }
-    // Stream channel returns a Pair (not Stream or Sink)
     if (stmt.value) {
-      if (auto *ce = std::get_if<ast::ExprCall>(&stmt.value->value.kind)) {
-        if (ce->function) {
-          if (auto *fi = std::get_if<ast::ExprIdentifier>(&ce->function->value.kind)) {
-            if (fi->name == "hew_stream_channel")
-              streamHandleVarTypes[varName] = "Pair";
-            else if (fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_lines" ||
-                     fi->name == "hew_stream_pair_stream" || fi->name == "hew_stream_chunks" ||
-                     fi->name == "hew_stream_map_string" ||
-                     fi->name == "hew_stream_filter_string" || fi->name == "hew_stream_take")
-              streamHandleVarTypes[varName] = "Stream";
-            else if (fi->name == "hew_stream_pair_sink" ||
-                     fi->name == "hew_stream_from_file_write" ||
-                     fi->name == "hew_http_respond_stream")
-              streamHandleVarTypes[varName] = "Sink";
-          }
-        }
-      }
+      if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value, &stmt.value->span))
+        rememberTrackedStreamHandleInfo(varName, *streamInfo);
     }
     // Track MPSC channel handle variables so the codegen uses ptr not struct.
     if (stmt.value) {
@@ -816,48 +798,40 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     bindTuplePatternFields(*tuplePat, value, location);
 
     // ── Track + RAII auto-close for destructured Stream/Sink tuple elements ──
-    // When `let (sink, input): (Sink<T>, Stream<T>) = stream.pipe(N)`,
-    // the tuple type annotation tells us which elements are Stream/Sink.
-    if (stmt.ty) {
-      if (auto *tupleType = std::get_if<ast::TypeTuple>(&stmt.ty->value.kind)) {
-        auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
-        for (size_t i = 0; i < tupleType->elements.size() && i < tuplePat->elements.size(); ++i) {
-          auto *elemIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[i]->value.kind);
-          if (!elemIdent)
-            continue;
-          auto elemStream = typeExprStreamKind(tupleType->elements[i].value, resolveAliasExpr);
-          if (elemStream.empty())
-            continue;
-          streamHandleVarTypes[elemIdent->name] = elemStream;
-          // Register RAII auto-close
-          std::string closeFn;
-          if (elemStream == "Stream")
-            closeFn = "hew_stream_close";
-          else if (elemStream == "Sink")
-            closeFn = "hew_sink_close";
-          else if (elemStream == "Pair")
-            closeFn = "hew_stream_pair_free";
-          if (!closeFn.empty()) {
-            auto elemVal = lookupVariable(elemIdent->name);
-            if (elemVal) {
-              auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-              mlir::Value closeValue = elemVal;
-              if (!mlir::isa<mlir::LLVM::LLVMPointerType>(closeValue.getType()))
-                closeValue = hew::BitcastOp::create(builder, location, ptrType, closeValue);
-              auto allocaType = mlir::MemRefType::get({}, ptrType);
-              auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
-              mlir::memref::StoreOp::create(builder, location, closeValue, closeAlloca,
-                                            mlir::ValueRange{});
-              if (!dropScopes.empty()) {
-                DropEntry entry;
-                entry.varName = elemIdent->name;
-                entry.dropFuncName = closeFn;
-                entry.closeAlloca = closeAlloca;
-                entry.bindingIdentity = resolveCurrentBindingIdentity(elemIdent->name);
-                maybeRecordFunctionDropExclusion(elemIdent->name, entry.bindingIdentity);
-                dropScopes.back().push_back(std::move(entry));
-              }
-            }
+    auto tupleStreamInfos = resolveTuplePatternStreamHandleInfos(stmt);
+    for (size_t i = 0; i < tupleStreamInfos.size() && i < tuplePat->elements.size(); ++i) {
+      auto *elemIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[i]->value.kind);
+      if (!elemIdent || !tupleStreamInfos[i].isTracked())
+        continue;
+
+      rememberTrackedStreamHandleInfo(elemIdent->name, tupleStreamInfos[i]);
+
+      std::string closeFn;
+      if (tupleStreamInfos[i].kind == "Stream")
+        closeFn = "hew_stream_close";
+      else if (tupleStreamInfos[i].kind == "Sink")
+        closeFn = "hew_sink_close";
+      else if (tupleStreamInfos[i].kind == "Pair")
+        closeFn = "hew_stream_pair_free";
+      if (!closeFn.empty()) {
+        auto elemVal = lookupVariable(elemIdent->name);
+        if (elemVal) {
+          auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+          mlir::Value closeValue = elemVal;
+          if (!mlir::isa<mlir::LLVM::LLVMPointerType>(closeValue.getType()))
+            closeValue = hew::BitcastOp::create(builder, location, ptrType, closeValue);
+          auto allocaType = mlir::MemRefType::get({}, ptrType);
+          auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
+          mlir::memref::StoreOp::create(builder, location, closeValue, closeAlloca,
+                                        mlir::ValueRange{});
+          if (!dropScopes.empty()) {
+            DropEntry entry;
+            entry.varName = elemIdent->name;
+            entry.dropFuncName = closeFn;
+            entry.closeAlloca = closeAlloca;
+            entry.bindingIdentity = resolveCurrentBindingIdentity(elemIdent->name);
+            maybeRecordFunctionDropExclusion(elemIdent->name, entry.bindingIdentity);
+            dropScopes.back().push_back(std::move(entry));
           }
         }
       }
@@ -922,10 +896,12 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   // ── Track first-class Stream<T> / Sink<T> for var statements ────────────
   if (stmt.ty) {
-    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
-    auto streamStr = typeExprStreamKind(stmt.ty->value, resolveAliasExpr);
-    if (!streamStr.empty())
-      streamHandleVarTypes[varNameStr] = streamStr;
+    if (auto streamInfo = streamHandleInfoFromTypeExpr(stmt.ty->value))
+      rememberTrackedStreamHandleInfo(varNameStr, *streamInfo);
+  }
+  if (stmt.value) {
+    if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value, &stmt.value->span))
+      rememberTrackedStreamHandleInfo(varNameStr, *streamInfo);
   }
 
   // ── Drop registration (shared with generateLetStmt) ──────────────
@@ -944,36 +920,16 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
 
   // ── RAII auto-close for Stream/Sink handles ──────────────────────────
   {
-    auto sit = streamHandleVarTypes.find(varName);
-    // Detect stream pipeline method calls (.filter, .map, .take, .chunks)
-    // which create new Box<HewStream> handles not tracked by streamHandleVarTypes.
-    bool isStreamPipelineResult = false;
-    if (sit == streamHandleVarTypes.end() && stmtValue && *stmtValue) {
-      if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind)) {
-        if (mc->method == "filter" || mc->method == "map" || mc->method == "take" ||
-            mc->method == "chunks") {
-          if (mc->receiver) {
-            if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
-              auto recvSit = streamHandleVarTypes.find(recvId->name);
-              if (recvSit != streamHandleVarTypes.end() && recvSit->second == "Stream")
-                isStreamPipelineResult = true;
-            }
-            if (!isStreamPipelineResult) {
-              if (auto *typeExpr = resolvedTypeOf(mc->receiver->span))
-                isStreamPipelineResult = typeExprStreamKind(*typeExpr) == "Stream";
-            }
-          }
-        }
+    auto *streamInfo = lookupTrackedStreamHandleInfo(varName);
+    if (!streamInfo && stmtValue && *stmtValue) {
+      if (auto inferredInfo = resolveStreamHandleInfo((*stmtValue)->value, &(*stmtValue)->span)) {
+        rememberTrackedStreamHandleInfo(varName, *inferredInfo);
+        streamInfo = lookupTrackedStreamHandleInfo(varName);
       }
     }
-    if (isStreamPipelineResult) {
-      streamHandleVarTypes[varName] = "Stream";
-    }
-    if ((sit != streamHandleVarTypes.end() || isStreamPipelineResult) && value) {
+    if (streamInfo && value) {
       std::string closeFn;
-      std::string kind = isStreamPipelineResult
-                             ? "Stream"
-                             : (sit != streamHandleVarTypes.end() ? sit->second : "");
+      std::string kind = streamInfo->kind;
       if (kind == "Stream")
         closeFn = "hew_stream_close";
       else if (kind == "Sink")
@@ -1145,7 +1101,7 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
         if (isRcCtor || isCloneCall)
           registerDroppable(varName, "hew_rc_drop");
       } else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
-                 !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
+                 !handleVarTypes.count(varName) && !lookupTrackedStreamHandleInfo(varName)) {
         bool isBorrowed = isBorrowedGetString;
         if (stmtValue && *stmtValue) {
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
@@ -1163,7 +1119,7 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
 
   // ── Runtime string drop by value type ──────────────────────────────
   if (value && mlir::isa<hew::StringRefType>(value.getType())) {
-    bool isHandle = handleVarTypes.count(varName) || streamHandleVarTypes.count(varName);
+    bool isHandle = handleVarTypes.count(varName) || lookupTrackedStreamHandleInfo(varName);
 
     bool alreadyRegistered = false;
     if (!dropScopes.empty()) {
@@ -2171,8 +2127,8 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   // "bytes" → hew_stream_next_bytes / hew_vec_free
   // anything else (default) → hew_stream_next / hew_string_drop
   bool isBytesStream = false;
-  if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
-    isBytesStream = typeExprStreamElement(*typeExpr) == "bytes";
+  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value, &stmt.iterable.span))
+    isBytesStream = streamInfo->isBytesStream();
 
   std::string nextFn = isBytesStream ? "hew_stream_next_bytes" : "hew_stream_next";
   std::string dropFn = isBytesStream ? "hew_vec_free" : "hew_string_drop";
@@ -2582,59 +2538,14 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   auto i8Type = builder.getI8Type();
   auto i1Type = builder.getI1Type();
 
-  // Fast path: if the iterable is a first-class Stream<T> variable, delegate.
-  // NOTE: ExprMethodCall on actors is intentionally excluded — those use mailbox iteration.
-  if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
-    bool isStreamVar = false;
-    // Prefer resolved type from the type checker
-    if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
-      isStreamVar = typeExprStreamKind(*typeExpr) == "Stream";
-    // Fall back to map lookup
-    if (!isStreamVar) {
-      auto sit = streamHandleVarTypes.find(identExpr->name);
-      isStreamVar = (sit != streamHandleVarTypes.end() && sit->second == "Stream");
-    }
-    if (isStreamVar) {
+  // First-class streams can arrive from checker metadata, tracked bindings,
+  // or known stream-producing/chaining expressions. Method calls only count
+  // here when the receiver is already a stream; actor receive-gen methods
+  // intentionally fall through to the mailbox path below.
+  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value, &stmt.iterable.span)) {
+    if (streamInfo->kind == "Stream") {
       generateForStreamStmt(stmt);
       return;
-    }
-  }
-
-  // Check resolved type for any iterable expression.  Method calls that
-  // return Stream<T> (e.g. stream.filter(f), stream.map(f)) use the stream
-  // iteration path.  Actor receive-gen methods also resolve to Stream<T>,
-  // so for ExprMethodCall we must check the RECEIVER type: if it is already
-  // Stream<T>, the method is a stream combinator; if it is ActorRef<T>,
-  // it falls through to the mailbox iteration path below.
-  if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.iterable.value.kind)) {
-    if (mc->receiver) {
-      if (auto *recvType = resolvedTypeOf(mc->receiver->span)) {
-        if (typeExprStreamKind(*recvType) == "Stream") {
-          generateForStreamStmt(stmt);
-          return;
-        }
-      }
-    }
-  } else {
-    if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
-      if (typeExprStreamKind(*typeExpr) == "Stream") {
-        generateForStreamStmt(stmt);
-        return;
-      }
-    }
-    // Fall back to recognizing stream-returning C function calls by name.
-    if (auto *ce = std::get_if<ast::ExprCall>(&stmt.iterable.value.kind)) {
-      if (ce->function) {
-        if (auto *fi = std::get_if<ast::ExprIdentifier>(&ce->function->value.kind)) {
-          if (fi->name == "hew_stream_lines" || fi->name == "hew_stream_chunks" ||
-              fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_pair_stream" ||
-              fi->name == "hew_stream_map_string" || fi->name == "hew_stream_filter_string" ||
-              fi->name == "hew_stream_take") {
-            generateForStreamStmt(stmt);
-            return;
-          }
-        }
-      }
     }
   }
 

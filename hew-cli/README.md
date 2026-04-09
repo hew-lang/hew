@@ -264,7 +264,7 @@ hew test tests/ --no-color               # disable coloured output
 |---|---|---|
 | `--filter <pattern>` | — | Run only tests whose name contains `pattern` |
 | `--format text\|junit` | `text` | Human-readable output or JUnit XML |
-| `--timeout <seconds>` | `30` | Wall-clock limit per test (compile + run) |
+| `--timeout <seconds>` | `30` | Wall-clock limit for test execution (run phase only, not compile) |
 | `--include-ignored` | off | Also execute tests annotated with `#[ignore]` |
 | `--no-color` | off | Suppress ANSI colour codes |
 

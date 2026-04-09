@@ -129,6 +129,89 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
 }
 
 #[test]
+fn non_root_private_type_rcfree_is_registered_during_body_checking() {
+    let parsed = hew_parser::parse(
+        r"
+        type Holder {
+            value: Rc<int>
+        }
+
+        fn helper() {
+            var v = Vec::new();
+            let h = Holder { value: Rc::new(1) };
+            v.push(h);
+        }",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "module parse errors: {:?}",
+        parsed.errors
+    );
+
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(vec!["helpers".to_string()]);
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module);
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::UnsafeCollectionElement),
+        "expected non-root private type with transitive Rc to be rejected from Vec during body checking, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn actor_decl_registers_rcfree_members_for_collection_checks() {
+    let parsed = hew_parser::parse(
+        r"
+        actor Worker {
+            let value: Rc<int>;
+            receive fn ping() {}
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "program parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let _ = checker.check_program(&parsed.program);
+    let actor_ref_ty = Ty::actor_ref(Ty::Named {
+        name: "Worker".to_string(),
+        args: vec![],
+    });
+
+    assert!(
+        !checker.validate_hashset_owned_element_type(&actor_ref_ty, &(0..0)),
+        "ActorRef<Worker> should fail RcFree collection admissibility when Worker stores Rc"
+    );
+    assert!(checker.errors.iter().any(|err| {
+        err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
+    }));
+}
+
+#[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker

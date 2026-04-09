@@ -648,7 +648,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
 
   if (std::holds_alternative<ast::TypeInfer>(type.kind)) {
     ++errorCount_;
-    emitError(diagLoc) << "unresolved inferred type (`_`) reached MLIR codegen boundary";
+    emitError(diagLoc) << "unresolved type inference placeholder `_` reached MLIR codegen boundary"
+                       << " — add an explicit type annotation or let the type checker infer it";
     return mlir::NoneType::get(&context);
   }
 

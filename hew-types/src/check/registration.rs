@@ -237,7 +237,7 @@ impl Checker {
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
         let ty = self.resolve_type_expr_tracking_holes(type_expr, hole_vars);
-        self.validate_concrete_hashset_type(&ty, &type_expr.1);
+        self.validate_concrete_collection_types(&ty, &type_expr.1);
         ty
     }
 

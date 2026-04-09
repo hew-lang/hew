@@ -1875,6 +1875,53 @@ fn rc_field_assignment_escape_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Unsupported Vec array elements
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains(needle)
+        })
+        .collect();
+    assert!(
+        !hits.is_empty(),
+        "{context}: expected InvalidOperation containing `{needle}`, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<[int; 2]> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "annotated Vec<[int; 2]>",
+    );
+}
+
+#[test]
+fn vec_from_array_elements_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v = Vec::from([[1, 2]]);
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "Vec::from([[1, 2]])",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  UnsafeCollectionElement — Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════
 

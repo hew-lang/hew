@@ -279,17 +279,11 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![Ty::String],
-                }
+                self.make_vec_type(Ty::String, span)
             }
             "lines" => {
                 self.check_arity(args, 0, "`String::lines`", span);
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![Ty::String],
-                }
+                self.make_vec_type(Ty::String, span)
             }
             "find" | "index_of" => {
                 if let Some(arg) = args.first() {
@@ -325,10 +319,7 @@ impl Checker {
             }
             "chars" => {
                 self.check_arity(args, 0, "`String::chars`", span);
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![Ty::Char],
-                }
+                self.make_vec_type(Ty::Char, span)
             }
             _ => {
                 self.report_error(
@@ -385,6 +376,71 @@ impl Checker {
         false
     }
 
+    pub(super) fn validate_vec_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(elem_ty);
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return true;
+        }
+
+        if let Ty::Array(_, _) = resolved {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "Vec<{}> is not supported; vec lowering does not support array element types yet",
+                    resolved.user_facing()
+                ),
+            );
+            return false;
+        }
+
+        true
+    }
+
+    pub(super) fn validate_concrete_vec_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Named { name, args } => {
+                if name == "Vec" && args.len() == 1 {
+                    return self.validate_vec_element_type(&args[0], span);
+                }
+                args.iter()
+                    .all(|arg| self.validate_concrete_vec_type(arg, span))
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.validate_concrete_vec_type(elem, span)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_vec_type(elem, span),
+            Ty::Function { params, ret } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_vec_type(param, span))
+                    && self.validate_concrete_vec_type(ret, span)
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_vec_type(param, span))
+                    && self.validate_concrete_vec_type(ret, span)
+                    && captures
+                        .iter()
+                        .all(|capture| self.validate_concrete_vec_type(capture, span))
+            }
+            Ty::Pointer { pointee, .. } => self.validate_concrete_vec_type(pointee, span),
+            Ty::TraitObject { traits } => traits.iter().all(|bound| {
+                bound
+                    .args
+                    .iter()
+                    .all(|arg| self.validate_concrete_vec_type(arg, span))
+            }),
+            _ => true,
+        }
+    }
+
     pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
@@ -427,6 +483,21 @@ impl Checker {
             }),
             _ => true,
         }
+    }
+
+    pub(super) fn validate_concrete_collection_types(&mut self, ty: &Ty, span: &Span) -> bool {
+        let hashset_ok = self.validate_concrete_hashset_type(ty, span);
+        let vec_ok = self.validate_concrete_vec_type(ty, span);
+        hashset_ok && vec_ok
+    }
+
+    pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
+        let ty = Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+        };
+        self.validate_concrete_vec_type(&ty, span);
+        ty
     }
 
     pub(super) fn check_hashmap_method(
@@ -485,17 +556,11 @@ impl Checker {
             }
             "keys" => {
                 self.check_arity(args, 0, "`HashMap::keys`", span);
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![key_ty],
-                }
+                self.make_vec_type(key_ty, span)
             }
             "values" => {
                 self.check_arity(args, 0, "`HashMap::values`", span);
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![val_ty],
-                }
+                self.make_vec_type(val_ty, span)
             }
             "clone" => {
                 self.check_arity(args, 0, "`HashMap::clone`", span);
@@ -666,7 +731,8 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        match method {
+        let elem_ty_before = self.subst.resolve(&elem_ty);
+        let result = match method {
             "push" => {
                 self.check_arity(args, 1, "`Vec::push`", span);
                 if let Some(arg) = args.first() {
@@ -676,7 +742,7 @@ impl Checker {
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 Ty::Unit
             }
-            "pop" => elem_ty,
+            "pop" => elem_ty.clone(),
             "len" => Ty::I64,
             "get" | "remove" => {
                 self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
@@ -684,7 +750,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
-                elem_ty
+                elem_ty.clone()
             }
             "contains" => {
                 if let Some(arg) = args.first() {
@@ -752,10 +818,7 @@ impl Checker {
                     self.check_against(expr, sp, &expected_fn);
                 }
                 let resolved_ret = self.subst.resolve(&ret_ty);
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![resolved_ret],
-                }
+                self.make_vec_type(resolved_ret, span)
             }
             "filter" => {
                 self.check_arity(args, 1, "`Vec::filter`", span);
@@ -795,7 +858,13 @@ impl Checker {
                 );
                 Ty::Error
             }
+        };
+        let elem_ty_after = self.subst.resolve(&elem_ty);
+        if matches!(elem_ty_after, Ty::Array(_, _)) && !matches!(elem_ty_before, Ty::Array(_, _)) {
+            let _ = self.validate_vec_element_type(&elem_ty_after, span);
+            return Ty::Error;
         }
+        result
     }
 
     #[expect(

@@ -68,7 +68,7 @@ impl Checker {
         } else {
             fd.return_type.as_ref().map_or(Ty::Unit, |annotation| {
                 let ty = self.resolve_type_expr(annotation);
-                self.validate_concrete_hashset_type(&ty, &annotation.1);
+                self.validate_concrete_collection_types(&ty, &annotation.1);
                 ty
             })
         };

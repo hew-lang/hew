@@ -81,7 +81,7 @@ impl Checker {
     ) -> (Ty, Vec<TypeVar>) {
         let mut hole_vars = Vec::new();
         let ty = self.resolve_type_expr_tracking_holes(annotation, &mut hole_vars);
-        self.validate_concrete_hashset_type(&ty, &annotation.1);
+        self.validate_concrete_collection_types(&ty, &annotation.1);
         (ty, hole_vars)
     }
 

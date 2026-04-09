@@ -1611,6 +1611,7 @@ impl Checker {
                             type_name: name.clone(),
                         },
                     );
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     return sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.

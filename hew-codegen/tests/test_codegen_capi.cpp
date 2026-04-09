@@ -698,6 +698,44 @@ static void test_len_free_call_on_rc_fails_closed() {
   PASS();
 }
 
+static void test_rc_owned_payload_fails_closed() {
+  TEST(rc_owned_payload_fails_closed);
+  auto ast = hewToMsgpack("fn main() { let rc = Rc::new(Some(\"hello\")); print(0); }");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = 0;
+  auto stderrText =
+      captureStderr([&] { rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf); });
+
+  if (rc != 1) {
+    FAIL("Rc::new with Option<String> should fail closed");
+    if (buf.data != nullptr) {
+      hew_codegen_buffer_free(buf);
+    }
+    return;
+  }
+
+  const char *err = hew_codegen_last_error();
+  if (!strstr(err, "MLIR generation failed")) {
+    FAIL("expected MLIR generation failure");
+    if (buf.data != nullptr) {
+      hew_codegen_buffer_free(buf);
+    }
+    return;
+  }
+
+  if (buf.data != nullptr) {
+    hew_codegen_buffer_free(buf);
+  }
+  PASS();
+}
+
 static void test_rc_outlive_block_drop_registered() {
   TEST(rc_outlive_block_drop_registered);
   // Rc alias escaping a block as trailing expression must still get
@@ -1098,6 +1136,7 @@ int main() {
   test_collection_clone_receiver_temporaries_drop();
   test_len_free_call_lowers_via_codegen_dispatch();
   test_len_free_call_on_rc_fails_closed();
+  test_rc_owned_payload_fails_closed();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
   test_rc_call_boundary_borrow_no_clone();

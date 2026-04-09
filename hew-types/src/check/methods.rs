@@ -566,6 +566,45 @@ impl Checker {
         ty
     }
 
+    fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return true;
+        }
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Copy)
+        {
+            return true;
+        }
+        match resolved {
+            Ty::String | Ty::Bytes => true,
+            Ty::Named { name, args } if name == "Rc" && args.len() == 1 => {
+                self.rc_payload_drop_supported(&args[0])
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if self.rc_payload_drop_supported(&resolved) {
+            return true;
+        }
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads, \
+                 `String`, `bytes`, and nested `Rc` values because the current Rc \
+                 drop path does not recursively drop owned contents",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],

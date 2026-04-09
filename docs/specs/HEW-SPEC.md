@@ -1104,7 +1104,7 @@ impl Drop for FileHandle {
 |-----------|---------------|
 | Variable goes out of scope | `drop()` called immediately |
 | Value is moved | No drop at original location |
-| `Rc<T>` refcount reaches zero | `drop()` called on inner `T` |
+| `Rc<T>` refcount reaches zero | supported `Rc<T>` payloads drop their inner `T`; unsupported payloads are rejected during checking |
 | Actor terminates | All owned values dropped, then heap freed |
 
 #### 3.7.4 Indirect Enums (Recursive Data Types)
@@ -1157,11 +1157,12 @@ fn eval(e: Expr) -> Int {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
+- Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
 
 ```hew
-let data: Rc<LargeStruct> = Rc::new(expensive_computation());
+let data: Rc<String> = Rc::new(expensive_computation());
 let alias = data.clone();  // refcount++, no data copy
-// data and alias share the same LargeStruct
+// data and alias share the same String
 ```
 
 **Runtime note: internal `Arc` support exists, but Hew source does not expose `Arc<T>` yet.**

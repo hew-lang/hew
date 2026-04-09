@@ -1031,6 +1031,79 @@ fn rc_non_copy_construction_ok() {
 }
 
 #[test]
+fn rc_copy_struct_construction_ok() {
+    let output = typecheck_inline(
+        r"
+        type Point {
+            x: int
+            y: int
+        }
+
+        fn main() {
+            let _rc = Rc::new(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with a Copy struct payload should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_option_payload_rejected() {
+    let output = typecheck_inline(r#"fn main() { let _rc = Rc::new(Some("hello")); }"#);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc::new with Option<String> should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_struct_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn main() {
+            let _rc = Rc::new(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc::new with a struct containing owned fields should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_payload_annotation_rejected() {
+    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<String>>) {}");
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc<Option<String>> annotations should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
     // Copy types.  Calling it on Rc<String> must be rejected.

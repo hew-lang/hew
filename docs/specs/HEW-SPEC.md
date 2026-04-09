@@ -1513,7 +1513,7 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 
 **Return type inference:**
 
-The `-> _` annotation requests that the compiler infer the return type from the checked function body. When a trailing expression is present, that expression supplies the return type; otherwise Hew uses the checker-resolved signature for that body. This also applies to trait default methods with bodies. If the checker cannot resolve a concrete return type, `-> _` is rejected. This is distinct from omitting `->` entirely, which means the function returns void (unit):
+The `-> _` annotation requests that the compiler infer the return type from the checked function body. When a trailing expression is present, that expression supplies the return type; otherwise Hew uses the checker-resolved signature for that body. This also applies to trait default methods with bodies. Bodyless trait methods may also use `-> _`; in that case each implementation provides the concrete return type. If the checker cannot resolve a concrete return type where one is required, `-> _` is rejected. This is distinct from omitting `->` entirely, which means the function returns void (unit):
 
 ```hew
 fn add(a: i32, b: i32) -> _ { a + b }  // inferred: -> i32
@@ -1521,7 +1521,7 @@ fn greet(name: string) -> _ { "hello {name}" }  // inferred: -> string
 fn noop() { }  // no -> at all: returns void
 ```
 
-`-> _` requires a function body — it cannot be used on `extern fn` declarations or bodyless trait methods.
+`-> _` cannot be used on `extern fn` declarations. Bodyless trait methods may use it as a placeholder, with each implementation providing the concrete return type.
 
 **Lambda inference examples:**
 

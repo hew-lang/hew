@@ -445,6 +445,58 @@ fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
 }
 
 #[test]
+fn stream_decode_fails_closed_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        wire type Message {
+            id: int @1;
+        }
+
+        fn main() {
+            let (_sink, input) = stream.bytes_pipe(4);
+            let _decoded: stream.Stream<Message> = input.decode();
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message
+                .contains("`decode()` is not available on `Stream<bytes>` yet")
+        }),
+        "expected explicit stream.decode fail-closed diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn sink_encode_fails_closed_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        wire type Message {
+            id: int @1;
+        }
+
+        fn main() {
+            let (sink, _input) = stream.bytes_pipe(4);
+            let _encoded: stream.Sink<Message> = sink.encode();
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message
+                .contains("`encode()` is not available on `Sink<bytes>` yet")
+        }),
+        "expected explicit sink.encode fail-closed diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn channel_dot_receiver_annotation_typechecks() {
     // A function whose parameter is explicitly spelled `channel.Receiver<String>`.
     // Proves: the qualified spelling resolves to the canonical Receiver<String>

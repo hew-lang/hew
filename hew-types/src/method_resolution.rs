@@ -123,7 +123,6 @@ fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Opt
 )]
 fn builtin_methods(kind: BuiltinNamedType) -> HashMap<String, FnSig> {
     let item_ty = generic_ty("T");
-    let row_ty = generic_ty("Row");
     let option_item_ty = Ty::option(item_ty.clone());
     let item_fn = Ty::Function {
         params: vec![item_ty.clone()],
@@ -248,14 +247,6 @@ fn builtin_methods(kind: BuiltinNamedType) -> HashMap<String, FnSig> {
                     ..FnSig::default()
                 },
             ),
-            (
-                "decode",
-                FnSig {
-                    type_params: vec!["Row".to_string()],
-                    return_type: Ty::stream(row_ty),
-                    ..FnSig::default()
-                },
-            ),
         ],
         BuiltinNamedType::Sink => &[
             (
@@ -278,14 +269,6 @@ fn builtin_methods(kind: BuiltinNamedType) -> HashMap<String, FnSig> {
                 "close",
                 FnSig {
                     return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "encode",
-                FnSig {
-                    type_params: vec!["Row".to_string()],
-                    return_type: Ty::sink(row_ty),
                     ..FnSig::default()
                 },
             ),
@@ -539,6 +522,19 @@ mod tests {
             .expect("builtin stream type def should resolve");
         assert!(type_def.methods.contains_key("next"));
         assert!(type_def.methods.contains_key("collect"));
+        assert!(!type_def.methods.contains_key("decode"));
+    }
+
+    #[test]
+    fn unlowerable_stream_codec_boundaries_are_not_builtin_methods() {
+        assert!(
+            lookup_builtin_method_sig(&Ty::stream(Ty::Bytes), "decode").is_none(),
+            "Stream::decode must fail closed until lowering exists"
+        );
+        assert!(
+            lookup_builtin_method_sig(&Ty::sink(Ty::Bytes), "encode").is_none(),
+            "Sink::encode must fail closed until lowering exists"
+        );
     }
 
     #[test]

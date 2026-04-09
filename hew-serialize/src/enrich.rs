@@ -286,10 +286,7 @@ fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bo
         return false;
     };
     if name == STREAM || name == QUALIFIED_STREAM {
-        return matches!(method, "map" | "filter" | "take" | "decode");
-    }
-    if name == SINK || name == QUALIFIED_SINK {
-        return matches!(method, "encode");
+        return matches!(method, "map" | "filter" | "take");
     }
     false
 }
@@ -308,6 +305,12 @@ fn missing_stream_lowering_metadata_context(
                 "`{handle_kind}::{method}` does not support `{name}`; expected `String` or `bytes`"
             ),
         }),
+        (STREAM, "decode") => {
+            Some("`Stream::decode` is not lowered yet; lowering/runtime support is not implemented".to_string())
+        }
+        (SINK, "encode") => {
+            Some("`Sink::encode` is not lowered yet; lowering/runtime support is not implemented".to_string())
+        }
         _ => None,
     }
 }
@@ -1623,9 +1626,9 @@ fn enrich_method_call(
     {
         return;
     }
-    // Stream/Sink combinators like map/filter/encode/decode are intentionally
-    // left as MethodCall nodes for later lowering; only direct runtime entry
-    // points are rewritten here.
+    // Stream combinators like map/filter/take are intentionally left as
+    // MethodCall nodes for later lowering; only direct runtime entry points are
+    // rewritten here.
     if is_deferred_builtin_method_call(receiver_ty, method) {
         return;
     }
@@ -4326,20 +4329,6 @@ mod tests {
             "stream.filter() must remain a MethodCall for later lowering"
         );
 
-        let mut expr_decode = make_method_call_expr("s", 2, "decode");
-        let mut diagnostics_decode = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_decode, &tco, &mut diagnostics_decode, &registry)
-            .unwrap();
-
-        assert!(
-            diagnostics_decode.is_empty(),
-            "stream.decode() is lowered later and must not emit a diagnostic"
-        );
-        assert!(
-            matches!(&expr_decode.0, Expr::MethodCall { .. }),
-            "stream.decode() must remain a MethodCall for later lowering"
-        );
-
         let mut expr_take = make_method_call_expr("s", 2, "take");
         let mut diagnostics_take = Vec::new();
         enrich_expr_with_diagnostics(&mut expr_take, &tco, &mut diagnostics_take, &registry)
@@ -4356,7 +4345,36 @@ mod tests {
     }
 
     #[test]
-    fn test_enrich_method_call_sink_encode_is_left_for_later_lowering() {
+    fn test_enrich_method_call_stream_decode_reports_unlowerable_boundary() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![hew_types::Ty::Bytes],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "decode");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+        assert!(
+            diagnostics[0]
+                .to_string()
+                .contains("`Stream::decode` is not lowered yet"),
+            "expected explicit decode-lowering diagnostic, got {:?}",
+            diagnostics[0]
+        );
+        assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+    }
+
+    #[test]
+    fn test_enrich_method_call_sink_encode_reports_unlowerable_boundary() {
         let tco = make_tco_with_receiver_ty(
             2,
             hew_types::Ty::Named {
@@ -4369,14 +4387,19 @@ mod tests {
         let mut diagnostics = Vec::new();
         enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
 
-        assert!(
-            diagnostics.is_empty(),
-            "sink.encode() is lowered later and must not emit a diagnostic"
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
         );
         assert!(
-            matches!(&expr.0, Expr::MethodCall { .. }),
-            "sink.encode() must remain a MethodCall for later lowering"
+            diagnostics[0]
+                .to_string()
+                .contains("`Sink::encode` is not lowered yet"),
+            "expected explicit encode-lowering diagnostic, got {:?}",
+            diagnostics[0]
         );
+        assert!(matches!(&expr.0, Expr::MethodCall { .. }));
     }
 
     #[test]

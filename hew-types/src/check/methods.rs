@@ -124,6 +124,14 @@ impl Checker {
         ) else {
             return Ty::Error;
         };
+        if method == "decode" {
+            return self.report_unlowerable_stream_codec_boundary(
+                BuiltinNamedType::Stream.canonical_name(),
+                &inner,
+                method,
+                span,
+            );
+        }
         let receiver_ty = Ty::stream(inner.clone());
         let Some(sig) = lookup_builtin_method_sig(&receiver_ty, method) else {
             self.report_error(
@@ -162,10 +170,6 @@ impl Checker {
                     );
                 }
                 sig.return_type
-            }
-            "decode" => {
-                // Returns Stream<T> where T is inferred; codec type arg not yet resolved
-                Ty::stream(Ty::Var(TypeVar::fresh()))
             }
             "chunks" | "take" | "map" | "filter" => {
                 if let Some(arg) = args.first() {
@@ -217,6 +221,24 @@ impl Checker {
             return None;
         }
         Some(inner)
+    }
+
+    fn report_unlowerable_stream_codec_boundary(
+        &mut self,
+        type_name: &str,
+        inner: &Ty,
+        method: &str,
+        span: &Span,
+    ) -> Ty {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`{method}()` is not available on `{type_name}<{}>` yet; lowering/runtime support is not implemented",
+                inner.user_facing()
+            ),
+        );
+        Ty::Error
     }
 
     pub(super) fn check_string_method(
@@ -1293,6 +1315,14 @@ impl Checker {
                 ) else {
                     return Ty::Error;
                 };
+                if method == "encode" {
+                    return self.report_unlowerable_stream_codec_boundary(
+                        BuiltinNamedType::Sink.canonical_name(),
+                        &inner,
+                        method,
+                        span,
+                    );
+                }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
                     "write" => {
@@ -1314,10 +1344,6 @@ impl Checker {
                                 unreachable!("builtin Sink::{method} signature missing")
                             })
                             .return_type
-                    }
-                    "encode" => {
-                        // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
-                        Ty::sink(Ty::Var(TypeVar::fresh()))
                     }
                     _ => {
                         self.report_error(

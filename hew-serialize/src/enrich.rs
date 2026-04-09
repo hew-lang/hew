@@ -204,7 +204,22 @@ pub fn build_expr_type_map(tco: &TypeCheckOutput) -> ExprTypeMapBuild {
 }
 
 fn is_internal_generator_handle_type(ty: &Ty) -> bool {
-    ty.as_generator().is_some() || ty.as_async_generator().is_some()
+    match ty {
+        Ty::Named { name, .. } if name == "Generator" || name == "AsyncGenerator" => true,
+        Ty::Named { args, .. } => args.iter().any(is_internal_generator_handle_type),
+        Ty::Tuple(elems) => elems.iter().any(is_internal_generator_handle_type),
+        Ty::Array(elem, _) | Ty::Slice(elem) => is_internal_generator_handle_type(elem),
+        Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+            params.iter().any(is_internal_generator_handle_type)
+                || is_internal_generator_handle_type(ret)
+        }
+        Ty::Pointer { pointee, .. } => is_internal_generator_handle_type(pointee),
+        Ty::TraitObject { traits } => traits
+            .iter()
+            .flat_map(|bound| bound.args.iter())
+            .any(is_internal_generator_handle_type),
+        _ => false,
+    }
 }
 
 fn require_converted(
@@ -2767,6 +2782,37 @@ mod tests {
     }
 
     #[test]
+    fn test_build_expr_type_map_skips_nested_internal_generator_entries() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey { start: 3, end: 9 },
+            Ty::option(Ty::generator(Ty::I32, Ty::Unit)),
+        );
+
+        let result = build_expr_type_map(&tco);
+        assert!(result.entries.is_empty());
+        assert!(result.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn test_build_expr_type_map_preserves_closure_with_generator_capture() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey { start: 3, end: 9 },
+            Ty::Closure {
+                params: vec![Ty::I32],
+                ret: Box::new(Ty::Bool),
+                captures: vec![Ty::generator(Ty::String, Ty::Unit)],
+            },
+        );
+
+        let result = build_expr_type_map(&tco);
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.diagnostics().is_empty());
+        assert!(matches!(result.entries[0].ty.0, TypeExpr::Function { .. }));
+    }
+
+    #[test]
     fn test_enrich_program_reports_unsupported_inferred_binding_type() {
         use hew_parser::ast::Pattern;
         use hew_types::ty::TypeVar;
@@ -2895,6 +2941,73 @@ mod tests {
         assert!(
             diagnostics.diagnostics().is_empty(),
             "generator handles should stay implicit: {:?}",
+            diagnostics.diagnostics()
+        );
+        if let Item::Function(function) = &program.items[0].0 {
+            match &function.body.stmts[0].0 {
+                Stmt::Let { ty, .. } => assert!(ty.is_none()),
+                other => panic!("expected let statement, got {other:?}"),
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_keeps_nested_generator_binding_type_implicit() {
+        use hew_parser::ast::Pattern;
+
+        let expr_span = 10..18;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
+                                ty: None,
+                                value: Some((Expr::Identifier("input".into()), expr_span.clone())),
+                            },
+                            expr_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::option(Ty::generator(Ty::I32, Ty::Unit)),
+        );
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.diagnostics().is_empty(),
+            "nested generator handles should stay implicit: {:?}",
             diagnostics.diagnostics()
         );
         if let Item::Function(function) = &program.items[0].0 {

@@ -7998,3 +7998,208 @@ mod module_body_diagnostic_envelope {
         );
     }
 }
+
+// ── Warning source-module attribution (PR-A slice) ──────────────────────────
+
+#[cfg(test)]
+mod warning_source_attribution {
+    use super::*;
+
+    fn make_unused_import_decl() -> ImportDecl {
+        // import std::encoding::json  (unresolved — no resolved_items)
+        // The module registry will fail to find it, but the import is still
+        // registered into import_spans so the UnusedImport path is exercised.
+        // Use a fake single-segment path so `register_import` takes the user-
+        // module branch (path non-empty, no resolved_items → unresolved error
+        // path, does NOT insert into import_spans).
+        //
+        // Instead we supply `resolved_items = Some(vec![])` to convince
+        // register_import to follow the user-module branch and insert into
+        // import_spans.
+        ImportDecl {
+            path: vec!["fakemod".to_string()],
+            spec: None,
+            file_path: None,
+            resolved_items: Some(vec![]),
+            resolved_item_source_paths: vec![],
+            resolved_source_paths: vec![],
+        }
+    }
+
+    fn make_trivial_fn(name: &str) -> FnDecl {
+        FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: name.to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        }
+    }
+
+    /// Build a Program whose module graph has:
+    ///   - a root module with `fn main()` (no imports, in program.items)
+    ///   - a non-root module "submod" with an import of "fakemod" and `fn helper()`
+    fn build_program_with_non_root_import_and_fn() -> Program {
+        let root_id = ModuleId::root();
+        let submod_id = ModuleId::new(vec!["submod".to_string()]);
+
+        let main_fn = make_trivial_fn("main");
+        let helper_fn = make_trivial_fn("helper");
+        let import_decl = make_unused_import_decl();
+
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let sub_module = Module {
+            id: submod_id.clone(),
+            items: vec![
+                (Item::Import(import_decl), 0..20),
+                (Item::Function(helper_fn), 25..50),
+            ],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module);
+        mg.add_module(sub_module);
+        mg.topo_order = vec![submod_id, root_id];
+
+        Program {
+            module_graph: Some(mg),
+            // Root-module items live in program.items (not in Module.items for root).
+            items: vec![(Item::Function(main_fn), 0..10)],
+            module_doc: None,
+        }
+    }
+
+    /// An `UnusedImport` warning emitted for an import registered while
+    /// `current_module` was "submod" must carry `source_module = Some("submod")`.
+    #[test]
+    fn non_root_unused_import_carries_source_module() {
+        let program = build_program_with_non_root_import_and_fn();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let unused_import_warnings: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("fakemod"))
+            .collect();
+
+        assert!(
+            !unused_import_warnings.is_empty(),
+            "expected an UnusedImport warning for 'fakemod'; got warnings: {:?}",
+            output.warnings
+        );
+        for w in &unused_import_warnings {
+            assert_eq!(
+                w.source_module.as_deref(),
+                Some("submod"),
+                "UnusedImport for 'fakemod' must carry source_module='submod'; got {:?}",
+                w.source_module
+            );
+        }
+    }
+
+    /// A root-module `UnusedImport` (registered while `current_module = None`) must
+    /// continue to carry `source_module = None` — no regression.
+    #[test]
+    fn root_unused_import_has_no_source_module() {
+        // Build an ImportDecl with resolved_items so it reaches import_spans.
+        let import_decl = make_unused_import_decl();
+        let main_fn = make_trivial_fn("main");
+
+        let program = Program {
+            module_graph: None,
+            items: vec![
+                (Item::Import(import_decl), 0..20),
+                (Item::Function(main_fn), 25..40),
+            ],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let w = output
+            .warnings
+            .iter()
+            .find(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("fakemod"));
+
+        assert!(
+            w.is_some(),
+            "expected UnusedImport warning for root 'fakemod'; got: {:?}",
+            output.warnings
+        );
+        assert_eq!(
+            w.unwrap().source_module,
+            None,
+            "root-module UnusedImport must have source_module=None; got {:?}",
+            w.unwrap().source_module
+        );
+    }
+
+    /// Functions defined in a non-root module must have their source module stored
+    /// in `fn_def_spans` even though the current dead-code filter skips dot-named
+    /// functions (they are never promoted to `DeadCode` warnings today).
+    /// This guards the attribution infrastructure for future use.
+    #[test]
+    fn non_root_fn_def_span_stores_source_module() {
+        let program = build_program_with_non_root_import_and_fn();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&program);
+
+        // Non-root function is keyed as "submod.helper" in fn_def_spans.
+        let entry = checker.fn_def_spans.get("submod.helper");
+        assert!(
+            entry.is_some(),
+            "fn_def_spans must contain 'submod.helper'; keys: {:?}",
+            checker.fn_def_spans.keys().collect::<Vec<_>>()
+        );
+        let (_, stored_module) = entry.unwrap();
+        assert_eq!(
+            stored_module.as_deref(),
+            Some("submod"),
+            "fn_def_spans entry for 'submod.helper' must store source_module='submod'; got {stored_module:?}",
+        );
+    }
+
+    /// Root-module functions must store `source_module = None` in `fn_def_spans`.
+    #[test]
+    fn root_fn_def_span_has_no_source_module() {
+        let program = build_program_with_non_root_import_and_fn();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&program);
+
+        // Root fn (main) has no module prefix.
+        let entry = checker.fn_def_spans.get("main");
+        assert!(
+            entry.is_some(),
+            "fn_def_spans must contain 'main'; keys: {:?}",
+            checker.fn_def_spans.keys().collect::<Vec<_>>()
+        );
+        let (_, stored_module) = entry.unwrap();
+        assert_eq!(
+            stored_module.as_deref(),
+            None,
+            "fn_def_spans entry for 'main' must have source_module=None; got {stored_module:?}",
+        );
+    }
+}

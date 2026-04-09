@@ -265,8 +265,9 @@ pub struct Checker {
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
-    /// Tracks the span where each function was first defined (for duplicate detection).
-    pub(super) fn_def_spans: HashMap<String, Span>,
+    /// Tracks the span and originating module where each function was first defined
+    /// (for duplicate detection and dead-code source attribution).
+    pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
     /// Tracks public top-level names introduced by prior flat file imports so later
@@ -300,9 +301,10 @@ pub struct Checker {
     pub(super) lambda_capture_depth: Option<usize>,
     /// Captured variable types accumulated during lambda body checking.
     pub(super) lambda_captures: Vec<Ty>,
-    /// Tracks imported module paths with their source spans for unused-import detection.
-    /// Key: module short name (e.g., "json"), Value: import span.
-    pub(super) import_spans: HashMap<String, Span>,
+    /// Tracks imported module paths with their source spans and originating module for
+    /// unused-import detection and source attribution.
+    /// Key: module short name (e.g., "json"), Value: (import span, source module).
+    pub(super) import_spans: HashMap<String, (Span, Option<String>)>,
     /// Module short names that have actually been referenced in code.
     pub(super) used_modules: RefCell<HashSet<String>>,
     /// Module short names for user (non-stdlib) imports.

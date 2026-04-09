@@ -1969,9 +1969,11 @@ Important current details:
 
 - `std::io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
-- `std::collections::hashset` currently supports the surface forms
-  `HashSet<int>` and `HashSet<String>`; the underlying stdlib source lowers
-  these through type-specific runtime entry points
+- `std::collections::hashset` currently lowers the supported surface forms
+  `HashSet<int>` and `HashSet<String>` through type-specific runtime entry
+  points; unsupported `HashSet<T>` usages are rejected fail-closed during
+  type checking, including nested annotations, function signatures, and
+  `wire enum` payloads
 - `std::iter` is presently specialised to `Vec<int>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,

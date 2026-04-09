@@ -33,7 +33,8 @@ use crate::msgpack::ExprTypeEntry;
 ///   sink, channel, or registered handle) could not be rewritten to a C function
 ///   call; the method is unknown for that receiver kind and must not reach codegen.
 /// - `Unsupported` — the type is structurally valid but not yet representable
-///   (e.g. generator types); callers may choose to warn and continue.
+///   (e.g. generator types); treated as fatal at the serializer boundary so
+///   codegen never silently skips an unsupported type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeExprConversionKind {
     UnresolvedVar,
@@ -4519,7 +4520,7 @@ mod tests {
             args: vec![],
         });
         assert_eq!(diag.kind(), TypeExprConversionKind::MethodCallRewriteFailed);
-        // Confirm it is distinct from the Unsupported kind (which is non-fatal).
+        // Confirm it is distinct from the Unsupported kind (both are now fatal).
         assert_ne!(diag.kind(), TypeExprConversionKind::Unsupported);
     }
 

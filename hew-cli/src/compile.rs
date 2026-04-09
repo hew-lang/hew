@@ -255,6 +255,7 @@ fn inferred_type_serialization_diagnostic_is_fatal(
             | hew_serialize::TypeExprConversionKind::ErrorSentinel
             | hew_serialize::TypeExprConversionKind::LiteralKind
             | hew_serialize::TypeExprConversionKind::MethodCallRewriteFailed
+            | hew_serialize::TypeExprConversionKind::Unsupported
     )
 }
 
@@ -2745,6 +2746,39 @@ fn helper() -> int { 41 }
                 .iter()
                 .map(|e| &e.source_module)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// Regression guard for issue #789: `TypeExprConversionKind::Unsupported`
+    /// must now be fatal so that unsupported inferred types (e.g. generators)
+    /// abort serialization instead of warning and continuing.
+    #[test]
+    fn unsupported_inferred_type_serialization_diagnostic_is_fatal() {
+        use hew_types::check::SpanKey;
+
+        // Build a TypeCheckOutput that maps an expression span to a generator
+        // type, which the serializer cannot represent and emits Unsupported.
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey { start: 0, end: 1 },
+            Ty::generator(Ty::I32, Ty::String),
+        );
+
+        let build = hew_serialize::build_expr_type_map(&tco);
+        let diagnostics = build.diagnostics();
+        assert!(
+            !diagnostics.is_empty(),
+            "generator type must produce a serialization diagnostic"
+        );
+
+        let unsupported_diag = diagnostics
+            .iter()
+            .find(|d| d.kind() == hew_serialize::TypeExprConversionKind::Unsupported)
+            .expect("must have an Unsupported diagnostic for generator type");
+
+        assert!(
+            inferred_type_serialization_diagnostic_is_fatal(unsupported_diag),
+            "Unsupported diagnostic must now be fatal (issue #789)"
         );
     }
 }

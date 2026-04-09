@@ -137,6 +137,7 @@ impl Checker {
 
         fn_sigs.retain(|_, sig| {
             !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
+                && !signature_uses_unsupported_type(&sig.params, &sig.return_type)
         });
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty_has_unresolved_inference_var(ty)));
         self.validate_assign_target_output_contract();
@@ -680,6 +681,7 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module_registry::ModuleRegistry;
 
     #[test]
     fn ty_contains_error_recurses_through_named_and_closure_types() {
@@ -705,5 +707,63 @@ mod tests {
 
         assert!(signature_uses_unsupported_type(&params, &ret));
         assert!(!signature_uses_unsupported_type(&[Ty::I32], &Ty::Bool));
+    }
+
+    /// Regression guard for issue #789: `validate_checker_output_contract` must
+    /// remove `fn_sigs` entries whose parameter or return types contain
+    /// `Ty::Error` so they cannot propagate into serialization/codegen.
+    #[test]
+    fn validate_checker_output_contract_prunes_fn_sigs_with_error_type() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let mut fn_sigs = HashMap::from([
+            (
+                "good_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::I32],
+                    return_type: Ty::Bool,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "error_param_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::Error],
+                    return_type: Ty::I32,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "error_return_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::I32],
+                    return_type: Ty::Error,
+                    ..FnSig::default()
+                },
+            ),
+        ]);
+
+        let mut expr_types = HashMap::new();
+        let mut type_defs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            fn_sigs.contains_key("good_fn"),
+            "clean signature must survive the contract check"
+        );
+        assert!(
+            !fn_sigs.contains_key("error_param_fn"),
+            "signature with Ty::Error in params must be pruned"
+        );
+        assert!(
+            !fn_sigs.contains_key("error_return_fn"),
+            "signature with Ty::Error as return type must be pruned"
+        );
     }
 }

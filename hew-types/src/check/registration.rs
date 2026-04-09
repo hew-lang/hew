@@ -1233,17 +1233,17 @@ impl Checker {
                 VariantKind::Tuple(fields) => {
                     let variant_tys = fields
                         .iter()
-                        .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, &mut hole_vars))
+                        .map(|field| self.resolve_registered_annotation_ty(field, &mut hole_vars))
                         .collect();
                     variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
                 }
                 VariantKind::Struct(fields) => {
                     let variant_fields: Vec<(String, Ty)> = fields
                         .iter()
-                        .map(|(name, (te, _))| {
+                        .map(|(name, field)| {
                             (
                                 name.clone(),
-                                self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                self.resolve_registered_annotation_ty(field, &mut hole_vars),
                             )
                         })
                         .collect();

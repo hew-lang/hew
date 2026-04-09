@@ -2081,6 +2081,46 @@ fn hashset_i32_nested_in_machine_state_field_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_bool_in_wire_enum_tuple_variant_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        wire enum Packet {
+            Flags(HashSet<bool>);
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected wire enum tuple variant with HashSet<bool> to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_i32_nested_in_wire_enum_struct_variant_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        wire enum Packet {
+            Flags { values: Vec<HashSet<i32>> };
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i32> is not supported")
+        ),
+        "expected wire enum struct variant with nested HashSet<i32> to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

@@ -1776,7 +1776,7 @@ impl Checker {
                     message,
                     notes: vec![(span.clone(), note)],
                     suggestions: vec![suggestion],
-                    source_module: None,
+                    source_module: self.current_module.clone(),
                 });
             }
             // Descend into block expressions: `{ r }` wraps the identifier

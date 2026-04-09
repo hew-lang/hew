@@ -232,7 +232,7 @@ impl Checker {
                  deliver the result as a message"
                     .to_string(),
             ],
-            source_module: None,
+            source_module: self.current_module.clone(),
         });
     }
 

@@ -8366,6 +8366,58 @@ mod warning_source_attribution {
         }
     }
 
+    fn make_non_root_program_with_fn_body(
+        module_name: &str,
+        name: &str,
+        stmts: Vec<Spanned<Stmt>>,
+    ) -> Program {
+        let fn_decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: name.to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts,
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+        let root_id = ModuleId::root();
+        let module_id = ModuleId::new(vec![module_name.to_string()]);
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let sub_module = Module {
+            id: module_id.clone(),
+            items: vec![(Item::Function(fn_decl), 0..40)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module);
+        mg.add_module(sub_module);
+        mg.topo_order = vec![module_id, root_id];
+
+        Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        }
+    }
+
     /// Build a Program whose module graph has:
     ///   - a root module with `fn main()` (no imports, in program.items)
     ///   - a non-root module "submod" with an import of "fakemod" and `fn helper()`
@@ -8520,6 +8572,41 @@ mod warning_source_attribution {
             None,
             "fn_def_spans entry for 'main' must have source_module=None; got {stored_module:?}",
         );
+    }
+
+    #[test]
+    fn non_root_unreachable_warning_carries_source_module() {
+        let stmts = vec![
+            (Stmt::Return(None), 10..16),
+            (
+                Stmt::Expression((Expr::Literal(Literal::Bool(true)), 21..25)),
+                21..23,
+            ),
+        ];
+        let program = make_non_root_program_with_fn_body("submod", "warns", stmts);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let warnings: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnreachableCode)
+            .collect();
+
+        assert!(
+            !warnings.is_empty(),
+            "expected UnreachableCode warning in non-root module; got: {:?}",
+            output.warnings
+        );
+        for warning in warnings {
+            assert_eq!(
+                warning.source_module.as_deref(),
+                Some("submod"),
+                "UnreachableCode warning must carry source_module='submod'; got {:?}",
+                warning.source_module
+            );
+        }
     }
 
     // ── ImportKey: same short-name across different owning modules ─────────────

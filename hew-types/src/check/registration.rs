@@ -826,7 +826,7 @@ impl Checker {
                     ),
                     notes: vec![],
                     suggestions: vec![],
-                    source_module: None,
+                    source_module: self.current_module.clone(),
                 });
             }
         }
@@ -847,7 +847,7 @@ impl Checker {
                         ),
                         notes: vec![],
                         suggestions: vec![],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
 
@@ -865,7 +865,7 @@ impl Checker {
                             ),
                             notes: vec![],
                             suggestions: vec![],
-                            source_module: None,
+                            source_module: self.current_module.clone(),
                         });
                     }
                 }
@@ -885,7 +885,7 @@ impl Checker {
                         ),
                         notes: vec![],
                         suggestions: vec![],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
             }

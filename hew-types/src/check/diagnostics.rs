@@ -80,7 +80,7 @@ impl Checker {
             suggestions: vec![
                 "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
             ],
-            source_module: None,
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -92,7 +92,7 @@ impl Checker {
             message,
             notes: vec![],
             suggestions: vec![],
-            source_module: None,
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -131,7 +131,7 @@ impl Checker {
             message,
             notes: vec![],
             suggestions,
-            source_module: None,
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -163,7 +163,7 @@ impl Checker {
                 suggestions: vec![format!(
                     "choose a different name, or prefix with underscore: `_{name}`"
                 )],
-                source_module: None,
+                source_module: self.current_module.clone(),
             });
             return;
         }
@@ -183,7 +183,7 @@ impl Checker {
                         suggestions: vec![format!(
                             "choose a different name, or prefix with underscore: `_{name}`"
                         )],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
                 Some(prev) => {
@@ -200,7 +200,7 @@ impl Checker {
                         suggestions: vec![format!(
                             "consider a more descriptive name, or prefix with underscore to suppress: `_{name}`"
                         )],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
             }
@@ -220,7 +220,7 @@ impl Checker {
                         message: format!("unused variable `{}`", w.name),
                         notes: vec![],
                         suggestions: vec![format!("prefix with underscore: `_{}`", w.name)],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
                 ScopeWarningKind::NeverMutated => {
@@ -234,7 +234,7 @@ impl Checker {
                         ),
                         notes: vec![],
                         suggestions: vec!["use `let` instead of `var`".to_string()],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
             }

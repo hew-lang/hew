@@ -63,7 +63,7 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 | Suite | Command | Scope | Speed |
 |---|---|---|---|
 | Full (default) | `make test` | Rust workspace + native codegen E2E + Hew test files + C++ unit | slow |
-| Extended | `make test-all` | Adds stdlib type-check sweep and WASM E2E | slowest |
+| Extended | `make test-all` | Rust workspace + native codegen E2E + stdlib type-check sweep + Hew test files + WASM E2E (no `test-cpp`) | slowest |
 | Rust only | `make test-rust` | All Rust workspace crates | fast |
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |

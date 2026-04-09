@@ -7,9 +7,9 @@ default-filter = "not package(hew-wasm)"
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
-# Exclude test_runner_e2e tests — they invoke `make runtime stdlib` internally
-# and are slower than the main nextest path. The same scenarios are covered by
-# the ctest E2E suite that runs after the codegen build step.
+# Exclude test_runner_e2e tests — they are slower than the main nextest path,
+# and the same scenarios are covered by the ctest E2E suite that runs after the
+# codegen build step.
 default-filter = "not package(hew-wasm) - binary(test_runner_e2e)"
 
 [[profile.ci.overrides]]

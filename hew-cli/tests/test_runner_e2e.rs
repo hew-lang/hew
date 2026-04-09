@@ -1,27 +1,9 @@
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn require_codegen() -> bool {
-    static BUILD_OK: OnceLock<bool> = OnceLock::new();
-    *BUILD_OK.get_or_init(|| {
-        Command::new("make")
-            .args(["runtime", "stdlib"])
-            .current_dir(repo_root())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, require_codegen};
 
 fn write_file(root: &Path, relative_path: &str, contents: &str) {
     let path = root.join(relative_path);
@@ -48,9 +30,7 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 
 #[test]
 fn passing_suite_exits_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_suite(
         &[(
@@ -68,9 +48,7 @@ fn passing_suite_exits_zero() {
 
 #[test]
 fn failing_suite_exits_non_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_suite(
         &[(
@@ -88,9 +66,7 @@ fn failing_suite_exits_non_zero() {
 
 #[test]
 fn mixed_suite_reports_each_test_and_exits_non_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_suite(
         &[
@@ -130,9 +106,7 @@ fn parse_errors_fail_the_suite() {
 
 #[test]
 fn timeout_exit_code_is_non_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_suite(
         &[(

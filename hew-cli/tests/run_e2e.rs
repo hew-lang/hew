@@ -1,27 +1,8 @@
-use std::path::{Path, PathBuf};
+mod support;
+
 use std::process::Command;
-use std::sync::OnceLock;
 
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn require_codegen() -> bool {
-    static BUILD_OK: OnceLock<bool> = OnceLock::new();
-    *BUILD_OK.get_or_init(|| {
-        Command::new("make")
-            .args(["runtime", "stdlib"])
-            .current_dir(repo_root())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, repo_root, require_codegen};
 
 #[test]
 fn timeout_zero_is_rejected() {
@@ -38,9 +19,7 @@ fn timeout_zero_is_rejected() {
 
 #[test]
 fn run_timeout_exit_code_is_non_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("timeout_run.hew");

@@ -1,32 +1,10 @@
 mod support;
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 
-use support::strip_ansi;
-
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn require_codegen() -> bool {
-    static BUILD_OK: OnceLock<bool> = OnceLock::new();
-    *BUILD_OK.get_or_init(|| {
-        Command::new("make")
-            .args(["runtime", "stdlib"])
-            .current_dir(repo_root())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
 fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output {
     let mut child = Command::new(hew_binary())
@@ -65,9 +43,7 @@ fn timeout_zero_is_rejected() {
 
 #[test]
 fn eval_inline_expression_succeeds() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = Command::new(hew_binary())
         .args(["eval", "1 + 2"])
@@ -85,9 +61,7 @@ fn eval_inline_expression_succeeds() {
 
 #[test]
 fn eval_file_in_repl_context_succeeds() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("positive_eval.hew");
@@ -115,9 +89,7 @@ fn eval_file_in_repl_context_succeeds() {
 
 #[test]
 fn eval_file_resolves_sibling_imports_relative_to_file_path() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let nested = dir.path().join("nested");
@@ -148,9 +120,7 @@ fn eval_file_resolves_sibling_imports_relative_to_file_path() {
 
 #[test]
 fn eval_stdin_in_repl_context_succeeds() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(
         &["eval", "-f", "-"],
@@ -167,9 +137,7 @@ fn eval_stdin_in_repl_context_succeeds() {
 
 #[test]
 fn eval_stdin_file_mode_resolves_imports_from_cwd() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -194,9 +162,7 @@ fn eval_stdin_file_mode_resolves_imports_from_cwd() {
 
 #[test]
 fn statement_replay_stdin_does_not_repeat_one_shot_statement() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(&["eval", "-f", "-"], "println(\"once\");\n1 + 1\n");
 
@@ -210,9 +176,7 @@ fn statement_replay_stdin_does_not_repeat_one_shot_statement() {
 
 #[test]
 fn statement_replay_stdin_keeps_explicit_binding() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(&["eval", "-f", "-"], "let x = 41;\nx + 1\n");
 
@@ -226,9 +190,7 @@ fn statement_replay_stdin_keeps_explicit_binding() {
 
 #[test]
 fn statement_replay_repl_does_not_repeat_one_shot_statement() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(&["eval"], "println(\"once\");\n1 + 1\n:quit\n");
 
@@ -246,9 +208,7 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
 
 #[test]
 fn eval_timeout_exit_code_is_non_zero() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("timeout_eval.hew");
@@ -275,9 +235,7 @@ fn eval_timeout_exit_code_is_non_zero() {
 
 #[test]
 fn eval_large_stdout_completes_before_timeout() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("large_stdout_eval.hew");
@@ -311,9 +269,7 @@ fn eval_large_stdout_completes_before_timeout() {
 
 #[test]
 fn eval_large_stderr_completes_before_timeout() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("large_stderr_eval.hew");
@@ -343,9 +299,7 @@ fn eval_large_stderr_completes_before_timeout() {
 
 #[test]
 fn eval_repl_timeout_is_reported_and_quit_still_works() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(
         &["eval", "--timeout", "1"],
@@ -368,9 +322,7 @@ fn eval_repl_timeout_is_reported_and_quit_still_works() {
 
 #[test]
 fn eval_repl_continues_balanced_incomplete_expression() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(&["eval"], "1 +\n2\n:quit\n");
 
@@ -409,9 +361,7 @@ fn eval_repl_reports_balanced_invalid_input_without_waiting() {
 
 #[test]
 fn eval_stdin_continues_balanced_incomplete_expression() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let output = run_eval_with_stdin(&["eval", "-f", "-"], "1 +\n2\n");
 
@@ -441,9 +391,7 @@ fn eval_stdin_reports_balanced_invalid_input() {
 
 #[test]
 fn eval_file_continues_balanced_incomplete_expression() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("balanced_incomplete.hew");
@@ -700,9 +648,7 @@ fn eval_repl_load_non_root_type_errors_render_imported_filename() {
 
 #[test]
 fn eval_repl_load_valid_file_succeeds() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("load_ok.hew");
@@ -730,9 +676,7 @@ fn eval_repl_load_valid_file_succeeds() {
 
 #[test]
 fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let dir = tempfile::tempdir().unwrap();
     let nested = dir.path().join("nested");
@@ -783,9 +727,7 @@ fn eval_repl_clear_emits_confirmation() {
 /// defined names are no longer visible and can be safely redefined.
 #[test]
 fn eval_repl_clear_resets_session_state() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     // Round 1: define a function, call it (get 42).
     // Round 2: :clear, redefine the *same* function with 99, call it again.

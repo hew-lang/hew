@@ -1,27 +1,8 @@
-use std::path::{Path, PathBuf};
+mod support;
+
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
-
-fn require_codegen() -> bool {
-    static BUILD_OK: OnceLock<bool> = OnceLock::new();
-    *BUILD_OK.get_or_init(|| {
-        Command::new("make")
-            .args(["runtime", "stdlib"])
-            .current_dir(repo_root())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
+use support::{hew_binary, repo_root, require_codegen};
 
 fn describe_output(output: &Output) -> String {
     format!(
@@ -52,9 +33,7 @@ fn werror_flag_is_accepted_as_noop_by_build_style_commands() {
 
 #[test]
 fn directory_module_demo_can_be_checked_built_and_run() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let source = repo_root().join("examples/directory_module_demo/main.hew");
     let workspace = tempfile::Builder::new()

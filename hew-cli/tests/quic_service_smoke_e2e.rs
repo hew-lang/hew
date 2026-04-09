@@ -1,34 +1,16 @@
+mod support;
+
 use std::io::{ErrorKind, Read};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+use support::{hew_binary, repo_root, require_codegen};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn require_codegen() -> bool {
-    static BUILD_OK: OnceLock<bool> = OnceLock::new();
-    *BUILD_OK.get_or_init(|| {
-        Command::new("make")
-            .args(["runtime", "stdlib"])
-            .current_dir(repo_root())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
 
 fn hew_std() -> PathBuf {
     repo_root().join("std")
@@ -212,9 +194,7 @@ impl Drop for RunningChild {
 
 #[test]
 fn quic_remote_service_probe_round_trip_succeeds() {
-    if !require_codegen() {
-        return;
-    }
+    require_codegen();
 
     let probe_dir = probe_dir();
     let workspace = tempfile::Builder::new()

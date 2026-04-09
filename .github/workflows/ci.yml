@@ -242,7 +242,11 @@ jobs:
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
       - name: Build libhew.a (runtime + stdlib)
-        run: cargo build -p hew-lib --release
+        # Build both release and debug so workspace tests that run the debug
+        # hew binary do not pick up a stale cached target/debug/libhew.a.
+        run: |
+          cargo build -p hew-lib --release
+          cargo build -p hew-lib
 
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag. hew-wasm

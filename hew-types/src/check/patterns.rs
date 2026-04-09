@@ -31,18 +31,47 @@ impl Checker {
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
                     }
-                } else if let Ty::Named {
-                    name: type_name, ..
-                } = ty
-                {
-                    self.report_error(
-                        TypeErrorKind::Mismatch {
-                            expected: type_name.clone(),
-                            actual: name.clone(),
-                        },
-                        span,
-                        format!("variant `{name}` is not a member of enum `{type_name}`"),
-                    );
+                } else {
+                    match ty {
+                        Ty::Named {
+                            name: type_name, ..
+                        } => {
+                            self.report_error(
+                                TypeErrorKind::Mismatch {
+                                    expected: type_name.clone(),
+                                    actual: name.clone(),
+                                },
+                                span,
+                                format!("variant `{name}` is not a member of enum `{type_name}`"),
+                            );
+                        }
+                        Ty::Machine { name: type_name } => {
+                            self.report_error(
+                                TypeErrorKind::Mismatch {
+                                    expected: type_name.clone(),
+                                    actual: name.clone(),
+                                },
+                                span,
+                                format!(
+                                    "variant `{name}` is not a member of machine `{type_name}`"
+                                ),
+                            );
+                        }
+                        Ty::Var(_) | Ty::Error => {}
+                        _ => {
+                            let expected = ty.user_facing().to_string();
+                            self.report_error(
+                                TypeErrorKind::Mismatch {
+                                    expected: expected.clone(),
+                                    actual: name.clone(),
+                                },
+                                span,
+                                format!(
+                                    "constructor pattern `{name}` cannot match non-enum type `{expected}`"
+                                ),
+                            );
+                        }
+                    }
                 }
             }
             Pattern::Struct { name, fields } => {
@@ -211,18 +240,6 @@ impl Checker {
         // errored scrutinee must not seed fresh inference variables.
         if let Ty::Error = enum_ty {
             return Some(vec![Ty::Error; fallback_arity]);
-        }
-        // Search all enum types for the variant only when scrutinee type is
-        // not a known enum (e.g. int, string, or other non-enum named types).
-        for td in self.type_defs.values() {
-            if let Some(v) = td.variants.get(short_name) {
-                if let VariantDef::Tuple(fields) = v {
-                    return Some(fields.clone());
-                }
-                if let VariantDef::Unit = v {
-                    return Some(vec![]);
-                }
-            }
         }
         None
     }

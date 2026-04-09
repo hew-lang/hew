@@ -2183,6 +2183,27 @@ fn hashset_int_insert_ok() {
 }
 
 #[test]
+fn hashset_inferred_literal_then_i16_insert_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            s.insert(42);
+            let x: i16 = 7;
+            s.insert(x);
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i16> is not supported")
+        ),
+        "expected inferred HashSet narrowed to i16 to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn slice_param_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"

@@ -509,6 +509,19 @@ impl Checker {
         }
     }
 
+    fn check_hashset_element_arg(&mut self, elem_ty: &Ty, arg: &CallArg) -> bool {
+        let (expr, sp) = arg.expr();
+        let err_before = self.errors.len();
+        let actual = self.check_against(expr, sp, elem_ty);
+        if self.errors.len() > err_before || matches!(actual, Ty::Error) {
+            return false;
+        }
+
+        let err_before = self.errors.len();
+        self.expect_type(elem_ty, &actual, sp);
+        self.errors.len() == err_before
+    }
+
     pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
@@ -665,8 +678,9 @@ impl Checker {
             "insert" => {
                 self.check_arity(args, 1, "`HashSet::insert`", span);
                 if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &elem_ty);
+                    if !self.check_hashset_element_arg(&elem_ty, arg) {
+                        return Ty::Error;
+                    }
                 }
                 self.reject_rc_collection_element("HashSet", &elem_ty, span);
                 let resolved = self.subst.resolve(&elem_ty);
@@ -682,8 +696,9 @@ impl Checker {
             "contains" | "remove" => {
                 self.check_arity(args, 1, &format!("`HashSet::{method}`"), span);
                 if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &elem_ty);
+                    if !self.check_hashset_element_arg(&elem_ty, arg) {
+                        return Ty::Error;
+                    }
                 }
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
@@ -1110,7 +1125,15 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "HashSet" => self.check_hashset_method(type_args, method, args, span),
+            ) if name == "HashSet" => {
+                // Preserve the receiver's original inference vars so a later non-literal insert
+                // can refine an earlier `IntLiteral` element before we validate lowerability.
+                let original_type_args = match &receiver_ty {
+                    Ty::Named { name, args } if name == "HashSet" => args.as_slice(),
+                    _ => type_args,
+                };
+                self.check_hashset_method(original_type_args, method, args, span)
+            }
             // Rc<T> methods
             (
                 Ty::Named {

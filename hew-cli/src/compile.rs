@@ -254,6 +254,7 @@ fn inferred_type_serialization_diagnostic_is_fatal(
         hew_serialize::TypeExprConversionKind::UnresolvedVar
             | hew_serialize::TypeExprConversionKind::ErrorSentinel
             | hew_serialize::TypeExprConversionKind::LiteralKind
+            | hew_serialize::TypeExprConversionKind::MethodCallRewriteFailed
     )
 }
 

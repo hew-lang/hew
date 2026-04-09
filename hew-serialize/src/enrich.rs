@@ -29,6 +29,9 @@ use crate::msgpack::ExprTypeEntry;
 ///   this should abort codegen rather than being silently dropped.
 /// - `LiteralKind` — a numeric literal kind survived to serialization without
 ///   being finalized at a real coercion/defaulting site.
+/// - `MethodCallRewriteFailed` — a `MethodCall` on a known receiver type (stream,
+///   sink, channel, or registered handle) could not be rewritten to a C function
+///   call; the method is unknown for that receiver kind and must not reach codegen.
 /// - `Unsupported` — the type is structurally valid but not yet representable
 ///   (e.g. generator types); callers may choose to warn and continue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,17 +39,24 @@ pub enum TypeExprConversionKind {
     UnresolvedVar,
     ErrorSentinel,
     LiteralKind,
+    MethodCallRewriteFailed,
     Unsupported,
 }
 
 /// Diagnostic describing why a resolved [`Ty`] could not be serialized into a
 /// [`TypeExpr`].
+///
+/// `span` is boxed to keep the struct below the 128-byte `result_large_err`
+/// threshold; spans are attached infrequently (diagnostic creation paths only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeExprConversionError {
     ty: Ty,
     detail: &'static str,
+    /// Overrides the kind derived from `ty` when set.  Used for diagnostics
+    /// that are not Ty-conversion failures (e.g. method-call rewrite failures).
+    kind_override: Option<TypeExprConversionKind>,
     contexts: Vec<String>,
-    span: Option<Span>,
+    span: Option<Box<Span>>,
 }
 
 impl TypeExprConversionError {
@@ -54,6 +64,22 @@ impl TypeExprConversionError {
         Self {
             ty: ty.clone(),
             detail,
+            kind_override: None,
+            contexts: Vec::new(),
+            span: None,
+        }
+    }
+
+    /// Constructs a diagnostic for a `MethodCall` that could not be rewritten
+    /// to a C function call because the method is unknown for the receiver type.
+    ///
+    /// `receiver_ty` is the resolved type of the receiver expression; it is
+    /// attached to the diagnostic for display purposes only.
+    fn unresolvable_method_call(receiver_ty: &Ty) -> Self {
+        Self {
+            ty: receiver_ty.clone(),
+            detail: "method call on known receiver type could not be rewritten to a C function",
+            kind_override: Some(TypeExprConversionKind::MethodCallRewriteFailed),
             contexts: Vec::new(),
             span: None,
         }
@@ -63,6 +89,7 @@ impl TypeExprConversionError {
         Self {
             ty: Ty::Error,
             detail,
+            kind_override: None,
             contexts: Vec::new(),
             span: None,
         }
@@ -74,16 +101,16 @@ impl TypeExprConversionError {
     }
 
     fn with_span(mut self, span: Span) -> Self {
-        self.span = Some(span);
+        self.span = Some(Box::new(span));
         self
     }
 
     #[must_use]
     pub fn span(&self) -> Option<&Span> {
-        self.span.as_ref()
+        self.span.as_deref()
     }
 
-    /// Returns the kind of this conversion error, derived from the source type.
+    /// Returns the kind of this conversion error.
     ///
     /// - [`TypeExprConversionKind::UnresolvedVar`] when the originating type is
     ///   `Ty::Var`; callers should treat this as a hard error.
@@ -91,9 +118,14 @@ impl TypeExprConversionError {
     ///   callers should treat this as a hard error if it ever escapes.
     /// - [`TypeExprConversionKind::LiteralKind`] when a numeric literal kind
     ///   reached serialization before explicit finalization.
+    /// - [`TypeExprConversionKind::MethodCallRewriteFailed`] when a method call
+    ///   on a known receiver type could not be rewritten; treat as a hard error.
     /// - [`TypeExprConversionKind::Unsupported`] for all other types.
     #[must_use]
     pub fn kind(&self) -> TypeExprConversionKind {
+        if let Some(k) = self.kind_override {
+            return k;
+        }
         match &self.ty {
             Ty::Var(_) => TypeExprConversionKind::UnresolvedVar,
             Ty::Error => TypeExprConversionKind::ErrorSentinel,
@@ -247,6 +279,19 @@ fn is_runtime_special_handle_type(
         || registry
             .qualify_handle_type(name)
             .is_some_and(|qualified| is_runtime_special_name(&qualified))
+}
+
+fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bool {
+    let Some(Ty::Named { name, .. }) = receiver_ty else {
+        return false;
+    };
+    if name == STREAM || name == QUALIFIED_STREAM {
+        return matches!(method, "map" | "filter" | "take" | "decode");
+    }
+    if name == SINK || name == QUALIFIED_SINK {
+        return matches!(method, "encode");
+    }
+    false
 }
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
@@ -1457,10 +1502,21 @@ fn enrich_stmt_with_diagnostics(
 /// 1. Module-qualified stdlib calls (e.g. `os.pid()` → `hew_os_pid()`)
 /// 2. User module calls (e.g. `utils.helper(x)` → `helper(x)`)
 /// 3. Handle/stream/channel method calls (receiver prepended as first argument)
+///
+/// When the receiver type is a known dispatch category (stream, sink, channel,
+/// or a registered C handle) but the method cannot be resolved, a
+/// [`TypeExprConversionKind::MethodCallRewriteFailed`] diagnostic is pushed so
+/// the caller can surface an actionable error rather than silently passing an
+/// un-rewritten `MethodCall` node to codegen.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Dispatch table for five distinct receiver kinds; splitting obscures the symmetry"
+)]
 fn enrich_method_call(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
     registry: &hew_types::module_registry::ModuleRegistry,
+    diagnostics: &mut Vec<TypeExprConversionError>,
 ) {
     let Expr::MethodCall {
         receiver,
@@ -1516,32 +1572,104 @@ fn enrich_method_call(
     {
         return;
     }
+    // Stream/Sink combinators like map/filter/encode/decode are intentionally
+    // left as MethodCall nodes for later lowering; only direct runtime entry
+    // points are rewritten here.
+    if is_deferred_builtin_method_call(receiver_ty, method) {
+        return;
+    }
 
     // Rewrite handle method calls to C function calls.
     // The receiver type is looked up from the type checker output;
     // if it's a handle type (e.g. http.Request), the method call is
     // rewritten to a plain function call with the receiver prepended
     // as the first argument.
+    //
+    // When the receiver type IS a known dispatch category but the method
+    // cannot be resolved, emit a diagnostic rather than silently no-oping.
+    //
+    // Normalization invariant: Ty::normalize_named (called by every Ty::stream /
+    // Ty::sink / Ty::sender / Ty::receiver constructor, and by all type-checking
+    // paths that produce these types) always maps qualified spellings like
+    // "stream.Stream" to their short canonical names ("Stream") before types are
+    // stored in tco.expr_types.  Therefore only the short-name constants (STREAM,
+    // SINK, SENDER, RECEIVER) will ever match in practice.  The QUALIFIED_*
+    // guards are defence-in-depth: they cannot be reached under normal operation
+    // but ensure correctness if a hypothetical future path bypasses normalization.
     let c_fn: Option<String> = match receiver_ty {
-        Some(Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
+        Some(recv_ty @ Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
             let elem = args.first().and_then(ty_element_name);
-            hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from)
+            let resolved =
+                hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from);
+            if resolved.is_none() {
+                diagnostics.push(
+                    TypeExprConversionError::unresolvable_method_call(recv_ty)
+                        .with_context(format!("unknown method `{method}` on `Stream`"))
+                        .with_span(expr.1.clone()),
+                );
+            }
+            resolved
         }
-        Some(Ty::Named { name, args }) if name == SINK || name == QUALIFIED_SINK => {
+        Some(recv_ty @ Ty::Named { name, args }) if name == SINK || name == QUALIFIED_SINK => {
             let elem = args.first().and_then(ty_element_name);
-            hew_types::stdlib::resolve_stream_method(SINK, method, elem).map(String::from)
+            let resolved =
+                hew_types::stdlib::resolve_stream_method(SINK, method, elem).map(String::from);
+            if resolved.is_none() {
+                diagnostics.push(
+                    TypeExprConversionError::unresolvable_method_call(recv_ty)
+                        .with_context(format!("unknown method `{method}` on `Sink`"))
+                        .with_span(expr.1.clone()),
+                );
+            }
+            resolved
         }
-        Some(Ty::Named { name, args }) if name == SENDER || name == QUALIFIED_SENDER => {
-            hew_types::stdlib::resolve_channel_method(SENDER, method, args.first())
-                .map(String::from)
+        Some(recv_ty @ Ty::Named { name, args }) if name == SENDER || name == QUALIFIED_SENDER => {
+            let resolved = hew_types::stdlib::resolve_channel_method(SENDER, method, args.first())
+                .map(String::from);
+            if resolved.is_none() {
+                diagnostics.push(
+                    TypeExprConversionError::unresolvable_method_call(recv_ty)
+                        .with_context(format!("unknown method `{method}` on `Sender`"))
+                        .with_span(expr.1.clone()),
+                );
+            }
+            resolved
         }
-        Some(Ty::Named { name, args }) if name == RECEIVER || name == QUALIFIED_RECEIVER => {
-            hew_types::stdlib::resolve_channel_method(RECEIVER, method, args.first())
-                .map(String::from)
+        Some(recv_ty @ Ty::Named { name, args })
+            if name == RECEIVER || name == QUALIFIED_RECEIVER =>
+        {
+            let resolved =
+                hew_types::stdlib::resolve_channel_method(RECEIVER, method, args.first())
+                    .map(String::from);
+            if resolved.is_none() {
+                diagnostics.push(
+                    TypeExprConversionError::unresolvable_method_call(recv_ty)
+                        .with_context(format!("unknown method `{method}` on `Receiver`"))
+                        .with_span(expr.1.clone()),
+                );
+            }
+            resolved
         }
-        Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
+        Some(recv_ty @ Ty::Named { name, .. }) => {
+            let resolved = registry.resolve_handle_method(name, method);
+            // Only emit a diagnostic when the type is a registered C handle —
+            // plain user-defined named types are not expected to be rewritten.
+            if resolved.is_none()
+                && (registry.is_handle_type(name) || registry.qualify_handle_type(name).is_some())
+            {
+                diagnostics.push(
+                    TypeExprConversionError::unresolvable_method_call(recv_ty)
+                        .with_context(format!("unknown method `{method}` on handle type `{name}`"))
+                        .with_span(expr.1.clone()),
+                );
+            }
+            resolved
+        }
+        // No type entry (e.g. identity-mapped module wrappers whose receiver is
+        // a plain identifier) or a non-Named type: no rewrite is expected here.
         _ => None,
     };
+
     if let Some(c_fn) = c_fn {
         let span = expr.1.clone();
         let recv = std::mem::replace(
@@ -1619,7 +1747,7 @@ fn enrich_expr_with_diagnostics_inner(
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
-            enrich_method_call(expr, tco, registry);
+            enrich_method_call(expr, tco, registry, diagnostics);
         }
         Expr::Call {
             function,
@@ -3722,6 +3850,398 @@ mod tests {
             }
             other => panic!("expected Call, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // enrich_method_call — fail-closed diagnostics (issue #789)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a `MethodCall` `Spanned<Expr>` with receiver at span `0..recv_end`.
+    fn make_method_call_expr(recv_name: &str, recv_end: usize, method: &str) -> Spanned<Expr> {
+        (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier(recv_name.to_string()), 0..recv_end)),
+                method: method.to_string(),
+                args: vec![],
+            },
+            0..20,
+        )
+    }
+
+    fn make_tco_with_receiver_ty(recv_span_end: usize, ty: hew_types::Ty) -> TypeCheckOutput {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey {
+                start: 0,
+                end: recv_span_end,
+            },
+            ty,
+        );
+        tco
+    }
+
+    #[test]
+    fn test_enrich_method_call_unknown_stream_method_emits_diagnostic() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "nonexistent_method");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected one diagnostic, got {diagnostics:?}"
+        );
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed,
+            "diagnostic should be MethodCallRewriteFailed, got {:?}",
+            diagnostics[0].kind()
+        );
+        // Node must still be MethodCall (not silently left in a broken Call state)
+        assert!(
+            matches!(&expr.0, Expr::MethodCall { .. }),
+            "un-rewritten expr should remain MethodCall, got {:?}",
+            expr.0
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_unknown_sink_method_emits_diagnostic() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SINK.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "unknown_sink_op");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_unknown_sender_method_emits_diagnostic() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SENDER.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("tx", 2, "bogus");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_unknown_receiver_method_emits_diagnostic() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: RECEIVER.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("rx", 2, "no_such_method");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_known_stream_method_no_diagnostic() {
+        // stream.next() is a valid method — must not produce a diagnostic
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "next");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "valid stream.next() must emit no diagnostics"
+        );
+        assert!(
+            matches!(&expr.0, Expr::Call { .. }),
+            "valid stream.next() should be rewritten to a Call"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_stream_combinators_are_left_for_later_lowering() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![hew_types::Ty::Bytes],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "map");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "stream.map() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr.0, Expr::MethodCall { .. }),
+            "stream.map() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_filter = make_method_call_expr("s", 2, "filter");
+        let mut diagnostics_filter = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_filter, &tco, &mut diagnostics_filter, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_filter.is_empty(),
+            "stream.filter() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr_filter.0, Expr::MethodCall { .. }),
+            "stream.filter() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_decode = make_method_call_expr("s", 2, "decode");
+        let mut diagnostics_decode = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_decode, &tco, &mut diagnostics_decode, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_decode.is_empty(),
+            "stream.decode() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr_decode.0, Expr::MethodCall { .. }),
+            "stream.decode() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_take = make_method_call_expr("s", 2, "take");
+        let mut diagnostics_take = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_take, &tco, &mut diagnostics_take, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_take.is_empty(),
+            "stream.take() is lowered by codegen and must not emit a serializer diagnostic"
+        );
+        assert!(
+            matches!(&expr_take.0, Expr::MethodCall { .. }),
+            "stream.take() must remain a MethodCall for later lowering"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_sink_encode_is_left_for_later_lowering() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SINK.to_string(),
+                args: vec![hew_types::Ty::Bytes],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "encode");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "sink.encode() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr.0, Expr::MethodCall { .. }),
+            "sink.encode() must remain a MethodCall for later lowering"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_known_sender_send_no_diagnostic() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SENDER.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("tx", 2, "send");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "valid sender.send() must emit no diagnostics"
+        );
+        assert!(matches!(&expr.0, Expr::Call { .. }));
+    }
+
+    #[test]
+    fn test_enrich_method_call_no_type_info_no_diagnostic() {
+        // When no type is recorded for the receiver, enrich must not emit a diagnostic
+        // (covers identity-mapped module wrappers and error-recovery paths).
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("obj", 3, "whatever");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "missing receiver type must not emit a diagnostic (may be intentional no-rewrite)"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_unknown_handle_method_emits_diagnostic() {
+        // A registered handle type with an unknown method should produce a diagnostic.
+        let registry = test_registry_with(&["std::net::quic"]);
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: "quic.QUICEndpoint".to_string(),
+                args: vec![],
+            },
+        );
+        let mut expr = make_method_call_expr("ep", 2, "nonexistent_quic_method");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "registered handle + unknown method must emit diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_unregistered_named_type_no_diagnostic() {
+        // A Ty::Named that is NOT a registered handle must not produce a diagnostic
+        // when its method call isn't in the registry — it's a user-defined type.
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let tco = make_tco_with_receiver_ty(
+            3,
+            hew_types::Ty::Named {
+                name: "UserStruct".to_string(),
+                args: vec![],
+            },
+        );
+        let mut expr = make_method_call_expr("obj", 3, "some_method");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "user-defined named type must not emit a method-call diagnostic"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_rewrite_failed_kind_is_fatal() {
+        // Verify the kind() accessor returns MethodCallRewriteFailed and that
+        // the kind is considered fatal by the same predicate used in compile.rs.
+        let diag = TypeExprConversionError::unresolvable_method_call(&hew_types::Ty::Named {
+            name: STREAM.to_string(),
+            args: vec![],
+        });
+        assert_eq!(diag.kind(), TypeExprConversionKind::MethodCallRewriteFailed);
+        // Confirm it is distinct from the Unsupported kind (which is non-fatal).
+        assert_ne!(diag.kind(), TypeExprConversionKind::Unsupported);
+    }
+
+    /// Regression guard for the normalization-invariant review concern:
+    ///
+    /// `Ty::normalize_named` (called by every `Ty::stream/sink/sender/receiver`
+    /// constructor and all type-checking paths) maps QUALIFIED_* spellings
+    /// ("stream.Stream", "stream.Sink", "channel.Sender", "channel.Receiver")
+    /// to their short canonical names before storage in `tco.expr_types`.
+    /// Therefore the SHORT-name guards are the ones that matter in practice, and
+    /// the QUALIFIED_* guards are defence-in-depth.
+    ///
+    /// This test verifies that even if a qualified name *did* reach `expr_types`
+    /// (it never does in practice), the specific match arms still catch it and
+    /// emit the correct diagnostic — the qualified form does NOT fall through to
+    /// the generic `Ty::Named` arm where the diagnostic would be skipped.
+    #[test]
+    fn test_enrich_method_call_qualified_builtin_name_still_caught() {
+        // Put "stream.Stream" (QUALIFIED_STREAM) directly into expr_types — this
+        // bypasses normalize_named and simulates the "what-if" scenario.
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: QUALIFIED_STREAM.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+
+        // Known method → no diagnostic, rewritten to Call.
+        let mut expr_ok = make_method_call_expr("s", 2, "next");
+        let mut diag_ok = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_ok, &tco, &mut diag_ok, &registry).unwrap();
+        assert!(
+            diag_ok.is_empty(),
+            "qualified-name stream.next() must emit no diagnostic"
+        );
+        assert!(
+            matches!(&expr_ok.0, Expr::Call { .. }),
+            "qualified-name stream.next() must be rewritten to a Call"
+        );
+
+        // Unknown method → MethodCallRewriteFailed (NOT silently skipped).
+        let mut expr_bad = make_method_call_expr("s", 2, "bogus_method");
+        let mut diag_bad = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_bad, &tco, &mut diag_bad, &registry).unwrap();
+        assert_eq!(
+            diag_bad.len(),
+            1,
+            "qualified-name stream with unknown method must emit exactly one diagnostic"
+        );
+        assert_eq!(
+            diag_bad[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed,
+            "qualified-name dispatch must produce MethodCallRewriteFailed, not be silently skipped"
+        );
     }
 
     // -----------------------------------------------------------------------

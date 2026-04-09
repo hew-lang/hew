@@ -39,7 +39,10 @@ What to check:
   targets instead of calling Cargo/CMake/ctest directly.
 - Use the toolchain from the root README: Rust stable, LLVM/MLIR 22,
   CMake >= 3.20, Ninja, and clang/clang++.
-- On Linux, build `hew-codegen` with clang/clang++ rather than GCC.
+- On Linux, build the embedded codegen with clang/clang++ rather than GCC
+  (see [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
+  the reason — LLVM CMake config propagates Clang-specific warning flags that
+  GCC does not accept).
 - On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) and
   follow [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
   bitcode, sysroot, and libc++ issues.

@@ -243,6 +243,35 @@ See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
 For the current wildcard-import warning caveat, see the
 [troubleshooting guide](../docs/troubleshooting.md).
 
+## Testing
+
+`hew test` discovers and runs test functions declared with `#[test]` in one or
+more `.hew` files or directories. Each test is compiled to a native binary via
+the standard `hew build` pipeline and executed in a child process for
+isolation. A per-test timeout prevents hung tests from blocking the suite.
+
+```sh
+hew test tests/                          # run all tests under tests/
+hew test mylib.hew                       # run tests in a single file
+hew test tests/ --filter auth            # run only tests whose name contains "auth"
+hew test tests/ --format junit           # emit JUnit XML to stdout (CI mode)
+hew test tests/ --timeout 60            # per-test timeout in seconds (default: 30)
+hew test tests/ --include-ignored        # also run #[ignore]-annotated tests
+hew test tests/ --no-color               # disable coloured output
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--filter <pattern>` | — | Run only tests whose name contains `pattern` |
+| `--format text\|junit` | `text` | Human-readable output or JUnit XML |
+| `--timeout <seconds>` | `30` | Wall-clock limit per test (compile + run) |
+| `--include-ignored` | off | Also execute tests annotated with `#[ignore]` |
+| `--no-color` | off | Suppress ANSI colour codes |
+
+Exit code is **0** when all executed tests pass, **1** when any test fails or
+times out. Discovery parse errors are reported as failures (the runner is
+fail-closed on discovery errors).
+
 ## Debugging
 
 `hew debug` compiles the program with full debug information (no optimisation,

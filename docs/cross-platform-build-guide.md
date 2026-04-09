@@ -1,20 +1,29 @@
 # Cross-Platform Build Guide
 
-Building hew-codegen (the C++ MLIR code generator) for release requires careful
-setup because it statically links against LLVM 22 and MLIR. This document
-captures the platform-specific issues and their solutions.
+The C++ MLIR code generator (`hew-codegen`) is **embedded inside the `hew`
+binary** via `build.rs`. It is not a separately shipped binary. The CMake
+build in the `hew-codegen/` directory exists only to produce the C++ object
+library that `build.rs` links into `hew`, and to build the C++ unit-test and
+E2E ctest harness. This document captures the platform-specific issues
+involved in building LLVM/MLIR and linking them into `hew`.
 
 ## Overview
 
-The release build produces three binary artifacts per platform:
+The release build produces two binary artifacts per platform:
 
-- `hew` — compiler driver (Rust)
+- `hew` — compiler driver (Rust), with the MLIR/LLVM codegen backend
+  statically embedded (when built with `HEW_EMBED_STATIC=1` or `LLVM_PREFIX`
+  set)
 - `adze` — package manager (Rust)
-- `hew-codegen` — MLIR code generator (C++, statically linked against LLVM/MLIR)
 
-The Rust components build straightforwardly with `cargo build --release`. The
-C++ component requires LLVM 22 development libraries and a compatible compiler
-toolchain, and this is where the platform-specific complexity lives.
+Both Rust binaries build straightforwardly with `cargo build --release` once
+LLVM/MLIR libraries are available. The embedded C++ codegen requires LLVM 22
+development libraries and a compatible compiler toolchain, and this is where
+the platform-specific complexity lives.
+
+Use `make` / `make release` from the repository root rather than invoking
+`cargo` or `cmake` directly — the Makefile wires up the detection and
+embedding steps correctly across platforms.
 
 ## Linux x86_64
 
@@ -36,6 +45,17 @@ sudo apt-get install -y cmake ninja-build \
 ```
 
 ### Build
+
+Use `make` from the repository root. It auto-detects LLVM/MLIR paths, invokes
+CMake to build the C++ object library, and then triggers `cargo build` which
+embeds that library into `hew`:
+
+```bash
+make           # debug build with embedded codegen
+make release   # release build (sets HEW_EMBED_STATIC=1 automatically)
+```
+
+To drive CMake manually (e.g. for C++ unit tests only):
 
 ```bash
 cd hew-codegen
@@ -128,6 +148,15 @@ LLVM_PREFIX="$(brew --prefix llvm)"
 ```
 
 ### Build
+
+Use `make` from the repository root with `LLVM_PREFIX` set:
+
+```bash
+LLVM_PREFIX="$(brew --prefix llvm)" make
+LLVM_PREFIX="$(brew --prefix llvm)" make release
+```
+
+To drive CMake manually (e.g. for C++ unit tests only):
 
 ```bash
 LLVM_PREFIX="$(brew --prefix llvm)"
@@ -237,6 +266,10 @@ This is handled automatically in `hew-cli/src/link.rs` when `extra_libs` is
 non-empty.
 
 ## Quick Reference
+
+The table below covers the flags needed when invoking CMake directly (e.g. to
+run C++ unit tests). For a full build of `hew`, prefer `make` / `make release`
+which handles all of these automatically.
 
 | Platform      | Compiler                     | Sysroot                    | Linker flags                              | Extra apt packages       |
 | ------------- | ---------------------------- | -------------------------- | ----------------------------------------- | ------------------------ |

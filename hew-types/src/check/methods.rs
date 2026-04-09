@@ -376,13 +376,75 @@ impl Checker {
         false
     }
 
+    fn instantiate_type_def_member(&self, ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+        type_params
+            .iter()
+            .zip(type_args.iter())
+            .fold(ty.clone(), |instantiated, (param, arg)| {
+                self.substitute_named_param(&instantiated, param, arg)
+            })
+    }
+
+    /// Detect arrays that survive inside the stored shape of a Vec element.
+    /// Nested collection validation runs separately so this walk stays focused
+    /// on structural payloads like tuples, ranges, and user-defined types.
+    fn vec_element_contains_structural_array(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Array(_, _) => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
+            Ty::Named { name, args } if name == "Range" => args
+                .iter()
+                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
+            Ty::Named { name, args } => {
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    return false;
+                };
+                if visiting.contains(type_def.name.as_str()) {
+                    return false;
+                }
+
+                visiting.insert(type_def.name.clone());
+                let result = type_def.fields.values().any(|field_ty| {
+                    let field_ty =
+                        self.instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.vec_element_contains_structural_array(&field_ty, visiting)
+                }) || type_def.variants.values().any(|variant| match variant {
+                    VariantDef::Unit => false,
+                    VariantDef::Tuple(tys) => tys.iter().any(|ty| {
+                        let ty = self.instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_structural_array(&ty, visiting)
+                    }),
+                    VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
+                        let ty = self.instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_structural_array(&ty, visiting)
+                    }),
+                });
+                visiting.remove(type_def.name.as_str());
+                result
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn validate_vec_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return true;
         }
 
-        if let Ty::Array(_, _) = resolved {
+        if !self.validate_concrete_collection_types(&resolved, span) {
+            return false;
+        }
+
+        let mut visiting = HashSet::new();
+        if self.vec_element_contains_structural_array(&resolved, &mut visiting) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -732,6 +794,9 @@ impl Checker {
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
         let elem_ty_before = self.subst.resolve(&elem_ty);
+        let mut elem_ty_before_visiting = HashSet::new();
+        let elem_ty_before_has_structural_array = self
+            .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let result = match method {
             "push" => {
                 self.check_arity(args, 1, "`Vec::push`", span);
@@ -860,7 +925,10 @@ impl Checker {
             }
         };
         let elem_ty_after = self.subst.resolve(&elem_ty);
-        if matches!(elem_ty_after, Ty::Array(_, _)) && !matches!(elem_ty_before, Ty::Array(_, _)) {
+        let mut elem_ty_after_visiting = HashSet::new();
+        let elem_ty_after_has_structural_array =
+            self.vec_element_contains_structural_array(&elem_ty_after, &mut elem_ty_after_visiting);
+        if elem_ty_after_has_structural_array && !elem_ty_before_has_structural_array {
             let _ = self.validate_vec_element_type(&elem_ty_after, span);
             return Ty::Error;
         }

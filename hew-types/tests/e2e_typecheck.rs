@@ -1921,6 +1921,50 @@ fn vec_from_array_elements_rejected() {
     );
 }
 
+#[test]
+fn vec_nested_vec_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Vec<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "annotated Vec<Vec<[int; 2]>>",
+    );
+}
+
+#[test]
+fn vec_tuple_with_array_elements_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v = Vec::new();
+            v.push((1, [2, 3]));
+            println(v.len());
+        }",
+        "Vec<(int, [int; 2])> is not supported",
+        "Vec tuple element with nested array",
+    );
+}
+
+#[test]
+fn vec_generic_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        type Box<T> {
+            value: T,
+        }
+
+        fn main() {
+            let v: Vec<Box<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Box<[int; 2]>> is not supported",
+        "annotated Vec<Box<[int; 2]>>",
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  UnsafeCollectionElement — Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════

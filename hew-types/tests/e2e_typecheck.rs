@@ -1871,6 +1871,25 @@ fn hashset_u32_insert_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_i32_len_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let s: HashSet<i32> = HashSet::new();
+            println(s.len());
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i32> is not supported")
+        ),
+        "expected HashSet<i32>.len() to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

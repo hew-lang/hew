@@ -343,7 +343,7 @@ impl Checker {
         }
     }
 
-    fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
+    pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
         if matches!(
             resolved,

@@ -1965,6 +1965,32 @@ fn vec_generic_wrapper_array_annotation_rejected() {
     );
 }
 
+#[test]
+fn vec_option_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Option<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Option<[int; 2]>> is not supported",
+        "annotated Vec<Option<[int; 2]>>",
+    );
+}
+
+#[test]
+fn vec_result_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Result<[int; 2], String>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Result<[int; 2], String>> is not supported",
+        "annotated Vec<Result<[int; 2], String>>",
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  UnsafeCollectionElement — Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════

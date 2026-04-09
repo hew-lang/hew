@@ -387,7 +387,8 @@ impl Checker {
 
     /// Detect arrays that survive inside the stored shape of a Vec element.
     /// Nested collection validation runs separately so this walk stays focused
-    /// on structural payloads like tuples, ranges, and user-defined types.
+    /// on structural payloads like tuples, builtin wrappers, ranges, and
+    /// user-defined types.
     fn vec_element_contains_structural_array(
         &self,
         ty: &Ty,
@@ -399,9 +400,12 @@ impl Checker {
             Ty::Tuple(elems) => elems
                 .iter()
                 .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
-            Ty::Named { name, args } if name == "Range" => args
-                .iter()
-                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
+            // Builtin wrappers inline their payloads but do not live in
+            // `type_defs`, so recurse through their type arguments directly.
+            Ty::Named { name, args } if matches!(name.as_str(), "Range" | "Option" | "Result") => {
+                args.iter()
+                    .any(|arg| self.vec_element_contains_structural_array(arg, visiting))
+            }
             Ty::Named { name, args } => {
                 let Some(type_def) = self.lookup_type_def(name) else {
                     return false;

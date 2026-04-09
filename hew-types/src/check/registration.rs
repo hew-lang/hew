@@ -1535,7 +1535,7 @@ impl Checker {
 
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args = type_args
+                    let self_type_args: Vec<Ty> = type_args
                         .as_ref()
                         .map(|args| {
                             args.iter()
@@ -1543,7 +1543,7 @@ impl Checker {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    self.current_self_type = Some((type_name.clone(), self_type_args));
+                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -1573,16 +1573,55 @@ impl Checker {
                                 );
                                 let param_names: Vec<String> =
                                     m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
-                                let params: Vec<Ty> = m
-                                    .params
-                                    .iter()
-                                    .skip(skip)
-                                    .map(|p| self.resolve_type_expr(&p.ty.0))
-                                    .collect();
-                                let return_type = m
-                                    .return_type
-                                    .as_ref()
-                                    .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+                                self.register_trait_method_sig(&tb.name, &m, span);
+                                let trait_method_key = format!("{}::{}", tb.name, m.name);
+                                let concrete_self = Ty::Named {
+                                    name: type_name.clone(),
+                                    args: self_type_args.clone(),
+                                };
+                                let (params, return_type) = if let Some(sig) =
+                                    self.fn_sigs.get(&trait_method_key).cloned()
+                                {
+                                    // Qualified trait signatures registered outside an impl
+                                    // scope can still include a concrete receiver
+                                    // (`fn bump(box: CounterBox)`) because receiver
+                                    // detection there only knows about `Self`.
+                                    // When copying defaults onto a concrete impl,
+                                    // drop that leading receiver iff the trait sig
+                                    // still has it.
+                                    let sig_skip = usize::from(
+                                        skip == 1 && sig.params.len() == m.params.len(),
+                                    );
+                                    (
+                                        sig.params
+                                            .iter()
+                                            .skip(sig_skip)
+                                            .map(|ty| {
+                                                self.substitute_named_param(
+                                                    ty,
+                                                    "Self",
+                                                    &concrete_self,
+                                                )
+                                            })
+                                            .collect::<Vec<_>>(),
+                                        self.substitute_named_param(
+                                            &sig.return_type,
+                                            "Self",
+                                            &concrete_self,
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        m.params
+                                            .iter()
+                                            .skip(skip)
+                                            .map(|p| self.resolve_type_expr(&p.ty.0))
+                                            .collect(),
+                                        m.return_type
+                                            .as_ref()
+                                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te)),
+                                    )
+                                };
                                 let sig = FnSig {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
@@ -1661,6 +1700,13 @@ impl Checker {
                     }
                 }
             }
+            Item::Trait(td) => {
+                for trait_item in &td.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        self.register_trait_method_sig(&td.name, method, span);
+                    }
+                }
+            }
             Item::ExternBlock(eb) => {
                 self.register_extern_block(eb);
             }
@@ -1676,6 +1722,39 @@ impl Checker {
 
     pub(super) fn register_fn_sig(&mut self, fd: &FnDecl) {
         self.register_fn_sig_with_name(&fd.name, fd);
+    }
+
+    fn register_trait_method_sig(
+        &mut self,
+        trait_name: &str,
+        method: &hew_parser::ast::TraitMethod,
+        span: &Span,
+    ) {
+        let method_key = format!("{trait_name}::{}", method.name);
+        if self.fn_sigs.contains_key(&method_key) {
+            return;
+        }
+        self.register_fn_sig_with_name(
+            &method_key,
+            &FnDecl {
+                attributes: vec![],
+                is_async: false,
+                is_generator: false,
+                visibility: hew_parser::ast::Visibility::Private,
+                is_pure: method.is_pure,
+                name: method.name.clone(),
+                type_params: method.type_params.clone(),
+                params: method.params.clone(),
+                return_type: method.return_type.clone(),
+                where_clause: method.where_clause.clone(),
+                body: hew_parser::ast::Block {
+                    stmts: vec![],
+                    trailing_expr: None,
+                },
+                doc_comment: None,
+                decl_span: span.clone(),
+            },
+        );
     }
 
     #[expect(

@@ -418,6 +418,21 @@ impl Checker {
                         }
                     }
                 }
+                Item::Trait(td) => {
+                    for trait_item in &td.items {
+                        if let TraitItem::Method(method) = trait_item {
+                            let method_name = format!("{}::{}", td.name, method.name);
+                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
+                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
+                            ) {
+                                self.errors.push(TypeError::inference_failed(
+                                    span.clone(),
+                                    &format!("signature of trait method `{method_name}`"),
+                                ));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }

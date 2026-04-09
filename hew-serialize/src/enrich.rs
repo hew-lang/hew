@@ -279,6 +279,19 @@ fn is_runtime_special_handle_type(
             .qualify_handle_type(name)
             .is_some_and(|qualified| is_runtime_special_name(&qualified))
 }
+
+fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bool {
+    let Some(Ty::Named { name, .. }) = receiver_ty else {
+        return false;
+    };
+    if name == STREAM || name == QUALIFIED_STREAM {
+        return matches!(method, "map" | "filter" | "take" | "chunks" | "decode");
+    }
+    if name == SINK || name == QUALIFIED_SINK {
+        return matches!(method, "encode");
+    }
+    false
+}
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
     ty.canonical_lowering_name()
@@ -1556,6 +1569,12 @@ fn enrich_method_call(
         .contains_key(&method_call_key)
         && !is_runtime_special_handle_type(receiver_ty, registry)
     {
+        return;
+    }
+    // Stream/Sink combinators like map/filter/encode/decode are intentionally
+    // left as MethodCall nodes for later lowering; only direct runtime entry
+    // points are rewritten here.
+    if is_deferred_builtin_method_call(receiver_ty, method) {
         return;
     }
 
@@ -3978,6 +3997,110 @@ mod tests {
         assert!(
             matches!(&expr.0, Expr::Call { .. }),
             "valid stream.next() should be rewritten to a Call"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_stream_combinators_are_left_for_later_lowering() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![hew_types::Ty::Bytes],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "map");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "stream.map() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr.0, Expr::MethodCall { .. }),
+            "stream.map() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_filter = make_method_call_expr("s", 2, "filter");
+        let mut diagnostics_filter = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_filter, &tco, &mut diagnostics_filter, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_filter.is_empty(),
+            "stream.filter() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr_filter.0, Expr::MethodCall { .. }),
+            "stream.filter() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_decode = make_method_call_expr("s", 2, "decode");
+        let mut diagnostics_decode = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_decode, &tco, &mut diagnostics_decode, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_decode.is_empty(),
+            "stream.decode() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr_decode.0, Expr::MethodCall { .. }),
+            "stream.decode() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_take = make_method_call_expr("s", 2, "take");
+        let mut diagnostics_take = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_take, &tco, &mut diagnostics_take, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_take.is_empty(),
+            "stream.take() is lowered by codegen and must not emit a serializer diagnostic"
+        );
+        assert!(
+            matches!(&expr_take.0, Expr::MethodCall { .. }),
+            "stream.take() must remain a MethodCall for later lowering"
+        );
+
+        let mut expr_chunks = make_method_call_expr("s", 2, "chunks");
+        let mut diagnostics_chunks = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_chunks, &tco, &mut diagnostics_chunks, &registry)
+            .unwrap();
+
+        assert!(
+            diagnostics_chunks.is_empty(),
+            "stream.chunks() is lowered by codegen and must not emit a serializer diagnostic"
+        );
+        assert!(
+            matches!(&expr_chunks.0, Expr::MethodCall { .. }),
+            "stream.chunks() must remain a MethodCall for later lowering"
+        );
+    }
+
+    #[test]
+    fn test_enrich_method_call_sink_encode_is_left_for_later_lowering() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SINK.to_string(),
+                args: vec![hew_types::Ty::Bytes],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "encode");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "sink.encode() is lowered later and must not emit a diagnostic"
+        );
+        assert!(
+            matches!(&expr.0, Expr::MethodCall { .. }),
+            "sink.encode() must remain a MethodCall for later lowering"
         );
     }
 

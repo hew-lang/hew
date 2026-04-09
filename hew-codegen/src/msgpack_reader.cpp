@@ -4,6 +4,7 @@
 // DO NOT EDIT - changes will be overwritten.
 //
 //===----------------------------------------------------------------------===//
+// clang-format off
 
 #include "hew/msgpack_reader.h"
 
@@ -159,6 +160,7 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj);
 static ast::Pattern parsePattern(const msgpack::object &obj);
 static ast::FnDecl parseFnDecl(const msgpack::object &obj);
 
+
 // ── Forward declarations for special-cased parsers ──────────────────────────
 
 static ast::AttributeArg parseAttributeArg(const msgpack::object &obj);
@@ -178,6 +180,7 @@ static ast::ReceiveFnDecl parseReceiveFnDecl(const msgpack::object &obj);
 static ast::TypeParam parseTypeParam(const msgpack::object &obj);
 static ast::NamingCase parseNamingCase(const msgpack::object &obj);
 static ast::WireMetadata parseWireMetadata(const msgpack::object &obj);
+
 
 // ── Span / Spanned ──────────────────────────────────────────────────────────
 
@@ -315,28 +318,20 @@ static ast::FieldDecl parseFieldDecl(const msgpack::object &obj) {
 
 static ast::OverflowFallback parseOverflowFallback(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "DropNew")
-    return ast::OverflowFallback::DropNew;
-  if (s == "DropOld")
-    return ast::OverflowFallback::DropOld;
-  if (s == "Block")
-    return ast::OverflowFallback::Block;
-  if (s == "Fail")
-    return ast::OverflowFallback::Fail;
+  if (s == "DropNew") return ast::OverflowFallback::DropNew;
+  if (s == "DropOld") return ast::OverflowFallback::DropOld;
+  if (s == "Block") return ast::OverflowFallback::Block;
+  if (s == "Fail") return ast::OverflowFallback::Fail;
   fail("unknown OverflowFallback: " + s);
 }
 
 static ast::OverflowPolicy parseOverflowPolicy(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "DropNew")
-    return ast::OverflowPolicy{ast::OverflowDropNew{}};
-  if (name == "DropOld")
-    return ast::OverflowPolicy{ast::OverflowDropOld{}};
-  if (name == "Block")
-    return ast::OverflowPolicy{ast::OverflowBlock{}};
-  if (name == "Fail")
-    return ast::OverflowPolicy{ast::OverflowFail{}};
+  if (name == "DropNew") return ast::OverflowPolicy{ast::OverflowDropNew{}};
+  if (name == "DropOld") return ast::OverflowPolicy{ast::OverflowDropOld{}};
+  if (name == "Block") return ast::OverflowPolicy{ast::OverflowBlock{}};
+  if (name == "Fail") return ast::OverflowPolicy{ast::OverflowFail{}};
   if (name == "Coalesce") {
     ast::OverflowCoalesce e;
     e.key_field = getString(mapReq(*payload, "key_field"));
@@ -353,10 +348,7 @@ static ast::TraitBound parseTraitBound(const msgpack::object &obj) {
   result.name = getString(mapReq(obj, "name"));
   const auto *type_args = mapGet(obj, "type_args");
   if (type_args && !isNil(*type_args))
-    result.type_args =
-        parseVec<ast::Spanned<ast::TypeExpr>>(*type_args, [](const msgpack::object &o) {
-          return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
-        });
+    result.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*type_args, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
   return result;
 }
 
@@ -478,18 +470,14 @@ static ast::ImportName parseImportName(const msgpack::object &obj) {
 static ast::ImportSpec parseImportSpec(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Glob")
-    return ast::ImportSpec{ast::ImportSpecGlob{}};
-  if (name == "Names")
-    return ast::ImportSpec{
-        ast::ImportSpecNames{parseVec<ast::ImportName>(*payload, parseImportName)}};
+  if (name == "Glob") return ast::ImportSpec{ast::ImportSpecGlob{}};
+  if (name == "Names") return ast::ImportSpec{ast::ImportSpecNames{parseVec<ast::ImportName>(*payload, parseImportName)}};
   fail("unknown ImportSpec variant: " + name);
 }
 
 static ast::ImportDecl parseImportDecl(const msgpack::object &obj) {
   ast::ImportDecl result;
-  result.path = parseVec<std::string>(mapReq(obj, "path"),
-                                      [](const msgpack::object &o) { return getString(o); });
+  result.path = parseVec<std::string>(mapReq(obj, "path"), [](const msgpack::object &o) { return getString(o); });
   const auto *spec = mapGet(obj, "spec");
   if (spec && !isNil(*spec))
     result.spec = parseImportSpec(*spec);
@@ -502,30 +490,14 @@ static ast::ImportDecl parseImportDecl(const msgpack::object &obj) {
 static ast::MachineEvent parseMachineEvent(const msgpack::object &obj) {
   ast::MachineEvent result;
   result.name = getString(mapReq(obj, "name"));
-  result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
-      mapReq(obj, "fields"), [](const msgpack::object &o) {
-        uint32_t sz;
-        const auto *arr = arrayData(o, sz);
-        if (sz != 2)
-          fail("tuple should have 2 elements");
-        return std::make_pair(getString(arr[0]),
-                              parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr));
-      });
+  result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"), [](const msgpack::object &o) { uint32_t sz; const auto *arr = arrayData(o, sz); if (sz != 2) fail("tuple should have 2 elements"); return std::make_pair(getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)); });
   return result;
 }
 
 static ast::MachineState parseMachineState(const msgpack::object &obj) {
   ast::MachineState result;
   result.name = getString(mapReq(obj, "name"));
-  result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
-      mapReq(obj, "fields"), [](const msgpack::object &o) {
-        uint32_t sz;
-        const auto *arr = arrayData(o, sz);
-        if (sz != 2)
-          fail("tuple should have 2 elements");
-        return std::make_pair(getString(arr[0]),
-                              parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr));
-      });
+  result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"), [](const msgpack::object &o) { uint32_t sz; const auto *arr = arrayData(o, sz); if (sz != 2) fail("tuple should have 2 elements"); return std::make_pair(getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)); });
   return result;
 }
 
@@ -537,8 +509,7 @@ static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
   result.name = getString(mapReq(obj, "name"));
   result.states = parseVec<ast::MachineState>(mapReq(obj, "states"), parseMachineState);
   result.events = parseVec<ast::MachineEvent>(mapReq(obj, "events"), parseMachineEvent);
-  result.transitions =
-      parseVec<ast::MachineTransition>(mapReq(obj, "transitions"), parseMachineTransition);
+  result.transitions = parseVec<ast::MachineTransition>(mapReq(obj, "transitions"), parseMachineTransition);
   const auto *has_default_ = mapGet(obj, "has_default");
   if (has_default_ && !isNil(*has_default_))
     result.has_default = getBool(*has_default_);
@@ -547,23 +518,17 @@ static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
 
 static ast::RestartPolicy parseRestartPolicy(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Permanent")
-    return ast::RestartPolicy::Permanent;
-  if (s == "Transient")
-    return ast::RestartPolicy::Transient;
-  if (s == "Temporary")
-    return ast::RestartPolicy::Temporary;
+  if (s == "Permanent") return ast::RestartPolicy::Permanent;
+  if (s == "Transient") return ast::RestartPolicy::Transient;
+  if (s == "Temporary") return ast::RestartPolicy::Temporary;
   fail("unknown RestartPolicy: " + s);
 }
 
 static ast::SupervisorStrategy parseSupervisorStrategy(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "OneForOne")
-    return ast::SupervisorStrategy::OneForOne;
-  if (s == "OneForAll")
-    return ast::SupervisorStrategy::OneForAll;
-  if (s == "RestForOne")
-    return ast::SupervisorStrategy::RestForOne;
+  if (s == "OneForOne") return ast::SupervisorStrategy::OneForOne;
+  if (s == "OneForAll") return ast::SupervisorStrategy::OneForAll;
+  if (s == "RestForOne") return ast::SupervisorStrategy::RestForOne;
   fail("unknown SupervisorStrategy: " + s);
 }
 
@@ -637,25 +602,18 @@ static ast::TypeAliasDecl parseTypeAliasDecl(const msgpack::object &obj) {
 
 static ast::TypeDeclKind parseTypeDeclKind(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Struct")
-    return ast::TypeDeclKind::Struct;
-  if (s == "Enum")
-    return ast::TypeDeclKind::Enum;
+  if (s == "Struct") return ast::TypeDeclKind::Struct;
+  if (s == "Enum") return ast::TypeDeclKind::Enum;
   fail("unknown TypeDeclKind: " + s);
 }
 
 static ast::NamingCase parseNamingCase(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "CamelCase")
-    return ast::NamingCase::CamelCase;
-  if (s == "PascalCase")
-    return ast::NamingCase::PascalCase;
-  if (s == "SnakeCase")
-    return ast::NamingCase::SnakeCase;
-  if (s == "ScreamingSnake")
-    return ast::NamingCase::ScreamingSnake;
-  if (s == "KebabCase")
-    return ast::NamingCase::KebabCase;
+  if (s == "CamelCase") return ast::NamingCase::CamelCase;
+  if (s == "PascalCase") return ast::NamingCase::PascalCase;
+  if (s == "SnakeCase") return ast::NamingCase::SnakeCase;
+  if (s == "ScreamingSnake") return ast::NamingCase::ScreamingSnake;
+  if (s == "KebabCase") return ast::NamingCase::KebabCase;
   fail("unknown NamingCase: " + s);
 }
 
@@ -681,10 +639,7 @@ static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
 static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
   ast::WireMetadata result;
   result.field_meta = parseVec<ast::WireFieldMeta>(mapReq(obj, "field_meta"), parseWireFieldMeta);
-  result.reserved_numbers =
-      parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) {
-        return static_cast<uint32_t>(getUint(o));
-      });
+  result.reserved_numbers = parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); });
   const auto *json_case = mapGet(obj, "json_case");
   if (json_case && !isNil(*json_case))
     result.json_case = parseNamingCase(*json_case);
@@ -702,10 +657,8 @@ static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
 
 static ast::WireDeclKind parseWireDeclKind(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Struct")
-    return ast::WireDeclKind::Struct;
-  if (s == "Enum")
-    return ast::WireDeclKind::Enum;
+  if (s == "Struct") return ast::WireDeclKind::Struct;
+  if (s == "Enum") return ast::WireDeclKind::Enum;
   fail("unknown WireDeclKind: " + s);
 }
 
@@ -751,48 +704,33 @@ static ast::WireDecl parseWireDecl(const msgpack::object &obj) {
 static ast::Item parseItem(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Import")
-    return ast::Item{parseImportDecl(*payload)};
-  if (name == "Const")
-    return ast::Item{parseConstDecl(*payload)};
-  if (name == "TypeDecl")
-    return ast::Item{parseTypeDecl(*payload)};
-  if (name == "TypeAlias")
-    return ast::Item{parseTypeAliasDecl(*payload)};
-  if (name == "Trait")
-    return ast::Item{parseTraitDecl(*payload)};
-  if (name == "Impl")
-    return ast::Item{parseImplDecl(*payload)};
-  if (name == "Wire")
-    return ast::Item{parseWireDecl(*payload)};
-  if (name == "Function")
-    return ast::Item{parseFnDecl(*payload)};
-  if (name == "ExternBlock")
-    return ast::Item{parseExternBlock(*payload)};
-  if (name == "Actor")
-    return ast::Item{parseActorDecl(*payload)};
-  if (name == "Supervisor")
-    return ast::Item{parseSupervisorDecl(*payload)};
-  if (name == "Machine")
-    return ast::Item{parseMachineDecl(*payload)};
+  if (name == "Import") return ast::Item{parseImportDecl(*payload)};
+  if (name == "Const") return ast::Item{parseConstDecl(*payload)};
+  if (name == "TypeDecl") return ast::Item{parseTypeDecl(*payload)};
+  if (name == "TypeAlias") return ast::Item{parseTypeAliasDecl(*payload)};
+  if (name == "Trait") return ast::Item{parseTraitDecl(*payload)};
+  if (name == "Impl") return ast::Item{parseImplDecl(*payload)};
+  if (name == "Wire") return ast::Item{parseWireDecl(*payload)};
+  if (name == "Function") return ast::Item{parseFnDecl(*payload)};
+  if (name == "ExternBlock") return ast::Item{parseExternBlock(*payload)};
+  if (name == "Actor") return ast::Item{parseActorDecl(*payload)};
+  if (name == "Supervisor") return ast::Item{parseSupervisorDecl(*payload)};
+  if (name == "Machine") return ast::Item{parseMachineDecl(*payload)};
   fail("unknown Item variant: " + name);
 }
 
 static ast::StringPart parseStringPart(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Literal")
-    return ast::StringPart{ast::StringPartLiteral{getString(*payload)}};
-  if (name == "Expr")
-    return ast::StringPart{ast::StringPartExpr{parseSpannedPtr<ast::Expr>(*payload, parseExpr)}};
+  if (name == "Literal") return ast::StringPart{ast::StringPartLiteral{getString(*payload)}};
+  if (name == "Expr") return ast::StringPart{ast::StringPartExpr{parseSpannedPtr<ast::Expr>(*payload, parseExpr)}};
   fail("unknown StringPart variant: " + name);
 }
 
 static ast::CallArg parseCallArg(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Positional")
-    return ast::CallArg{ast::CallArgPositional{parseSpannedPtr<ast::Expr>(*payload, parseExpr)}};
+  if (name == "Positional") return ast::CallArg{ast::CallArgPositional{parseSpannedPtr<ast::Expr>(*payload, parseExpr)}};
   if (name == "Named") {
     ast::CallArgNamed e;
     e.name = getString(mapReq(*payload, "name"));
@@ -804,52 +742,29 @@ static ast::CallArg parseCallArg(const msgpack::object &obj) {
 
 static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Add")
-    return ast::BinaryOp::Add;
-  if (s == "Subtract")
-    return ast::BinaryOp::Subtract;
-  if (s == "Multiply")
-    return ast::BinaryOp::Multiply;
-  if (s == "Divide")
-    return ast::BinaryOp::Divide;
-  if (s == "Modulo")
-    return ast::BinaryOp::Modulo;
-  if (s == "Equal")
-    return ast::BinaryOp::Equal;
-  if (s == "NotEqual")
-    return ast::BinaryOp::NotEqual;
-  if (s == "Less")
-    return ast::BinaryOp::Less;
-  if (s == "LessEqual")
-    return ast::BinaryOp::LessEqual;
-  if (s == "Greater")
-    return ast::BinaryOp::Greater;
-  if (s == "GreaterEqual")
-    return ast::BinaryOp::GreaterEqual;
-  if (s == "And")
-    return ast::BinaryOp::And;
-  if (s == "Or")
-    return ast::BinaryOp::Or;
-  if (s == "BitAnd")
-    return ast::BinaryOp::BitAnd;
-  if (s == "BitOr")
-    return ast::BinaryOp::BitOr;
-  if (s == "BitXor")
-    return ast::BinaryOp::BitXor;
-  if (s == "Shl")
-    return ast::BinaryOp::Shl;
-  if (s == "Shr")
-    return ast::BinaryOp::Shr;
-  if (s == "Range")
-    return ast::BinaryOp::Range;
-  if (s == "RangeInclusive")
-    return ast::BinaryOp::RangeInclusive;
-  if (s == "Send")
-    return ast::BinaryOp::Send;
-  if (s == "RegexMatch")
-    return ast::BinaryOp::RegexMatch;
-  if (s == "RegexNotMatch")
-    return ast::BinaryOp::RegexNotMatch;
+  if (s == "Add") return ast::BinaryOp::Add;
+  if (s == "Subtract") return ast::BinaryOp::Subtract;
+  if (s == "Multiply") return ast::BinaryOp::Multiply;
+  if (s == "Divide") return ast::BinaryOp::Divide;
+  if (s == "Modulo") return ast::BinaryOp::Modulo;
+  if (s == "Equal") return ast::BinaryOp::Equal;
+  if (s == "NotEqual") return ast::BinaryOp::NotEqual;
+  if (s == "Less") return ast::BinaryOp::Less;
+  if (s == "LessEqual") return ast::BinaryOp::LessEqual;
+  if (s == "Greater") return ast::BinaryOp::Greater;
+  if (s == "GreaterEqual") return ast::BinaryOp::GreaterEqual;
+  if (s == "And") return ast::BinaryOp::And;
+  if (s == "Or") return ast::BinaryOp::Or;
+  if (s == "BitAnd") return ast::BinaryOp::BitAnd;
+  if (s == "BitOr") return ast::BinaryOp::BitOr;
+  if (s == "BitXor") return ast::BinaryOp::BitXor;
+  if (s == "Shl") return ast::BinaryOp::Shl;
+  if (s == "Shr") return ast::BinaryOp::Shr;
+  if (s == "Range") return ast::BinaryOp::Range;
+  if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
+  if (s == "Send") return ast::BinaryOp::Send;
+  if (s == "RegexMatch") return ast::BinaryOp::RegexMatch;
+  if (s == "RegexNotMatch") return ast::BinaryOp::RegexNotMatch;
   fail("unknown BinaryOp: " + s);
 }
 
@@ -871,37 +786,24 @@ static ast::TimeoutClause parseTimeoutClause(const msgpack::object &obj) {
 
 static ast::UnaryOp parseUnaryOp(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Not")
-    return ast::UnaryOp::Not;
-  if (s == "Negate")
-    return ast::UnaryOp::Negate;
-  if (s == "BitNot")
-    return ast::UnaryOp::BitNot;
+  if (s == "Not") return ast::UnaryOp::Not;
+  if (s == "Negate") return ast::UnaryOp::Negate;
+  if (s == "BitNot") return ast::UnaryOp::BitNot;
   fail("unknown UnaryOp: " + s);
 }
 
 static ast::CompoundAssignOp parseCompoundAssignOp(const msgpack::object &obj) {
   auto s = getString(obj);
-  if (s == "Add")
-    return ast::CompoundAssignOp::Add;
-  if (s == "Subtract")
-    return ast::CompoundAssignOp::Subtract;
-  if (s == "Multiply")
-    return ast::CompoundAssignOp::Multiply;
-  if (s == "Divide")
-    return ast::CompoundAssignOp::Divide;
-  if (s == "Modulo")
-    return ast::CompoundAssignOp::Modulo;
-  if (s == "BitAnd")
-    return ast::CompoundAssignOp::BitAnd;
-  if (s == "BitOr")
-    return ast::CompoundAssignOp::BitOr;
-  if (s == "BitXor")
-    return ast::CompoundAssignOp::BitXor;
-  if (s == "Shl")
-    return ast::CompoundAssignOp::Shl;
-  if (s == "Shr")
-    return ast::CompoundAssignOp::Shr;
+  if (s == "Add") return ast::CompoundAssignOp::Add;
+  if (s == "Subtract") return ast::CompoundAssignOp::Subtract;
+  if (s == "Multiply") return ast::CompoundAssignOp::Multiply;
+  if (s == "Divide") return ast::CompoundAssignOp::Divide;
+  if (s == "Modulo") return ast::CompoundAssignOp::Modulo;
+  if (s == "BitAnd") return ast::CompoundAssignOp::BitAnd;
+  if (s == "BitOr") return ast::CompoundAssignOp::BitOr;
+  if (s == "BitXor") return ast::CompoundAssignOp::BitXor;
+  if (s == "Shl") return ast::CompoundAssignOp::Shl;
+  if (s == "Shr") return ast::CompoundAssignOp::Shr;
   fail("unknown CompoundAssignOp: " + s);
 }
 
@@ -913,9 +815,7 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     e.name = getString(mapReq(*payload, "name"));
     const auto *type_args = mapGet(*payload, "type_args");
     if (type_args && !isNil(*type_args))
-      e.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*type_args, [](const msgpack::object &o) {
-        return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
-      });
+      e.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*type_args, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
     return ast::TypeExpr{std::move(e)};
   }
   if (name == "Result") {
@@ -924,26 +824,18 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     e.err = parseSpannedPtr<ast::TypeExpr>(mapReq(*payload, "err"), parseTypeExpr);
     return ast::TypeExpr{std::move(e)};
   }
-  if (name == "Option")
-    return ast::TypeExpr{ast::TypeOption{parseSpannedPtr<ast::TypeExpr>(*payload, parseTypeExpr)}};
-  if (name == "Tuple")
-    return ast::TypeExpr{ast::TypeTuple{
-        parseVec<ast::Spanned<ast::TypeExpr>>(*payload, [](const msgpack::object &o) {
-          return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
-        })}};
+  if (name == "Option") return ast::TypeExpr{ast::TypeOption{parseSpannedPtr<ast::TypeExpr>(*payload, parseTypeExpr)}};
+  if (name == "Tuple") return ast::TypeExpr{ast::TypeTuple{parseVec<ast::Spanned<ast::TypeExpr>>(*payload, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); })}};
   if (name == "Array") {
     ast::TypeArray e;
     e.element = parseSpannedPtr<ast::TypeExpr>(mapReq(*payload, "element"), parseTypeExpr);
     e.size = getUint(mapReq(*payload, "size"));
     return ast::TypeExpr{std::move(e)};
   }
-  if (name == "Slice")
-    return ast::TypeExpr{ast::TypeSlice{parseSpannedPtr<ast::TypeExpr>(*payload, parseTypeExpr)}};
+  if (name == "Slice") return ast::TypeExpr{ast::TypeSlice{parseSpannedPtr<ast::TypeExpr>(*payload, parseTypeExpr)}};
   if (name == "Function") {
     ast::TypeFunction e;
-    e.params = parseVec<ast::Spanned<ast::TypeExpr>>(
-        mapReq(*payload, "params"),
-        [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
+    e.params = parseVec<ast::Spanned<ast::TypeExpr>>(mapReq(*payload, "params"), [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
     e.return_type = parseSpannedPtr<ast::TypeExpr>(mapReq(*payload, "return_type"), parseTypeExpr);
     return ast::TypeExpr{std::move(e)};
   }
@@ -953,11 +845,8 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     e.pointee = parseSpannedPtr<ast::TypeExpr>(mapReq(*payload, "pointee"), parseTypeExpr);
     return ast::TypeExpr{std::move(e)};
   }
-  if (name == "TraitObject")
-    return ast::TypeExpr{
-        ast::TypeTraitObject{parseVec<ast::TraitBound>(*payload, parseTraitBound)}};
-  if (name == "Infer")
-    fail("TypeInfer (`_`) reached the wire: inference must be complete before serialization");
+  if (name == "TraitObject") return ast::TypeExpr{ast::TypeTraitObject{parseVec<ast::TraitBound>(*payload, parseTraitBound)}};
+  if (name == "Infer") fail("TypeInfer (`_`) reached the wire: inference must be complete before serialization");
   fail("unknown TypeExpr variant: " + name);
 }
 
@@ -973,18 +862,13 @@ static ast::PatternField parsePatternField(const msgpack::object &obj) {
 static ast::Pattern parsePattern(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Wildcard")
-    return ast::Pattern{ast::PatWildcard{}};
-  if (name == "Literal")
-    return ast::Pattern{ast::PatLiteral{parseLiteral(*payload)}};
-  if (name == "Identifier")
-    return ast::Pattern{ast::PatIdentifier{getString(*payload)}};
+  if (name == "Wildcard") return ast::Pattern{ast::PatWildcard{}};
+  if (name == "Literal") return ast::Pattern{ast::PatLiteral{parseLiteral(*payload)}};
+  if (name == "Identifier") return ast::Pattern{ast::PatIdentifier{getString(*payload)}};
   if (name == "Constructor") {
     ast::PatConstructor e;
     e.name = getString(mapReq(*payload, "name"));
-    e.patterns = parseVecPtr<ast::Spanned<ast::Pattern>>(
-        mapReq(*payload, "patterns"),
-        [](const msgpack::object &o) { return parseSpanned<ast::Pattern>(o, parsePattern); });
+    e.patterns = parseVecPtr<ast::Spanned<ast::Pattern>>(mapReq(*payload, "patterns"), [](const msgpack::object &o) { return parseSpanned<ast::Pattern>(o, parsePattern); });
     return ast::Pattern{std::move(e)};
   }
   if (name == "Struct") {
@@ -993,16 +877,11 @@ static ast::Pattern parsePattern(const msgpack::object &obj) {
     e.fields = parseVec<ast::PatternField>(mapReq(*payload, "fields"), parsePatternField);
     return ast::Pattern{std::move(e)};
   }
-  if (name == "Tuple")
-    return ast::Pattern{ast::PatTuple{
-        parseVecPtr<ast::Spanned<ast::Pattern>>(*payload, [](const msgpack::object &o) {
-          return parseSpanned<ast::Pattern>(o, parsePattern);
-        })}};
+  if (name == "Tuple") return ast::Pattern{ast::PatTuple{parseVecPtr<ast::Spanned<ast::Pattern>>(*payload, [](const msgpack::object &o) { return parseSpanned<ast::Pattern>(o, parsePattern); })}};
   if (name == "Or") {
     uint32_t sz;
     const auto *arr = arrayData(*payload, sz);
-    if (sz != 2)
-      fail("Or expects 2 elements");
+    if (sz != 2) fail("Or expects 2 elements");
     ast::PatOr e;
     e.left = parseSpannedPtr<ast::Pattern>(arr[0], parsePattern);
     e.right = parseSpannedPtr<ast::Pattern>(arr[1], parsePattern);
@@ -1013,10 +892,7 @@ static ast::Pattern parsePattern(const msgpack::object &obj) {
 
 static ast::Block parseBlock(const msgpack::object &obj) {
   ast::Block result;
-  result.stmts =
-      parseVecPtr<ast::Spanned<ast::Stmt>>(mapReq(obj, "stmts"), [](const msgpack::object &o) {
-        return parseSpanned<ast::Stmt>(o, parseStmt);
-      });
+  result.stmts = parseVecPtr<ast::Spanned<ast::Stmt>>(mapReq(obj, "stmts"), [](const msgpack::object &o) { return parseSpanned<ast::Stmt>(o, parseStmt); });
   const auto *trailing_expr = mapGet(obj, "trailing_expr");
   if (trailing_expr && !isNil(*trailing_expr))
     result.trailing_expr = parseSpannedPtr<ast::Expr>(*trailing_expr, parseExpr);
@@ -1144,16 +1020,15 @@ static ast::VariantDecl parseVariantDecl(const msgpack::object &obj) {
   }
   if (name == "Tuple") {
     ast::VariantDecl::VariantTuple tuple;
-    tuple.fields = parseVec<ast::Spanned<ast::TypeExpr>>(*payload, [](const msgpack::object &o) {
-      return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
-    });
+    tuple.fields = parseVec<ast::Spanned<ast::TypeExpr>>(
+        *payload, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
     result.kind = std::move(tuple);
     return result;
   }
   if (name == "Struct") {
     ast::VariantDecl::VariantStruct s;
-    s.fields =
-        parseVec<ast::VariantDecl::VariantStructField>(*payload, [](const msgpack::object &o) {
+    s.fields = parseVec<ast::VariantDecl::VariantStructField>(
+        *payload, [](const msgpack::object &o) {
           uint32_t sz;
           const auto *arr = arrayData(o, sz);
           if (sz != 2)
@@ -1944,8 +1819,10 @@ static ast::Program parseProgram(const msgpack::object &obj) {
       mapReq(obj, "assign_target_shapes"), parseAssignTargetShapeEntry);
 
   // Handle type metadata: list of known handle type names
-  prog.handle_types = parseVec<std::string>(mapReq(obj, "handle_types"),
-                                            [](const msgpack::object &o) { return getString(o); });
+  prog.handle_types =
+      parseVec<std::string>(mapReq(obj, "handle_types"), [](const msgpack::object &o) {
+        return getString(o);
+      });
 
   // Handle type representations: map of type name → repr string ("i32", etc.)
   const auto &hr = mapReq(obj, "handle_type_repr");

@@ -1049,6 +1049,7 @@ pub fn file_header() -> &'static str {
 // DO NOT EDIT - changes will be overwritten.
 //
 //===----------------------------------------------------------------------===//
+// clang-format off
 
 #include "hew/msgpack_reader.h"
 

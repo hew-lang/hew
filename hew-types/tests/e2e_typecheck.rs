@@ -670,6 +670,159 @@ fn for_await_receiver_unsupported_type_errors() {
     );
 }
 
+/// `for await item in input` over `Stream<Row>` must reuse the stream element
+/// validation boundary instead of lowering through the text ABI.
+#[test]
+fn for_await_stream_unsupported_type_errors() {
+    let output = typecheck_inline(
+        r#"
+        import std::stream;
+
+        type Row { value: int }
+
+        extern "C" {
+            fn fake_stream() -> Stream<Row>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await row in input {
+                println("seen");
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Stream<Row>` is not supported")
+        }),
+        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Unsupported first-class `Stream<T>` element types in `for await` must fail
+/// closed without cascading into loop-body field/type errors.
+#[test]
+fn for_await_stream_unsupported_type_does_not_cascade() {
+    let output = typecheck_inline(
+        r#"
+        type Row { value: int }
+
+        extern "C" {
+            fn fake_stream() -> Stream<Row>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await row in input {
+                println(row.missing);
+            }
+        }
+        "#,
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the fail-closed Stream<Row> error, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Stream<Row>` is not supported")
+        }),
+        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in input` over a bare `Stream` annotation must fail closed
+/// instead of bypassing stream element validation and lowering as text.
+#[test]
+fn for_await_stream_missing_element_type_errors() {
+    let output = typecheck_inline(
+        r#"
+        extern "C" { fn make_stream() -> Stream; }
+
+        fn main() {
+            let s = unsafe { make_stream() };
+            for await x in s {
+                println("bypassed!");
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("requires a resolved element type")
+        }),
+        "expected InvalidOperation for bare Stream in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in actor.receive_gen()` must keep the actor mailbox path and
+/// not reuse first-class `Stream<T>` element restrictions.
+#[test]
+fn for_await_receive_generator_int_stream_typechecks() {
+    let output = typecheck_inline(
+        r"
+        actor Counter {
+            receive gen fn count_up() -> int {
+                yield 1;
+            }
+        }
+
+        fn main() {
+            let c = spawn Counter();
+            for await val in c.count_up() {
+                println(val);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "for await over receive gen Stream<int> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Actor method calls in `for await` must target `receive gen fn`, even if the
+/// method's return type is `Stream<T>`.
+#[test]
+fn for_await_actor_method_stream_requires_receive_gen() {
+    let output = typecheck_inline(
+        r#"
+        extern "C" { fn fake_stream() -> Stream<String>; }
+
+        actor Reader {
+            receive fn lines() -> Stream<String> {
+                unsafe { fake_stream() }
+            }
+        }
+
+        fn main() {
+            let r = spawn Reader();
+            for await line in r.lines() {
+                println(line);
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("requires a `receive gen fn`")
+        }),
+        "expected InvalidOperation for actor method Stream<T> without receive gen, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in vec` must error — Vec is a sync iterable.
 #[test]
 fn for_await_over_vec_errors() {

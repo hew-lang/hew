@@ -284,6 +284,8 @@ pub struct Checker {
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    /// Qualified `Actor::method` names declared with `receive gen fn`.
+    pub(super) receive_generator_methods: HashSet<String>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
@@ -428,6 +430,7 @@ impl Checker {
             assign_target_shapes: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            receive_generator_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),

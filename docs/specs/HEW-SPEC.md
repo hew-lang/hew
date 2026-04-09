@@ -1508,12 +1508,12 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 
 - **Context flows inward**: Function signatures and explicit annotations provide typing context
 - **Lambda parameters infer from context**: When a lambda appears where a specific function type is expected, parameter types are inferred
-- **Return type inference with `-> _`**: A function annotated with `-> _` has its return type inferred from the body's trailing expression
+- **Return type inference with `-> _`**: A function annotated with `-> _` has its return type inferred from the checked body — first from the trailing expression when present, otherwise from the checker-resolved signature
 - **Explicit annotations when ambiguous**: If types cannot be inferred, the compiler requires explicit annotations
 
 **Return type inference:**
 
-The `-> _` annotation requests that the compiler infer the return type from the function body. This is distinct from omitting `->` entirely, which means the function returns void (unit):
+The `-> _` annotation requests that the compiler infer the return type from the checked function body. When a trailing expression is present, that expression supplies the return type; otherwise Hew uses the checker-resolved signature for that body. This also applies to trait default methods with bodies. If the checker cannot resolve a concrete return type, `-> _` is rejected. This is distinct from omitting `->` entirely, which means the function returns void (unit):
 
 ```hew
 fn add(a: i32, b: i32) -> _ { a + b }  // inferred: -> i32

@@ -11,6 +11,13 @@
   clear error directing users to `--emit-obj`. Verified by e2e tests that inspect object-file
   format and architecture via the `object` crate (#730, closes phase-1 of #254).
 
+### Fixed
+
+- **Fail-closed type metadata boundaries:** reject unresolved type-checker output holes and serializer-side explicit `-> _` survivors instead of leaking unresolved inference variables or reconstructing missing type data downstream (#838, #848, #849)
+- **Trait default `-> _` resolution:** default trait methods with bodies now resolve explicit `-> _` from checker signatures and fail closed when the return type remains unresolved (#849)
+- **CLI E2E bootstrap hardening:** serialize shared `hew-lib` bootstrap in the CLI test harness so concurrent integration runs do not race codegen setup (#851)
+- **Codegen metadata hardening:** MLIR lowering now fails closed on missing indirect-enum scrutinee metadata and preserves bytes-stream ABI selection through tracked stream-metadata fallbacks (#852, #853)
+
 ## [0.2.2] - 2026-03-29
 
 ### Added

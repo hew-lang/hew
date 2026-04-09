@@ -343,6 +343,23 @@ impl Checker {
         }
     }
 
+    fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(elem_ty);
+        if matches!(resolved, Ty::Var(_) | Ty::Error | Ty::String) || resolved.is_integer() {
+            return true;
+        }
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "HashSet<{}> is not supported; only HashSet<String> and HashSet<int> are currently supported",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -442,6 +459,14 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("HashSet", &elem_ty, span);
+                let resolved = self.subst.resolve(&elem_ty);
+                let mut visiting = HashSet::new();
+                if ty_contains_rc_deep(&resolved, &self.type_defs, &mut visiting) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Bool
             }
             "contains" | "remove" => {
@@ -449,6 +474,9 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
+                }
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
                 }
                 Ty::Bool
             }

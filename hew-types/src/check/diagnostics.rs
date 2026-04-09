@@ -35,7 +35,7 @@ impl Checker {
             }
         }
 
-        for (fn_name, def_span) in &self.fn_def_spans {
+        for (fn_name, (def_span, stored_module)) in &self.fn_def_spans {
             if fn_name == "main" || fn_name.starts_with('_') || fn_name.contains("::") {
                 continue;
             }
@@ -54,7 +54,7 @@ impl Checker {
                 suggestions: vec![format!(
                     "if this is intentional, prefix with underscore: `_{fn_name}`"
                 )],
-                source_module: None,
+                source_module: stored_module.clone(),
             });
         }
     }

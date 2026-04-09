@@ -223,7 +223,7 @@ impl Checker {
             .collect();
 
         // Emit unused import warnings
-        for (module_name, import_span) in &self.import_spans {
+        for (module_name, (import_span, stored_module)) in &self.import_spans {
             if !self.used_modules.borrow().contains(module_name) {
                 self.warnings.push(TypeError {
                     severity: crate::error::Severity::Warning,
@@ -232,7 +232,7 @@ impl Checker {
                     message: format!("unused import: `{module_name}`"),
                     notes: vec![],
                     suggestions: vec!["remove this import".to_string()],
-                    source_module: None,
+                    source_module: stored_module.clone(),
                 });
             }
         }

@@ -1501,14 +1501,15 @@ impl Checker {
                     Some(m) => format!("{m}.{}", fd.name),
                     None => fd.name.clone(),
                 };
-                if let Some(prev_span) = self.fn_def_spans.get(&scoped_name) {
+                if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     self.errors.push(TypeError::duplicate_definition(
                         span.clone(),
                         &scoped_name,
                         prev_span.clone(),
                     ));
                 } else {
-                    self.fn_def_spans.insert(scoped_name, span.clone());
+                    self.fn_def_spans
+                        .insert(scoped_name, (span.clone(), self.current_module.clone()));
                 }
                 self.register_fn_sig(fd);
             }
@@ -1664,15 +1665,10 @@ impl Checker {
                 self.register_extern_block(eb);
             }
             Item::Import(id) => {
-                // Only track import spans for root-module items. Sub-module spans are
-                // byte offsets into their own source file and cannot be attributed to
-                // the root file's source text for diagnostics.
-                let import_span = if self.current_module.is_none() {
-                    Some(span)
-                } else {
-                    None
-                };
-                self.register_import(id, import_span);
+                // Always track the import span. For non-root modules the span is a byte
+                // offset into the sub-module's own source file; the stored `source_module`
+                // in `import_spans` tells the diagnostic renderer which file owns the span.
+                self.register_import(id, Some(span));
             }
             _ => {}
         }
@@ -2081,7 +2077,8 @@ impl Checker {
                 // Register module and clean names
                 self.modules.insert(short.clone());
                 if let Some(span) = import_span {
-                    self.import_spans.insert(short.clone(), span.clone());
+                    self.import_spans
+                        .insert(short.clone(), (span.clone(), self.current_module.clone()));
                 }
                 for (method, c_symbol) in &clean_names {
                     // Prefer the wrapper function's own signature (registered under
@@ -2147,7 +2144,8 @@ impl Checker {
                 self.modules.insert(short.clone());
                 self.user_modules.insert(short.clone());
                 if let Some(span) = import_span {
-                    self.import_spans.insert(short.clone(), span.clone());
+                    self.import_spans
+                        .insert(short.clone(), (span.clone(), self.current_module.clone()));
                 }
                 self.register_user_module(&short, resolved_items, &decl.spec);
             }

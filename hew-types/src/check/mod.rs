@@ -15,6 +15,7 @@ use hew_parser::ast::{
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 
+pub(crate) mod admissibility;
 mod calls;
 mod coerce;
 mod diagnostics;
@@ -61,108 +62,6 @@ fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty,
 
 fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
     Ty::result(ok_ty.clone(), err_ty.clone())
-}
-
-fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
-    match ty {
-        Ty::Named { name, args } => {
-            let normalized_args: Vec<Ty> = args
-                .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
-                .collect();
-            if matches!(
-                builtin_named_type(name.as_str()),
-                Some(kind) if kind.is_channel_handle()
-            ) && matches!(normalized_args.as_slice(), [Ty::Var(_)])
-            {
-                return Ty::normalize_named(name.clone(), vec![]);
-            }
-            Ty::normalize_named(name.clone(), normalized_args)
-        }
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
-                .collect(),
-        ),
-        Ty::Array(elem, size) => Ty::Array(
-            Box::new(normalize_synthetic_channel_handle_expr_type(elem)),
-            *size,
-        ),
-        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_expr_type(elem))),
-        Ty::Function { params, ret } => Ty::Function {
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
-        },
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => Ty::Closure {
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
-            captures: captures
-                .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
-                .collect(),
-        },
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => Ty::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(normalize_synthetic_channel_handle_expr_type(pointee)),
-        },
-        _ => ty.clone(),
-    }
-}
-
-fn ty_references_tracked_inference_var(ty: &Ty, tracked_vars: &HashSet<TypeVar>) -> bool {
-    let mut unresolved = HashSet::new();
-    collect_unresolved_inference_vars(ty, &mut unresolved);
-    !unresolved.is_disjoint(tracked_vars)
-}
-
-fn fn_sig_references_tracked_inference_var(sig: &FnSig, tracked_vars: &HashSet<TypeVar>) -> bool {
-    sig.params
-        .iter()
-        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
-        || ty_references_tracked_inference_var(&sig.return_type, tracked_vars)
-}
-
-fn variant_def_references_tracked_inference_var(
-    variant: &VariantDef,
-    tracked_vars: &HashSet<TypeVar>,
-) -> bool {
-    match variant {
-        VariantDef::Unit => false,
-        VariantDef::Tuple(fields) => fields
-            .iter()
-            .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars)),
-        VariantDef::Struct(fields) => fields
-            .iter()
-            .any(|(_, ty)| ty_references_tracked_inference_var(ty, tracked_vars)),
-    }
-}
-
-fn type_def_shape_references_tracked_inference_var(
-    type_def: &TypeDef,
-    tracked_vars: &HashSet<TypeVar>,
-) -> bool {
-    type_def
-        .fields
-        .values()
-        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
-        || type_def
-            .variants
-            .values()
-            .any(|variant| variant_def_references_tracked_inference_var(variant, tracked_vars))
 }
 
 impl Checker {
@@ -299,22 +198,15 @@ impl Checker {
 
         // Also resolve inferred call type args so the enrichment layer can
         // fill in explicit type annotations for the codegen.
-        let resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
+        let mut resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
             std::mem::take(&mut self.call_type_args)
                 .into_iter()
-                .filter_map(|(k, args)| {
+                .map(|(k, args)| {
                     let resolved: Vec<Ty> = args
                         .iter()
                         .map(|a| self.subst.resolve(a).materialize_literal_defaults())
                         .collect();
-                    if resolved
-                        .iter()
-                        .all(|ty| !ty_has_unresolved_inference_var(ty))
-                    {
-                        Some((k, resolved))
-                    } else {
-                        None
-                    }
+                    (k, resolved)
                 })
                 .collect();
 
@@ -333,114 +225,28 @@ impl Checker {
             })
             .collect();
 
-        // Fail-closed boundary: unresolved inference vars must not cross from
-        // type-checking into serialized expr type metadata.
-        // When another inference diagnostic path already covers the same hole
-        // vars, suppress the fallback boundary error so we keep the more
-        // specific message/span/source-module envelope.
-        let mut covered_inference_vars = HashSet::new();
-        for hole_vars in self
-            .type_def_inference_holes
-            .values()
-            .chain(self.fn_sig_inference_holes.values())
-            .chain(
-                self.deferred_inference_holes
-                    .iter()
-                    .map(|hole| &hole.hole_vars),
-            )
-        {
-            for hole_var in hole_vars {
-                let resolved_hole = self.subst.resolve(&Ty::Var(*hole_var));
-                collect_unresolved_inference_vars(&resolved_hole, &mut covered_inference_vars);
-            }
-        }
-        for site in &self.deferred_monomorphic_sites {
-            let resolved = self.subst.resolve(&site.ty);
-            collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
-        }
-        // Let-bound generic lambdas use fresh type vars as polymorphic
-        // placeholders until a later call site instantiates them. Those vars
-        // are not checker-output leaks and should not trigger the fail-closed
-        // boundary fallback when the lambda remains unused.
-        for poly_vars in self.lambda_poly_type_var_map.values() {
-            for (_, poly_var) in poly_vars {
-                let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
-                collect_unresolved_inference_vars(&resolved_poly, &mut covered_inference_vars);
-            }
-        }
-        let mut seen_inference_spans: HashSet<SpanKey> = self
-            .errors
-            .iter()
-            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-            .map(|e| SpanKey::from(&e.span))
-            .collect();
-        let mut leaked_expr_type_spans = Vec::new();
-        for (span, ty) in &mut resolved_expr_types {
-            let mut unresolved = HashSet::new();
-            collect_unresolved_inference_vars(ty, &mut unresolved);
-            if unresolved.is_empty() {
-                continue;
-            }
-            if !unresolved.is_subset(&covered_inference_vars) {
-                let normalized = normalize_synthetic_channel_handle_expr_type(ty);
-                if normalized != *ty {
-                    let mut normalized_unresolved = HashSet::new();
-                    collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
-                    if normalized_unresolved.is_empty() {
-                        *ty = normalized;
-                        continue;
-                    }
-                }
-            }
-            leaked_expr_type_spans.push(span.clone());
-            if unresolved.is_subset(&covered_inference_vars) {
-                continue;
-            }
-            if seen_inference_spans.insert(span.clone()) {
-                let mut err = TypeError::inference_failed(
-                    Span {
-                        start: span.start,
-                        end: span.end,
-                    },
-                    "expression type at checker output boundary",
-                );
-                err.source_module = self.expr_type_source_modules.get(span).cloned().flatten();
-                self.errors.push(err);
-            }
-        }
-        for span in leaked_expr_type_spans {
-            resolved_expr_types.remove(&span);
-        }
-
-        // Fail-closed boundary for checker-owned signatures/type defs:
-        // user-authored unresolved inference holes must not survive into the
-        // serialized metadata tables.  Keep generic builtin placeholders that
-        // are not tied to tracked inference-hole vars.
-        let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
+        let mut resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
             .into_iter()
-            .filter_map(|(name, type_def)| {
-                let mut resolved = self.resolve_type_def(&type_def);
-                if type_def_shape_references_tracked_inference_var(
-                    &resolved,
-                    &covered_inference_vars,
-                ) {
-                    return None;
-                }
-                resolved.methods.retain(|_, sig| {
-                    !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
-                });
-                Some((name, resolved))
+            .map(|(name, type_def)| {
+                let resolved = self.resolve_type_def(&type_def);
+                (name, resolved)
             })
             .collect();
 
-        let resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
+        let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
-            .filter_map(|(name, sig)| {
+            .map(|(name, sig)| {
                 let resolved = self.resolve_fn_sig(&sig);
-                (!fn_sig_references_tracked_inference_var(&resolved, &covered_inference_vars))
-                    .then_some((name, resolved))
+                (name, resolved)
             })
             .collect();
+
+        self.validate_checker_output_contract(
+            &mut resolved_expr_types,
+            &mut resolved_type_defs,
+            &mut resolved_fn_sigs,
+            &mut resolved_call_type_args,
+        );
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();

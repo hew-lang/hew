@@ -10,6 +10,7 @@ use hew_parser::ast::{
 };
 use hew_parser::parse;
 
+use crate::check::admissibility::signature_uses_unsupported_type;
 use crate::ty::Ty;
 
 /// All type information extracted from a single `.hew` module file.
@@ -215,36 +216,6 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
         .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
 
     (params, ret)
-}
-
-fn signature_uses_unsupported_type(params: &[Ty], ret: &Ty) -> bool {
-    params.iter().any(ty_contains_error) || ty_contains_error(ret)
-}
-
-fn ty_contains_error(ty: &Ty) -> bool {
-    match ty {
-        Ty::Error => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_error),
-        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_error(elem),
-        Ty::Named { args, .. } => args.iter().any(ty_contains_error),
-        Ty::Function { params, ret } => {
-            params.iter().any(ty_contains_error) || ty_contains_error(ret)
-        }
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => {
-            params.iter().any(ty_contains_error)
-                || ty_contains_error(ret)
-                || captures.iter().any(ty_contains_error)
-        }
-        Ty::Pointer { pointee, .. } => ty_contains_error(pointee),
-        Ty::TraitObject { traits } => traits
-            .iter()
-            .any(|bound| bound.args.iter().any(ty_contains_error)),
-        _ => false,
-    }
 }
 
 /// Convert a wrapper `pub fn` declaration to type checker types.

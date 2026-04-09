@@ -42,6 +42,76 @@ fn test_type_checker_creation() {
     assert_eq!(checker.errors.len(), 0);
 }
 
+#[test]
+fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Holder".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Holder".to_string(),
+            type_params: vec![],
+            fields: HashMap::from([("value".to_string(), Ty::rc(Ty::I64))]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+
+    let holder_ty = Ty::Named {
+        name: "Holder".to_string(),
+        args: vec![],
+    };
+    assert!(
+        !checker.validate_hashset_owned_element_type(&holder_ty, &(0..0)),
+        "HashSet element admissibility should fail closed for nested Rc payloads"
+    );
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::UnsafeCollectionElement
+                && err.message.contains("HashSet")),
+        "expected centralized HashSet admissibility to report UnsafeCollectionElement, got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn checker_output_contract_intersects_assignment_target_side_tables() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .assign_target_kinds
+        .insert(SpanKey { start: 1, end: 2 }, AssignTargetKind::LocalVar);
+    checker.assign_target_shapes.insert(
+        SpanKey { start: 3, end: 4 },
+        AssignTargetShape { is_unsigned: false },
+    );
+
+    let mut expr_types = HashMap::new();
+    let mut type_defs = HashMap::new();
+    let mut fn_sigs = HashMap::new();
+    let mut call_type_args = HashMap::new();
+    checker.validate_checker_output_contract(
+        &mut expr_types,
+        &mut type_defs,
+        &mut fn_sigs,
+        &mut call_type_args,
+    );
+
+    assert!(
+        checker.assign_target_kinds.is_empty(),
+        "orphan assign_target_kinds entries should be pruned at the output boundary: {:?}",
+        checker.assign_target_kinds
+    );
+    assert!(
+        checker.assign_target_shapes.is_empty(),
+        "orphan assign_target_shapes entries should be pruned at the output boundary: {:?}",
+        checker.assign_target_shapes
+    );
+}
+
 // Helper functions for testing AST construction
 fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
     (

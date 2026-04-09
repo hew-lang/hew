@@ -4,7 +4,7 @@
 )]
 use super::*;
 
-pub(crate) fn signature_uses_unsupported_type(params: &[Ty], ret: &Ty) -> bool {
+pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
 }
 
@@ -137,7 +137,7 @@ impl Checker {
 
         fn_sigs.retain(|_, sig| {
             !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
-                && !signature_uses_unsupported_type(&sig.params, &sig.return_type)
+                && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty_has_unresolved_inference_var(ty)));
         self.validate_assign_target_output_contract();
@@ -698,15 +698,15 @@ mod tests {
     }
 
     #[test]
-    fn signature_uses_unsupported_type_flags_error_anywhere_in_signature() {
+    fn signature_contains_error_type_flags_error_anywhere_in_signature() {
         let params = vec![Ty::I32];
         let ret = Ty::Function {
             params: vec![Ty::Tuple(vec![Ty::Error])],
             ret: Box::new(Ty::Bool),
         };
 
-        assert!(signature_uses_unsupported_type(&params, &ret));
-        assert!(!signature_uses_unsupported_type(&[Ty::I32], &Ty::Bool));
+        assert!(signature_contains_error_type(&params, &ret));
+        assert!(!signature_contains_error_type(&[Ty::I32], &Ty::Bool));
     }
 
     /// Regression guard for issue #789: `validate_checker_output_contract` must

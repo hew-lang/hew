@@ -36,9 +36,10 @@ pub fn resolve_channel_method(
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///
 /// The `element_type` parameter carries the resolved inner type name (e.g.
-/// `"bytes"` or `"String"`).  When the element is `bytes`, the enricher
-/// dispatches to the bytes-specific runtime entry points; all other types
-/// (including `None` / unknown) fall through to the default string ABI.
+/// `"bytes"` or `"String"`). Element-type-sensitive methods now fail closed:
+/// when the inner type is missing or not one of the lowerable runtime ABIs,
+/// the resolver returns `None` instead of silently falling back to the string
+/// entry point.
 ///
 /// These types are not opaque handle types (`Ty::Named`) — they are `Ty::Stream` /
 /// `Ty::Sink` variants.  This resolver is called separately from
@@ -49,14 +50,12 @@ pub fn resolve_stream_method(
     method: &str,
     element_type: Option<&str>,
 ) -> Option<&'static str> {
+    let is_string = matches!(element_type, Some("String" | "string" | "str"));
     let is_bytes = element_type == Some("bytes");
     match (stream_kind, method) {
         // Stream<T> methods — element-type-dependent
-        (k, "next") if k == STREAM => Some(if is_bytes {
-            "hew_stream_next_bytes"
-        } else {
-            "hew_stream_next"
-        }),
+        (k, "next") if k == STREAM && is_bytes => Some("hew_stream_next_bytes"),
+        (k, "next") if k == STREAM && is_string => Some("hew_stream_next"),
         (k, "collect") if k == STREAM => Some("hew_stream_collect_string"),
         // Stream<T> methods — element-type-independent
         (k, "close") if k == STREAM => Some("hew_stream_close"),
@@ -64,11 +63,8 @@ pub fn resolve_stream_method(
         (k, "chunks") if k == STREAM => Some("hew_stream_chunks"),
         (k, "take") if k == STREAM => Some("hew_stream_take"),
         // Sink<T> methods — element-type-dependent
-        (k, "write") if k == SINK => Some(if is_bytes {
-            "hew_sink_write_bytes"
-        } else {
-            "hew_sink_write_string"
-        }),
+        (k, "write") if k == SINK && is_bytes => Some("hew_sink_write_bytes"),
+        (k, "write") if k == SINK && is_string => Some("hew_sink_write_string"),
         // Sink<T> methods — element-type-independent
         (k, "flush") if k == SINK => Some("hew_sink_flush"),
         (k, "close") if k == SINK => Some("hew_sink_close"),
@@ -141,7 +137,7 @@ mod tests {
     #[test]
     fn stream_methods_resolve() {
         assert_eq!(
-            resolve_stream_method(STREAM, "next", None),
+            resolve_stream_method(STREAM, "next", Some("String")),
             Some("hew_stream_next")
         );
         assert_eq!(
@@ -173,7 +169,7 @@ mod tests {
     #[test]
     fn sink_methods_resolve() {
         assert_eq!(
-            resolve_stream_method(SINK, "write", None),
+            resolve_stream_method(SINK, "write", Some("String")),
             Some("hew_sink_write_string")
         );
         assert_eq!(
@@ -194,6 +190,14 @@ mod tests {
     fn stream_unknown_method_returns_none() {
         assert_eq!(resolve_stream_method(STREAM, "nonexistent", None), None);
         assert_eq!(resolve_stream_method("Unknown", "next", None), None);
+    }
+
+    #[test]
+    fn stream_element_sensitive_methods_require_lowerable_metadata() {
+        assert_eq!(resolve_stream_method(STREAM, "next", None), None);
+        assert_eq!(resolve_stream_method(STREAM, "next", Some("Row")), None);
+        assert_eq!(resolve_stream_method(SINK, "write", None), None);
+        assert_eq!(resolve_stream_method(SINK, "write", Some("Row")), None);
     }
 
     // ── constants match expected string values ──────────────────────────────

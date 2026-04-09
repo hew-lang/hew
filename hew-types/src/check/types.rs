@@ -37,6 +37,12 @@ use std::path::PathBuf;
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    /// Checker-owned method-call lowering decisions keyed by the method call span.
+    ///
+    /// Populated during type checking for receiver-based runtime rewrites so
+    /// serialization can consume a single authoritative contract instead of
+    /// re-resolving C symbols from receiver types.
+    pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -114,6 +120,12 @@ impl From<&Span> for SpanKey {
 pub enum MethodCallReceiverKind {
     NamedTypeInstance { type_name: String },
     TraitObject { trait_name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MethodCallRewrite {
+    RewriteToFunction { c_symbol: String },
+    DeferToLowering,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -280,6 +292,7 @@ pub struct Checker {
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub(super) type_defs: HashMap<String, TypeDef>,
@@ -429,6 +442,7 @@ impl Checker {
             expr_types: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             type_defs: HashMap::new(),

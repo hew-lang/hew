@@ -33,8 +33,8 @@ mod types;
 mod util;
 
 pub use self::types::{
-    AssignTargetKind, AssignTargetShape, Checker, FnSig, MethodCallReceiverKind, SpanKey,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    AssignTargetKind, AssignTargetShape, Checker, FnSig, MethodCallReceiverKind, MethodCallRewrite,
+    SpanKey, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredCastCheck, DeferredInferenceHole, DeferredMonomorphicSite, ImplAliasEntry,
@@ -254,6 +254,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
+            method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),

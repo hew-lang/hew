@@ -209,6 +209,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
         }
     }
 
@@ -347,6 +348,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -409,6 +411,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

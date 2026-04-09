@@ -14,6 +14,46 @@ impl Checker {
             .insert(SpanKey::from(span), kind);
     }
 
+    fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
+        self.method_call_rewrites
+            .insert(SpanKey::from(span), rewrite);
+    }
+
+    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol: c_symbol.into(),
+            },
+        );
+    }
+
+    fn record_deferred_method_call_rewrite(&mut self, span: &Span) {
+        self.record_method_call_rewrite(span, MethodCallRewrite::DeferToLowering);
+    }
+
+    fn record_handle_method_call_rewrite_if_any(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        span: &Span,
+    ) {
+        let Ty::Named { name, .. } = receiver_ty else {
+            return;
+        };
+        if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
+            self.record_runtime_method_call_rewrite(span, c_symbol);
+        }
+    }
+
+    fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
+        match ty {
+            Ty::String => Some("String"),
+            Ty::Bytes => Some("bytes"),
+            _ => None,
+        }
+    }
+
     pub(super) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
         if self.modules.contains(&name[..dot]) {
@@ -98,6 +138,7 @@ impl Checker {
                     },
                 );
             }
+            self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, span);
             return ty;
         }
 
@@ -109,6 +150,10 @@ impl Checker {
         Ty::Error
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builtin stream typing and checker-owned rewrite metadata stay together"
+    )]
     pub(super) fn check_stream_method(
         &mut self,
         type_args: &[Ty],
@@ -141,8 +186,18 @@ impl Checker {
             );
             return Ty::Error;
         };
+        let resolved_inner = self.subst.resolve(&inner);
         match method {
-            "next" | "close" => sig.return_type,
+            "next" | "close" => {
+                let c_symbol = crate::stdlib::resolve_stream_method(
+                    BuiltinNamedType::Stream.canonical_name(),
+                    method,
+                    Self::runtime_stream_element_name(&resolved_inner),
+                )
+                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+                sig.return_type
+            }
             "lines" => {
                 if inner != Ty::String {
                     self.report_error(
@@ -155,6 +210,13 @@ impl Checker {
                         ),
                     );
                 }
+                let c_symbol = crate::stdlib::resolve_stream_method(
+                    BuiltinNamedType::Stream.canonical_name(),
+                    method,
+                    None,
+                )
+                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
             "collect" => {
@@ -169,15 +231,39 @@ impl Checker {
                         ),
                     );
                 }
+                let c_symbol = crate::stdlib::resolve_stream_method(
+                    BuiltinNamedType::Stream.canonical_name(),
+                    method,
+                    None,
+                )
+                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "chunks" | "take" | "map" | "filter" => {
+            "chunks" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
+                let c_symbol = crate::stdlib::resolve_stream_method(
+                    BuiltinNamedType::Stream.canonical_name(),
+                    method,
+                    None,
+                )
+                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+                sig.return_type
+            }
+            "take" | "map" | "filter" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    if let Some(param_ty) = sig.params.first() {
+                        self.check_against(expr, sp, param_ty);
+                    }
+                }
+                self.record_deferred_method_call_rewrite(span);
                 sig.return_type
             }
             _ => {
@@ -1062,22 +1148,30 @@ impl Checker {
             (Ty::Named { name, .. }, _) if name == "http.Server" => match method {
                 "accept" => {
                     self.warn_if_blocking_in_receive_fn("http.Server::accept", span);
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::Named {
                         name: "http.Request".to_string(),
                         args: vec![],
                     }
                 }
-                "close" => Ty::Unit,
+                "close" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Unit
+                }
                 _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
             },
             // http.Request methods/properties
             (Ty::Named { name, .. }, _) if name == "http.Request" => match method {
-                "path" | "method" | "body" => Ty::String,
+                "path" | "method" | "body" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::String
+                }
                 "header" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::String
                 }
                 "respond" => {
@@ -1093,6 +1187,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::I32
                 }
                 "respond_text" | "respond_json" => {
@@ -1104,9 +1199,13 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::I32
                 }
-                "free" => Ty::Unit,
+                "free" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Unit
+                }
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
                 }
@@ -1115,12 +1214,16 @@ impl Checker {
             (Ty::Named { name, .. }, _) if name == "net.Listener" => match method {
                 "accept" => {
                     self.warn_if_blocking_in_receive_fn("net.Listener::accept", span);
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::Named {
                         name: "net.Connection".to_string(),
                         args: vec![],
                     }
                 }
-                "close" => Ty::Unit,
+                "close" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Unit
+                }
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
                 }
@@ -1129,6 +1232,7 @@ impl Checker {
             (Ty::Named { name, .. }, _) if name == "net.Connection" => match method {
                 "read" => {
                     self.warn_if_blocking_in_receive_fn("net.Connection::read", span);
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::Bytes
                 }
                 "write" => {
@@ -1136,14 +1240,19 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::Bytes);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::I32
                 }
-                "close" => Ty::I32,
+                "close" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::I32
+                }
                 "set_read_timeout" | "set_write_timeout" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::I32);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::I32
                 }
                 _ => self.check_named_method_fallback(
@@ -1161,6 +1270,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::Bool
                 }
                 "find" => {
@@ -1168,6 +1278,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::String
                 }
                 "replace" => {
@@ -1179,17 +1290,27 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::String
                 }
-                "free" => Ty::Unit,
+                "free" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Unit
+                }
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }
             },
             // process.Child methods
             (Ty::Named { name, .. }, _) if name == "process.Child" => match method {
-                "wait" | "kill" => Ty::I32,
-                "free" => Ty::Unit,
+                "wait" | "kill" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::I32
+                }
+                "free" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Unit
+                }
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
                 }
@@ -1260,9 +1381,23 @@ impl Checker {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
+                        let c_symbol = crate::stdlib::resolve_stream_method(
+                            BuiltinNamedType::Sink.canonical_name(),
+                            method,
+                            Self::runtime_stream_element_name(&self.subst.resolve(&inner)),
+                        )
+                        .unwrap_or_else(|| unreachable!("builtin Sink::write rewrite missing"));
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
                     "close" | "flush" => {
+                        let c_symbol = crate::stdlib::resolve_stream_method(
+                            BuiltinNamedType::Sink.canonical_name(),
+                            method,
+                            None,
+                        )
+                        .unwrap_or_else(|| unreachable!("builtin Sink::{method} rewrite missing"));
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         lookup_builtin_method_sig(&receiver_ty, method)
                             .unwrap_or_else(|| {
                                 unreachable!("builtin Sink::{method} signature missing")
@@ -1292,6 +1427,7 @@ impl Checker {
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 let receiver_ty = Ty::sender(inner.clone());
+                let resolved_inner = self.subst.resolve(&inner);
                 match method {
                     "send" => {
                         let sig =
@@ -1319,9 +1455,25 @@ impl Checker {
                             );
                             return Ty::Error;
                         }
+                        let c_symbol = crate::stdlib::resolve_channel_method(
+                            BuiltinNamedType::Sender.canonical_name(),
+                            method,
+                            Some(&resolved_inner),
+                        )
+                        .unwrap_or_else(|| unreachable!("builtin Sender::send rewrite missing"));
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
                     "clone" | "close" => {
+                        let c_symbol = crate::stdlib::resolve_channel_method(
+                            BuiltinNamedType::Sender.canonical_name(),
+                            method,
+                            Some(&resolved_inner),
+                        )
+                        .unwrap_or_else(|| {
+                            unreachable!("builtin Sender::{method} rewrite missing")
+                        });
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         lookup_builtin_method_sig(&receiver_ty, method)
                             .unwrap_or_else(|| {
                                 unreachable!("builtin Sender::{method} signature missing")
@@ -1367,9 +1519,25 @@ impl Checker {
                                 unreachable!("builtin Receiver::recv signature missing")
                             });
                         self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
+                        let c_symbol = crate::stdlib::resolve_channel_method(
+                            BuiltinNamedType::Receiver.canonical_name(),
+                            method,
+                            Some(&resolved_inner),
+                        )
+                        .unwrap_or_else(|| unreachable!("builtin Receiver::recv rewrite missing"));
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
                     "try_recv" | "close" => {
+                        let c_symbol = crate::stdlib::resolve_channel_method(
+                            BuiltinNamedType::Receiver.canonical_name(),
+                            method,
+                            Some(&resolved_inner),
+                        )
+                        .unwrap_or_else(|| {
+                            unreachable!("builtin Receiver::{method} rewrite missing")
+                        });
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
                         lookup_builtin_method_sig(&receiver_ty, method)
                             .unwrap_or_else(|| {
                                 unreachable!("builtin Receiver::{method} signature missing")
@@ -1407,6 +1575,7 @@ impl Checker {
                             type_name: name.clone(),
                         },
                     );
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     return sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.

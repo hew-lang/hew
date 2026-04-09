@@ -764,34 +764,34 @@ static bool eraseMethodCallReceiverKindEntryForSpan(hew::ast::Program &program,
 static std::optional<hew::ast::Span> restoreReturnedHandleMethodCall(hew::ast::FnDecl &fn,
                                                                      llvm::StringRef callee,
                                                                      llvm::StringRef methodName) {
-  if (fn.body.stmts.size() != 2)
-    return std::nullopt;
+  for (auto &stmt : fn.body.stmts) {
+    auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+    if (!retStmt || !retStmt->value)
+      continue;
 
-  auto *retStmt = std::get_if<hew::ast::StmtReturn>(&fn.body.stmts[1]->value.kind);
-  if (!retStmt || !retStmt->value)
-    return std::nullopt;
+    auto *callExpr = std::get_if<hew::ast::ExprCall>(&retStmt->value->value.kind);
+    if (!callExpr || !callExpr->function)
+      continue;
 
-  auto *callExpr = std::get_if<hew::ast::ExprCall>(&retStmt->value->value.kind);
-  if (!callExpr || !callExpr->function)
-    return std::nullopt;
+    auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
+    if (!calleeIdent || calleeIdent->name != callee)
+      continue;
 
-  auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
-  if (!calleeIdent || calleeIdent->name != callee)
-    return std::nullopt;
+    if (callExpr->args.size() != 1)
+      continue;
 
-  if (callExpr->args.size() != 1)
-    return std::nullopt;
+    auto *receiverArg = std::get_if<hew::ast::CallArgPositional>(&callExpr->args.front());
+    if (!receiverArg || !receiverArg->expr)
+      continue;
 
-  auto *receiverArg = std::get_if<hew::ast::CallArgPositional>(&callExpr->args.front());
-  if (!receiverArg || !receiverArg->expr)
-    return std::nullopt;
-
-  auto receiverSpan = receiverArg->expr->span;
-  hew::ast::ExprMethodCall methodCall;
-  methodCall.receiver = std::move(receiverArg->expr);
-  methodCall.method = methodName.str();
-  retStmt->value->value.kind = std::move(methodCall);
-  return receiverSpan;
+    auto receiverSpan = receiverArg->expr->span;
+    hew::ast::ExprMethodCall methodCall;
+    methodCall.receiver = std::move(receiverArg->expr);
+    methodCall.method = methodName.str();
+    retStmt->value->value.kind = std::move(methodCall);
+    return receiverSpan;
+  }
+  return std::nullopt;
 }
 
 static hew::ast::Span *findMutableReturnedMethodReceiverSpan(hew::ast::FnDecl &fn,
@@ -7659,11 +7659,18 @@ fn main() {}
     return;
   }
 
-  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "type_of");
-  if (!methodCallSpan || !eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
-    FAIL("failed to remove method_call_receiver_kinds entry for json.Value.type_of()");
+  auto receiverSpan = restoreReturnedHandleMethodCall(*useValue, "hew_json_type", "type_of");
+  if (!receiverSpan) {
+    FAIL("failed to restore json.Value.type_of() method call shape");
     return;
   }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "type_of");
+  if (!methodCallSpan) {
+    FAIL("failed to find restored json.Value.type_of() method call span");
+    return;
+  }
+  (void)eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan);
 
   mlir::MLIRContext ctx;
   initContext(ctx);

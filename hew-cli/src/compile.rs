@@ -1985,7 +1985,7 @@ fn main() {
                 start: expr_span.start,
                 end: expr_span.end,
             },
-            Ty::generator(Ty::I32, Ty::Unit),
+            Ty::option(Ty::Var(hew_types::ty::TypeVar(7))),
         );
 
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);

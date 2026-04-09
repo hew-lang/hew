@@ -293,6 +293,25 @@ fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bo
     }
     false
 }
+
+fn missing_stream_lowering_metadata_context(
+    handle_kind: &str,
+    method: &str,
+    element_name: Option<&str>,
+) -> Option<String> {
+    match (handle_kind, method) {
+        (STREAM, "next") | (SINK, "write") => Some(match element_name {
+            None => format!(
+                "`{handle_kind}::{method}` requires lowerable element metadata (`String` or `bytes`)"
+            ),
+            Some(name) => format!(
+                "`{handle_kind}::{method}` does not support `{name}`; expected `String` or `bytes`"
+            ),
+        }),
+        _ => None,
+    }
+}
+
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
     ty.canonical_lowering_name()
@@ -1634,9 +1653,11 @@ fn enrich_method_call(
             let resolved =
                 hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from);
             if resolved.is_none() {
+                let context = missing_stream_lowering_metadata_context(STREAM, method, elem)
+                    .unwrap_or_else(|| format!("unknown method `{method}` on `Stream`"));
                 diagnostics.push(
                     TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(format!("unknown method `{method}` on `Stream`"))
+                        .with_context(context)
                         .with_span(expr.1.clone()),
                 );
             }
@@ -1647,9 +1668,11 @@ fn enrich_method_call(
             let resolved =
                 hew_types::stdlib::resolve_stream_method(SINK, method, elem).map(String::from);
             if resolved.is_none() {
+                let context = missing_stream_lowering_metadata_context(SINK, method, elem)
+                    .unwrap_or_else(|| format!("unknown method `{method}` on `Sink`"));
                 diagnostics.push(
                     TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(format!("unknown method `{method}` on `Sink`"))
+                        .with_context(context)
                         .with_span(expr.1.clone()),
                 );
             }
@@ -4166,6 +4189,35 @@ mod tests {
     }
 
     #[test]
+    fn test_enrich_method_call_stream_next_requires_lowerable_element_metadata() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: STREAM.to_string(),
+                args: vec![],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "next");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+        assert!(
+            diagnostics[0]
+                .to_string()
+                .contains("requires lowerable element metadata"),
+            "expected lowerable-element diagnostic, got {:?}",
+            diagnostics[0]
+        );
+        assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+    }
+
+    #[test]
     fn test_enrich_method_call_stream_combinators_are_left_for_later_lowering() {
         let tco = make_tco_with_receiver_ty(
             2,
@@ -4253,6 +4305,35 @@ mod tests {
             matches!(&expr.0, Expr::MethodCall { .. }),
             "sink.encode() must remain a MethodCall for later lowering"
         );
+    }
+
+    #[test]
+    fn test_enrich_method_call_sink_write_requires_lowerable_element_metadata() {
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: SINK.to_string(),
+                args: vec![],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr = make_method_call_expr("s", 2, "write");
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
+        assert_eq!(
+            diagnostics[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed
+        );
+        assert!(
+            diagnostics[0]
+                .to_string()
+                .contains("requires lowerable element metadata"),
+            "expected lowerable-element diagnostic, got {:?}",
+            diagnostics[0]
+        );
+        assert!(matches!(&expr.0, Expr::MethodCall { .. }));
     }
 
     #[test]

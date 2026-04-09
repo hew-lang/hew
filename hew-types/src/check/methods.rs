@@ -568,8 +568,11 @@ impl Checker {
 
     fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
         let resolved = self.subst.resolve(ty);
-        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+        if matches!(resolved, Ty::Error) {
             return true;
+        }
+        if matches!(resolved, Ty::Var(_)) {
+            return false;
         }
         match &resolved {
             Ty::String | Ty::Bytes => true,

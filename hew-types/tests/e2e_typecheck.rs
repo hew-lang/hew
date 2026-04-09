@@ -1144,6 +1144,57 @@ fn rc_owned_payload_annotation_rejected() {
 }
 
 #[test]
+fn rc_generic_wrapper_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn wrap<T>(val: T) -> Rc<T> {
+            Rc::new(val)
+        }
+
+        fn main() {
+            let _ = wrap(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("Rc only accepts Copy payloads")
+        }),
+        "generic Rc<T> wrappers should fail closed until payload support is proven, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_generic_lambda_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn main() {
+            let wrap = <T>(val: T) -> Rc<T> => Rc::new(val);
+            let _ = wrap(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("Rc only accepts Copy payloads")
+        }),
+        "generic Rc<T> lambdas should fail closed until payload support is proven, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
     // Copy types.  Calling it on Rc<String> must be rejected.

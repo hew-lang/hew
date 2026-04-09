@@ -69,6 +69,10 @@ What to check:
   generic code, and any `_` placeholders.
 - `type Foo = _;` currently fails closed with `cannot infer type for type alias`
   and a help suggestion to add a type annotation.
+- `fn ... -> _` and trait default methods with bodies and `-> _` fail closed
+  too: if the checker cannot resolve a concrete return type, Hew reports an
+  inference error at the checker/output boundary instead of guessing later in
+  serialization or codegen.
 - When you hit a mismatch, fix the earliest ambiguous binding or return value,
   not only the final call site.
 

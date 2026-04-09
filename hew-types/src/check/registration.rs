@@ -1582,9 +1582,20 @@ impl Checker {
                                 let (params, return_type) = if let Some(sig) =
                                     self.fn_sigs.get(&trait_method_key).cloned()
                                 {
+                                    // Qualified trait signatures registered outside an impl
+                                    // scope can still include a concrete receiver
+                                    // (`fn bump(box: CounterBox)`) because receiver
+                                    // detection there only knows about `Self`.
+                                    // When copying defaults onto a concrete impl,
+                                    // drop that leading receiver iff the trait sig
+                                    // still has it.
+                                    let sig_skip = usize::from(
+                                        skip == 1 && sig.params.len() == m.params.len(),
+                                    );
                                     (
                                         sig.params
                                             .iter()
+                                            .skip(sig_skip)
                                             .map(|ty| {
                                                 self.substitute_named_param(
                                                     ty,

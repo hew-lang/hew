@@ -7053,6 +7053,43 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
+    fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
+        let source = r"
+            type Greeter {
+                id: int;
+            }
+
+            trait Answerer {
+                fn answer(g: Greeter) -> int {
+                    42
+                }
+            }
+
+            impl Answerer for Greeter {}
+        ";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        assert!(
+            output.errors.is_empty(),
+            "default impl method with a concrete receiver should typecheck cleanly; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            output.fn_sigs["Greeter::answer"].params.is_empty(),
+            "default impl method should not expose the concrete receiver as an explicit argument: {:?}",
+            output.fn_sigs["Greeter::answer"]
+        );
+    }
+
+    #[test]
     fn inferred_binding_does_not_duplicate_lambda_hole_error() {
         let source = "fn main() { let f = (x: _) => x; }";
         let result = hew_parser::parse(source);

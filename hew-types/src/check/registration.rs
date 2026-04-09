@@ -231,18 +231,19 @@ impl Checker {
         );
     }
 
-    fn resolve_registered_type_member_ty(
+    fn resolve_registered_annotation_ty(
         &mut self,
         type_expr: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
         let ty = self.resolve_type_expr_tracking_holes(&type_expr.0, hole_vars);
-        if let Ty::Named { name, args } = &ty {
-            if name == "HashSet" && args.len() == 1 {
-                self.validate_hashset_element_type(&args[0], &type_expr.1);
-            }
-        }
+        self.validate_concrete_hashset_type(&ty, &type_expr.1);
         ty
+    }
+
+    fn resolve_registered_annotation_ty_no_holes(&mut self, type_expr: &Spanned<TypeExpr>) -> Ty {
+        let mut hole_vars = Vec::new();
+        self.resolve_registered_annotation_ty(type_expr, &mut hole_vars)
     }
 
     /// Pass 1: Collect type definitions
@@ -405,7 +406,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_registered_type_member_ty(ty, &mut hole_vars);
+                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -430,7 +431,7 @@ impl Checker {
                             let variant_tys: Vec<Ty> = tfields
                                 .iter()
                                 .map(|field| {
-                                    self.resolve_registered_type_member_ty(field, &mut hole_vars)
+                                    self.resolve_registered_annotation_ty(field, &mut hole_vars)
                                 })
                                 .collect();
                             variants.insert(
@@ -453,7 +454,7 @@ impl Checker {
                                 .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_registered_type_member_ty(
+                                        self.resolve_registered_annotation_ty(
                                             field,
                                             &mut hole_vars,
                                         ),
@@ -556,7 +557,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_registered_type_member_ty(ty, &mut hole_vars);
+                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -581,7 +582,7 @@ impl Checker {
                             let variant_tys: Vec<Ty> = fields
                                 .iter()
                                 .map(|field| {
-                                    self.resolve_registered_type_member_ty(field, &mut hole_vars)
+                                    self.resolve_registered_annotation_ty(field, &mut hole_vars)
                                 })
                                 .collect();
                             variants.insert(
@@ -607,7 +608,7 @@ impl Checker {
                                 .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_registered_type_member_ty(
+                                        self.resolve_registered_annotation_ty(
                                             field,
                                             &mut hole_vars,
                                         ),
@@ -1629,11 +1630,15 @@ impl Checker {
                                         m.params
                                             .iter()
                                             .skip(skip)
-                                            .map(|p| self.resolve_type_expr(&p.ty.0))
+                                            .map(|p| {
+                                                self.resolve_registered_annotation_ty_no_holes(
+                                                    &p.ty,
+                                                )
+                                            })
                                             .collect(),
-                                        m.return_type
-                                            .as_ref()
-                                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te)),
+                                        m.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                                            self.resolve_registered_annotation_ty_no_holes(ret)
+                                        }),
                                     )
                                 };
                                 let sig = FnSig {
@@ -1689,12 +1694,11 @@ impl Checker {
                             .params
                             .iter()
                             .skip(skip)
-                            .map(|p| self.resolve_type_expr(&p.ty.0))
+                            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
                             .collect();
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+                        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                            self.resolve_registered_annotation_ty_no_holes(ret)
+                        });
                         let is_async = method.is_async;
                         let method_name = method.name.clone();
                         let type_name = td.name.clone();
@@ -1876,10 +1880,10 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
-        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
@@ -1939,12 +1943,11 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
             .collect();
-        let return_type = method
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty_no_holes(ret)
+        });
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -2006,10 +2009,10 @@ impl Checker {
         let params = rf
             .params
             .iter()
-            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
-        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
         let return_type = if rf.is_generator {
             Ty::stream(declared_return_type)
@@ -2047,10 +2050,10 @@ impl Checker {
             let params = f
                 .params
                 .iter()
-                .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+                .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
                 .collect();
-            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-                self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                self.resolve_registered_annotation_ty(ret, &mut hole_vars)
             });
             let sig = FnSig {
                 param_names,
@@ -2786,12 +2789,11 @@ impl Checker {
         let params = fd
             .params
             .iter()
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
             .collect();
-        let declared_return = fd
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty_no_holes(ret)
+        });
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });

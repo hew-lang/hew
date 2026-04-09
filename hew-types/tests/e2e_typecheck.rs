@@ -1910,6 +1910,50 @@ fn hashset_bool_type_field_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_bool_param_annotation_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn count(flags: HashSet<bool>) -> i64 {
+            flags.len()
+        }
+
+        fn main() {
+            println(count(HashSet::new()));
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected HashSet<bool> parameter annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_bool_return_annotation_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn make() -> HashSet<bool> {
+            HashSet::new()
+        }
+
+        fn main() {
+            println(make().len());
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected HashSet<bool> return annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

@@ -66,9 +66,11 @@ impl Checker {
         let declared_ret = if let Some(sig) = self.fn_sigs.get(fn_name) {
             sig.return_type.clone()
         } else {
-            fd.return_type
-                .as_ref()
-                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te))
+            fd.return_type.as_ref().map_or(Ty::Unit, |(te, span)| {
+                let ty = self.resolve_type_expr(te);
+                self.validate_concrete_hashset_type(&ty, span);
+                ty
+            })
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).

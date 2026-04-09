@@ -363,6 +363,16 @@ impl Checker {
         false
     }
 
+    pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if let Ty::Named { name, args } = &resolved {
+            if name == "HashSet" && args.len() == 1 {
+                return self.validate_hashset_element_type(&args[0], span);
+            }
+        }
+        true
+    }
+
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -485,14 +495,32 @@ impl Checker {
             }
             "clone" => {
                 self.check_arity(args, 0, "`HashSet::clone`", span);
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Named {
                     name: "HashSet".to_string(),
                     args: vec![elem_ty.clone()],
                 }
             }
-            "len" => Ty::I64,
-            "is_empty" => Ty::Bool,
-            "clear" => Ty::Unit,
+            "len" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::I64
+            }
+            "is_empty" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::Bool
+            }
+            "clear" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::Unit
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,

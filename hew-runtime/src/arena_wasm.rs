@@ -60,8 +60,8 @@ struct ArenaChunk {
 impl ArenaChunk {
     fn new(size: usize) -> Option<Self> {
         debug_assert!(size > 0, "chunk size must be non-zero");
-        // SAFETY: size > 0 and CHUNK_ALIGN is a valid power-of-two alignment.
         let layout = Layout::from_size_align(size, CHUNK_ALIGN).ok()?;
+        // SAFETY: size > 0 and CHUNK_ALIGN is a valid power-of-two alignment.
         let base = unsafe { alloc(layout) };
         if base.is_null() {
             return None;
@@ -72,16 +72,15 @@ impl ArenaChunk {
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
-        // SAFETY: base was allocated with the same layout.
         let layout = Layout::from_size_align(self.size, CHUNK_ALIGN).expect("layout must be valid");
+        // SAFETY: base was allocated with the same layout.
         unsafe { dealloc(self.base, layout) };
     }
 }
 
-// ArenaChunk holds a raw pointer; assure the compiler it is Send/Sync
-// (safe: single-threaded WASM, no concurrent access).
 // SAFETY: WASM is single-threaded; no concurrent access to chunk memory.
 unsafe impl Send for ArenaChunk {}
+// SAFETY: WASM is single-threaded; no concurrent access to chunk memory.
 unsafe impl Sync for ArenaChunk {}
 
 /// Per-actor arena bump allocator (WASM variant).
@@ -120,6 +119,17 @@ impl ActorArena {
     ///
     /// `align` must be a power of two (asserted in debug builds).
     /// Returns null if `size` is zero or memory is exhausted.
+    ///
+    /// # Alignment correctness
+    ///
+    /// Chunks are backed by `std::alloc` with `CHUNK_ALIGN = 16`, so
+    /// `chunk.base` is only guaranteed to satisfy alignments ≤ 16.  For
+    /// larger alignments (e.g. 32, 64 bytes — possible for SIMD types) the
+    /// cursor-relative alignment formula `(cursor + align - 1) & !(align - 1)`
+    /// would produce a wrong result because it treats `chunk.base` as if it
+    /// were at address 0.  We therefore compute alignment against the
+    /// **absolute address** of `chunk.base + cursor`, which is correct for
+    /// any power-of-two alignment.
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
         debug_assert!(
             align.is_power_of_two(),
@@ -130,25 +140,65 @@ impl ActorArena {
             return ptr::null_mut();
         }
 
-        let aligned_cursor = (self.cursor + align - 1) & !(align - 1);
-        let end_offset = aligned_cursor + size;
-
+        // ── Try current chunk ───────────────────────────────────────────
         if self.current_chunk < self.chunks.len() {
             let chunk = &self.chunks[self.current_chunk];
+            // Compute the next address inside this chunk that satisfies `align`,
+            // working against the absolute address so that chunk.base's own
+            // alignment (CHUNK_ALIGN = 16) does not cap the achievable alignment.
+            let base_addr = chunk.base as usize;
+            let abs_cursor = base_addr + self.cursor;
+            let abs_aligned = (abs_cursor + align - 1) & !(align - 1);
+            let aligned_cursor = abs_aligned - base_addr;
+            let end_offset = aligned_cursor + size;
+
             if end_offset <= chunk.size {
                 self.cursor = end_offset;
-                // SAFETY: aligned_cursor is within chunk bounds.
+                // SAFETY: aligned_cursor < chunk.size (checked above) and
+                // chunk.base is a valid allocation of at least chunk.size bytes.
                 return unsafe { chunk.base.add(aligned_cursor) };
             }
         }
 
-        // Need a new chunk.
+        // ── Advance through retained chunks before allocating fresh ─────
+        //
+        // reset() rewinds current_chunk to 0 but retains chunks 1..n so that
+        // the next dispatch cycle can reuse already-allocated backing memory.
+        // Without this loop, overflowing chunk 0 after a reset would push a
+        // brand-new chunk on every cycle and grow the arena without bound.
+        //
+        // Chunks grow geometrically, so a retained chunk that does not fit
+        // the current request will not fit any smaller future request from
+        // the same slot either; advancing past it is safe.
+        let first_candidate = self.current_chunk + 1;
+        for idx in first_candidate..self.chunks.len() {
+            let chunk = &self.chunks[idx];
+            let base_addr = chunk.base as usize;
+            let abs_aligned = (base_addr + align - 1) & !(align - 1);
+            let aligned_cursor = abs_aligned - base_addr;
+            let end_offset = aligned_cursor + size;
+
+            if end_offset <= chunk.size {
+                self.current_chunk = idx;
+                self.cursor = end_offset;
+                // SAFETY: aligned_cursor < chunk.size (checked above) and
+                // chunk.base is a valid allocation of at least chunk.size bytes.
+                return unsafe { chunk.base.add(aligned_cursor) };
+            }
+            // Retained chunk too small; advance current_chunk past it so it is
+            // not revisited, then continue to the next retained chunk.
+            self.current_chunk = idx;
+        }
+
+        // ── No retained chunk fits; allocate a fresh one ─────────────────
         let next_size = if self.chunks.is_empty() {
             self.initial_chunk_size
         } else {
             let last = self.chunks[self.chunks.len() - 1].size;
             std::cmp::min(last * 2, self.max_chunk_size)
         };
+        // Reserve `align` extra bytes so that absolute-address alignment
+        // padding (at most `align - 1` bytes) always fits within the chunk.
         let chunk_size = std::cmp::max(next_size, size + align);
 
         let Some(new_chunk) = ArenaChunk::new(chunk_size) else {
@@ -158,13 +208,17 @@ impl ActorArena {
         self.chunks.push(new_chunk);
         self.current_chunk = self.chunks.len() - 1;
 
-        // Offset 0 is aligned to CHUNK_ALIGN (≥ any requested align up to 16 bytes).
-        // For larger alignments the alignment computation still works because
-        // rounding 0 up by any power-of-two is still 0.
-        self.cursor = size;
+        // Compute alignment padding from the new chunk's absolute base address.
+        let chunk = &self.chunks[self.current_chunk];
+        let base_addr = chunk.base as usize;
+        let abs_aligned = (base_addr + align - 1) & !(align - 1);
+        let aligned_cursor = abs_aligned - base_addr;
 
-        // SAFETY: offset 0 is within the new chunk bounds.
-        self.chunks[self.current_chunk].base
+        self.cursor = aligned_cursor + size;
+
+        // SAFETY: aligned_cursor + size <= chunk_size (proven above) and
+        // chunk.base is a valid allocation of at least chunk_size bytes.
+        unsafe { chunk.base.add(aligned_cursor) }
     }
 
     /// Reset the arena for reuse after a completed dispatch cycle.
@@ -195,9 +249,9 @@ impl Default for ActorArena {
     }
 }
 
-// ActorArena holds raw pointers (inside ArenaChunk); assure the compiler.
 // SAFETY: WASM is single-threaded; no concurrent access possible.
 unsafe impl Send for ActorArena {}
+// SAFETY: WASM is single-threaded; no concurrent access possible.
 unsafe impl Sync for ActorArena {}
 
 // ── Thread-local current arena ────────────────────────────────────────────
@@ -233,6 +287,7 @@ fn get_current_arena() -> *mut ActorArena {
 ///
 /// The returned pointer must eventually be passed to `hew_arena_free` (while
 /// the same arena is active) or to `libc::free` (when no arena is active).
+#[must_use]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
@@ -264,6 +319,7 @@ pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
 }
 
 /// Create a new arena and return an owning raw pointer.
+#[must_use]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn hew_arena_new() -> *mut ActorArena {
     match ActorArena::new() {
@@ -343,6 +399,70 @@ mod tests {
         assert_eq!(ptr3 as usize % 16, 0, "16-byte alignment");
     }
 
+    /// Alignment requests larger than `CHUNK_ALIGN` (16) must still be
+    /// honoured.  Previously the code treated `cursor` as if `chunk.base`
+    /// were at absolute address 0, which would produce a misaligned pointer
+    /// whenever `chunk.base` was not already aligned to the requested value.
+    #[test]
+    fn arena_alloc_alignment_above_chunk_align() {
+        for align in [32_usize, 64, 128, 256, 512, 1024, 4096] {
+            let mut arena = ActorArena::new().expect("arena creation must succeed");
+
+            // First alloc: exercises both the initial-chunk path (where cursor=0
+            // and the base may not be `align`-aligned) and the pointer check.
+            let p1 = arena.alloc(align, align);
+            assert!(!p1.is_null(), "alloc({align}, {align}) returned null");
+            assert_eq!(
+                p1 as usize % align,
+                0,
+                "initial-chunk alloc({align}, {align}) not aligned: addr={p1:p}"
+            );
+
+            // Second alloc after an odd-sized first alloc: exercises cursor
+            // advancement forcing a non-zero padding calculation.
+            let mut arena2 = ActorArena::new().expect("arena creation must succeed");
+            arena2.alloc(1, 1); // advance cursor by 1 to misalign it
+            let p2 = arena2.alloc(align, align);
+            assert!(
+                !p2.is_null(),
+                "alloc after odd cursor: alloc({align}, {align}) returned null"
+            );
+            assert_eq!(
+                p2 as usize % align,
+                0,
+                "post-odd-cursor alloc({align}, {align}) not aligned: addr={p2:p}"
+            );
+        }
+    }
+
+    /// After a reset the arena cursor returns to zero; a high-alignment alloc
+    /// on the reused initial chunk must still be correctly aligned.
+    #[test]
+    fn arena_high_align_after_reset() {
+        let mut arena = ActorArena::new().expect("arena creation must succeed");
+        arena.alloc(7, 1); // dirty the cursor
+        arena.reset();
+        let p = arena.alloc(32, 32);
+        assert!(!p.is_null());
+        assert_eq!(p as usize % 32, 0, "32-byte alignment after reset");
+    }
+
+    /// A high-alignment request that overflows the current chunk must produce
+    /// an aligned pointer from the freshly-allocated overflow chunk.
+    #[test]
+    fn arena_high_align_on_new_chunk() {
+        // Tiny initial chunk forces every alloc to spill into a new chunk.
+        let mut arena =
+            ActorArena::new_with_sizes(32, 64 * 1024).expect("arena creation must succeed");
+        let p = arena.alloc(8, 32);
+        assert!(!p.is_null(), "alloc on new chunk returned null");
+        assert_eq!(
+            p as usize % 32,
+            0,
+            "new-chunk alloc not 32-byte aligned: addr={p:p}"
+        );
+    }
+
     #[test]
     fn arena_reset_and_reuse() {
         let mut arena = ActorArena::new().expect("arena creation must succeed");
@@ -363,6 +483,70 @@ mod tests {
         let arena = ActorArena::new().expect("arena creation must succeed");
         // Mainly checks that free_all does not panic or leak.
         arena.free_all();
+    }
+
+    #[test]
+    fn arena_reset_reuses_retained_overflow_chunks() {
+        // Use a tiny initial chunk so that a moderate allocation forces chunk 1
+        // to be allocated during the first dispatch cycle.
+        let mut arena =
+            ActorArena::new_with_sizes(64, 64 * 1024).expect("arena creation must succeed");
+
+        // Cycle 1: overflow into a second chunk.
+        let p1 = arena.alloc(128, 1);
+        assert!(!p1.is_null());
+        let chunk_count_after_cycle1 = arena.chunks.len();
+        assert!(
+            chunk_count_after_cycle1 >= 2,
+            "cycle 1 must have allocated at least 2 chunks"
+        );
+
+        // Reset for cycle 2.
+        arena.reset();
+        assert_eq!(arena.current_chunk, 0, "reset must rewind to chunk 0");
+        assert_eq!(arena.cursor, 0);
+
+        // Cycle 2: overflow chunk 0 again.  The retained chunk 1 must be
+        // reused; no new chunk should be allocated.
+        let p2 = arena.alloc(128, 1);
+        assert!(!p2.is_null());
+        assert_eq!(
+            arena.chunks.len(),
+            chunk_count_after_cycle1,
+            "cycle 2 must reuse retained chunk — chunk count must not grow"
+        );
+
+        // A further reset + cycle must still not grow the chunk count.
+        arena.reset();
+        let p3 = arena.alloc(128, 1);
+        assert!(!p3.is_null());
+        assert_eq!(
+            arena.chunks.len(),
+            chunk_count_after_cycle1,
+            "cycle 3 must still reuse retained chunks"
+        );
+    }
+
+    /// A fresh chunk must only be allocated when all retained chunks are
+    /// exhausted (i.e., the working set genuinely grows).
+    #[test]
+    fn arena_fresh_chunk_only_when_retained_exhausted() {
+        let mut arena =
+            ActorArena::new_with_sizes(64, 64 * 1024).expect("arena creation must succeed");
+
+        // Cycle 1: burn through enough bytes to need 2 chunks.
+        arena.alloc(128, 1);
+        let chunks_after_cycle1 = arena.chunks.len();
+
+        // Cycle 2 with a larger working set: needs a third chunk.
+        arena.reset();
+        arena.alloc(128, 1); // reuses retained chunk 1 — count unchanged
+        assert_eq!(arena.chunks.len(), chunks_after_cycle1);
+        arena.alloc(256, 1); // exceeds retained chunk capacity — needs a new one
+        assert!(
+            arena.chunks.len() > chunks_after_cycle1,
+            "working-set growth must allocate a new chunk"
+        );
     }
 
     #[test]

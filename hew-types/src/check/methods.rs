@@ -395,6 +395,28 @@ impl Checker {
         false
     }
 
+    fn reject_unsafe_hashmap_element_types(
+        &mut self,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        span: &Span,
+    ) -> bool {
+        self.reject_rc_collection_element("HashMap", key_ty, span);
+        self.reject_rc_collection_element("HashMap", val_ty, span);
+
+        let resolved_key = self.subst.resolve(key_ty);
+        let resolved_val = self.subst.resolve(val_ty);
+        let mut visiting = HashSet::new();
+        if ty_contains_rc_deep(&resolved_key, &self.type_defs, &mut visiting) {
+            return false;
+        }
+        let mut visiting = HashSet::new();
+        if ty_contains_rc_deep(&resolved_val, &self.type_defs, &mut visiting) {
+            return false;
+        }
+        true
+    }
+
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
         // Inferred integer literals default to i64 later, so `HashSet::new(); s.insert(42);`
@@ -740,16 +762,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &val_ty);
                 }
-                self.reject_rc_collection_element("HashMap", &key_ty, span);
-                self.reject_rc_collection_element("HashMap", &val_ty, span);
-                let resolved_key = self.subst.resolve(&key_ty);
-                let resolved_val = self.subst.resolve(&val_ty);
-                let mut visiting = HashSet::new();
-                if ty_contains_rc_deep(&resolved_key, &self.type_defs, &mut visiting) {
-                    return Ty::Error;
-                }
-                let mut visiting = HashSet::new();
-                if ty_contains_rc_deep(&resolved_val, &self.type_defs, &mut visiting) {
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
@@ -762,6 +775,9 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
+                }
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
                 }
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
@@ -789,6 +805,9 @@ impl Checker {
             }
             "keys" => {
                 self.check_arity(args, 0, "`HashMap::keys`", span);
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
@@ -796,6 +815,9 @@ impl Checker {
             }
             "values" => {
                 self.check_arity(args, 0, "`HashMap::values`", span);
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }

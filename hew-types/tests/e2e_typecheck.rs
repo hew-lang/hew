@@ -2326,6 +2326,48 @@ fn rc_hashmap_insert_key_rejected() {
 }
 
 #[test]
+fn rc_hashmap_get_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        type Holder {
+            items: HashMap<String, Rc<int>>
+        }
+        fn leak(h: Holder) -> Option<Rc<int>> {
+            h.items.get("key")
+        }"#,
+        "HashMap.get() on HashMap<String, Rc<int>>",
+    );
+}
+
+#[test]
+fn rc_hashmap_keys_rejected_when_value_type_is_rc() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder {
+            items: HashMap<String, Rc<int>>
+        }
+        fn leak(h: Holder) -> Vec<String> {
+            h.items.keys()
+        }",
+        "HashMap.keys() on HashMap<String, Rc<int>>",
+    );
+}
+
+#[test]
+fn rc_hashmap_values_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder {
+            items: HashMap<String, Rc<int>>
+        }
+        fn leak(h: Holder) -> Vec<Rc<int>> {
+            h.items.values()
+        }",
+        "HashMap.values() on HashMap<String, Rc<int>>",
+    );
+}
+
+#[test]
 fn rc_hashset_insert_rejected() {
     assert_unsafe_collection_element(
         r"

@@ -2702,6 +2702,26 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
     fieldNames.push_back(field.name);
   }
 
+  auto cloneRetainedClosureField = [&](const StructFieldInfo &field, mlir::Value val,
+                                       const ast::Expr &fieldExpr) -> mlir::Value {
+    if (!mlir::isa<hew::ClosureType>(field.semanticType) || !val)
+      return val;
+    if (!std::holds_alternative<ast::ExprIdentifier>(fieldExpr.kind) &&
+        !std::holds_alternative<ast::ExprFieldAccess>(fieldExpr.kind)) {
+      return val;
+    }
+
+    auto closureTy = mlir::dyn_cast<hew::ClosureType>(val.getType());
+    if (!closureTy)
+      return val;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, val);
+    auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, val);
+    auto clonedEnv = hew::RcCloneOp::create(builder, location, ptrType, envPtr).getResult();
+    return hew::ClosureCreateOp::create(builder, location, closureTy, fnPtr, clonedEnv);
+  };
+
   for (const auto &[fieldInitName, fieldInitVal] : si.fields) {
     bool found = false;
     for (const auto &field : info.fields) {
@@ -2709,6 +2729,9 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
         auto val = generateExpression(fieldInitVal->value);
         if (!val)
           return nullptr;
+        // Struct init from an existing closure owner must retain an
+        // independent env reference; otherwise both bindings drop the same env.
+        val = cloneRetainedClosureField(field, val, fieldInitVal->value);
         val = coerceType(val, field.type, location);
         fieldValues[field.index] = val;
         found = true;

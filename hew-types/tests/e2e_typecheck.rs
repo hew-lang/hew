@@ -1908,6 +1908,24 @@ fn hashset_int_insert_ok() {
 }
 
 #[test]
+fn slice_param_annotation_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn take(xs: [i32]) {}
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("slice annotations are not supported")
+        ),
+        "expected slice parameter annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn hashset_bool_insert_rejected_before_codegen() {
     let output = typecheck_inline(
         r"

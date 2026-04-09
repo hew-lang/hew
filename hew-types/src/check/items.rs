@@ -44,7 +44,7 @@ impl Checker {
 
         // Bind params — only the first parameter can be the receiver
         for (i, p) in fd.params.iter().enumerate() {
-            let mut ty = self.resolve_type_expr(&p.ty.0);
+            let mut ty = self.resolve_type_expr(&p.ty);
             if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
@@ -66,9 +66,9 @@ impl Checker {
         let declared_ret = if let Some(sig) = self.fn_sigs.get(fn_name) {
             sig.return_type.clone()
         } else {
-            fd.return_type.as_ref().map_or(Ty::Unit, |(te, span)| {
-                let ty = self.resolve_type_expr(te);
-                self.validate_concrete_hashset_type(&ty, span);
+            fd.return_type.as_ref().map_or(Ty::Unit, |annotation| {
+                let ty = self.resolve_type_expr(annotation);
+                self.validate_concrete_hashset_type(&ty, &annotation.1);
                 ty
             })
         };
@@ -184,7 +184,7 @@ impl Checker {
 
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
         for field in fields {
-            let field_ty = self.resolve_type_expr(&field.ty.0);
+            let field_ty = self.resolve_type_expr(&field.ty);
             self.env.define(field.name.clone(), field_ty, true);
         }
     }
@@ -390,7 +390,7 @@ impl Checker {
 
         for p in &rf.params {
             self.check_shadowing(&p.name, &p.ty.1);
-            let ty = self.resolve_type_expr(&p.ty.0);
+            let ty = self.resolve_type_expr(&p.ty);
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
 
@@ -406,7 +406,7 @@ impl Checker {
         } else {
             rf.return_type
                 .as_ref()
-                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te))
+                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation))
         };
         let expected_ret = if rf.is_generator {
             Ty::Unit
@@ -521,7 +521,7 @@ impl Checker {
                 .as_ref()
                 .map(|args| {
                     args.iter()
-                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .map(|type_arg| self.resolve_type_expr(type_arg))
                         .collect()
                 })
                 .unwrap_or_default();

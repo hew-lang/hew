@@ -80,7 +80,7 @@ impl Checker {
         annotation: &Spanned<TypeExpr>,
     ) -> (Ty, Vec<TypeVar>) {
         let mut hole_vars = Vec::new();
-        let ty = self.resolve_type_expr_tracking_holes(&annotation.0, &mut hole_vars);
+        let ty = self.resolve_type_expr_tracking_holes(annotation, &mut hole_vars);
         self.validate_concrete_hashset_type(&ty, &annotation.1);
         (ty, hole_vars)
     }
@@ -530,7 +530,7 @@ impl Checker {
         }
     }
 
-    pub(super) fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
+    pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {
         let mut ignored_hole_vars = Vec::new();
         self.resolve_type_expr_tracking_holes(te, &mut ignored_hole_vars)
     }
@@ -541,10 +541,10 @@ impl Checker {
     )]
     pub(super) fn resolve_type_expr_tracking_holes(
         &mut self,
-        te: &TypeExpr,
+        te: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
-        match te {
+        match &te.0 {
             TypeExpr::Named { name, type_args } => {
                 // Handle `Self` type
                 if name == "Self" {
@@ -582,7 +582,7 @@ impl Checker {
                 // Non-primitive: resolve generics, aliases, special types
                 let args = type_args.as_ref().map_or(vec![], |ta| {
                     ta.iter()
-                        .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                        .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
                         .collect()
                 });
                 // Check if it's a generic type parameter
@@ -657,42 +657,50 @@ impl Checker {
                 }
             }
             TypeExpr::Result { ok, err } => Ty::result(
-                self.resolve_type_expr_tracking_holes(&ok.0, hole_vars),
-                self.resolve_type_expr_tracking_holes(&err.0, hole_vars),
+                self.resolve_type_expr_tracking_holes(ok, hole_vars),
+                self.resolve_type_expr_tracking_holes(err, hole_vars),
             ),
             TypeExpr::Option(inner) => {
-                Ty::option(self.resolve_type_expr_tracking_holes(&inner.0, hole_vars))
+                Ty::option(self.resolve_type_expr_tracking_holes(inner, hole_vars))
             }
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems
                     .iter()
-                    .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                    .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
                     .collect(),
             ),
             TypeExpr::Array { element, size } => Ty::Array(
-                Box::new(self.resolve_type_expr_tracking_holes(&element.0, hole_vars)),
+                Box::new(self.resolve_type_expr_tracking_holes(element, hole_vars)),
                 *size,
             ),
-            TypeExpr::Slice(inner) => Ty::Slice(Box::new(
-                self.resolve_type_expr_tracking_holes(&inner.0, hole_vars),
-            )),
+            TypeExpr::Slice(_) => {
+                if self.unsupported_slice_spans.insert(SpanKey::from(&te.1)) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &te.1,
+                        "`[T]` slice annotations are not supported; MLIR lowering cannot lower slice types yet"
+                            .to_string(),
+                    );
+                }
+                Ty::Error
+            }
             TypeExpr::Function {
                 params,
                 return_type,
             } => Ty::Function {
                 params: params
                     .iter()
-                    .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                    .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
                     .collect(),
-                ret: Box::new(self.resolve_type_expr_tracking_holes(&return_type.0, hole_vars)),
+                ret: Box::new(self.resolve_type_expr_tracking_holes(return_type, hole_vars)),
             },
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(self.resolve_type_expr_tracking_holes(&pointee.0, hole_vars)),
+                pointee: Box::new(self.resolve_type_expr_tracking_holes(pointee, hole_vars)),
             },
             TypeExpr::TraitObject(bounds) => {
                 let traits = bounds
@@ -700,7 +708,7 @@ impl Checker {
                     .map(|bound| {
                         let args = bound.type_args.as_ref().map_or(vec![], |ta| {
                             ta.iter()
-                                .map(|t| self.resolve_type_expr_tracking_holes(&t.0, hole_vars))
+                                .map(|t| self.resolve_type_expr_tracking_holes(t, hole_vars))
                                 .collect()
                         });
                         crate::ty::TraitObjectBound {

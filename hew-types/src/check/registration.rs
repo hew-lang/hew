@@ -236,7 +236,7 @@ impl Checker {
         type_expr: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
-        let ty = self.resolve_type_expr_tracking_holes(&type_expr.0, hole_vars);
+        let ty = self.resolve_type_expr_tracking_holes(type_expr, hole_vars);
         self.validate_concrete_hashset_type(&ty, &type_expr.1);
         ty
     }
@@ -328,7 +328,7 @@ impl Checker {
                         continue;
                     }
                     let mut hole_vars = Vec::new();
-                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty.0, &mut hole_vars);
+                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
                 }
@@ -955,7 +955,7 @@ impl Checker {
         let mut all_field_types = Vec::new();
         for state in &md.states {
             for (_, spanned_te) in &state.fields {
-                all_field_types.push(self.resolve_type_expr(&spanned_te.0));
+                all_field_types.push(self.resolve_type_expr(spanned_te));
             }
         }
         self.registry
@@ -1432,7 +1432,7 @@ impl Checker {
                 return Some(Ty::Error);
             }
         };
-        let ty = self.resolve_type_expr(&expr.0);
+        let ty = self.resolve_type_expr(&expr);
         if let Some(scope) = self.impl_alias_scopes.get_mut(scope_index) {
             if let Some(entry) = scope.entries.get_mut(alias) {
                 entry.resolving = false;
@@ -1551,7 +1551,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -1844,7 +1844,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -2394,7 +2394,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -2733,7 +2733,7 @@ impl Checker {
                             .as_ref()
                             .map(|args| {
                                 args.iter()
-                                    .map(|(te, _)| self.resolve_type_expr(te))
+                                    .map(|type_arg| self.resolve_type_expr(type_arg))
                                     .collect()
                             })
                             .unwrap_or_default();

@@ -307,7 +307,7 @@ impl Checker {
                     inferred_args = type_args_provided
                         .iter()
                         .take(type_param_count)
-                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .map(|type_arg| self.resolve_type_expr(type_arg))
                         .collect();
                 }
                 while inferred_args.len() < type_param_count {

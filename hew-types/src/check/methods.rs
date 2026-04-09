@@ -687,10 +687,6 @@ impl Checker {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "HashMap has multiple methods plus ABI-boundary validation"
-    )]
     fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Error) {
@@ -736,6 +732,10 @@ impl Checker {
         false
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HashMap has multiple methods plus ABI-boundary validation"
+    )]
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -789,6 +789,12 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
+                }
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
                 }
                 Ty::Bool
             }

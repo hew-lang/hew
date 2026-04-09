@@ -119,6 +119,27 @@ fn main() {
 }
 
 #[test]
+fn hashmap_i64_key_remove_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+fn main() {
+    let m: HashMap<i64, i64> = HashMap::new();
+    let _ = m.remove(1);
+}
+",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("HashMap<int, int> is not supported")
+                && e.message.contains("String keys and scalar/string values")
+        }),
+        "expected HashMap<i64, i64>::remove to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
     let output = typecheck_inline(
         r"
@@ -2336,6 +2357,20 @@ fn rc_hashmap_get_value_rejected() {
             h.items.get("key")
         }"#,
         "HashMap.get() on HashMap<String, Rc<int>>",
+    );
+}
+
+#[test]
+fn rc_hashmap_remove_value_rejected() {
+    assert_unsafe_collection_element(
+        r#"
+        type Holder {
+            items: HashMap<String, Rc<int>>
+        }
+        fn remove_key(h: Holder) -> bool {
+            h.items.remove("key")
+        }"#,
+        "HashMap.remove() on HashMap<String, Rc<int>>",
     );
 }
 

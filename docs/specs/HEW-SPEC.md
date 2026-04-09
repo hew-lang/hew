@@ -377,6 +377,8 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `(T1, T2, ...)`                    | All elements are `Send`                    |
 | `[T; N]`                           | `T` is `Send`                              |
 
+> **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker — MLIR lowering has no slice type lowering. Use `Vec<T>` for dynamically-sized sequences.
+
 **Frozen derivation:**
 
 | Type                          | `Frozen` if...                            |
@@ -1158,6 +1160,7 @@ fn eval(e: Expr) -> Int {
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
 - Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
+- `Rc<T>` cannot be used as a collection element or key type: `Vec<Rc<T>>`, `HashMap<Rc<T>, V>`, `HashMap<K, Rc<T>>`, and `HashSet<Rc<T>>` are all rejected by the type checker
 
 ```hew
 let data: Rc<String> = Rc::new(expensive_computation());
@@ -1881,6 +1884,11 @@ impl<T> Vec<T> {
 }
 ```
 
+**Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
+
+- `Rc<T>` elements are rejected: `Vec<Rc<T>>` is not supported (the runtime does not track Rc ownership for collection elements)
+- Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
+
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `.contains()`, `.trim()`, `.replace()`, `.split()`, `.lines()`,
 `.is_digit()`, `.is_alpha()`, and `.is_alphanumeric()`.
@@ -1892,6 +1900,8 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 the shipped runtime/codegen ABI currently supports only `HashMap<String, V>`
 where `V` is `String`, `bool`, `char`, any integer type, any float type, or
 `duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
+Additionally, `Rc<T>` in either the key or value position is rejected regardless
+of the ABI key/value check.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
@@ -1979,7 +1989,8 @@ Important current details:
   `HashSet<int>` and `HashSet<String>` through type-specific runtime entry
   points; unsupported `HashSet<T>` usages are rejected fail-closed during
   type checking, including nested annotations, function signatures, and
-  `wire enum` payloads
+  `wire enum` payloads; `HashSet<Rc<T>>` is additionally rejected because
+  `Rc<T>` elements in collections are not supported
 - `std::iter` is presently specialised to `Vec<int>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,

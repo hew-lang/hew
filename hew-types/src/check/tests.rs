@@ -6874,6 +6874,184 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
+    fn trait_default_method_explicit_infer_return_registers_qualified_signature() {
+        use hew_parser::ast::{TraitDecl, TraitItem};
+
+        let trait_decl = TraitDecl {
+            visibility: Visibility::Private,
+            name: "Answerer".to_string(),
+            type_params: None,
+            super_traits: None,
+            items: vec![TraitItem::Method(TraitMethod {
+                name: "answer".to_string(),
+                is_pure: false,
+                type_params: None,
+                params: vec![Param {
+                    name: "value".to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "i64".to_string(),
+                            type_args: None,
+                        },
+                        12..15,
+                    ),
+                    is_mutable: false,
+                }],
+                return_type: Some((TypeExpr::Infer, 10..11)),
+                where_clause: None,
+                body: Some(Block {
+                    stmts: vec![],
+                    trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
+                }),
+            })],
+            doc_comment: None,
+        };
+        let program = Program {
+            module_graph: None,
+            items: vec![(Item::Trait(trait_decl), 0..30)],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            output.errors.is_empty(),
+            "trait default `->_` return should resolve cleanly; got errors: {:?}",
+            output.errors
+        );
+        assert_eq!(output.fn_sigs["Answerer::answer"].return_type, Ty::I64);
+    }
+
+    #[test]
+    fn trait_default_method_unresolved_explicit_infer_return_fails_closed() {
+        use hew_parser::ast::{TraitDecl, TraitItem};
+
+        let trait_decl = TraitDecl {
+            visibility: Visibility::Private,
+            name: "Answerer".to_string(),
+            type_params: None,
+            super_traits: None,
+            items: vec![TraitItem::Method(TraitMethod {
+                name: "answer".to_string(),
+                is_pure: false,
+                type_params: None,
+                params: vec![],
+                return_type: Some((TypeExpr::Infer, 10..11)),
+                where_clause: None,
+                body: Some(Block {
+                    stmts: vec![],
+                    trailing_expr: Some(Box::new((Expr::Identifier("None".to_string()), 20..24))),
+                }),
+            })],
+            doc_comment: None,
+        };
+        let program = Program {
+            module_graph: None,
+            items: vec![(Item::Trait(trait_decl), 0..30)],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let errs = inference_failed_errors(&output);
+        assert!(
+            errs.iter().any(|err| err
+                .message
+                .contains("signature of trait method `Answerer::answer`")),
+            "expected InferenceFailed for unresolved trait default `->_`; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            output.fn_sigs.contains_key("Answerer::answer"),
+            "trait methods should be registered under `Trait::method`"
+        );
+    }
+
+    #[test]
+    fn trait_default_method_explicit_infer_return_propagates_to_impl_method_signature() {
+        use hew_parser::ast::{ImplDecl, TraitBound, TraitDecl, TraitItem, TypeDecl, TypeDeclKind};
+
+        let trait_decl = TraitDecl {
+            visibility: Visibility::Private,
+            name: "Answerer".to_string(),
+            type_params: None,
+            super_traits: None,
+            items: vec![TraitItem::Method(TraitMethod {
+                name: "answer".to_string(),
+                is_pure: false,
+                type_params: None,
+                params: vec![Param {
+                    name: "value".to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "i64".to_string(),
+                            type_args: None,
+                        },
+                        12..15,
+                    ),
+                    is_mutable: false,
+                }],
+                return_type: Some((TypeExpr::Infer, 10..11)),
+                where_clause: None,
+                body: Some(Block {
+                    stmts: vec![],
+                    trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
+                }),
+            })],
+            doc_comment: None,
+        };
+        let greeter = TypeDecl {
+            visibility: Visibility::Private,
+            kind: TypeDeclKind::Struct,
+            name: "Greeter".to_string(),
+            type_params: None,
+            where_clause: None,
+            body: vec![],
+            doc_comment: None,
+            wire: None,
+            is_indirect: false,
+        };
+        let impl_decl = ImplDecl {
+            type_params: None,
+            trait_bound: Some(TraitBound {
+                name: "Answerer".to_string(),
+                type_args: None,
+            }),
+            target_type: (
+                TypeExpr::Named {
+                    name: "Greeter".to_string(),
+                    type_args: None,
+                },
+                30..37,
+            ),
+            where_clause: None,
+            type_aliases: vec![],
+            methods: vec![],
+        };
+        let program = Program {
+            module_graph: None,
+            items: vec![
+                (Item::Trait(trait_decl), 0..30),
+                (Item::TypeDecl(greeter), 31..40),
+                (Item::Impl(impl_decl), 41..60),
+            ],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            output.errors.is_empty(),
+            "default impl method signature should inherit resolved trait return type; got errors: {:?}",
+            output.errors
+        );
+        assert_eq!(output.fn_sigs["Greeter::answer"].return_type, Ty::I64);
+    }
+
+    #[test]
     fn inferred_binding_does_not_duplicate_lambda_hole_error() {
         let source = "fn main() { let f = (x: _) => x; }";
         let result = hew_parser::parse(source);

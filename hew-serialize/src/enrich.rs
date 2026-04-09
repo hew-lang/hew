@@ -534,6 +534,74 @@ fn explicit_infer_survivor_diagnostic(
     diagnostic
 }
 
+fn enrich_function_like_return_type_with_diagnostics(
+    kind: &str,
+    display_name: &str,
+    fn_sig_name: &str,
+    return_type: &mut Option<Spanned<TypeExpr>>,
+    trailing_expr_span: Option<&Span>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+) {
+    let explicit_infer_span = match &*return_type {
+        Some((TypeExpr::Infer, span)) => Some(span.clone()),
+        _ => None,
+    };
+    let needs_infer = return_type.is_none() || explicit_infer_span.is_some();
+    if !needs_infer {
+        return;
+    }
+
+    let mut explicit_infer_reason = None;
+    if let Some(expr_span) = trailing_expr_span {
+        match lookup_inferred_type(
+            tco,
+            expr_span,
+            format!("{kind} `{display_name}` return type inferred from trailing expression"),
+        ) {
+            Ok(Some(inferred)) => *return_type = Some(inferred),
+            Ok(None) => {}
+            Err(diagnostic) => {
+                if explicit_infer_span.is_some() {
+                    explicit_infer_reason = Some(diagnostic);
+                } else {
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
+    if matches!(&*return_type, Some((TypeExpr::Infer, _))) {
+        if let Some(ref infer_span) = explicit_infer_span {
+            match lookup_inferred_fn_return_type(
+                tco,
+                fn_sig_name,
+                display_name,
+                infer_span,
+                format!("{kind} `{display_name}` return type inferred from checker signature"),
+            ) {
+                Ok(Some(inferred)) => *return_type = Some(inferred),
+                Ok(None) => {}
+                Err(diagnostic) => {
+                    explicit_infer_reason.get_or_insert(diagnostic);
+                }
+            }
+        }
+    }
+
+    if let Some(ref infer_span) = explicit_infer_span {
+        if matches!(&*return_type, Some((TypeExpr::Infer, _))) {
+            diagnostics.push(explicit_infer_survivor_diagnostic(
+                infer_span,
+                format!("{kind} `{display_name}` explicit `_` return type"),
+                "explicit `_` return type annotation reached serializer without a serializable resolved return type",
+                explicit_infer_reason.as_ref(),
+            ));
+            *return_type = None;
+        }
+    }
+}
+
 /// Enrich a program's AST with inferred types from the type checker.
 ///
 /// # Errors
@@ -1255,10 +1323,25 @@ fn enrich_item_with_diagnostics(
         }
         Item::Trait(trait_decl) => {
             for trait_item in &mut trait_decl.items {
-                if let hew_parser::ast::TraitItem::Method(m) = trait_item {
-                    if let Some(ref mut body) = m.body {
+                if let hew_parser::ast::TraitItem::Method(method) = trait_item {
+                    if let Some(ref mut body) = method.body {
                         enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
                     }
+                    let method_name = method.name.clone();
+                    let fn_sig_name = format!("{}::{}", trait_decl.name, method_name);
+                    let trailing_expr_span = method
+                        .body
+                        .as_ref()
+                        .and_then(|body| body.trailing_expr.as_ref().map(|expr| &expr.1));
+                    enrich_function_like_return_type_with_diagnostics(
+                        "trait method",
+                        &method_name,
+                        &fn_sig_name,
+                        &mut method.return_type,
+                        trailing_expr_span,
+                        tco,
+                        diagnostics,
+                    );
                 }
             }
         }
@@ -1290,68 +1373,17 @@ fn enrich_fn_decl_with_diagnostics(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics, registry)?;
-
-    let explicit_infer_span = match &fn_decl.return_type {
-        Some((TypeExpr::Infer, span)) => Some(span.clone()),
-        _ => None,
-    };
-    let needs_infer = fn_decl.return_type.is_none() || explicit_infer_span.is_some();
-    if needs_infer {
-        let mut explicit_infer_reason = None;
-        if let Some(ref expr) = fn_decl.body.trailing_expr {
-            match lookup_inferred_type(
-                tco,
-                &expr.1,
-                format!(
-                    "function `{}` return type inferred from trailing expression",
-                    fn_decl.name
-                ),
-            ) {
-                Ok(Some(inferred)) => fn_decl.return_type = Some(inferred),
-                Ok(None) => {}
-                Err(diagnostic) => {
-                    if explicit_infer_span.is_some() {
-                        explicit_infer_reason = Some(diagnostic);
-                    } else {
-                        diagnostics.push(diagnostic);
-                    }
-                }
-            }
-        }
-
-        if matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _))) {
-            if let Some(ref infer_span) = explicit_infer_span {
-                match lookup_inferred_fn_return_type(
-                    tco,
-                    fn_sig_name,
-                    &fn_decl.name,
-                    infer_span,
-                    format!(
-                        "function `{}` return type inferred from checker signature",
-                        fn_decl.name
-                    ),
-                ) {
-                    Ok(Some(inferred)) => fn_decl.return_type = Some(inferred),
-                    Ok(None) => {}
-                    Err(diagnostic) => {
-                        explicit_infer_reason.get_or_insert(diagnostic);
-                    }
-                }
-            }
-        }
-
-        if let Some(ref infer_span) = explicit_infer_span {
-            if matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _))) {
-                diagnostics.push(explicit_infer_survivor_diagnostic(
-                    infer_span,
-                    format!("function `{}` explicit `_` return type", fn_decl.name),
-                    "explicit `_` return type annotation reached serializer without a serializable resolved return type",
-                    explicit_infer_reason.as_ref(),
-                ));
-                fn_decl.return_type = None;
-            }
-        }
-    }
+    let fn_name = fn_decl.name.clone();
+    let trailing_expr_span = fn_decl.body.trailing_expr.as_ref().map(|expr| &expr.1);
+    enrich_function_like_return_type_with_diagnostics(
+        "function",
+        &fn_name,
+        fn_sig_name,
+        &mut fn_decl.return_type,
+        trailing_expr_span,
+        tco,
+        diagnostics,
+    );
     Ok(())
 }
 
@@ -3148,6 +3180,138 @@ mod tests {
             ));
         } else {
             panic!("expected type declaration");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_explicit_infer_trait_method_return_uses_qualified_signature() {
+        use hew_parser::ast::{TraitDecl, TraitItem, Visibility};
+
+        let infer_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::Trait(TraitDecl {
+                    visibility: Visibility::Private,
+                    name: "Shape".into(),
+                    type_params: None,
+                    super_traits: None,
+                    items: vec![TraitItem::Method(hew_parser::ast::TraitMethod {
+                        name: "area".into(),
+                        is_pure: false,
+                        type_params: None,
+                        params: vec![],
+                        return_type: Some((TypeExpr::Infer, infer_span.clone())),
+                        where_clause: None,
+                        body: Some(Block {
+                            stmts: vec![],
+                            trailing_expr: None,
+                        }),
+                    })],
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.fn_sigs.insert(
+            "Shape::area".into(),
+            hew_types::check::FnSig {
+                return_type: Ty::I32,
+                ..hew_types::check::FnSig::default()
+            },
+        );
+        tco.fn_sigs.insert(
+            "Other::area".into(),
+            hew_types::check::FnSig {
+                return_type: Ty::Bool,
+                ..hew_types::check::FnSig::default()
+            },
+        );
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.diagnostics().is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics.diagnostics()
+        );
+        if let Item::Trait(trait_decl) = &program.items[0].0 {
+            let TraitItem::Method(method) = &trait_decl.items[0] else {
+                panic!("expected trait method");
+            };
+            assert!(matches!(
+                method.return_type.as_ref(),
+                Some((TypeExpr::Named { name, type_args: None }, _)) if name == "i32"
+            ));
+        } else {
+            panic!("expected trait declaration");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_explicit_infer_trait_method_return_without_resolution_is_fatal() {
+        use hew_parser::ast::{TraitDecl, TraitItem, Visibility};
+
+        let infer_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::Trait(TraitDecl {
+                    visibility: Visibility::Private,
+                    name: "Shape".into(),
+                    type_params: None,
+                    super_traits: None,
+                    items: vec![TraitItem::Method(hew_parser::ast::TraitMethod {
+                        name: "area".into(),
+                        is_pure: false,
+                        type_params: None,
+                        params: vec![],
+                        return_type: Some((TypeExpr::Infer, infer_span.clone())),
+                        where_clause: None,
+                        body: Some(Block {
+                            stmts: vec![],
+                            trailing_expr: None,
+                        }),
+                    })],
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &empty_tco(),
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert_eq!(diagnostics.diagnostics().len(), 1);
+        let diagnostic = &diagnostics.diagnostics()[0];
+        assert_eq!(diagnostic.kind(), TypeExprConversionKind::ErrorSentinel);
+        assert_eq!(diagnostic.span(), Some(&infer_span));
+        assert!(
+            diagnostic
+                .to_string()
+                .contains("explicit `_` return type annotation reached serializer without a serializable resolved return type"),
+            "unexpected diagnostic: {diagnostic}"
+        );
+        if let Item::Trait(trait_decl) = &program.items[0].0 {
+            let TraitItem::Method(method) = &trait_decl.items[0] else {
+                panic!("expected trait method");
+            };
+            assert!(
+                method.return_type.is_none(),
+                "explicit infer return placeholder should be cleared"
+            );
+        } else {
+            panic!("expected trait declaration");
         }
     }
 

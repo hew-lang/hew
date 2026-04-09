@@ -811,7 +811,11 @@ impl Checker {
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 Ty::Unit
             }
-            "pop" => elem_ty.clone(),
+            "pop" => {
+                self.check_arity(args, 0, "`Vec::pop`", span);
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
+                elem_ty.clone()
+            }
             "len" => Ty::I64,
             "get" | "remove" => {
                 self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
@@ -819,6 +823,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 elem_ty.clone()
             }
             "contains" => {

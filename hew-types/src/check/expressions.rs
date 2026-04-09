@@ -826,8 +826,8 @@ impl Checker {
                 let param_ty = params
                     .first()
                     .and_then(|p| p.ty.as_ref())
-                    .map_or(Ty::Var(TypeVar::fresh()), |(te, _)| {
-                        self.resolve_type_expr(te)
+                    .map_or(Ty::Var(TypeVar::fresh()), |annotation| {
+                        self.resolve_type_expr(annotation)
                     });
                 Ty::Named {
                     name: "Actor".to_string(),
@@ -1680,7 +1680,7 @@ impl Checker {
             .params
             .iter()
             .filter_map(|p| {
-                let ty = self.resolve_type_expr(&p.ty.0);
+                let ty = self.resolve_type_expr(&p.ty);
                 if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
                     return Some((p.name.as_str(), "Rc"));
                 }

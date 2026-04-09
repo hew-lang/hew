@@ -236,7 +236,7 @@ impl Checker {
         type_expr: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
-        let ty = self.resolve_type_expr_tracking_holes(&type_expr.0, hole_vars);
+        let ty = self.resolve_type_expr_tracking_holes(type_expr, hole_vars);
         self.validate_concrete_hashset_type(&ty, &type_expr.1);
         ty
     }
@@ -328,7 +328,7 @@ impl Checker {
                         continue;
                     }
                     let mut hole_vars = Vec::new();
-                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty.0, &mut hole_vars);
+                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
                 }
@@ -955,7 +955,7 @@ impl Checker {
         let mut all_field_types = Vec::new();
         for state in &md.states {
             for (_, spanned_te) in &state.fields {
-                all_field_types.push(self.resolve_type_expr(&spanned_te.0));
+                all_field_types.push(self.resolve_type_expr(spanned_te));
             }
         }
         self.registry
@@ -1432,7 +1432,7 @@ impl Checker {
                 return Some(Ty::Error);
             }
         };
-        let ty = self.resolve_type_expr(&expr.0);
+        let ty = self.resolve_type_expr(&expr);
         if let Some(scope) = self.impl_alias_scopes.get_mut(scope_index) {
             if let Some(entry) = scope.entries.get_mut(alias) {
                 entry.resolving = false;
@@ -1551,7 +1551,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -1844,7 +1844,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -2133,95 +2133,102 @@ impl Checker {
         // `self.module_registry` borrow ends before we mutate `self.errors`.
         let load_error_detail: Option<String> = match self.module_registry.load(&module_path) {
             Ok(info) => {
-                // Clone all data from ModuleInfo before mutating self, because
-                // info borrows from self.module_registry.
-                let functions = info.functions.clone();
-                let wrapper_fns = info.wrapper_fns.clone();
-                let clean_names = info.clean_names.clone();
-                let handle_types = info.handle_types.clone();
-                let drop_types = info.drop_types.clone();
+                if info.unsupported_type_signatures.is_empty() {
+                    // Clone all data from ModuleInfo before mutating self, because
+                    // info borrows from self.module_registry.
+                    let functions = info.functions.clone();
+                    let wrapper_fns = info.wrapper_fns.clone();
+                    let clean_names = info.clean_names.clone();
+                    let handle_types = info.handle_types.clone();
+                    let drop_types = info.drop_types.clone();
 
-                let short = module_path
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&module_path)
-                    .to_string();
+                    let short = module_path
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&module_path)
+                        .to_string();
 
-                // Register extern C function signatures
-                for (name, params, ret) in functions {
-                    let accepts_kwargs = module_path == "std::misc::log"
-                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                    let sig = FnSig {
-                        params,
-                        return_type: ret,
-                        accepts_kwargs,
-                        ..FnSig::default()
-                    };
-                    self.unsafe_functions.insert(name.clone());
-                    self.fn_sigs.insert(name, sig);
-                }
+                    // Register extern C function signatures
+                    for (name, params, ret) in functions {
+                        let accepts_kwargs = module_path == "std::misc::log"
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                        let sig = FnSig {
+                            params,
+                            return_type: ret,
+                            accepts_kwargs,
+                            ..FnSig::default()
+                        };
+                        self.unsafe_functions.insert(name.clone());
+                        self.fn_sigs.insert(name, sig);
+                    }
 
-                // Register wrapper pub fn signatures
-                for (name, params, ret) in wrapper_fns {
-                    let accepts_kwargs = module_path == "std::misc::log"
-                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                    let sig = FnSig {
-                        params,
-                        return_type: ret,
-                        accepts_kwargs,
-                        ..FnSig::default()
-                    };
-                    self.fn_sigs.insert(name, sig);
-                }
+                    // Register wrapper pub fn signatures
+                    for (name, params, ret) in wrapper_fns {
+                        let accepts_kwargs = module_path == "std::misc::log"
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                        let sig = FnSig {
+                            params,
+                            return_type: ret,
+                            accepts_kwargs,
+                            ..FnSig::default()
+                        };
+                        self.fn_sigs.insert(name, sig);
+                    }
 
-                // Register module and clean names
-                self.modules.insert(short.clone());
-                if let Some(span) = import_span {
-                    self.import_spans.insert(
-                        ImportKey::new(self.current_module.clone(), short.clone()),
-                        (span.clone(), self.current_module.clone()),
-                    );
-                }
-                for (method, c_symbol) in &clean_names {
-                    // Prefer the wrapper function's own signature (registered under
-                    // the method name) over the extern C function's signature.
-                    // E.g. `log.setup()` should have 0 params (the wrapper's sig),
-                    // not 1 param (the extern `hew_log_set_level(level)` sig).
-                    let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
-                    let sig = wrapper_sig
-                        .clone()
-                        .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
-                    if let Some(sig) = sig {
-                        let key = format!("{short}.{method}");
-                        self.module_fn_exports.insert(key.clone());
-                        self.fn_sigs.insert(key.clone(), sig);
-                        if wrapper_sig.is_none() {
-                            self.unsafe_functions.insert(key);
+                    // Register module and clean names
+                    self.modules.insert(short.clone());
+                    if let Some(span) = import_span {
+                        self.import_spans.insert(
+                            ImportKey::new(self.current_module.clone(), short.clone()),
+                            (span.clone(), self.current_module.clone()),
+                        );
+                    }
+                    for (method, c_symbol) in &clean_names {
+                        // Prefer the wrapper function's own signature (registered under
+                        // the method name) over the extern C function's signature.
+                        // E.g. `log.setup()` should have 0 params (the wrapper's sig),
+                        // not 1 param (the extern `hew_log_set_level(level)` sig).
+                        let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                        let sig = wrapper_sig
+                            .clone()
+                            .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                        if let Some(sig) = sig {
+                            let key = format!("{short}.{method}");
+                            self.module_fn_exports.insert(key.clone());
+                            self.fn_sigs.insert(key.clone(), sig);
+                            if wrapper_sig.is_none() {
+                                self.unsafe_functions.insert(key);
+                            }
                         }
                     }
-                }
 
-                // Register handle type names so they can be used in type annotations
-                for type_name in &handle_types {
-                    self.known_types.insert(type_name.clone());
-                }
-
-                // Populate TraitRegistry with handle/drop types
-                for ht in &handle_types {
-                    self.registry.register_handle_type(ht.clone());
-                }
-                for dt in &drop_types {
-                    self.registry.register_drop_type(dt.clone());
-                }
-
-                // Process resolved Hew source items from stdlib modules that ship
-                // alongside their C/Rust bindings so trait methods stay visible.
-                if let Some(ref resolved_items) = decl.resolved_items {
-                    if !self.stdlib_hew_source_already_registered(decl, &module_path) {
-                        self.register_stdlib_hew_items(&short, resolved_items);
+                    // Register handle type names so they can be used in type annotations
+                    for type_name in &handle_types {
+                        self.known_types.insert(type_name.clone());
                     }
+
+                    // Populate TraitRegistry with handle/drop types
+                    for ht in &handle_types {
+                        self.registry.register_handle_type(ht.clone());
+                    }
+                    for dt in &drop_types {
+                        self.registry.register_drop_type(dt.clone());
+                    }
+
+                    // Process resolved Hew source items from stdlib modules that ship
+                    // alongside their C/Rust bindings so trait methods stay visible.
+                    if let Some(ref resolved_items) = decl.resolved_items {
+                        if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                            self.register_stdlib_hew_items(&short, resolved_items);
+                        }
+                    }
+                    return;
                 }
-                return;
+                Some(format!(
+                    "module file contains unsupported slice annotations in signature(s): {}. \
+                     MLIR lowering cannot lower slice types yet",
+                    info.unsupported_type_signatures.join(", ")
+                ))
             }
             Err(ModuleError::NotFound { .. }) => {
                 Some("module not found in any search path".to_string())
@@ -2397,7 +2404,7 @@ impl Checker {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .map(|type_arg| self.resolve_type_expr(type_arg))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -2736,7 +2743,7 @@ impl Checker {
                             .as_ref()
                             .map(|args| {
                                 args.iter()
-                                    .map(|(te, _)| self.resolve_type_expr(te))
+                                    .map(|type_arg| self.resolve_type_expr(type_arg))
                                     .collect()
                             })
                             .unwrap_or_default();

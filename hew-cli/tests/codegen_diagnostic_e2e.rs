@@ -101,3 +101,57 @@ fn module_qualified_generic_call_builds_with_inferred_type_args() {
         "generic module call should specialize instead of failing with undefined function\n{stderr}"
     );
 }
+
+#[test]
+fn slice_annotations_fail_in_typecheck_before_mlir_codegen() {
+    require_codegen();
+
+    let workspace = tempfile::Builder::new()
+        .prefix("slice-annotation-")
+        .tempdir_in(repo_root())
+        .expect("create slice annotation workspace");
+    let main_path = workspace.path().join("main.hew");
+    fs::write(&main_path, "fn take(xs: [i32]) {}\n\nfn main() {}\n").expect("write main.hew");
+
+    let source_arg = main_path.to_str().expect("main path should be valid UTF-8");
+    let location = format!("{}:1:13: error:", main_path.display());
+    let expected_message = "slice annotations are not supported";
+
+    let check_output = Command::new(hew_binary())
+        .args(["check", source_arg])
+        .current_dir(workspace.path())
+        .output()
+        .expect("run hew check");
+    assert!(
+        !check_output.status.success(),
+        "hew check unexpectedly succeeded\n{}",
+        describe_output(&check_output),
+    );
+
+    let check_stderr = strip_ansi(&String::from_utf8_lossy(&check_output.stderr));
+    assert!(check_stderr.contains(&location), "{check_stderr}");
+    assert!(check_stderr.contains(expected_message), "{check_stderr}");
+    assert!(
+        !check_stderr.contains("unsupported type expression in MLIR codegen"),
+        "{check_stderr}"
+    );
+
+    let build_output = Command::new(hew_binary())
+        .args(["build", "--emit-mlir", "-g", source_arg])
+        .current_dir(workspace.path())
+        .output()
+        .expect("run hew build --emit-mlir");
+    assert!(
+        !build_output.status.success(),
+        "hew build --emit-mlir unexpectedly succeeded\n{}",
+        describe_output(&build_output),
+    );
+
+    let build_stderr = strip_ansi(&String::from_utf8_lossy(&build_output.stderr));
+    assert!(build_stderr.contains(&location), "{build_stderr}");
+    assert!(build_stderr.contains(expected_message), "{build_stderr}");
+    assert!(
+        !build_stderr.contains("unsupported type expression in MLIR codegen"),
+        "{build_stderr}"
+    );
+}

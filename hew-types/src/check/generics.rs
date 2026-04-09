@@ -100,7 +100,7 @@ impl Checker {
             resolved_type_args = type_args.map_or(vec![], |args| {
                 args.iter()
                     .take(sig.type_params.len())
-                    .map(|(te, _)| self.resolve_type_expr(te))
+                    .map(|type_arg| self.resolve_type_expr(type_arg))
                     .collect::<Vec<_>>()
             });
             while resolved_type_args.len() < sig.type_params.len() {
@@ -658,12 +658,12 @@ impl Checker {
                 .params
                 .iter()
                 .skip(skip)
-                .map(|p| self.resolve_type_expr(&p.ty.0))
+                .map(|p| self.resolve_type_expr(&p.ty))
                 .collect();
             let return_type = m
                 .return_type
                 .as_ref()
-                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             return Some(FnSig {

@@ -32,6 +32,12 @@ pub struct ModuleInfo {
     /// Extracted from the body of `fn drop` inside `impl Drop for T` blocks.
     /// Only populated when the drop body is a single direct C call.
     pub drop_funcs: Vec<(String, String)>,
+    /// Public / extern signatures that used unsupported slice annotations.
+    ///
+    /// The loader is used for registry-loaded modules (stdlib, ecosystem, and
+    /// module-path imports). MLIR still has no slice lowering, so these
+    /// signatures must be rejected before they are registered with the checker.
+    pub unsupported_type_signatures: Vec<String>,
 }
 
 /// Load type information for a module from its `.hew` file.
@@ -109,6 +115,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         wrapper_fns: Vec::new(),
         drop_types: Vec::new(),
         drop_funcs: Vec::new(),
+        unsupported_type_signatures: Vec::new(),
     };
 
     for (item, _span) in &program.items {
@@ -116,6 +123,10 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             Item::ExternBlock(block) => {
                 for func in &block.functions {
                     let (params, ret) = extern_fn_sig(func, module_short);
+                    if signature_uses_unsupported_type(&params, &ret) {
+                        info.unsupported_type_signatures
+                            .push(format!("extern function `{}`", func.name));
+                    }
                     info.functions.push((func.name.clone(), params, ret));
                 }
             }
@@ -135,6 +146,10 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 // Extract wrapper function's own signature
                 let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
+                if signature_uses_unsupported_type(&params, &ret) {
+                    info.unsupported_type_signatures
+                        .push(format!("public function `{}`", fn_decl.name));
+                }
                 info.wrapper_fns.push((fn_decl.name.clone(), params, ret));
 
                 // Clean name mapping: use the C function target only for
@@ -200,6 +215,36 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
         .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
 
     (params, ret)
+}
+
+fn signature_uses_unsupported_type(params: &[Ty], ret: &Ty) -> bool {
+    params.iter().any(ty_contains_error) || ty_contains_error(ret)
+}
+
+fn ty_contains_error(ty: &Ty) -> bool {
+    match ty {
+        Ty::Error => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_error),
+        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_error(elem),
+        Ty::Named { args, .. } => args.iter().any(ty_contains_error),
+        Ty::Function { params, ret } => {
+            params.iter().any(ty_contains_error) || ty_contains_error(ret)
+        }
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params.iter().any(ty_contains_error)
+                || ty_contains_error(ret)
+                || captures.iter().any(ty_contains_error)
+        }
+        Ty::Pointer { pointee, .. } => ty_contains_error(pointee),
+        Ty::TraitObject { traits } => traits
+            .iter()
+            .any(|bound| bound.args.iter().any(ty_contains_error)),
+        _ => false,
+    }
 }
 
 /// Convert a wrapper `pub fn` declaration to type checker types.
@@ -311,7 +356,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
         TypeExpr::Array { element, size } => {
             Ty::Array(Box::new(type_expr_to_ty(&element.0, module_short)), *size)
         }
-        TypeExpr::Slice(inner) => Ty::Slice(Box::new(type_expr_to_ty(&inner.0, module_short))),
+        TypeExpr::Slice(_) | TypeExpr::Infer => Ty::Error,
         TypeExpr::Function {
             params,
             return_type,
@@ -338,7 +383,6 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 })
                 .collect(),
         },
-        TypeExpr::Infer => Ty::Error,
     }
 }
 
@@ -870,6 +914,47 @@ mod tests {
                 "alias `{alias}` must not become a Named type (was mis-qualified before fix), got {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn slice_type_exprs_fail_closed_in_loader() {
+        use hew_parser::ast::TypeExpr;
+
+        let texpr = TypeExpr::Slice(Box::new((
+            TypeExpr::Named {
+                name: "i32".to_string(),
+                type_args: None,
+            },
+            0..0,
+        )));
+
+        assert_eq!(
+            type_expr_to_ty(&texpr, "mymod"),
+            Ty::Error,
+            "slice annotations must not become Ty::Slice in registry-loaded signatures"
+        );
+    }
+
+    #[test]
+    fn module_info_tracks_public_slice_signatures_as_unsupported() {
+        let result = parse("pub fn take(xs: [i32]) {}\n");
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let info = extract_module_info(&result.program, "widgets");
+        assert_eq!(
+            info.unsupported_type_signatures,
+            vec!["public function `take`".to_string()],
+            "slice-bearing public signatures should be marked unsupported"
+        );
+        assert_eq!(
+            info.wrapper_fns[0].1,
+            vec![Ty::Error],
+            "unsupported slice parameter should fail closed inside the loaded signature"
+        );
     }
 
     #[test]

@@ -375,6 +375,9 @@ pub struct Checker {
     pub(super) wasm_target: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
+    /// Tracks slice annotation spans we've already rejected so repeated
+    /// resolution passes don't emit duplicate diagnostics.
+    pub(super) unsupported_slice_spans: HashSet<SpanKey>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     pub(super) current_machine_transition: Option<(String, String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
@@ -476,6 +479,7 @@ impl Checker {
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),
+            unsupported_slice_spans: HashSet::new(),
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),

@@ -239,6 +239,32 @@ fn ty_element_name(ty: &Ty) -> Option<&str> {
     }
 }
 
+fn refine_channel_runtime_rewrite(
+    c_symbol: &str,
+    receiver_ty: Option<&Ty>,
+) -> Option<&'static str> {
+    let Some(Ty::Named { name, args }) = receiver_ty else {
+        return None;
+    };
+    let is_channel_receiver = matches!(
+        name.as_str(),
+        SENDER | QUALIFIED_SENDER | RECEIVER | QUALIFIED_RECEIVER
+    );
+    let is_int_channel = is_channel_receiver
+        && args
+            .first()
+            .is_some_and(|inner| !matches!(inner, Ty::Error) && inner.is_integer());
+    if !is_int_channel {
+        return None;
+    }
+    match c_symbol {
+        "hew_channel_send" => Some("hew_channel_send_int"),
+        "hew_channel_recv" => Some("hew_channel_recv_int"),
+        "hew_channel_try_recv" => Some("hew_channel_try_recv_int"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 fn is_runtime_special_handle_type(
     receiver_ty: Option<&Ty>,
@@ -1613,6 +1639,8 @@ fn enrich_method_call(
     if let Some(rewrite) = tco.method_call_rewrites.get(&method_call_key) {
         match rewrite {
             MethodCallRewrite::RewriteToFunction { c_symbol } => {
+                let c_symbol =
+                    refine_channel_runtime_rewrite(c_symbol, receiver_ty).unwrap_or(c_symbol);
                 let span = expr.1.clone();
                 let recv = std::mem::replace(
                     receiver.as_mut(),
@@ -1629,7 +1657,7 @@ fn enrich_method_call(
                 all_args.push(hew_parser::ast::CallArg::Positional(recv));
                 all_args.extend(old_args);
                 expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_symbol.clone()), span)),
+                    function: Box::new((Expr::Identifier(c_symbol.to_string()), span)),
                     type_args: None,
                     args: all_args,
                     is_tail_call: false,
@@ -3739,6 +3767,47 @@ mod tests {
             matches!(expr.0, Expr::MethodCall { .. }),
             "method call with receiver-kind metadata should not be rewritten"
         );
+    }
+
+    #[test]
+    fn test_enrich_refines_channel_recv_rewrite_to_int_variant() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey { start: 0, end: 2 },
+            hew_types::Ty::Named {
+                name: RECEIVER.to_string(),
+                args: vec![hew_types::Ty::I64],
+            },
+        );
+        record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "hew_channel_recv");
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("rx".to_string()), 0..2)),
+                method: "recv".to_string(),
+                args: vec![],
+            },
+            0..10,
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Call { function, args, .. } => {
+                match &function.0 {
+                    Expr::Identifier(name) => assert_eq!(name, "hew_channel_recv_int"),
+                    other => panic!("expected Identifier, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "recv() should prepend the receiver");
+            }
+            other => panic!("expected Call expr, got {other:?}"),
+        }
     }
 
     #[test]

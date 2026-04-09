@@ -42,24 +42,24 @@ pub unsafe extern "C" fn hew_regex_new(pattern: *const c_char) -> *mut HewRegex 
 
 /// Test whether `text` matches the compiled regex.
 ///
-/// Returns `1` if the text matches, `0` otherwise.
+/// Returns `true` if the text matches, `false` otherwise.
 ///
 /// # Safety
 ///
 /// - `re` must be a valid pointer returned by [`hew_regex_new`].
 /// - `text` must be a valid NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_char) -> bool {
     if re.is_null() {
-        return 0;
+        return false;
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
     let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
-        return 0;
+        return false;
     };
-    i32::from(regex.inner.is_match(text_str))
+    regex.inner.is_match(text_str)
 }
 
 /// Find the first match of the compiled regex in `text`.
@@ -150,9 +150,9 @@ mod tests {
         let text_yes = CString::new("abc123def").unwrap();
         let text_no = CString::new("abcdef").unwrap();
         // SAFETY: re and text pointers are valid.
-        assert_eq!(unsafe { hew_regex_is_match(re, text_yes.as_ptr()) }, 1);
+        assert!(unsafe { hew_regex_is_match(re, text_yes.as_ptr()) });
         // SAFETY: re and text pointers are valid.
-        assert_eq!(unsafe { hew_regex_is_match(re, text_no.as_ptr()) }, 0);
+        assert!(!unsafe { hew_regex_is_match(re, text_no.as_ptr()) });
 
         // SAFETY: re was returned by hew_regex_new.
         unsafe { hew_regex_free(re) };
@@ -211,10 +211,9 @@ mod tests {
     fn test_regex_null_safety() {
         // SAFETY: Testing null pointer handling.
         assert!(unsafe { hew_regex_new(std::ptr::null()) }.is_null());
-        assert_eq!(
+        assert!(
             // SAFETY: Testing null pointer handling.
-            unsafe { hew_regex_is_match(std::ptr::null(), std::ptr::null()) },
-            0
+            !unsafe { hew_regex_is_match(std::ptr::null(), std::ptr::null()) },
         );
         // SAFETY: Testing null pointer handling — should not crash.
         unsafe { hew_regex_free(std::ptr::null_mut()) };

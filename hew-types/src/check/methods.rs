@@ -1385,42 +1385,6 @@ impl Checker {
                     ),
                 }
             }
-            // Machine methods: step(), state_name()
-            (Ty::Machine { name }, _) => {
-                if let Some(td) = self.lookup_type_def(name) {
-                    if let Some(sig) = td.methods.get(method) {
-                        self.check_arity(
-                            args,
-                            sig.params.len(),
-                            &format!("method '{method}'"),
-                            span,
-                        );
-                        for (i, arg) in args.iter().enumerate() {
-                            if let Some(param_ty) = sig.params.get(i) {
-                                let (expr, sp) = arg.expr();
-                                self.check_against(expr, sp, param_ty);
-                            }
-                        }
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::NamedTypeInstance {
-                                type_name: name.clone(),
-                            },
-                        );
-                        return sig.return_type.clone();
-                    }
-                }
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method}` on `{name}`"),
-                );
-                Ty::Error
-            }
             // User-defined struct/actor methods from type_defs
             (
                 Ty::Named {

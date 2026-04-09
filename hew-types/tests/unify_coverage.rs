@@ -238,11 +238,13 @@ fn unify_trait_objects_arg_arity_mismatch() {
 #[test]
 fn unify_machine_types_different_names() {
     let mut subst = fresh_subst();
-    let a = Ty::Machine {
+    let a = Ty::Named {
         name: "TrafficLight".into(),
+        args: vec![],
     };
-    let b = Ty::Machine {
+    let b = Ty::Named {
         name: "DoorLock".into(),
+        args: vec![],
     };
     assert!(matches!(
         unify(&mut subst, &a, &b),
@@ -254,8 +256,9 @@ fn unify_machine_types_different_names() {
 fn unify_machine_with_named_same_name_no_args() {
     // Machine interops with bare Named of the same name (no type args).
     let mut subst = fresh_subst();
-    let machine = Ty::Machine {
+    let machine = Ty::Named {
         name: "Sensor".into(),
+        args: vec![],
     };
     let named = Ty::Named {
         name: "Sensor".into(),
@@ -269,8 +272,9 @@ fn unify_machine_with_named_same_name_no_args() {
 #[test]
 fn unify_machine_with_named_different_name() {
     let mut subst = fresh_subst();
-    let machine = Ty::Machine {
+    let machine = Ty::Named {
         name: "Sensor".into(),
+        args: vec![],
     };
     let named = Ty::Named {
         name: "Actuator".into(),
@@ -283,8 +287,9 @@ fn unify_machine_with_named_different_name() {
 fn unify_machine_with_named_with_args_fails() {
     // Machine only matches Named with empty args.
     let mut subst = fresh_subst();
-    let machine = Ty::Machine {
+    let machine = Ty::Named {
         name: "Sensor".into(),
+        args: vec![],
     };
     let named = Ty::Named {
         name: "Sensor".into(),

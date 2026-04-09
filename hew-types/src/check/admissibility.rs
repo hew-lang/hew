@@ -9,29 +9,7 @@ pub(crate) fn signature_uses_unsupported_type(params: &[Ty], ret: &Ty) -> bool {
 }
 
 fn ty_contains_error(ty: &Ty) -> bool {
-    match ty {
-        Ty::Error => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_error),
-        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_error(elem),
-        Ty::Named { args, .. } => args.iter().any(ty_contains_error),
-        Ty::Function { params, ret } => {
-            params.iter().any(ty_contains_error) || ty_contains_error(ret)
-        }
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => {
-            params.iter().any(ty_contains_error)
-                || ty_contains_error(ret)
-                || captures.iter().any(ty_contains_error)
-        }
-        Ty::Pointer { pointee, .. } => ty_contains_error(pointee),
-        Ty::TraitObject { traits } => traits
-            .iter()
-            .any(|bound| bound.args.iter().any(ty_contains_error)),
-        _ => false,
-    }
+    ty.contains_error()
 }
 
 fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
@@ -696,5 +674,36 @@ impl Checker {
             ),
         );
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ty_contains_error_recurses_through_named_and_closure_types() {
+        let ty = Ty::Closure {
+            params: vec![Ty::normalize_named(
+                "Result".to_string(),
+                vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
+            )],
+            ret: Box::new(Ty::Bool),
+            captures: vec![],
+        };
+
+        assert!(ty_contains_error(&ty));
+    }
+
+    #[test]
+    fn signature_uses_unsupported_type_flags_error_anywhere_in_signature() {
+        let params = vec![Ty::I32];
+        let ret = Ty::Function {
+            params: vec![Ty::Tuple(vec![Ty::Error])],
+            ret: Box::new(Ty::Bool),
+        };
+
+        assert!(signature_uses_unsupported_type(&params, &ret));
+        assert!(!signature_uses_unsupported_type(&[Ty::I32], &Ty::Bool));
     }
 }

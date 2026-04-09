@@ -139,9 +139,6 @@ pub enum Ty {
         traits: Vec<TraitObjectBound>,
     },
 
-    /// Machine type (value-type state machine)
-    Machine { name: String },
-
     /// Error recovery — a type that unifies with anything
     Error,
 }
@@ -392,7 +389,6 @@ impl Ty {
                 }
                 Ok(())
             }
-            Ty::Machine { name } => write!(f, "{name}"),
             Ty::Error => write!(f, "<error>"),
         }
     }
@@ -422,6 +418,34 @@ impl Ty {
     #[must_use]
     pub(crate) fn is_named_builtin(name: &str) -> bool {
         Self::canonical_named_builtin(name).is_some()
+    }
+
+    #[must_use]
+    pub fn type_name(&self) -> Option<&str> {
+        match self {
+            Ty::Named { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn names_match_qualified(a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        let a_qualified = a.contains('.');
+        let b_qualified = b.contains('.');
+        if a_qualified && b_qualified {
+            return false;
+        }
+        let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
+        let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
+        a_bare == b_bare
+    }
+
+    #[must_use]
+    pub fn contains_error(&self) -> bool {
+        matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
     }
 
     // -- Constructor helpers: all produce Ty::Named --
@@ -749,7 +773,6 @@ impl Ty {
                 name: name.clone(),
                 args: args.iter().map(f).collect(),
             },
-            Ty::Machine { name } => Ty::Machine { name: name.clone() },
             Ty::Function { params, ret } => Ty::Function {
                 params: params.iter().map(f).collect(),
                 ret: Box::new(f(ret)),

@@ -471,12 +471,6 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     "type-checker error sentinel reached serializer",
                 ));
             }
-
-            // Machine types map to Named for serialization
-            Ty::Machine { name } => TypeExpr::Named {
-                name: name.clone(),
-                type_args: None,
-            },
             // Primitives, Unit, and Never are handled by the table above
             _ => unreachable!("primitive_name should have matched {ty:?}"),
         }
@@ -4691,8 +4685,9 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_machine() {
-        let ty = Ty::Machine {
+        let ty = Ty::Named {
             name: "TrafficLight".into(),
+            args: vec![],
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
         match te {
@@ -4700,7 +4695,7 @@ mod tests {
                 assert_eq!(name, "TrafficLight");
                 assert!(type_args.is_none());
             }
-            _ => panic!("expected Named variant for Machine"),
+            _ => panic!("expected Named variant for named machine type"),
         }
     }
 

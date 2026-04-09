@@ -101,6 +101,7 @@ When adding new language features, add an end-to-end test:
    ```cmake
    add_wasm_file_test(my_feature e2e_my_feature my_feature)
    ```
+   The `add_wasm_file_test` macro requires that you create the corresponding `examples/e2e_my_feature/my_feature.expected` file (read by the WASM CMake helpers) containing the expected output.
    If WASM support is deferred, add a `// WASM-TODO: <reason>` comment at the registration site.
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 

@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hew_types::error::TypeErrorKind;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -71,6 +73,46 @@ fn assert_inline_typechecks_cleanly(source: &str, context: &str) {
     assert!(
         output.errors.is_empty(),
         "{context}: expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_remove_typechecks_as_bool() {
+    assert_inline_typechecks_cleanly(
+        r#"
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("a", 1);
+    let removed: bool = m.remove("a");
+    let missing: bool = m.remove("a");
+    if removed && !missing {
+        println("ok");
+    }
+}
+"#,
+        "HashMap.remove should typecheck as bool",
+    );
+}
+
+#[test]
+fn hashmap_remove_no_longer_typechecks_as_option() {
+    let output = typecheck_inline(
+        r#"
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("a", 1);
+    let removed: Option<int> = m.remove("a");
+}
+"#,
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "Option<int>" && actual == "bool"
+        )),
+        "expected HashMap.remove Option<int>/bool mismatch, got: {:#?}",
         output.errors
     );
 }

@@ -2875,13 +2875,13 @@ struct HashMapRemoveOpLowering : public mlir::OpConversionPattern<hew::HashMapRe
     auto loc = op.getLoc();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto i1Type = rewriter.getI1Type();
-    // Runtime returns bool, but the op has no result — discard the return value
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i1Type});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_remove",
                         funcType);
-    mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_remove", mlir::TypeRange{i1Type},
-                               mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
-    rewriter.eraseOp(op);
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_remove", mlir::TypeRange{i1Type},
+                                   mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
+    rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
 };

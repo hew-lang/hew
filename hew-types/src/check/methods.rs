@@ -437,13 +437,21 @@ impl Checker {
                 self.reject_rc_collection_element("HashMap", &val_ty, span);
                 Ty::Unit
             }
-            "get" | "remove" => {
-                self.check_arity(args, 1, &format!("`HashMap::{method}`"), span);
+            "get" => {
+                self.check_arity(args, 1, "`HashMap::get`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
                 }
                 Ty::option(val_ty)
+            }
+            "remove" => {
+                self.check_arity(args, 1, "`HashMap::remove`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &key_ty);
+                }
+                Ty::Bool
             }
             "contains_key" => {
                 self.check_arity(args, 1, "`HashMap::contains_key`", span);

@@ -1926,7 +1926,7 @@ Available `HashMap` methods in v0.2.0:
 | `HashMap::new()`          | `HashMap<K,V>`  | Create empty map                 |
 | `m.get(key)`              | `Option<V>`     | Look up a key                    |
 | `m.insert(key, value)`    | `()`            | Insert or overwrite              |
-| `m.remove(key)`           | `Option<V>`     | Remove a key                     |
+| `m.remove(key)`           | `bool`          | Remove a key; true if present    |
 | `m.contains_key(key)`     | `bool`          | Test membership                  |
 | `m.len()`                 | `i64`           | Number of entries                |
 | `m.is_empty()`            | `bool`          | True if no entries               |

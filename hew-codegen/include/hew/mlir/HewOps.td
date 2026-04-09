@@ -866,6 +866,7 @@ def Hew_HashMapContainsKeyOp : Hew_Op<"hashmap.contains_key", [MemoryEffects<[Me
 def Hew_HashMapRemoveOp : Hew_Op<"hashmap.remove", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Remove a key from a HashMap.";
   let arguments = (ins AnyType:$map, AnyType:$key);
+  let results = (outs I1:$result);
   let assemblyFormat = "$map `,` $key attr-dict `:` `(` type($map) `,` type($key) `)`";
   let hasVerifier = 1;
 }

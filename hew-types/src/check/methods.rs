@@ -365,12 +365,46 @@ impl Checker {
 
     pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
-        if let Ty::Named { name, args } = &resolved {
-            if name == "HashSet" && args.len() == 1 {
-                return self.validate_hashset_element_type(&args[0], span);
+        match &resolved {
+            Ty::Named { name, args } => {
+                if name == "HashSet" && args.len() == 1 {
+                    return self.validate_hashset_element_type(&args[0], span);
+                }
+                args.iter()
+                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
             }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.validate_concrete_hashset_type(elem, span)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_hashset_type(elem, span),
+            Ty::Function { params, ret } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashset_type(param, span))
+                    && self.validate_concrete_hashset_type(ret, span)
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashset_type(param, span))
+                    && self.validate_concrete_hashset_type(ret, span)
+                    && captures
+                        .iter()
+                        .all(|capture| self.validate_concrete_hashset_type(capture, span))
+            }
+            Ty::Pointer { pointee, .. } => self.validate_concrete_hashset_type(pointee, span),
+            Ty::TraitObject { traits } => traits.iter().all(|bound| {
+                bound
+                    .args
+                    .iter()
+                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
+            }),
+            _ => true,
         }
-        true
     }
 
     pub(super) fn check_hashmap_method(

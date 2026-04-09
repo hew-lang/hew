@@ -1954,6 +1954,89 @@ fn hashset_bool_return_annotation_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_bool_nested_in_vec_annotation_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let xs: Vec<HashSet<bool>> = Vec::new();
+            println(xs.len());
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected Vec<HashSet<bool>> annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_i32_nested_in_option_param_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn count(flags: Option<HashSet<i32>>) -> i64 {
+            0
+        }
+
+        fn main() {
+            println(count(None));
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i32> is not supported")
+        ),
+        "expected Option<HashSet<i32>> parameter annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r#"
+        fn make() -> Result<HashSet<bool>, String> {
+            Err("nope")
+        }
+
+        fn main() {
+            println(make().is_err());
+        }"#,
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected Result<HashSet<bool>, String> return annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        type Config {
+            flags: HashMap<String, HashSet<i32>>;
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i32> is not supported")
+        ),
+        "expected HashMap<String, HashSet<i32>> field annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

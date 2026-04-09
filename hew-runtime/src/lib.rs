@@ -214,35 +214,16 @@ pub mod bytes;
 pub mod internal;
 mod tagged_union;
 
-// On WASM, provide a minimal arena stub — no per-actor scoping, just malloc.
+// On WASM, provide shims for runtime functions used by codegen but not
+// applicable to WASM (no threads, no native timer support).
+// Arena functions (hew_arena_malloc / hew_arena_free / etc.) are now
+// provided by the wasm32 arena module (pub mod arena below) instead of
+// these stubs.
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_stubs {
-    //! Minimal stubs for runtime functions used by codegen but not applicable
-    //! to WASM (no actors, no arena scoping, no threads).
+    //! Shims for runtime functions used by codegen but not applicable
+    //! to WASM (no threads, no native timer support).
     use std::ffi::c_int;
-    use std::os::raw::c_void;
-
-    /// WASM stub: allocate via libc malloc (no arena scoping on WASM).
-    ///
-    /// # Safety
-    ///
-    /// Called from compiled Hew programs via C ABI.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
-        // SAFETY: size is a valid allocation size from codegen.
-        unsafe { libc::malloc(size) }
-    }
-
-    /// WASM stub: free via libc free.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have been allocated by `hew_arena_malloc` or be null.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
-        // SAFETY: Caller guarantees ptr was allocated by hew_arena_malloc.
-        unsafe { libc::free(ptr) };
-    }
 
     /// WASM shim: block the current command thread for `ms` milliseconds.
     ///
@@ -304,6 +285,14 @@ pub mod actor;
 pub mod actor_group;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod arena;
+#[cfg(target_arch = "wasm32")]
+#[path = "arena_wasm.rs"]
+pub mod arena;
+// Expose arena_wasm as a distinct module in native test builds so its unit
+// tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
+// guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
 #[cfg(not(target_arch = "wasm32"))]

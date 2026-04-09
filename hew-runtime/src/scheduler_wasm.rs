@@ -221,51 +221,31 @@ unsafe fn hew_msg_node_free(node: *mut HewMsgNode) {
     unsafe { crate::mailbox_wasm::hew_msg_node_free(node.cast()) }
 }
 
-// ── Arena lifecycle shim ─────────────────────────────────────────────────
+// ── Arena lifecycle helpers ──────────────────────────────────────────────
 //
-// On native (test builds) the full arena module is available and we wire
-// up real `set_current_arena` / `hew_arena_reset` calls.  On wasm32 the
-// arena module is not compiled; the stubs are no-ops so the call sites
-// compile and will activate automatically once WASM arena support lands.
-//
-// WASM-TODO: replace the wasm32 stubs below with a real allocator once a
-// wasm32-compatible arena (backed by `memory.grow` or a slab) is added.
+// Both native and wasm32 builds now use the same `crate::arena` module
+// (on wasm32 it resolves to `arena_wasm.rs`).  There is no longer a
+// split between real-call and no-op paths.
 
 /// Install `arena` as the per-activation current arena and return the
-/// previously active arena pointer. Mirrors `crate::arena::set_current_arena`.
-#[cfg(not(target_arch = "wasm32"))]
+/// previously active arena pointer.  Mirrors `crate::arena::set_current_arena`.
 fn arena_install(arena: *mut c_void) -> *mut c_void {
     crate::arena::set_current_arena(arena.cast::<crate::arena::ActorArena>()).cast::<c_void>()
 }
 
-/// WASM-TODO: arena install stub — no-op until wasm32 arena support lands.
-#[cfg(target_arch = "wasm32")]
-fn arena_install(_arena: *mut c_void) -> *mut c_void {
-    std::ptr::null_mut()
-}
-
 /// Reset `arena` for reuse after a completed dispatch cycle.
-/// Mirrors `crate::arena::hew_arena_reset`. Safe to call with null.
+/// Mirrors `crate::arena::hew_arena_reset`.  Safe to call with null.
 ///
 /// # Safety
 ///
 /// `arena` must be either null or a valid pointer previously returned by
 /// `hew_arena_new()` that has not yet been freed.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn arena_reset(arena: *mut c_void) {
     if !arena.is_null() {
         // SAFETY: caller guarantees arena is valid.
         unsafe { crate::arena::hew_arena_reset(arena.cast::<crate::arena::ActorArena>()) };
     }
 }
-
-/// WASM-TODO: arena reset stub — no-op until wasm32 arena support lands.
-///
-/// # Safety
-///
-/// No-op; always safe on wasm32.
-#[cfg(target_arch = "wasm32")]
-unsafe fn arena_reset(_arena: *mut c_void) {}
 
 // ── Global state (single-threaded, no atomics needed) ───────────────────
 
@@ -2302,10 +2282,10 @@ mod tests {
     // ── Arena lifecycle parity tests ─────────────────────────────────────
     //
     // These tests verify that activate_actor_wasm installs/restores/resets
-    // arenas with the same lifecycle contract as the native scheduler.  The
-    // tests run on native (test build), where the full arena module is
-    // available.  On wasm32 the calls are no-ops until WASM arena support
-    // lands (WASM-TODO in arena_install / arena_reset shims above).
+    // arenas with the same lifecycle contract as the native scheduler.
+    // They compile and run on both native test builds (crate::arena backed
+    // by mmap/VirtualAlloc) and wasm32 (crate::arena backed by arena_wasm,
+    // which uses std::alloc).
 
     /// `hew_arena_malloc` must route through the actor's arena during
     /// dispatch and fall back to libc malloc once activation finishes.

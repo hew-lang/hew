@@ -1750,6 +1750,36 @@ fn enrich_method_call(
     }
 }
 
+fn hydrate_inferred_call_type_args(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+) {
+    let call_span_key = SpanKey::from(&expr.1);
+    let call_span = expr.1.clone();
+    let Expr::Call { type_args, .. } = &mut expr.0 else {
+        return;
+    };
+
+    if type_args.is_none() {
+        if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
+            let converted: Result<Vec<_>, _> = inferred
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    require_converted(ty, format!("inferred call type argument {index}"))
+                })
+                .collect();
+            match converted {
+                Ok(ta) => {
+                    *type_args = Some(ta);
+                }
+                Err(err) => diagnostics.push(err.with_span(call_span)),
+            }
+        }
+    }
+}
+
 fn enrich_expr_with_diagnostics(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
@@ -1803,13 +1833,9 @@ fn enrich_expr_with_diagnostics_inner(
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
             enrich_method_call(expr, tco, registry, diagnostics);
+            hydrate_inferred_call_type_args(expr, tco, diagnostics);
         }
-        Expr::Call {
-            function,
-            args,
-            type_args,
-            ..
-        } => {
+        Expr::Call { function, args, .. } => {
             enrich_expr_with_diagnostics(function, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
@@ -1817,24 +1843,7 @@ fn enrich_expr_with_diagnostics_inner(
 
             // Fill in inferred type arguments for generic calls that omit
             // explicit type annotations (e.g. `identity(42)` → `identity<int>(42)`).
-            if type_args.is_none() {
-                let call_span_key = SpanKey::from(&expr.1);
-                if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
-                    let converted: Result<Vec<_>, _> = inferred
-                        .iter()
-                        .enumerate()
-                        .map(|(index, ty)| {
-                            require_converted(ty, format!("inferred call type argument {index}"))
-                        })
-                        .collect();
-                    match converted {
-                        Ok(ta) => {
-                            *type_args = Some(ta);
-                        }
-                        Err(err) => diagnostics.push(err.with_span(expr.1.clone())),
-                    }
-                }
-            }
+            hydrate_inferred_call_type_args(expr, tco, diagnostics);
         }
         Expr::Lambda { params, body, .. } => {
             if let Some(inferred_params) = match tco.expr_types.get(&expr_span_key) {
@@ -4036,6 +4045,69 @@ mod tests {
                 assert_eq!(args.len(), 2, "should preserve both args");
             }
             other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enrich_user_module_generic_call_hydrates_inferred_type_args_after_rewrite() {
+        use hew_parser::ast::CallArg;
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("widgets".to_string()), 0..7)),
+                method: "id".to_string(),
+                args: vec![CallArg::Positional((
+                    Expr::Literal(hew_parser::ast::Literal::Integer {
+                        value: 1,
+                        radix: hew_parser::ast::IntRadix::Decimal,
+                    }),
+                    11..12,
+                ))],
+            },
+            0..13,
+        );
+        let mut tco = make_tco_with_user_modules(vec!["widgets"]);
+        tco.call_type_args
+            .insert(SpanKey::from(&expr.1), vec![Ty::I64]);
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(
+            &mut expr,
+            &tco,
+            &mut diagnostics,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics while hydrating rewritten module call: {diagnostics:?}"
+        );
+        match &expr.0 {
+            Expr::Call {
+                function,
+                type_args,
+                args,
+                ..
+            } => {
+                assert_eq!(
+                    match &function.0 {
+                        Expr::Identifier(name) => name.as_str(),
+                        other => panic!("expected identifier callee, got {other:?}"),
+                    },
+                    "id"
+                );
+                assert_eq!(args.len(), 1);
+                let type_args = type_args
+                    .as_ref()
+                    .expect("rewritten call should have type args");
+                assert_eq!(type_args.len(), 1);
+                assert!(matches!(
+                    &type_args[0].0,
+                    TypeExpr::Named { name, type_args: None } if name == "i64"
+                ));
+            }
+            other => panic!("expected rewritten Call, got {other:?}"),
         }
     }
 

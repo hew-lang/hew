@@ -161,8 +161,8 @@ mlir::Value MLIRGen::derefIndirectEnumScrutinee(mlir::Value scrutinee, const ast
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(scrutinee.getType()))
     return scrutinee;
 
-  if (arms && !resolvedTypeOf(span)) {
-    requireResolvedTypeOf(span, "match scrutinee indirect enum", location);
+  if (!resolvedTypeOf(span)) {
+    requireResolvedTypeOf(span, "indirect enum scrutinee", location);
     return nullptr;
   }
 

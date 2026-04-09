@@ -94,6 +94,12 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
   }
 
   scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.expr->span, location);
+  if (!scrutinee) {
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.activeFlag);
+    ensureYieldTerminator(location);
+    popLoopControl(lc, whileOp);
+    return;
+  }
   mlir::Value tagMatch = emitTagEqualCondition(scrutinee, variantIndex, location);
 
   // Create scf.if: if tag matches, bind + body; else, break.

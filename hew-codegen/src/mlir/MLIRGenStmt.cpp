@@ -3568,10 +3568,12 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{val});
       } else {
         emitAllDrops();
-        if (stmt.value && std::holds_alternative<ast::ExprMatch>(stmt.value->value.kind) &&
+        if (stmt.value &&
+            (std::holds_alternative<ast::ExprMatch>(stmt.value->value.kind) ||
+             std::holds_alternative<ast::ExprIfLet>(stmt.value->value.kind)) &&
             currentFunction && currentFunction.getResultTypes().size() == 1) {
-          // Match-expression failures should still leave a well-formed return
-          // while the earlier diagnostic aborts codegen.
+          // Control-flow expression failures should still leave a well-formed
+          // return while the earlier diagnostic aborts codegen.
           auto fallback =
               createDefaultValue(builder, location, currentFunction.getResultTypes()[0]);
           mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{fallback});

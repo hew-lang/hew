@@ -1,6 +1,6 @@
 //! LSP server implementation for the Hew language.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
 use hew_parser::ast::{
@@ -80,6 +80,16 @@ struct DocumentState {
     line_offsets: Vec<usize>,
     parse_result: ParseResult,
     type_output: Option<TypeCheckOutput>,
+    diagnostics_by_uri: DiagnosticMap,
+}
+
+type DiagnosticMap = HashMap<Url, Vec<Diagnostic>>;
+
+#[derive(Debug)]
+struct DiagnosticSource {
+    uri: Url,
+    source: String,
+    line_offsets: Vec<usize>,
 }
 
 // ── In-memory module resolution ──────────────────────────────────────
@@ -175,6 +185,9 @@ fn populate_user_module_imports_impl(
                         documents,
                         depth + 1,
                     );
+                    let item_count = module_items.len();
+                    decl.resolved_source_paths = vec![candidate.clone()];
+                    decl.resolved_item_source_paths = vec![candidate.clone(); item_count];
                     decl.resolved_items = Some(module_items);
                 }
                 // Stop after the first candidate that yielded source text,
@@ -226,20 +239,253 @@ fn import_candidate_paths(uri: &Url, import: &ImportDecl) -> Vec<std::path::Path
     import_candidate_paths_from_dir(source_dir, import)
 }
 
+fn module_id_from_file(
+    source_dir: &std::path::Path,
+    canonical_path: &std::path::Path,
+) -> hew_parser::module::ModuleId {
+    use hew_parser::module::ModuleId;
+
+    let without_ext = canonical_path.with_extension("");
+    let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
+    let mut segments: Vec<String> = rel
+        .iter()
+        .filter_map(|segment| segment.to_str())
+        .map(std::string::ToString::to_string)
+        .collect();
+
+    if segments.is_empty() {
+        segments.push(
+            canonical_path
+                .file_stem()
+                .and_then(|segment| segment.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        );
+    }
+
+    ModuleId::new(segments)
+}
+
+fn resolved_import_source_path(
+    current_source: &std::path::Path,
+    source_dir: &std::path::Path,
+    decl: &ImportDecl,
+) -> Option<std::path::PathBuf> {
+    decl.resolved_source_paths.first().cloned().or_else(|| {
+        decl.file_path.as_ref().map(|file_path| {
+            current_source
+                .parent()
+                .unwrap_or(source_dir)
+                .join(file_path)
+        })
+    })
+}
+
+fn build_document_module_graph(
+    source_uri: &Url,
+    program: &hew_parser::ast::Program,
+) -> Option<hew_parser::module::ModuleGraph> {
+    use hew_parser::module::{Module, ModuleGraph};
+
+    let input_path = source_uri.to_file_path().ok()?;
+    let input_path = std::fs::canonicalize(&input_path).unwrap_or(input_path);
+    let source_dir = input_path.parent().unwrap_or(std::path::Path::new("."));
+    let root_id = module_id_from_file(source_dir, &input_path);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut seen_ids = HashSet::from([root_id.clone()]);
+
+    let root_imports = extract_module_info(
+        &program.items,
+        &input_path,
+        source_dir,
+        &input_path,
+        &root_id,
+        &mut graph,
+        &mut seen_ids,
+    );
+
+    graph.add_module(Module {
+        id: root_id,
+        items: program.items.clone(),
+        imports: root_imports,
+        source_paths: vec![input_path],
+        doc: program.module_doc.clone(),
+    });
+
+    graph.compute_topo_order().ok()?;
+    Some(graph)
+}
+
+fn extract_module_info(
+    items: &[hew_parser::ast::Spanned<Item>],
+    current_source: &std::path::Path,
+    source_dir: &std::path::Path,
+    root_source: &std::path::Path,
+    root_id: &hew_parser::module::ModuleId,
+    graph: &mut hew_parser::module::ModuleGraph,
+    seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
+) -> Vec<hew_parser::module::ModuleImport> {
+    use hew_parser::module::{Module, ModuleId, ModuleImport};
+
+    let mut imports = Vec::new();
+
+    for (item, span) in items {
+        let Item::Import(decl) = item else { continue };
+
+        let first_source_path = resolved_import_source_path(current_source, source_dir, decl);
+        let module_id = if !decl.path.is_empty() {
+            ModuleId::new(decl.path.clone())
+        } else if let Some(source_path) = first_source_path.as_ref() {
+            if source_path == root_source {
+                root_id.clone()
+            } else {
+                module_id_from_file(source_dir, source_path)
+            }
+        } else {
+            continue;
+        };
+
+        imports.push(ModuleImport {
+            target: module_id.clone(),
+            spec: decl.spec.clone(),
+            span: span.clone(),
+        });
+
+        if seen_ids.insert(module_id.clone()) {
+            if let Some(resolved_items) = &decl.resolved_items {
+                let child_source = first_source_path.as_deref().unwrap_or(current_source);
+                let child_imports = extract_module_info(
+                    resolved_items,
+                    child_source,
+                    source_dir,
+                    root_source,
+                    root_id,
+                    graph,
+                    seen_ids,
+                );
+                let source_paths = if decl.resolved_source_paths.is_empty() {
+                    first_source_path.iter().cloned().collect()
+                } else {
+                    decl.resolved_source_paths.clone()
+                };
+                graph.add_module(Module {
+                    id: module_id,
+                    items: resolved_items.clone(),
+                    imports: child_imports,
+                    source_paths,
+                    doc: None,
+                });
+            }
+        }
+    }
+
+    imports
+}
+
+fn build_module_source_map(
+    program: &hew_parser::ast::Program,
+    documents: &DashMap<Url, DocumentState>,
+) -> HashMap<String, DiagnosticSource> {
+    let Some(ref module_graph) = program.module_graph else {
+        return HashMap::new();
+    };
+
+    let mut module_sources = HashMap::new();
+    for module_id in &module_graph.topo_order {
+        if *module_id == module_graph.root {
+            continue;
+        }
+        let Some(module) = module_graph.modules.get(module_id) else {
+            continue;
+        };
+        let Some(source_path) = module.source_paths.first() else {
+            continue;
+        };
+        let Ok(uri) = Url::from_file_path(source_path) else {
+            continue;
+        };
+        let Some(source) = source_for_path(source_path, documents) else {
+            continue;
+        };
+        module_sources.insert(
+            module_id.path.join("."),
+            DiagnosticSource {
+                uri,
+                line_offsets: compute_line_offsets(&source),
+                source,
+            },
+        );
+    }
+
+    module_sources
+}
+
+fn merge_diagnostics(into: &mut DiagnosticMap, from: &DiagnosticMap) {
+    for (uri, diagnostics) in from {
+        into.entry(uri.clone())
+            .or_default()
+            .extend(diagnostics.iter().cloned());
+    }
+}
+
+fn sort_and_dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .line
+            .cmp(&right.range.start.line)
+            .then(left.range.start.character.cmp(&right.range.start.character))
+            .then(left.range.end.line.cmp(&right.range.end.line))
+            .then(left.range.end.character.cmp(&right.range.end.character))
+            .then(
+                left.source
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(right.source.as_deref().unwrap_or("")),
+            )
+            .then(left.message.cmp(&right.message))
+    });
+
+    let mut seen = HashSet::new();
+    diagnostics.retain(|diagnostic| seen.insert(format!("{diagnostic:?}")));
+}
+
+fn collect_published_diagnostics(
+    documents: &DashMap<Url, DocumentState>,
+    publish_uris: HashSet<Url>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
+    for entry in documents {
+        merge_diagnostics(&mut diagnostics_by_uri, &entry.value().diagnostics_by_uri);
+    }
+
+    for uri in publish_uris {
+        diagnostics_by_uri.entry(uri).or_default();
+    }
+
+    let mut published: Vec<_> = diagnostics_by_uri.into_iter().collect();
+    for (_, diagnostics) in &mut published {
+        sort_and_dedup_diagnostics(diagnostics);
+    }
+    published.sort_by(|(left_uri, _), (right_uri, _)| left_uri.as_str().cmp(right_uri.as_str()));
+    published
+}
+
 fn analyze_document(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
-) -> (DocumentState, Vec<Diagnostic>) {
+) -> DocumentState {
     let parse_result = hew_parser::parse(source);
+    let line_offsets = compute_line_offsets(source);
 
     let has_parse_errors = parse_result
         .errors
         .iter()
         .any(|e| e.severity == hew_parser::Severity::Error);
 
-    let type_output = if has_parse_errors {
-        None
+    let (type_output, module_sources) = if has_parse_errors {
+        (None, HashMap::new())
     } else {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
             build_module_search_paths(),
@@ -249,28 +495,27 @@ fn analyze_document(
         // (other LSP features use the raw AST and do not need resolved_items).
         let mut program = parse_result.program.clone();
         populate_user_module_imports(uri, &mut program.items, documents);
-        Some(checker.check_program(&program))
+        program.module_graph = build_document_module_graph(uri, &program);
+        let module_sources = build_module_source_map(&program, documents);
+        (Some(checker.check_program(&program)), module_sources)
     };
 
-    let line_offsets = compute_line_offsets(source);
-
-    let diagnostics = build_diagnostics(
+    let diagnostics_by_uri = build_diagnostics_by_uri(
         uri,
         source,
         &line_offsets,
         &parse_result,
         type_output.as_ref(),
+        &module_sources,
     );
 
-    (
-        DocumentState {
-            source: source.to_string(),
-            line_offsets,
-            parse_result,
-            type_output,
-        },
-        diagnostics,
-    )
+    DocumentState {
+        source: source.to_string(),
+        line_offsets,
+        parse_result,
+        type_output,
+        diagnostics_by_uri,
+    }
 }
 
 fn document_imports_target(
@@ -293,7 +538,8 @@ fn document_imports_target(
 fn refresh_open_importers(
     target_uri: &Url,
     documents: &DashMap<Url, DocumentState>,
-) -> Vec<(Url, Vec<Diagnostic>)> {
+    publish_uris: &mut HashSet<Url>,
+) {
     let dependents: Vec<_> = documents
         .iter()
         .filter_map(|entry| {
@@ -304,22 +550,27 @@ fn refresh_open_importers(
 
             let importer = entry.value();
             if document_imports_target(&importer_uri, &importer.parse_result, target_uri) {
-                Some((importer_uri, importer.source.clone()))
+                Some((
+                    importer_uri,
+                    importer.source.clone(),
+                    importer
+                        .diagnostics_by_uri
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ))
             } else {
                 None
             }
         })
         .collect();
 
-    let mut refreshed = Vec::with_capacity(dependents.len());
-
-    for (importer_uri, importer_source) in dependents {
-        let (document, diagnostics) = analyze_document(&importer_uri, &importer_source, documents);
+    for (importer_uri, importer_source, previous_diagnostic_uris) in dependents {
+        publish_uris.insert(importer_uri.clone());
+        publish_uris.extend(previous_diagnostic_uris);
+        let document = analyze_document(&importer_uri, &importer_source, documents);
         documents.insert(importer_uri.clone(), document);
-        refreshed.push((importer_uri, diagnostics));
     }
-
-    refreshed
 }
 
 fn refresh_document_and_dependents(
@@ -327,23 +578,33 @@ fn refresh_document_and_dependents(
     source: &str,
     documents: &DashMap<Url, DocumentState>,
 ) -> Vec<(Url, Vec<Diagnostic>)> {
-    let (document, diagnostics) = analyze_document(uri, source, documents);
+    let mut publish_uris = HashSet::from([uri.clone()]);
+    if let Some(previous) = documents.get(uri) {
+        publish_uris.extend(previous.diagnostics_by_uri.keys().cloned());
+    }
+
+    let document = analyze_document(uri, source, documents);
     documents.insert(uri.clone(), document);
 
-    let mut refreshed = vec![(uri.clone(), diagnostics)];
-    refreshed.extend(refresh_open_importers(uri, documents));
-    refreshed
+    refresh_open_importers(uri, documents, &mut publish_uris);
+
+    collect_published_diagnostics(documents, publish_uris)
 }
 
 fn close_document_and_dependents(
     uri: &Url,
     documents: &DashMap<Url, DocumentState>,
 ) -> Vec<(Url, Vec<Diagnostic>)> {
-    if documents.remove(uri).is_none() {
+    let Some((_removed_uri, removed_document)) = documents.remove(uri) else {
         return vec![];
-    }
+    };
 
-    refresh_open_importers(uri, documents)
+    let mut publish_uris = HashSet::from([uri.clone()]);
+    publish_uris.extend(removed_document.diagnostics_by_uri.keys().cloned());
+
+    refresh_open_importers(uri, documents, &mut publish_uris);
+
+    collect_published_diagnostics(documents, publish_uris)
 }
 
 // ── Server ───────────────────────────────────────────────────────────
@@ -1045,6 +1306,11 @@ impl LanguageServer for HewLanguageServer {
 
 // ── Diagnostics ──────────────────────────────────────────────────────
 
+fn insert_diagnostic(diagnostics_by_uri: &mut DiagnosticMap, uri: Url, diagnostic: Diagnostic) {
+    diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
+}
+
+#[cfg(test)]
 fn build_diagnostics(
     uri: &Url,
     source: &str,
@@ -1052,7 +1318,20 @@ fn build_diagnostics(
     parse_result: &ParseResult,
     type_output: Option<&TypeCheckOutput>,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
+    build_diagnostics_by_uri(uri, source, lo, parse_result, type_output, &HashMap::new())
+        .remove(uri)
+        .unwrap_or_default()
+}
+
+fn build_diagnostics_by_uri(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+    type_output: Option<&TypeCheckOutput>,
+    module_sources: &HashMap<String, DiagnosticSource>,
+) -> DiagnosticMap {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
 
     for err in &parse_result.errors {
         let message = if let Some(hint) = &err.hint {
@@ -1064,17 +1343,35 @@ fn build_diagnostics(
             hew_parser::Severity::Error => DiagnosticSeverity::ERROR,
             hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
         };
-        diagnostics.push(Diagnostic {
-            range: span_to_range(source, lo, &err.span),
-            severity: Some(severity),
-            source: Some("hew-parser".to_string()),
-            message,
-            ..Default::default()
-        });
+        insert_diagnostic(
+            &mut diagnostics_by_uri,
+            uri.clone(),
+            Diagnostic {
+                range: span_to_range(source, lo, &err.span),
+                severity: Some(severity),
+                source: Some("hew-parser".to_string()),
+                message,
+                ..Default::default()
+            },
+        );
     }
 
     if let Some(tc) = type_output {
         for diag in tc.errors.iter().chain(tc.warnings.iter()) {
+            let target = diag
+                .source_module
+                .as_ref()
+                .and_then(|module_name| module_sources.get(module_name));
+            let (target_uri, target_source, target_line_offsets) = if let Some(target) = target {
+                (
+                    target.uri.clone(),
+                    target.source.as_str(),
+                    target.line_offsets.as_slice(),
+                )
+            } else {
+                (uri.clone(), source, lo)
+            };
+
             // Build the message, appending any suggestions.
             let message = if diag.suggestions.is_empty() {
                 diag.message.clone()
@@ -1095,8 +1392,8 @@ fn build_diagnostics(
                         .iter()
                         .map(|(note_span, note_msg)| DiagnosticRelatedInformation {
                             location: Location {
-                                uri: uri.clone(),
-                                range: span_to_range(source, lo, note_span),
+                                uri: target_uri.clone(),
+                                range: span_to_range(target_source, target_line_offsets, note_span),
                             },
                             message: note_msg.clone(),
                         })
@@ -1104,19 +1401,23 @@ fn build_diagnostics(
                 )
             };
 
-            diagnostics.push(Diagnostic {
-                range: span_to_range(source, lo, &diag.span),
-                severity: Some(severity_to_lsp(diag.severity)),
-                source: Some("hew-types".to_string()),
-                message,
-                related_information,
-                data: Some(diagnostic_data(&diag.kind, &diag.suggestions)),
-                ..Default::default()
-            });
+            insert_diagnostic(
+                &mut diagnostics_by_uri,
+                target_uri,
+                Diagnostic {
+                    range: span_to_range(target_source, target_line_offsets, &diag.span),
+                    severity: Some(severity_to_lsp(diag.severity)),
+                    source: Some("hew-types".to_string()),
+                    message,
+                    related_information,
+                    data: Some(diagnostic_data(&diag.kind, &diag.suggestions)),
+                    ..Default::default()
+                },
+            );
         }
     }
 
-    diagnostics
+    diagnostics_by_uri
 }
 
 /// Convert a type-checker `Severity` to the corresponding LSP `DiagnosticSeverity`.
@@ -3349,6 +3650,7 @@ mod tests {
             line_offsets: compute_line_offsets(""),
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
         };
         let items = hew_analysis::completions::complete(
             &doc.source,
@@ -3547,6 +3849,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
         };
         // Offset right after the dot in `p.x`
         let dot_pos = source.find("p.x").unwrap() + 2;
@@ -3589,6 +3892,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
         };
         let dot_pos = source.find("s.next").unwrap() + 2;
         let items = hew_analysis::completions::complete(
@@ -3633,6 +3937,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
         };
         let spawn_offset = source.find("spawn ").unwrap() + 7;
         let items = hew_analysis::completions::complete(
@@ -3667,6 +3972,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
         };
         let offset = source.find("0 }").unwrap();
         let items = hew_analysis::completions::complete(
@@ -3706,6 +4012,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
         };
         let offset = source.rfind("outside\n").unwrap();
         let items = hew_analysis::completions::complete(
@@ -3769,6 +4076,7 @@ impl Worker {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
         };
 
         let else_if_offset = source.find("else_if_local\n").unwrap();
@@ -4602,6 +4910,75 @@ impl Worker {
         assert!(diags.is_empty(), "empty source should have no diagnostics");
     }
 
+    #[test]
+    fn diagnostics_route_non_root_module_path_to_imported_uri() {
+        let main_source = "import shapes::circle;\nfn main() -> i64 { circle.mistyped() }\n";
+        let circle_source = "pub fn mistyped() -> i64 { true }\n";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(circle_url.clone(), make_doc(circle_source));
+
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let main_diags = refreshed
+            .iter()
+            .find(|(uri, _)| uri == &main_url)
+            .map(|(_, diags)| diags)
+            .expect("main document must be republished");
+        assert!(
+            main_diags.is_empty(),
+            "non-root type diagnostics should not stay attached to the importer: {main_diags:?}"
+        );
+
+        let circle_diags = refreshed
+            .iter()
+            .find(|(uri, _)| uri == &circle_url)
+            .map(|(_, diags)| diags)
+            .expect("imported module must receive routed diagnostics");
+        assert!(
+            circle_diags
+                .iter()
+                .any(|diag| diag.source.as_deref() == Some("hew-types")),
+            "expected routed hew-types diagnostic on imported module: {circle_diags:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_route_non_root_related_information_to_imported_uri() {
+        let main_source = "import \"dep.hew\";\nfn main() {}\n";
+        let dep_source = "pub fn dup() -> i64 { 1 }\npub fn dup() -> i64 { 2 }\n";
+
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let dep_url = make_test_uri("/fake/project/dep.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(dep_url.clone(), make_doc(dep_source));
+
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let dep_diag = refreshed
+            .iter()
+            .find(|(uri, _)| uri == &dep_url)
+            .and_then(|(_, diags)| {
+                diags.iter().find(|diag| {
+                    diag.source.as_deref() == Some("hew-types")
+                        && diag
+                            .related_information
+                            .as_ref()
+                            .is_some_and(|info| !info.is_empty())
+                })
+            })
+            .expect("expected a routed diagnostic with related information");
+
+        assert_eq!(
+            dep_diag.related_information.as_ref().unwrap()[0]
+                .location
+                .uri,
+            dep_url
+        );
+    }
+
     // ── Completion conversion tests ─────────────────────────────────
 
     #[test]
@@ -4964,6 +5341,7 @@ impl Worker {
             line_offsets: lo,
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
         }
     }
 

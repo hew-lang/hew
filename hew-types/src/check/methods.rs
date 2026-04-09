@@ -345,7 +345,10 @@ impl Checker {
 
     fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
-        if matches!(resolved, Ty::Var(_) | Ty::Error | Ty::String) || resolved.is_integer() {
+        if matches!(
+            resolved,
+            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64
+        ) {
             return true;
         }
 
@@ -353,7 +356,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "HashSet<{}> is not supported; only HashSet<String> and HashSet<int> are currently supported",
+                "HashSet<{}> is not supported; only HashSet<String> and 64-bit integer element types are currently supported",
                 resolved.user_facing()
             ),
         );

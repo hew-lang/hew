@@ -4659,16 +4659,6 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       materializeTemporary(receiver, mc.receiver->value);
 
   auto receiverType = receiver.getType();
-  auto isRuntimeSpecialHandleType = [](llvm::StringRef handleType) {
-    return handleType == "http.Server" || handleType == "http.Request" ||
-           handleType == "regex.Pattern" || handleType == "process.Child";
-  };
-  bool isGenericHandleImplReceiver = false;
-  if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
-    auto handleType = handleTy.getHandleKind().str();
-    isGenericHandleImplReceiver =
-        knownHandleTypes.count(handleType) && !isRuntimeSpecialHandleType(handleType);
-  }
   auto generateTraitObjectDispatch = [&](llvm::StringRef traitName) -> mlir::Value {
     auto dispIt = traitDispatchRegistry.find(traitName.str());
     if (dispIt == traitDispatchRegistry.end() || dispIt->second.impls.empty()) {
@@ -4857,17 +4847,15 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     return nullptr;
   }
 
-  if (!isGenericHandleImplReceiver) {
-    if (auto *receiverKind = methodCallReceiverKindOf(exprSpan)) {
-      if (auto *named =
-              std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind))
-        return generateNamedTypeDispatch(named->type_name);
-      if (auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
-        return generateTraitObjectDispatch(trait->trait_name);
-      ++errorCount_;
-      emitError(location) << "unsupported method_call_receiver_kinds variant";
-      return nullptr;
-    }
+  if (auto *receiverKind = methodCallReceiverKindOf(exprSpan)) {
+    if (auto *named =
+            std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind))
+      return generateNamedTypeDispatch(named->type_name);
+    if (auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
+      return generateTraitObjectDispatch(trait->trait_name);
+    ++errorCount_;
+    emitError(location) << "unsupported method_call_receiver_kinds variant";
+    return nullptr;
   }
 
   // Trait object dispatch — requires a resolved dyn Trait type from the checker.
@@ -4896,12 +4884,6 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   // Builtin methods on scalars
   if (auto result = generateBuiltinMethodCall(mc, receiver, location))
     return *result;
-
-  // Generic handle-backed impl methods (e.g. json.Value.type_of()) still rely
-  // on the existing handle-kind structural path until they carry stable
-  // receiver authority without regressing the #812 parse-wrapper flow.
-  if (isGenericHandleImplReceiver)
-    return generateNamedTypeDispatch("");
 
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
   std::string structuralTypeName;

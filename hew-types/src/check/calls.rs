@@ -407,10 +407,7 @@ impl Checker {
                         self.expect_type(&elem, &inner, span);
                     }
                 }
-                return Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![elem],
-                };
+                return self.make_vec_type(elem, span);
             }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → typed ActorRef based on supervisor decl

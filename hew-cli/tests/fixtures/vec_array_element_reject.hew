@@ -1,0 +1,4 @@
+fn main() {
+    let v: Vec<[int; 2]> = Vec::new();
+    println(v.len());
+}

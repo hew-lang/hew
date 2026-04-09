@@ -1875,6 +1875,123 @@ fn rc_field_assignment_escape_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Unsupported Vec array elements
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) {
+    let output = typecheck_inline(source);
+    let hits: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains(needle)
+        })
+        .collect();
+    assert!(
+        !hits.is_empty(),
+        "{context}: expected InvalidOperation containing `{needle}`, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<[int; 2]> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "annotated Vec<[int; 2]>",
+    );
+}
+
+#[test]
+fn vec_from_array_elements_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v = Vec::from([[1, 2]]);
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "Vec::from([[1, 2]])",
+    );
+}
+
+#[test]
+fn vec_nested_vec_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Vec<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<[int; 2]> is not supported",
+        "annotated Vec<Vec<[int; 2]>>",
+    );
+}
+
+#[test]
+fn vec_tuple_with_array_elements_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v = Vec::new();
+            v.push((1, [2, 3]));
+            println(v.len());
+        }",
+        "Vec<(int, [int; 2])> is not supported",
+        "Vec tuple element with nested array",
+    );
+}
+
+#[test]
+fn vec_generic_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        type Box<T> {
+            value: T,
+        }
+
+        fn main() {
+            let v: Vec<Box<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Box<[int; 2]>> is not supported",
+        "annotated Vec<Box<[int; 2]>>",
+    );
+}
+
+#[test]
+fn vec_option_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Option<[int; 2]>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Option<[int; 2]>> is not supported",
+        "annotated Vec<Option<[int; 2]>>",
+    );
+}
+
+#[test]
+fn vec_result_wrapper_array_annotation_rejected() {
+    assert_invalid_operation_contains(
+        r"
+        fn main() {
+            let v: Vec<Result<[int; 2], String>> = Vec::new();
+            println(v.len());
+        }",
+        "Vec<Result<[int; 2], String>> is not supported",
+        "annotated Vec<Result<[int; 2], String>>",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  UnsafeCollectionElement — Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════
 

@@ -157,7 +157,7 @@ impl Checker {
                     Ty::Array(Box::new(first_ty), elems.len() as u64)
                 }
             }
-            Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count),
+            Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count, span),
 
             Expr::MapLiteral { entries } => self.synthesize_map_literal(entries),
 
@@ -430,6 +430,7 @@ impl Checker {
         &mut self,
         value: &Spanned<Expr>,
         count: &Spanned<Expr>,
+        span: &Span,
     ) -> Ty {
         let elem_ty = self.synthesize(&value.0, &value.1);
         let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
@@ -453,10 +454,7 @@ impl Checker {
                 );
             }
         }
-        Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![elem_ty],
-        }
+        self.make_vec_type(elem_ty, span)
     }
 
     pub(super) fn synthesize_map_literal(

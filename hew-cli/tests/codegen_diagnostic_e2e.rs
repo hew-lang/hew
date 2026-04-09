@@ -46,6 +46,38 @@ fn extern_type_codegen_errors_report_the_type_span() {
 }
 
 #[test]
+fn vec_array_elements_fail_closed_before_mlir() {
+    let fixture = repo_root()
+        .join("hew-cli/tests/fixtures/vec_array_element_reject.hew")
+        .canonicalize()
+        .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["build", "--emit-mlir", fixture.to_str().unwrap()])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", describe_output(&output));
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let location = format!("{}:2:12: error:", fixture.display());
+    assert!(
+        stderr.contains(&format!(
+            "{location} Vec<[int; 2]> is not supported; vec lowering does not support array element types yet"
+        )),
+        "{stderr}",
+    );
+    assert!(stderr.contains("type errors found"), "{stderr}");
+    assert!(!stderr.contains("vecElemSuffix"), "{stderr}");
+    assert!(
+        stderr.contains("2 |     let v: Vec<[int; 2]> = Vec::new();")
+            && stderr.contains("|            ^"),
+        "{stderr}",
+    );
+}
+
+#[test]
 fn module_qualified_generic_call_builds_with_inferred_type_args() {
     require_codegen();
 

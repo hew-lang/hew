@@ -343,6 +343,70 @@ impl Checker {
         }
     }
 
+    pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(elem_ty);
+        if matches!(
+            resolved,
+            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64
+        ) {
+            return true;
+        }
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "HashSet<{}> is not supported; only HashSet<String> and 64-bit integer element types are currently supported",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
+    pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Named { name, args } => {
+                if name == "HashSet" && args.len() == 1 {
+                    return self.validate_hashset_element_type(&args[0], span);
+                }
+                args.iter()
+                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.validate_concrete_hashset_type(elem, span)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_hashset_type(elem, span),
+            Ty::Function { params, ret } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashset_type(param, span))
+                    && self.validate_concrete_hashset_type(ret, span)
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashset_type(param, span))
+                    && self.validate_concrete_hashset_type(ret, span)
+                    && captures
+                        .iter()
+                        .all(|capture| self.validate_concrete_hashset_type(capture, span))
+            }
+            Ty::Pointer { pointee, .. } => self.validate_concrete_hashset_type(pointee, span),
+            Ty::TraitObject { traits } => traits.iter().all(|bound| {
+                bound
+                    .args
+                    .iter()
+                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
+            }),
+            _ => true,
+        }
+    }
+
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -442,6 +506,14 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 self.reject_rc_collection_element("HashSet", &elem_ty, span);
+                let resolved = self.subst.resolve(&elem_ty);
+                let mut visiting = HashSet::new();
+                if ty_contains_rc_deep(&resolved, &self.type_defs, &mut visiting) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Bool
             }
             "contains" | "remove" => {
@@ -450,18 +522,39 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Bool
             }
             "clone" => {
                 self.check_arity(args, 0, "`HashSet::clone`", span);
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Named {
                     name: "HashSet".to_string(),
                     args: vec![elem_ty.clone()],
                 }
             }
-            "len" => Ty::I64,
-            "is_empty" => Ty::Bool,
-            "clear" => Ty::Unit,
+            "len" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::I64
+            }
+            "is_empty" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::Bool
+            }
+            "clear" => {
+                if !self.validate_hashset_element_type(&elem_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::Unit
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,

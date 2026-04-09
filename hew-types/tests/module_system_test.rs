@@ -5,8 +5,8 @@
 //! all behave correctly.
 
 use hew_parser::ast::{
-    ActorDecl, Block, FnDecl, ImportDecl, ImportName, ImportSpec, Item, Param, Program,
-    ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
+    ActorDecl, Block, ConstDecl, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
+    Literal, Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::{SpanKey, TypeDefKind};
@@ -15,7 +15,6 @@ use hew_types::{Checker, Ty};
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn make_pub_fn(name: &str) -> FnDecl {
-    use hew_parser::ast::{Expr, IntRadix, Literal};
     FnDecl {
         attributes: vec![],
         is_async: false,
@@ -45,6 +44,22 @@ fn make_pub_fn(name: &str) -> FnDecl {
         },
         doc_comment: None,
         decl_span: 0..0,
+    }
+}
+
+fn make_named_type(name: &str, type_args: Option<Vec<Spanned<TypeExpr>>>) -> TypeExpr {
+    TypeExpr::Named {
+        name: name.to_string(),
+        type_args,
+    }
+}
+
+fn make_pub_const(name: &str, ty: TypeExpr) -> ConstDecl {
+    ConstDecl {
+        visibility: Visibility::Pub,
+        name: name.to_string(),
+        ty: (ty, 0..0),
+        value: (Expr::Literal(Literal::Bool(false)), 0..0),
     }
 }
 
@@ -192,6 +207,70 @@ fn test_glob_import_resolution() {
     assert!(
         output.fn_sigs.contains_key("other"),
         "glob import should register unqualified 'other'"
+    );
+}
+
+#[test]
+fn test_file_import_const_annotation_rejects_unsupported_hashset() {
+    let import = make_user_import(
+        &[],
+        None,
+        vec![(
+            Item::Const(make_pub_const(
+                "FLAGS",
+                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
+            )),
+            0..0,
+        )],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        }),
+        "file import pub const annotation should reject unsupported HashSet, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn test_user_module_const_annotation_rejects_unsupported_hashset() {
+    let import = make_user_import(
+        &["myapp", "utils"],
+        None,
+        vec![(
+            Item::Const(make_pub_const(
+                "FLAGS",
+                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
+            )),
+            0..0,
+        )],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        }),
+        "user-module pub const annotation should reject unsupported HashSet, got: {:?}",
+        output.errors
     );
 }
 

@@ -231,6 +231,21 @@ impl Checker {
         );
     }
 
+    fn resolve_registered_annotation_ty(
+        &mut self,
+        type_expr: &Spanned<TypeExpr>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> Ty {
+        let ty = self.resolve_type_expr_tracking_holes(&type_expr.0, hole_vars);
+        self.validate_concrete_hashset_type(&ty, &type_expr.1);
+        ty
+    }
+
+    fn resolve_registered_annotation_ty_no_holes(&mut self, type_expr: &Spanned<TypeExpr>) -> Ty {
+        let mut hole_vars = Vec::new();
+        self.resolve_registered_annotation_ty(type_expr, &mut hole_vars)
+    }
+
     /// Pass 1: Collect type definitions
     pub(super) fn collect_types(&mut self, program: &Program) {
         // Pre-register TypeDecls from non-root module_graph modules into
@@ -391,7 +406,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
+                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -415,22 +430,19 @@ impl Checker {
                         VariantKind::Tuple(tfields) => {
                             let variant_tys: Vec<Ty> = tfields
                                 .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                .map(|field| {
+                                    self.resolve_registered_annotation_ty(field, &mut hole_vars)
                                 })
                                 .collect();
-                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
-                            let constructor_params: Vec<Ty> = tfields
-                                .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
-                                })
-                                .collect();
+                            variants.insert(
+                                variant.name.clone(),
+                                VariantDef::Tuple(variant_tys.clone()),
+                            );
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    params: constructor_params,
+                                    params: variant_tys,
                                     return_type,
                                     ..FnSig::default()
                                 },
@@ -439,10 +451,13 @@ impl Checker {
                         VariantKind::Struct(sfields) => {
                             let variant_fields: Vec<(String, Ty)> = sfields
                                 .iter()
-                                .map(|(name, (te, _))| {
+                                .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                        self.resolve_registered_annotation_ty(
+                                            field,
+                                            &mut hole_vars,
+                                        ),
                                     )
                                 })
                                 .collect();
@@ -542,7 +557,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
+                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -566,25 +581,22 @@ impl Checker {
                         VariantKind::Tuple(fields) => {
                             let variant_tys: Vec<Ty> = fields
                                 .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                .map(|field| {
+                                    self.resolve_registered_annotation_ty(field, &mut hole_vars)
                                 })
                                 .collect();
-                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+                            variants.insert(
+                                variant.name.clone(),
+                                VariantDef::Tuple(variant_tys.clone()),
+                            );
 
                             // Register variant constructor as function
-                            let constructor_params: Vec<Ty> = fields
-                                .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
-                                })
-                                .collect();
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    params: constructor_params,
+                                    params: variant_tys,
                                     return_type,
                                     ..FnSig::default()
                                 },
@@ -593,10 +605,13 @@ impl Checker {
                         VariantKind::Struct(fields) => {
                             let variant_fields: Vec<(String, Ty)> = fields
                                 .iter()
-                                .map(|(name, (te, _))| {
+                                .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                        self.resolve_registered_annotation_ty(
+                                            field,
+                                            &mut hole_vars,
+                                        ),
                                     )
                                 })
                                 .collect();
@@ -914,8 +929,8 @@ impl Checker {
                     .map(|(name, spanned_te)| {
                         (
                             name.clone(),
-                            self.resolve_type_expr_tracking_holes(
-                                &spanned_te.0,
+                            self.resolve_registered_annotation_ty(
+                                spanned_te,
                                 &mut machine_hole_vars,
                             ),
                         )
@@ -963,10 +978,7 @@ impl Checker {
                     .map(|(name, spanned_te)| {
                         (
                             name.clone(),
-                            self.resolve_type_expr_tracking_holes(
-                                &spanned_te.0,
-                                &mut event_hole_vars,
-                            ),
+                            self.resolve_registered_annotation_ty(spanned_te, &mut event_hole_vars),
                         )
                     })
                     .collect();
@@ -1178,7 +1190,7 @@ impl Checker {
         let mut fields = HashMap::new();
         let mut hole_vars = Vec::new();
         for field in &ad.fields {
-            let field_ty = self.resolve_type_expr_tracking_holes(&field.ty.0, &mut hole_vars);
+            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
             fields.insert(field.name.clone(), field_ty);
         }
 
@@ -1221,17 +1233,17 @@ impl Checker {
                 VariantKind::Tuple(fields) => {
                     let variant_tys = fields
                         .iter()
-                        .map(|(te, _)| self.resolve_type_expr_tracking_holes(te, &mut hole_vars))
+                        .map(|field| self.resolve_registered_annotation_ty(field, &mut hole_vars))
                         .collect();
                     variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
                 }
                 VariantKind::Struct(fields) => {
                     let variant_fields: Vec<(String, Ty)> = fields
                         .iter()
-                        .map(|(name, (te, _))| {
+                        .map(|(name, field)| {
                             (
                                 name.clone(),
-                                self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                self.resolve_registered_annotation_ty(field, &mut hole_vars),
                             )
                         })
                         .collect();
@@ -1615,11 +1627,15 @@ impl Checker {
                                         m.params
                                             .iter()
                                             .skip(skip)
-                                            .map(|p| self.resolve_type_expr(&p.ty.0))
+                                            .map(|p| {
+                                                self.resolve_registered_annotation_ty_no_holes(
+                                                    &p.ty,
+                                                )
+                                            })
                                             .collect(),
-                                        m.return_type
-                                            .as_ref()
-                                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te)),
+                                        m.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                                            self.resolve_registered_annotation_ty_no_holes(ret)
+                                        }),
                                     )
                                 };
                                 let sig = FnSig {
@@ -1675,12 +1691,11 @@ impl Checker {
                             .params
                             .iter()
                             .skip(skip)
-                            .map(|p| self.resolve_type_expr(&p.ty.0))
+                            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
                             .collect();
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+                        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                            self.resolve_registered_annotation_ty_no_holes(ret)
+                        });
                         let is_async = method.is_async;
                         let method_name = method.name.clone();
                         let type_name = td.name.clone();
@@ -1862,10 +1877,10 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
-        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
@@ -1925,12 +1940,11 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
             .collect();
-        let return_type = method
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty_no_holes(ret)
+        });
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -1992,10 +2006,10 @@ impl Checker {
         let params = rf
             .params
             .iter()
-            .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
-        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-            self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
         let return_type = if rf.is_generator {
             Ty::stream(declared_return_type)
@@ -2033,10 +2047,10 @@ impl Checker {
             let params = f
                 .params
                 .iter()
-                .map(|p| self.resolve_type_expr_tracking_holes(&p.ty.0, &mut hole_vars))
+                .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
                 .collect();
-            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |(te, _)| {
-                self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                self.resolve_registered_annotation_ty(ret, &mut hole_vars)
             });
             let sig = FnSig {
                 param_names,
@@ -2459,7 +2473,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let ty = self.resolve_type_expr(&cd.ty.0);
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
                     self.env.define(cd.name.clone(), ty, false);
                 }
                 Item::TypeDecl(td) => {
@@ -2697,7 +2711,7 @@ impl Checker {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
-                    let ty = self.resolve_type_expr(&cd.ty.0);
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
                     let qualified = format!("{module_short}.{}", cd.name);
                     self.env.define(qualified, ty.clone(), false);
                     if Self::should_import_name(&cd.name, spec) {
@@ -2772,12 +2786,11 @@ impl Checker {
         let params = fd
             .params
             .iter()
-            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
             .collect();
-        let declared_return = fd
-            .return_type
-            .as_ref()
-            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty_no_holes(ret)
+        });
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });

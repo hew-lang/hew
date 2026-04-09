@@ -1160,7 +1160,7 @@ fn eval(e: Expr) -> Int {
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
 - Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
-- `Rc<T>` cannot be used as a collection element or key type: `Vec<Rc<T>>`, `HashMap<Rc<T>, V>`, `HashMap<K, Rc<T>>`, and `HashSet<Rc<T>>` are all rejected by the type checker
+- `Rc<T>` cannot be used as a collection key type: `HashMap<Rc<T>, V>`, `HashMap<K, Rc<T>>`, and `HashSet<Rc<T>>` are rejected at the annotation level by the type checker; `Vec<Rc<T>>` is rejected at method-call sites (push, pop, get, remove, set, append, extend, map, filter, fold) rather than at the annotation level
 
 ```hew
 let data: Rc<String> = Rc::new(expensive_computation());
@@ -1886,7 +1886,7 @@ impl<T> Vec<T> {
 
 **Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
 
-- `Rc<T>` elements are rejected: `Vec<Rc<T>>` is not supported (the runtime does not track Rc ownership for collection elements)
+- `Rc<T>` elements: `Vec<Rc<T>>` is not supported (the runtime does not track Rc ownership for collection elements); rejection is enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 - Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,

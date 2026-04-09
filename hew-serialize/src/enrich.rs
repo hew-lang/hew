@@ -89,6 +89,7 @@ impl TypeExprConversionError {
         Self {
             ty: Ty::Error,
             detail,
+            kind_override: None,
             contexts: Vec::new(),
             span: None,
         }

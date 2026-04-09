@@ -880,6 +880,45 @@ static void test_rc_callee_param_no_drop_registered() {
   PASS();
 }
 
+// Struct init with a closure field sourced from an existing binding must clone
+// the closure env for the struct copy; otherwise the binding and the struct
+// both drop the same env.
+static void test_struct_init_closure_field_clones_bound_owner() {
+  TEST(struct_init_closure_field_clones_bound_owner);
+  auto ast = hewToMsgpack("type Job { id: int; action: fn(int) -> int; }\n"
+                          "fn main() {\n"
+                          "  let offset = 100;\n"
+                          "  let action = (x: int) -> int => x + offset;\n"
+                          "  let j = Job { id: 5, action: action };\n"
+                          "  println(1);\n"
+                          "}");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) {
+    FAIL(hew_codegen_last_error());
+    return;
+  }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+
+  auto structInitPos = mlir.find("hew.struct_init");
+  if (structInitPos == std::string::npos) {
+    FAIL("expected hew.struct_init in MLIR");
+    return;
+  }
+  if (countOccurrences(mlir, "hew.rc.clone") < 2) {
+    FAIL("struct init closure field missing env clone from bound owner");
+    return;
+  }
+  PASS();
+}
+
 static void test_emit_llvm_produces_output() {
   TEST(emit_llvm_produces_output);
   auto ast = hewToMsgpack("fn main() { println(\"hello\"); }");
@@ -1063,6 +1102,7 @@ int main() {
   test_rc_string_inner_drop_trampoline();
   test_rc_call_boundary_borrow_no_clone();
   test_rc_callee_param_no_drop_registered();
+  test_struct_init_closure_field_clones_bound_owner();
   test_emit_llvm_produces_output();
   test_emit_object_writes_file();
 

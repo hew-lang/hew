@@ -35,6 +35,8 @@ pub enum MarkerTrait {
     Decode,
     /// Can be serialized to bytes
     Encode,
+    /// Contains no `Rc<T>` anywhere in its admissible structure
+    RcFree,
 }
 
 impl std::fmt::Display for MarkerTrait {
@@ -53,6 +55,7 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Drop => write!(f, "Drop"),
             MarkerTrait::Decode => write!(f, "Decode"),
             MarkerTrait::Encode => write!(f, "Encode"),
+            MarkerTrait::RcFree => write!(f, "RcFree"),
         }
     }
 }
@@ -75,6 +78,7 @@ impl MarkerTrait {
             "Drop" => Some(Self::Drop),
             "Decode" => Some(Self::Decode),
             "Encode" => Some(Self::Encode),
+            "RcFree" => Some(Self::RcFree),
             _ => None,
         }
     }
@@ -118,6 +122,8 @@ pub struct TraitDef {
 pub struct TraitRegistry {
     /// Struct/enum definitions: name → field types
     type_fields: HashMap<String, Vec<Ty>>,
+    /// `RcFree` capability members: name → field and variant payload types
+    rc_free_members: HashMap<String, Vec<Ty>>,
     /// Explicit negative impls: types that DO NOT implement a trait
     negative_impls: HashMap<String, HashSet<MarkerTrait>>,
     /// Trait declarations with methods
@@ -142,6 +148,48 @@ impl TraitRegistry {
     /// Register a type definition with its field types.
     pub fn register_type(&mut self, name: String, field_types: Vec<Ty>) {
         self.type_fields.insert(name, field_types);
+    }
+
+    /// Register the structural members that participate in `RcFree`.
+    pub fn register_rcfree_members(&mut self, name: String, member_types: Vec<Ty>) {
+        self.rc_free_members.insert(name, member_types);
+    }
+
+    /// Look up `RcFree` members by exact or module-qualified/unqualified name.
+    fn rc_free_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
+        self.rc_free_members.get(name).or_else(|| {
+            name.rsplit_once('.')
+                .and_then(|(_, unqualified)| self.rc_free_members.get(unqualified))
+        })
+    }
+
+    fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Named { name, args } if name == "Rc" => args.is_empty(),
+            Ty::Named { name, args } => {
+                if args
+                    .iter()
+                    .any(|arg| !self.implements_rc_free(arg, visiting))
+                {
+                    return false;
+                }
+                if !visiting.insert(name.clone()) {
+                    return true;
+                }
+                let result = self.rc_free_members_any(name).is_none_or(|members| {
+                    members
+                        .iter()
+                        .all(|member| self.implements_rc_free(member, visiting))
+                });
+                visiting.remove(name);
+                result
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.implements_rc_free(elem, visiting)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => self.implements_rc_free(inner, visiting),
+            _ => true,
+        }
     }
 
     /// Register an actor type.
@@ -227,6 +275,10 @@ impl TraitRegistry {
         reason = "marker derivation covers many Ty variants"
     )]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        if marker == MarkerTrait::RcFree {
+            let mut visiting = HashSet::new();
+            return self.implements_rc_free(ty, &mut visiting);
+        }
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug
             Ty::I8
@@ -644,6 +696,45 @@ mod tests {
         };
         assert!(!registry.is_send(&set_rc));
         assert!(!registry.is_sync(&set_rc));
+    }
+
+    #[test]
+    fn test_rcfree_rejects_transitive_rc_through_registered_members() {
+        let mut registry = TraitRegistry::new();
+        registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
+        let holder = Ty::Named {
+            name: "Holder".to_string(),
+            args: vec![],
+        };
+
+        assert!(!registry.implements_marker(&holder, MarkerTrait::RcFree));
+        assert!(
+            registry.implements_marker(&Ty::Tuple(vec![Ty::I32, Ty::Bool]), MarkerTrait::RcFree)
+        );
+    }
+
+    #[test]
+    fn test_rcfree_handles_recursive_named_types() {
+        let mut registry = TraitRegistry::new();
+        let list = Ty::Named {
+            name: "List".to_string(),
+            args: vec![],
+        };
+        registry.register_rcfree_members("List".to_string(), vec![Ty::option(list.clone())]);
+
+        assert!(registry.implements_marker(&list, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn test_rcfree_falls_back_to_unqualified_registered_name() {
+        let mut registry = TraitRegistry::new();
+        registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
+        let qualified_holder = Ty::Named {
+            name: "widgets.Holder".to_string(),
+            args: vec![],
+        };
+
+        assert!(!registry.implements_marker(&qualified_holder, MarkerTrait::RcFree));
     }
 
     #[test]

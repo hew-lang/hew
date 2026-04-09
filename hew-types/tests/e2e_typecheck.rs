@@ -3171,6 +3171,22 @@ fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
 }
 
 #[test]
+fn rc_in_named_enum_variant_vec_push_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        enum MaybeHolder {
+            Some(Rc<int>);
+            None;
+        }
+        fn main() {
+            var v = Vec::new();
+            v.push(MaybeHolder::Some(Rc::new(1)));
+        }",
+        "Vec.push(MaybeHolder::Some(Rc<int>)) — named enum wrapping Rc should be rejected",
+    );
+}
+
+#[test]
 fn plain_named_struct_no_rc_vec_push_ok() {
     assert_no_unsafe_collection_element(
         r"

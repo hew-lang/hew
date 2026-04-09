@@ -5,6 +5,21 @@
 use super::*;
 
 impl Checker {
+    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+        let mut member_types: Vec<Ty> = type_def.fields.values().cloned().collect();
+        for variant in type_def.variants.values() {
+            match variant {
+                VariantDef::Unit => {}
+                VariantDef::Tuple(tys) => member_types.extend(tys.iter().cloned()),
+                VariantDef::Struct(fields) => {
+                    member_types.extend(fields.iter().map(|(_, ty)| ty.clone()));
+                }
+            }
+        }
+        self.registry
+            .register_rcfree_members(type_name.to_string(), member_types);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "all builtins registered in one place"
@@ -260,7 +275,9 @@ impl Checker {
         // import path's `register_type_namespace_name` succeeds) and skips
         // trait-registry / wire-method side effects (those are handled by
         // the import path's full `register_type_decl` for pub types, and
-        // are not needed for internal non-pub types).
+        // are not needed for internal non-pub types). `RcFree` is the
+        // bounded exception because collection admissibility during non-root
+        // body checking depends on that structural marker.
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
@@ -470,19 +487,18 @@ impl Checker {
             }
         }
 
-        self.type_defs.insert(
-            td.name.clone(),
-            TypeDef {
-                kind,
-                name: td.name.clone(),
-                type_params: type_param_names,
-                fields,
-                variants,
-                methods: HashMap::new(),
-                doc_comment: td.doc_comment.clone(),
-                is_indirect: td.is_indirect,
-            },
-        );
+        let type_def = TypeDef {
+            kind,
+            name: td.name.clone(),
+            type_params: type_param_names,
+            fields,
+            variants,
+            methods: HashMap::new(),
+            doc_comment: td.doc_comment.clone(),
+            is_indirect: td.is_indirect,
+        };
+        self.register_rcfree_members_for_type(&td.name, &type_def);
+        self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
     }
 
@@ -646,6 +662,7 @@ impl Checker {
                 .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
 
         self.registry.register_type(td.name.clone(), field_types);
+        self.register_rcfree_members_for_type(&td.name, &type_def);
 
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
@@ -958,6 +975,7 @@ impl Checker {
         }
         self.registry
             .register_type(md.name.clone(), all_field_types);
+        self.register_rcfree_members_for_type(&md.name, &type_def);
 
         self.type_defs.insert(md.name.clone(), type_def);
         self.record_type_def_inference_holes(&md.name, machine_hole_vars);
@@ -993,6 +1011,7 @@ impl Checker {
             doc_comment: None,
             is_indirect: false,
         };
+        self.register_rcfree_members_for_type(&event_type_name, &event_type_def);
         self.type_defs
             .insert(event_type_name.clone(), event_type_def);
         self.record_type_def_inference_holes(&event_type_name, event_hole_vars);
@@ -1203,6 +1222,7 @@ impl Checker {
 
         // Actors are always Send
         self.registry.register_actor(ad.name.clone());
+        self.register_rcfree_members_for_type(&ad.name, &type_def);
 
         self.type_defs.insert(ad.name.clone(), type_def);
         self.record_type_def_inference_holes(&ad.name, hole_vars);
@@ -1264,6 +1284,7 @@ impl Checker {
 
         let field_types: Vec<_> = type_def.fields.values().cloned().collect();
         self.registry.register_type(wd.name.clone(), field_types);
+        self.register_rcfree_members_for_type(&wd.name, &type_def);
 
         self.type_defs.insert(wd.name.clone(), type_def);
         self.record_type_def_inference_holes(&wd.name, hole_vars);

@@ -45,8 +45,7 @@ use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
     first_infer_span_in_extern_fn, first_infer_span_in_type_expr, float_fits_type,
     integer_fits_type, integer_type_info, integer_type_range, is_float_literal, is_integer_literal,
-    lookup_scoped_item, scoped_module_item_name, ty_contains_rc_deep,
-    ty_has_unresolved_inference_var,
+    lookup_scoped_item, scoped_module_item_name, ty_has_unresolved_inference_var,
 };
 
 fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {

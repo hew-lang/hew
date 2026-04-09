@@ -2749,15 +2749,17 @@ fn helper() -> int { 41 }
         );
     }
 
-    /// Regression guard for issue #789: `TypeExprConversionKind::Unsupported`
-    /// must now be fatal so that unsupported inferred types (e.g. generators)
-    /// abort serialization instead of warning and continuing.
+    /// Regression guard for issue #789: internal generator handle metadata must
+    /// be suppressed before the CLI serializer boundary instead of surfacing as
+    /// a fatal inferred-type diagnostic from `build_expr_type_map`.
     #[test]
-    fn unsupported_inferred_type_serialization_diagnostic_is_fatal() {
+    fn internal_generator_expr_type_entries_are_suppressed_before_boundary() {
         use hew_types::check::SpanKey;
 
-        // Build a TypeCheckOutput that maps an expression span to a generator
-        // type, which the serializer cannot represent and emits Unsupported.
+        // Generator handles are internal metadata for native codegen surfaces.
+        // The serializer rescue must drop them before expr-type-map emission so
+        // the CLI boundary only reports truly user-visible unresolved/invalid
+        // inferred types.
         let mut tco = empty_tco();
         tco.expr_types.insert(
             SpanKey { start: 0, end: 1 },
@@ -2765,20 +2767,13 @@ fn helper() -> int { 41 }
         );
 
         let build = hew_serialize::build_expr_type_map(&tco);
-        let diagnostics = build.diagnostics();
         assert!(
-            !diagnostics.is_empty(),
-            "generator type must produce a serialization diagnostic"
+            build.diagnostics().is_empty(),
+            "internal generator expr_types must be suppressed before the CLI boundary"
         );
-
-        let unsupported_diag = diagnostics
-            .iter()
-            .find(|d| d.kind() == hew_serialize::TypeExprConversionKind::Unsupported)
-            .expect("must have an Unsupported diagnostic for generator type");
-
         assert!(
-            inferred_type_serialization_diagnostic_is_fatal(unsupported_diag),
-            "Unsupported diagnostic must now be fatal (issue #789)"
+            build.entries.is_empty(),
+            "internal generator expr_types must not be serialized into expr_type_map entries"
         );
     }
 }

@@ -288,66 +288,107 @@ pub fn serialize_to_json(
     serde_json::to_string_pretty(&typed).expect("AST JSON serialization failed")
 }
 
-/// Walk `program` and collect an [`AssignTargetKindEntry`] for every
-/// `Stmt::Assign` whose target span has an entry in `tco.assign_target_kinds`.
-#[must_use]
+// ---- Shared side-table traversal walker ---------------------------------
+
+/// Controls how `Stmt::If` children are ordered during traversal.
+///
+/// The two assign-target walkers disagree on this order (an existing
+/// behavioral difference that must be preserved).
+#[derive(Clone, Copy)]
+enum IfStmtOrder {
+    /// Visit the else branch before the then branch.
+    ElseBeforeThen,
+    /// Visit the then branch before the else branch.
+    ThenBeforeElse,
+}
+
+/// Controls which items are visited at the top level.
+#[derive(Clone, Copy)]
+enum ModuleGraphMode {
+    /// Always visit `program.items` first, then non-root modules in topo order.
+    ItemsThenNonRootModules,
+    /// If a module graph is present, traverse all modules (including root) in
+    /// topo order; otherwise visit `program.items`.
+    ModulesOrProgramItems,
+}
+
+/// Visitor hooks for the shared AST side-table traversal walker.
+///
+/// Implementors supply entry-extraction logic at two hook points; the shared
+/// walker [`walk_program`] handles all recursive traversal.
+trait SideTableVisitor {
+    type Entry;
+
+    /// Called before recursing into a `Stmt::Assign`'s target and value.
+    fn on_assign_stmt(
+        &self,
+        target: &Spanned<Expr>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<Self::Entry>,
+    );
+
+    /// Called before recursing into a `Expr::MethodCall`'s receiver and args.
+    fn on_method_call_expr(
+        &self,
+        expr: &Spanned<Expr>,
+        tco: &TypeCheckOutput,
+        out: &mut Vec<Self::Entry>,
+    );
+
+    fn if_stmt_order(&self) -> IfStmtOrder;
+    fn module_graph_mode(&self) -> ModuleGraphMode;
+}
+
+/// Walk every reachable expression in `program`, calling `visitor` hooks at
+/// side-table-relevant nodes and collecting the returned entries.
 #[expect(
     clippy::too_many_lines,
-    reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
+    reason = "the shared walker needs one complete recursive pass mirroring every surviving AST shape"
 )]
-pub fn build_assign_target_kind_entries(
+fn walk_program<V: SideTableVisitor>(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
-) -> Vec<AssignTargetKindEntry> {
-    fn entry_for_span(
-        span: &std::ops::Range<usize>,
-        tco: &TypeCheckOutput,
-    ) -> Option<AssignTargetKindEntry> {
-        let key = SpanKey::from(span);
-        let kind = tco.assign_target_kinds.get(&key)?;
-        Some(AssignTargetKindEntry {
-            start: key.start,
-            end: key.end,
-            kind: match kind {
-                CheckedAssignTargetKind::LocalVar => AssignTargetKindData::LocalVar,
-                CheckedAssignTargetKind::ActorField => AssignTargetKindData::ActorField,
-                CheckedAssignTargetKind::FieldAccess => AssignTargetKindData::FieldAccess,
-                CheckedAssignTargetKind::Index => AssignTargetKindData::Index,
-            },
-        })
-    }
-
-    fn collect_fn(
+    visitor: &V,
+) -> Vec<V::Entry> {
+    fn collect_fn<V: SideTableVisitor>(
         fn_decl: &hew_parser::ast::FnDecl,
         tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetKindEntry>,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
     ) {
-        collect_block(&fn_decl.body, tco, out);
+        collect_block(&fn_decl.body, tco, visitor, out);
     }
 
-    fn collect_block(block: &Block, tco: &TypeCheckOutput, out: &mut Vec<AssignTargetKindEntry>) {
+    fn collect_block<V: SideTableVisitor>(
+        block: &Block,
+        tco: &TypeCheckOutput,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
+    ) {
         for stmt in &block.stmts {
-            collect_stmt(stmt, tco, out);
+            collect_stmt(stmt, tco, visitor, out);
         }
         if let Some(trailing) = &block.trailing_expr {
-            collect_expr(trailing, tco, out);
+            collect_expr(trailing, tco, visitor, out);
         }
     }
 
-    fn collect_call_args(
+    fn collect_call_args<V: SideTableVisitor>(
         args: &[CallArg],
         tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetKindEntry>,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
     ) {
         for arg in args {
-            collect_expr(arg.expr(), tco, out);
+            collect_expr(arg.expr(), tco, visitor, out);
         }
     }
 
-    fn collect_stmt(
+    fn collect_stmt<V: SideTableVisitor>(
         stmt: &Spanned<Stmt>,
         tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetKindEntry>,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
     ) {
         match &stmt.0 {
             Stmt::Let { value, .. }
@@ -355,30 +396,42 @@ pub fn build_assign_target_kind_entries(
             | Stmt::Break { value, .. }
             | Stmt::Return(value) => {
                 if let Some(value) = value {
-                    collect_expr(value, tco, out);
+                    collect_expr(value, tco, visitor, out);
                 }
             }
             Stmt::Assign { target, value, .. } => {
-                if let Some(entry) = entry_for_span(&target.1, tco) {
-                    out.push(entry);
-                }
-                collect_expr(target, tco, out);
-                collect_expr(value, tco, out);
+                visitor.on_assign_stmt(target, tco, out);
+                collect_expr(target, tco, visitor, out);
+                collect_expr(value, tco, visitor, out);
             }
             Stmt::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                collect_expr(condition, tco, out);
-                if let Some(else_block) = else_block {
-                    match (else_block.if_stmt.as_ref(), else_block.block.as_ref()) {
-                        (Some(if_stmt), _) => collect_stmt(if_stmt, tco, out),
-                        (None, Some(block)) => collect_block(block, tco, out),
-                        (None, None) => {}
+                collect_expr(condition, tco, visitor, out);
+                match visitor.if_stmt_order() {
+                    IfStmtOrder::ElseBeforeThen => {
+                        if let Some(eb) = else_block {
+                            match (eb.if_stmt.as_ref(), eb.block.as_ref()) {
+                                (Some(if_stmt), _) => collect_stmt(if_stmt, tco, visitor, out),
+                                (None, Some(block)) => collect_block(block, tco, visitor, out),
+                                (None, None) => {}
+                            }
+                        }
+                        collect_block(then_block, tco, visitor, out);
+                    }
+                    IfStmtOrder::ThenBeforeElse => {
+                        collect_block(then_block, tco, visitor, out);
+                        if let Some(eb) = else_block {
+                            match (eb.if_stmt.as_ref(), eb.block.as_ref()) {
+                                (Some(if_stmt), _) => collect_stmt(if_stmt, tco, visitor, out),
+                                (None, Some(block)) => collect_block(block, tco, visitor, out),
+                                (None, None) => {}
+                            }
+                        }
                     }
                 }
-                collect_block(then_block, tco, out);
             }
             Stmt::IfLet {
                 expr,
@@ -386,86 +439,87 @@ pub fn build_assign_target_kind_entries(
                 else_body,
                 ..
             } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
+                collect_expr(expr, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
                 if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
+                    collect_block(else_body, tco, visitor, out);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
+                collect_expr(scrutinee, tco, visitor, out);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
+                        collect_expr(guard, tco, visitor, out);
                     }
-                    collect_expr(&arm.body, tco, out);
+                    collect_expr(&arm.body, tco, visitor, out);
                 }
             }
-            Stmt::Loop { body, .. } => collect_block(body, tco, out),
+            Stmt::Loop { body, .. } => collect_block(body, tco, visitor, out),
             Stmt::For { iterable, body, .. } => {
-                collect_expr(iterable, tco, out);
-                collect_block(body, tco, out);
+                collect_expr(iterable, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
             }
             Stmt::While {
                 condition, body, ..
             } => {
-                collect_expr(condition, tco, out);
-                collect_block(body, tco, out);
+                collect_expr(condition, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
             }
             Stmt::WhileLet { expr, body, .. } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
+                collect_expr(expr, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
             }
-            Stmt::Defer(expr) => collect_expr(expr, tco, out),
-            Stmt::Expression(expr) => collect_expr(expr, tco, out),
+            Stmt::Defer(expr) => collect_expr(expr, tco, visitor, out),
+            Stmt::Expression(expr) => collect_expr(expr, tco, visitor, out),
             Stmt::Continue { .. } => {}
         }
     }
 
-    fn collect_expr(
+    fn collect_expr<V: SideTableVisitor>(
         expr: &Spanned<Expr>,
         tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetKindEntry>,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
     ) {
         match &expr.0 {
             Expr::Binary { left, right, .. } => {
-                collect_expr(left, tco, out);
-                collect_expr(right, tco, out);
+                collect_expr(left, tco, visitor, out);
+                collect_expr(right, tco, visitor, out);
             }
             Expr::Unary { operand, .. }
             | Expr::Cast { expr: operand, .. }
             | Expr::PostfixTry(operand)
-            | Expr::Await(operand) => collect_expr(operand, tco, out),
+            | Expr::Await(operand) => collect_expr(operand, tco, visitor, out),
             Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
                 for elem in exprs {
-                    collect_expr(elem, tco, out);
+                    collect_expr(elem, tco, visitor, out);
                 }
             }
             Expr::ArrayRepeat { value, count } => {
-                collect_expr(value, tco, out);
-                collect_expr(count, tco, out);
+                collect_expr(value, tco, visitor, out);
+                collect_expr(count, tco, visitor, out);
             }
             Expr::MapLiteral { entries } => {
                 for (key, value) in entries {
-                    collect_expr(key, tco, out);
-                    collect_expr(value, tco, out);
+                    collect_expr(key, tco, visitor, out);
+                    collect_expr(value, tco, visitor, out);
                 }
             }
             Expr::Block(block)
             | Expr::Unsafe(block)
             | Expr::ScopeLaunch(block)
             | Expr::ScopeSpawn(block) => {
-                collect_block(block, tco, out);
+                collect_block(block, tco, visitor, out);
             }
             Expr::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                collect_expr(condition, tco, out);
-                collect_expr(then_block, tco, out);
+                collect_expr(condition, tco, visitor, out);
+                collect_expr(then_block, tco, visitor, out);
                 if let Some(else_block) = else_block {
-                    collect_expr(else_block, tco, out);
+                    collect_expr(else_block, tco, visitor, out);
                 }
             }
             Expr::IfLet {
@@ -474,85 +528,86 @@ pub fn build_assign_target_kind_entries(
                 else_body,
                 ..
             } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
+                collect_expr(expr, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
                 if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
+                    collect_block(else_body, tco, visitor, out);
                 }
             }
             Expr::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
+                collect_expr(scrutinee, tco, visitor, out);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
+                        collect_expr(guard, tco, visitor, out);
                     }
-                    collect_expr(&arm.body, tco, out);
+                    collect_expr(&arm.body, tco, visitor, out);
                 }
             }
             Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-                collect_expr(body, tco, out);
+                collect_expr(body, tco, visitor, out);
             }
             Expr::Spawn { target, args } => {
-                collect_expr(target, tco, out);
+                collect_expr(target, tco, visitor, out);
                 for (_, arg) in args {
-                    collect_expr(arg, tco, out);
+                    collect_expr(arg, tco, visitor, out);
                 }
             }
-            Expr::Scope { body, .. } => collect_block(body, tco, out),
+            Expr::Scope { body, .. } => collect_block(body, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr(expr) = part {
-                        collect_expr(expr, tco, out);
+                        collect_expr(expr, tco, visitor, out);
                     }
                 }
             }
             Expr::Call { function, args, .. } => {
-                collect_expr(function, tco, out);
-                collect_call_args(args, tco, out);
+                collect_expr(function, tco, visitor, out);
+                collect_call_args(args, tco, visitor, out);
             }
             Expr::MethodCall { receiver, args, .. } => {
-                collect_expr(receiver, tco, out);
-                collect_call_args(args, tco, out);
+                visitor.on_method_call_expr(expr, tco, out);
+                collect_expr(receiver, tco, visitor, out);
+                collect_call_args(args, tco, visitor, out);
             }
             Expr::StructInit { fields, .. } => {
                 for (_, value) in fields {
-                    collect_expr(value, tco, out);
+                    collect_expr(value, tco, visitor, out);
                 }
             }
             Expr::Send { target, message } => {
-                collect_expr(target, tco, out);
-                collect_expr(message, tco, out);
+                collect_expr(target, tco, visitor, out);
+                collect_expr(message, tco, visitor, out);
             }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
-                    collect_expr(&arm.source, tco, out);
-                    collect_expr(&arm.body, tco, out);
+                    collect_expr(&arm.source, tco, visitor, out);
+                    collect_expr(&arm.body, tco, visitor, out);
                 }
                 if let Some(timeout) = timeout {
-                    collect_expr(&timeout.duration, tco, out);
-                    collect_expr(&timeout.body, tco, out);
+                    collect_expr(&timeout.duration, tco, visitor, out);
+                    collect_expr(&timeout.body, tco, visitor, out);
                 }
             }
             Expr::Timeout { expr, duration } => {
-                collect_expr(expr, tco, out);
-                collect_expr(duration, tco, out);
+                collect_expr(expr, tco, visitor, out);
+                collect_expr(duration, tco, visitor, out);
             }
             Expr::Yield(value) => {
                 if let Some(value) = value {
-                    collect_expr(value, tco, out);
+                    collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::FieldAccess { object, .. } => collect_expr(object, tco, out),
+            Expr::FieldAccess { object, .. } => collect_expr(object, tco, visitor, out),
             Expr::Index { object, index } => {
-                collect_expr(object, tco, out);
-                collect_expr(index, tco, out);
+                collect_expr(object, tco, visitor, out);
+                collect_expr(index, tco, visitor, out);
             }
             Expr::Range { start, end, .. } => {
                 if let Some(start) = start {
-                    collect_expr(start, tco, out);
+                    collect_expr(start, tco, visitor, out);
                 }
                 if let Some(end) = end {
-                    collect_expr(end, tco, out);
+                    collect_expr(end, tco, visitor, out);
                 }
             }
             Expr::Literal(_)
@@ -566,17 +621,18 @@ pub fn build_assign_target_kind_entries(
         }
     }
 
-    fn collect_item(
+    fn collect_item<V: SideTableVisitor>(
         item: &Spanned<Item>,
         tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetKindEntry>,
+        visitor: &V,
+        out: &mut Vec<V::Entry>,
     ) {
         match &item.0 {
-            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
+            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, visitor, out),
             Item::TypeDecl(type_decl) => {
                 for body_item in &type_decl.body {
                     if let TypeBodyItem::Method(method) = body_item {
-                        collect_fn(method, tco, out);
+                        collect_fn(method, tco, visitor, out);
                     }
                 }
             }
@@ -584,44 +640,44 @@ pub fn build_assign_target_kind_entries(
                 for trait_item in &trait_decl.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
-                            collect_block(body, tco, out);
+                            collect_block(body, tco, visitor, out);
                         }
                     }
                 }
             }
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
-                    collect_fn(method, tco, out);
+                    collect_fn(method, tco, visitor, out);
                 }
             }
-            Item::Function(fn_decl) => collect_fn(fn_decl, tco, out),
+            Item::Function(fn_decl) => collect_fn(fn_decl, tco, visitor, out),
             Item::Actor(actor_decl) => {
                 if let Some(init) = &actor_decl.init {
-                    collect_block(&init.body, tco, out);
+                    collect_block(&init.body, tco, visitor, out);
                 }
                 if let Some(terminate) = &actor_decl.terminate {
-                    collect_block(&terminate.body, tco, out);
+                    collect_block(&terminate.body, tco, visitor, out);
                 }
                 for receive_fn in &actor_decl.receive_fns {
-                    collect_block(&receive_fn.body, tco, out);
+                    collect_block(&receive_fn.body, tco, visitor, out);
                 }
                 for method in &actor_decl.methods {
-                    collect_fn(method, tco, out);
+                    collect_fn(method, tco, visitor, out);
                 }
             }
             Item::Supervisor(supervisor_decl) => {
                 for child in &supervisor_decl.children {
                     for arg in &child.args {
-                        collect_expr(arg, tco, out);
+                        collect_expr(arg, tco, visitor, out);
                     }
                 }
             }
             Item::Machine(machine_decl) => {
                 for transition in &machine_decl.transitions {
                     if let Some(guard) = &transition.guard {
-                        collect_expr(guard, tco, out);
+                        collect_expr(guard, tco, visitor, out);
                     }
-                    collect_expr(&transition.body, tco, out);
+                    collect_expr(&transition.body, tco, visitor, out);
                 }
             }
             Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
@@ -629,386 +685,134 @@ pub fn build_assign_target_kind_entries(
     }
 
     let mut entries = Vec::new();
-
-    for item in &program.items {
-        collect_item(item, tco, &mut entries);
-    }
-
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if module_id == &module_graph.root {
-                continue;
+    match visitor.module_graph_mode() {
+        ModuleGraphMode::ItemsThenNonRootModules => {
+            for item in &program.items {
+                collect_item(item, tco, visitor, &mut entries);
             }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                for item in &module.items {
-                    collect_item(item, tco, &mut entries);
+            if let Some(module_graph) = &program.module_graph {
+                for module_id in &module_graph.topo_order {
+                    if module_id == &module_graph.root {
+                        continue;
+                    }
+                    if let Some(module) = module_graph.modules.get(module_id) {
+                        for item in &module.items {
+                            collect_item(item, tco, visitor, &mut entries);
+                        }
+                    }
+                }
+            }
+        }
+        ModuleGraphMode::ModulesOrProgramItems => {
+            if let Some(module_graph) = &program.module_graph {
+                for module_id in &module_graph.topo_order {
+                    if let Some(module) = module_graph.modules.get(module_id) {
+                        for item in &module.items {
+                            collect_item(item, tco, visitor, &mut entries);
+                        }
+                    }
+                }
+            } else {
+                for item in &program.items {
+                    collect_item(item, tco, visitor, &mut entries);
                 }
             }
         }
     }
-
     entries
+}
+
+// ---- Public side-table builders -----------------------------------------
+
+/// Walk `program` and collect an [`AssignTargetKindEntry`] for every
+/// `Stmt::Assign` whose target span has an entry in `tco.assign_target_kinds`.
+#[must_use]
+pub fn build_assign_target_kind_entries(
+    program: &hew_parser::ast::Program,
+    tco: &TypeCheckOutput,
+) -> Vec<AssignTargetKindEntry> {
+    struct Visitor;
+    impl SideTableVisitor for Visitor {
+        type Entry = AssignTargetKindEntry;
+        fn on_assign_stmt(
+            &self,
+            target: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&target.1);
+            let Some(kind) = tco.assign_target_kinds.get(&key) else {
+                return;
+            };
+            out.push(AssignTargetKindEntry {
+                start: key.start,
+                end: key.end,
+                kind: match kind {
+                    CheckedAssignTargetKind::LocalVar => AssignTargetKindData::LocalVar,
+                    CheckedAssignTargetKind::ActorField => AssignTargetKindData::ActorField,
+                    CheckedAssignTargetKind::FieldAccess => AssignTargetKindData::FieldAccess,
+                    CheckedAssignTargetKind::Index => AssignTargetKindData::Index,
+                },
+            });
+        }
+        fn on_method_call_expr(
+            &self,
+            _expr: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
+        }
+        fn if_stmt_order(&self) -> IfStmtOrder {
+            IfStmtOrder::ElseBeforeThen
+        }
+        fn module_graph_mode(&self) -> ModuleGraphMode {
+            ModuleGraphMode::ItemsThenNonRootModules
+        }
+    }
+    walk_program(program, tco, &Visitor)
 }
 
 /// Walk `program` and collect an [`AssignTargetShapeEntry`] for every
 /// `Stmt::Assign` whose target span has an entry in `tco.assign_target_shapes`.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
-)]
 pub fn build_assign_target_shape_entries(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
 ) -> Vec<AssignTargetShapeEntry> {
-    fn shape_for_span(
-        span: &std::ops::Range<usize>,
-        tco: &TypeCheckOutput,
-    ) -> Option<AssignTargetShapeEntry> {
-        let key = SpanKey::from(span);
-        let shape = tco.assign_target_shapes.get(&key)?;
-        Some(AssignTargetShapeEntry {
-            start: key.start,
-            end: key.end,
-            is_unsigned: shape.is_unsigned,
-        })
-    }
-
-    fn collect_stmt(
-        stmt: &Spanned<Stmt>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetShapeEntry>,
-    ) {
-        match &stmt.0 {
-            Stmt::Assign { target, value, .. } => {
-                if let Some(entry) = shape_for_span(&target.1, tco) {
-                    out.push(entry);
-                }
-                collect_expr(target, tco, out);
-                collect_expr(value, tco, out);
-            }
-            Stmt::Let { value, .. }
-            | Stmt::Var { value, .. }
-            | Stmt::Break { value, .. }
-            | Stmt::Return(value) => {
-                if let Some(value) = value {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_expr(condition, tco, out);
-                collect_block(then_block, tco, out);
-                if let Some(else_block) = else_block {
-                    match (else_block.if_stmt.as_ref(), else_block.block.as_ref()) {
-                        (Some(if_stmt), _) => collect_stmt(if_stmt, tco, out),
-                        (None, Some(block)) => collect_block(block, tco, out),
-                        (None, None) => {}
-                    }
-                }
-            }
-            Stmt::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-                if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
-                }
-            }
-            Stmt::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&arm.body, tco, out);
-                }
-            }
-            Stmt::Loop { body, .. } => collect_block(body, tco, out),
-            Stmt::For { iterable, body, .. } => {
-                collect_expr(iterable, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::While {
-                condition, body, ..
-            } => {
-                collect_expr(condition, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::WhileLet { expr, body, .. } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::Defer(expr) => collect_expr(expr, tco, out),
-            Stmt::Expression(expr) => collect_expr(expr, tco, out),
-            Stmt::Continue { .. } => {}
+    struct Visitor;
+    impl SideTableVisitor for Visitor {
+        type Entry = AssignTargetShapeEntry;
+        fn on_assign_stmt(
+            &self,
+            target: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&target.1);
+            let Some(shape) = tco.assign_target_shapes.get(&key) else {
+                return;
+            };
+            out.push(AssignTargetShapeEntry {
+                start: key.start,
+                end: key.end,
+                is_unsigned: shape.is_unsigned,
+            });
+        }
+        fn on_method_call_expr(
+            &self,
+            _expr: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
+        }
+        fn if_stmt_order(&self) -> IfStmtOrder {
+            IfStmtOrder::ThenBeforeElse
+        }
+        fn module_graph_mode(&self) -> ModuleGraphMode {
+            ModuleGraphMode::ItemsThenNonRootModules
         }
     }
-
-    fn collect_block(block: &Block, tco: &TypeCheckOutput, out: &mut Vec<AssignTargetShapeEntry>) {
-        for stmt in &block.stmts {
-            collect_stmt(stmt, tco, out);
-        }
-        if let Some(trailing) = &block.trailing_expr {
-            collect_expr(trailing, tco, out);
-        }
-    }
-
-    fn collect_call_args(
-        args: &[CallArg],
-        tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetShapeEntry>,
-    ) {
-        for arg in args {
-            collect_expr(arg.expr(), tco, out);
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
-    )]
-    fn collect_expr(
-        expr: &Spanned<Expr>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetShapeEntry>,
-    ) {
-        match &expr.0 {
-            Expr::Binary { left, right, .. } => {
-                collect_expr(left, tco, out);
-                collect_expr(right, tco, out);
-            }
-            Expr::Unary { operand, .. }
-            | Expr::Cast { expr: operand, .. }
-            | Expr::PostfixTry(operand)
-            | Expr::Await(operand) => collect_expr(operand, tco, out),
-            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
-                for elem in exprs {
-                    collect_expr(elem, tco, out);
-                }
-            }
-            Expr::ArrayRepeat { value, count } => {
-                collect_expr(value, tco, out);
-                collect_expr(count, tco, out);
-            }
-            Expr::MapLiteral { entries } => {
-                for (key, value) in entries {
-                    collect_expr(key, tco, out);
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block) => {
-                collect_block(block, tco, out);
-            }
-            Expr::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_expr(condition, tco, out);
-                collect_expr(then_block, tco, out);
-                if let Some(else_block) = else_block {
-                    collect_expr(else_block, tco, out);
-                }
-            }
-            Expr::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-                if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&arm.body, tco, out);
-                }
-            }
-            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-                collect_expr(body, tco, out);
-            }
-            Expr::Spawn { target, args } => {
-                collect_expr(target, tco, out);
-                for (_, arg) in args {
-                    collect_expr(arg, tco, out);
-                }
-            }
-            Expr::Scope { body, .. } => collect_block(body, tco, out),
-            Expr::InterpolatedString(parts) => {
-                for part in parts {
-                    if let StringPart::Expr(expr) = part {
-                        collect_expr(expr, tco, out);
-                    }
-                }
-            }
-            Expr::Call { function, args, .. } => {
-                collect_expr(function, tco, out);
-                collect_call_args(args, tco, out);
-            }
-            Expr::MethodCall { receiver, args, .. } => {
-                collect_expr(receiver, tco, out);
-                collect_call_args(args, tco, out);
-            }
-            Expr::StructInit { fields, .. } => {
-                for (_, value) in fields {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::Send { target, message } => {
-                collect_expr(target, tco, out);
-                collect_expr(message, tco, out);
-            }
-            Expr::Select { arms, timeout } => {
-                for arm in arms {
-                    collect_expr(&arm.source, tco, out);
-                    collect_expr(&arm.body, tco, out);
-                }
-                if let Some(timeout) = timeout {
-                    collect_expr(&timeout.duration, tco, out);
-                    collect_expr(&timeout.body, tco, out);
-                }
-            }
-            Expr::Timeout { expr, duration } => {
-                collect_expr(expr, tco, out);
-                collect_expr(duration, tco, out);
-            }
-            Expr::Yield(value) => {
-                if let Some(value) = value {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::FieldAccess { object, .. } => collect_expr(object, tco, out),
-            Expr::Index { object, index } => {
-                collect_expr(object, tco, out);
-                collect_expr(index, tco, out);
-            }
-            Expr::Range { start, end, .. } => {
-                if let Some(start) = start {
-                    collect_expr(start, tco, out);
-                }
-                if let Some(end) = end {
-                    collect_expr(end, tco, out);
-                }
-            }
-            Expr::Literal(_)
-            | Expr::Identifier(_)
-            | Expr::Cooperate
-            | Expr::This
-            | Expr::ScopeCancel
-            | Expr::RegexLiteral(_)
-            | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_) => {}
-        }
-    }
-
-    fn collect_fn(
-        fn_decl: &hew_parser::ast::FnDecl,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetShapeEntry>,
-    ) {
-        collect_block(&fn_decl.body, tco, out);
-    }
-
-    fn collect_item(
-        item: &Spanned<Item>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<AssignTargetShapeEntry>,
-    ) {
-        match &item.0 {
-            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
-            Item::TypeDecl(type_decl) => {
-                for body_item in &type_decl.body {
-                    if let TypeBodyItem::Method(method) = body_item {
-                        collect_fn(method, tco, out);
-                    }
-                }
-            }
-            Item::Trait(trait_decl) => {
-                for trait_item in &trait_decl.items {
-                    if let TraitItem::Method(method) = trait_item {
-                        if let Some(body) = &method.body {
-                            collect_block(body, tco, out);
-                        }
-                    }
-                }
-            }
-            Item::Impl(impl_decl) => {
-                for method in &impl_decl.methods {
-                    collect_fn(method, tco, out);
-                }
-            }
-            Item::Function(fn_decl) => collect_fn(fn_decl, tco, out),
-            Item::Actor(actor_decl) => {
-                if let Some(init) = &actor_decl.init {
-                    collect_block(&init.body, tco, out);
-                }
-                if let Some(terminate) = &actor_decl.terminate {
-                    collect_block(&terminate.body, tco, out);
-                }
-                for receive_fn in &actor_decl.receive_fns {
-                    collect_block(&receive_fn.body, tco, out);
-                }
-                for method in &actor_decl.methods {
-                    collect_fn(method, tco, out);
-                }
-            }
-            Item::Supervisor(supervisor_decl) => {
-                for child in &supervisor_decl.children {
-                    for arg in &child.args {
-                        collect_expr(arg, tco, out);
-                    }
-                }
-            }
-            Item::Machine(machine_decl) => {
-                for transition in &machine_decl.transitions {
-                    if let Some(guard) = &transition.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&transition.body, tco, out);
-                }
-            }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
-        }
-    }
-
-    let mut entries = Vec::new();
-
-    for item in &program.items {
-        collect_item(item, tco, &mut entries);
-    }
-
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if module_id == &module_graph.root {
-                continue;
-            }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                for item in &module.items {
-                    collect_item(item, tco, &mut entries);
-                }
-            }
-        }
-    }
-
-    entries
+    walk_program(program, tco, &Visitor)
 }
 
 /// Deserialize a [`Program`](hew_parser::ast::Program) from `MessagePack` bytes.
@@ -1024,371 +828,55 @@ pub fn deserialize_from_msgpack(
 }
 
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the serializer needs one complete recursive walk that mirrors surviving AST shapes"
-)]
 pub fn build_method_call_receiver_kind_entries(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
 ) -> Vec<MethodCallReceiverKindEntry> {
-    fn entry_for_span(
-        span: &std::ops::Range<usize>,
-        tco: &TypeCheckOutput,
-    ) -> Option<MethodCallReceiverKindEntry> {
-        let key = SpanKey::from(span);
-        let kind = tco.method_call_receiver_kinds.get(&key)?;
-        Some(MethodCallReceiverKindEntry {
-            start: key.start,
-            end: key.end,
-            kind: match kind {
-                CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
-                    MethodCallReceiverKindData::NamedTypeInstance {
-                        type_name: type_name.clone(),
-                    }
-                }
-                CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
-                    MethodCallReceiverKindData::TraitObject {
-                        trait_name: trait_name.clone(),
-                    }
-                }
-            },
-        })
-    }
-
-    fn collect_fn(
-        fn_decl: &hew_parser::ast::FnDecl,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        collect_block(&fn_decl.body, tco, out);
-    }
-
-    fn collect_block(
-        block: &Block,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        for stmt in &block.stmts {
-            collect_stmt(stmt, tco, out);
+    struct Visitor;
+    impl SideTableVisitor for Visitor {
+        type Entry = MethodCallReceiverKindEntry;
+        fn on_assign_stmt(
+            &self,
+            _target: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
         }
-        if let Some(trailing) = &block.trailing_expr {
-            collect_expr(trailing, tco, out);
-        }
-    }
-
-    fn collect_call_args(
-        args: &[CallArg],
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        for arg in args {
-            collect_expr(arg.expr(), tco, out);
-        }
-    }
-
-    fn collect_stmt(
-        stmt: &Spanned<Stmt>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        match &stmt.0 {
-            Stmt::Let { value, .. }
-            | Stmt::Var { value, .. }
-            | Stmt::Break { value, .. }
-            | Stmt::Return(value) => {
-                if let Some(value) = value {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Stmt::Assign { target, value, .. } => {
-                collect_expr(target, tco, out);
-                collect_expr(value, tco, out);
-            }
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_expr(condition, tco, out);
-                if let Some(else_block) = else_block {
-                    match (else_block.if_stmt.as_ref(), else_block.block.as_ref()) {
-                        (Some(if_stmt), _) => collect_stmt(if_stmt, tco, out),
-                        (None, Some(block)) => collect_block(block, tco, out),
-                        (None, None) => {}
-                    }
-                }
-                collect_block(then_block, tco, out);
-            }
-            Stmt::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-                if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
-                }
-            }
-            Stmt::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&arm.body, tco, out);
-                }
-            }
-            Stmt::Loop { body, .. } => collect_block(body, tco, out),
-            Stmt::For { iterable, body, .. } => {
-                collect_expr(iterable, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::While {
-                condition, body, ..
-            } => {
-                collect_expr(condition, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::WhileLet { expr, body, .. } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-            }
-            Stmt::Defer(expr) => collect_expr(expr, tco, out),
-            Stmt::Expression(expr) => collect_expr(expr, tco, out),
-            Stmt::Continue { .. } => {}
-        }
-    }
-
-    fn collect_expr(
-        expr: &Spanned<Expr>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        if let Expr::MethodCall { receiver, args, .. } = &expr.0 {
-            if let Some(entry) = entry_for_span(&expr.1, tco) {
-                out.push(entry);
-            }
-            collect_expr(receiver, tco, out);
-            collect_call_args(args, tco, out);
-            return;
-        }
-
-        match &expr.0 {
-            Expr::Binary { left, right, .. } => {
-                collect_expr(left, tco, out);
-                collect_expr(right, tco, out);
-            }
-            Expr::Unary { operand, .. }
-            | Expr::Cast { expr: operand, .. }
-            | Expr::PostfixTry(operand)
-            | Expr::Await(operand) => collect_expr(operand, tco, out),
-            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
-                for elem in exprs {
-                    collect_expr(elem, tco, out);
-                }
-            }
-            Expr::ArrayRepeat { value, count } => {
-                collect_expr(value, tco, out);
-                collect_expr(count, tco, out);
-            }
-            Expr::MapLiteral { entries } => {
-                for (key, value) in entries {
-                    collect_expr(key, tco, out);
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block) => {
-                collect_block(block, tco, out);
-            }
-            Expr::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_expr(condition, tco, out);
-                collect_expr(then_block, tco, out);
-                if let Some(else_block) = else_block {
-                    collect_expr(else_block, tco, out);
-                }
-            }
-            Expr::IfLet {
-                expr,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_expr(expr, tco, out);
-                collect_block(body, tco, out);
-                if let Some(else_body) = else_body {
-                    collect_block(else_body, tco, out);
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                collect_expr(scrutinee, tco, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&arm.body, tco, out);
-                }
-            }
-            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-                collect_expr(body, tco, out);
-            }
-            Expr::Spawn { target, args } => {
-                collect_expr(target, tco, out);
-                for (_, arg) in args {
-                    collect_expr(arg, tco, out);
-                }
-            }
-            Expr::Scope { body, .. } => collect_block(body, tco, out),
-            Expr::InterpolatedString(parts) => {
-                for part in parts {
-                    if let StringPart::Expr(expr) = part {
-                        collect_expr(expr, tco, out);
-                    }
-                }
-            }
-            Expr::Call { function, args, .. } => {
-                collect_expr(function, tco, out);
-                collect_call_args(args, tco, out);
-            }
-            Expr::StructInit { fields, .. } => {
-                for (_, value) in fields {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::Send { target, message } => {
-                collect_expr(target, tco, out);
-                collect_expr(message, tco, out);
-            }
-            Expr::Select { arms, timeout } => {
-                for arm in arms {
-                    collect_expr(&arm.source, tco, out);
-                    collect_expr(&arm.body, tco, out);
-                }
-                if let Some(timeout) = timeout {
-                    collect_expr(&timeout.duration, tco, out);
-                    collect_expr(&timeout.body, tco, out);
-                }
-            }
-            Expr::Timeout { expr, duration } => {
-                collect_expr(expr, tco, out);
-                collect_expr(duration, tco, out);
-            }
-            Expr::Yield(value) => {
-                if let Some(value) = value {
-                    collect_expr(value, tco, out);
-                }
-            }
-            Expr::FieldAccess { object, .. } => collect_expr(object, tco, out),
-            Expr::Index { object, index } => {
-                collect_expr(object, tco, out);
-                collect_expr(index, tco, out);
-            }
-            Expr::Range { start, end, .. } => {
-                if let Some(start) = start {
-                    collect_expr(start, tco, out);
-                }
-                if let Some(end) = end {
-                    collect_expr(end, tco, out);
-                }
-            }
-            Expr::MethodCall { .. } => unreachable!("method calls are handled before recursion"),
-            Expr::Literal(_)
-            | Expr::Identifier(_)
-            | Expr::Cooperate
-            | Expr::This
-            | Expr::ScopeCancel
-            | Expr::RegexLiteral(_)
-            | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_) => {}
-        }
-    }
-
-    fn collect_item(
-        item: &Spanned<Item>,
-        tco: &TypeCheckOutput,
-        out: &mut Vec<MethodCallReceiverKindEntry>,
-    ) {
-        match &item.0 {
-            Item::Const(const_decl) => collect_expr(&const_decl.value, tco, out),
-            Item::TypeDecl(type_decl) => {
-                for body_item in &type_decl.body {
-                    if let TypeBodyItem::Method(method) = body_item {
-                        collect_fn(method, tco, out);
-                    }
-                }
-            }
-            Item::Trait(trait_decl) => {
-                for trait_item in &trait_decl.items {
-                    if let TraitItem::Method(method) = trait_item {
-                        if let Some(body) = &method.body {
-                            collect_block(body, tco, out);
+        fn on_method_call_expr(
+            &self,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&expr.1);
+            let Some(kind) = tco.method_call_receiver_kinds.get(&key) else {
+                return;
+            };
+            out.push(MethodCallReceiverKindEntry {
+                start: key.start,
+                end: key.end,
+                kind: match kind {
+                    CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                        MethodCallReceiverKindData::NamedTypeInstance {
+                            type_name: type_name.clone(),
                         }
                     }
-                }
-            }
-            Item::Impl(impl_decl) => {
-                for method in &impl_decl.methods {
-                    collect_fn(method, tco, out);
-                }
-            }
-            Item::Function(fn_decl) => collect_fn(fn_decl, tco, out),
-            Item::Actor(actor_decl) => {
-                if let Some(init) = &actor_decl.init {
-                    collect_block(&init.body, tco, out);
-                }
-                if let Some(terminate) = &actor_decl.terminate {
-                    collect_block(&terminate.body, tco, out);
-                }
-                for receive_fn in &actor_decl.receive_fns {
-                    collect_block(&receive_fn.body, tco, out);
-                }
-                for method in &actor_decl.methods {
-                    collect_fn(method, tco, out);
-                }
-            }
-            Item::Supervisor(supervisor_decl) => {
-                for child in &supervisor_decl.children {
-                    for arg in &child.args {
-                        collect_expr(arg, tco, out);
+                    CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
+                        MethodCallReceiverKindData::TraitObject {
+                            trait_name: trait_name.clone(),
+                        }
                     }
-                }
-            }
-            Item::Machine(machine_decl) => {
-                for transition in &machine_decl.transitions {
-                    if let Some(guard) = &transition.guard {
-                        collect_expr(guard, tco, out);
-                    }
-                    collect_expr(&transition.body, tco, out);
-                }
-            }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+                },
+            });
+        }
+        fn if_stmt_order(&self) -> IfStmtOrder {
+            IfStmtOrder::ElseBeforeThen
+        }
+        fn module_graph_mode(&self) -> ModuleGraphMode {
+            ModuleGraphMode::ModulesOrProgramItems
         }
     }
-
-    let mut entries = Vec::new();
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if let Some(module) = module_graph.modules.get(module_id) {
-                for item in &module.items {
-                    collect_item(item, tco, &mut entries);
-                }
-            }
-        }
-    } else {
-        for item in &program.items {
-            collect_item(item, tco, &mut entries);
-        }
-    }
-    entries
+    walk_program(program, tco, &Visitor)
 }
 
 #[cfg(test)]

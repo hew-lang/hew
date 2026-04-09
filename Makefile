@@ -253,7 +253,11 @@ codegen-rebuild: codegen-clean codegen
 
 # Run a subset of codegen E2E tests by regex pattern.
 # Usage: make codegen-test PATTERN=supervisor
-codegen-test: codegen
+#
+# Build local compiler/runtime artifacts first so dedicated worktrees do not
+# fall back to an unrelated `hew` binary from PATH or skip WASM runtime linking.
+codegen-test: hew stdlib wasm-runtime
+	$(MAKE) codegen
 	cd hew-codegen/build && ctest --output-on-failure $(if $(PATTERN),-R "$(PATTERN)")
 
 codegen:

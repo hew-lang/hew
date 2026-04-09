@@ -6964,8 +6964,9 @@ mod non_root_module_inference_scope {
             output.errors
         );
         assert!(
-            output.fn_sigs.contains_key("Answerer::answer"),
-            "trait methods should be registered under `Trait::method`"
+            !output.fn_sigs.contains_key("Answerer::answer"),
+            "failing trait method signature should be stripped from checker output: {:?}",
+            output.fn_sigs
         );
     }
 

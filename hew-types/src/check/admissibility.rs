@@ -288,8 +288,10 @@ impl Checker {
         span: &Span,
     ) {
         let resolved = self.subst.resolve(elem_ty);
-        let mut visiting = HashSet::new();
-        if ty_contains_rc_deep(&resolved, &self.type_defs, &mut visiting) {
+        if !self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::RcFree)
+        {
             self.report_error(
                 TypeErrorKind::UnsafeCollectionElement,
                 span,
@@ -352,12 +354,16 @@ impl Checker {
 
         let resolved_key = self.subst.resolve(key_ty);
         let resolved_val = self.subst.resolve(val_ty);
-        let mut visiting = HashSet::new();
-        if ty_contains_rc_deep(&resolved_key, &self.type_defs, &mut visiting) {
+        if !self
+            .registry
+            .implements_marker(&resolved_key, MarkerTrait::RcFree)
+        {
             return false;
         }
-        let mut visiting = HashSet::new();
-        if ty_contains_rc_deep(&resolved_val, &self.type_defs, &mut visiting) {
+        if !self
+            .registry
+            .implements_marker(&resolved_val, MarkerTrait::RcFree)
+        {
             return false;
         }
         true
@@ -400,8 +406,10 @@ impl Checker {
     ) -> bool {
         self.reject_rc_collection_element("HashSet", elem_ty, span);
         let resolved = self.subst.resolve(elem_ty);
-        let mut visiting = HashSet::new();
-        if ty_contains_rc_deep(&resolved, &self.type_defs, &mut visiting) {
+        if !self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::RcFree)
+        {
             return false;
         }
         self.validate_hashset_element_type(elem_ty, span)

@@ -58,6 +58,9 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
             is_indirect: false,
         },
     );
+    checker
+        .registry
+        .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
 
     let holder_ty = Ty::Named {
         name: "Holder".to_string(),
@@ -76,6 +79,36 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
         "expected centralized HashSet admissibility to report UnsafeCollectionElement, got: {:?}",
         checker.errors
     );
+}
+
+#[test]
+fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "MaybeHolder".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "MaybeHolder".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::from([(
+                "Some".to_string(),
+                VariantDef::Tuple(vec![Ty::rc(Ty::I64)]),
+            )]),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    checker
+        .registry
+        .register_rcfree_members("MaybeHolder".to_string(), vec![Ty::rc(Ty::I64)]);
+
+    let enum_ty = Ty::Named {
+        name: "MaybeHolder".to_string(),
+        args: vec![],
+    };
+    assert!(!checker.validate_hashset_owned_element_type(&enum_ty, &(0..0)));
 }
 
 #[test]

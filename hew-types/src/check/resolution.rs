@@ -604,7 +604,10 @@ impl Checker {
                         };
                         // Mark module as used when type name is module-qualified
                         if let Some((module, _)) = resolved_name.split_once('.') {
-                            self.used_modules.borrow_mut().insert(module.to_string());
+                            self.used_modules.borrow_mut().insert(ImportKey::new(
+                                self.current_module.clone(),
+                                module.to_string(),
+                            ));
                         }
                         // Auto-parameterise channel handle types: bare `Sender`
                         // becomes `Sender<T>` with a fresh type variable so that

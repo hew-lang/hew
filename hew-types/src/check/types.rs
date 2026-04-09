@@ -6,6 +6,30 @@ use crate::ty::{Substitution, Ty, TypeVar};
 use hew_parser::ast::{Span, Spanned, TraitMethod, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+/// Uniquely identifies an import declaration within the checker.
+///
+/// Keying only by `short_name` causes collisions when multiple owning modules
+/// each import a module with the same short name: the second registration
+/// clobbers the first in `import_spans`, and a use in one owner suppresses
+/// the unused-import warning for the other owner.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct ImportKey {
+    /// The module that owns the `import` declaration, or `None` for
+    /// root-level (no-module-graph) programs.
+    pub(super) owner_module: Option<String>,
+    /// Short (last-segment) name of the imported module, e.g. `"json"`.
+    pub(super) short_name: String,
+}
+
+impl ImportKey {
+    pub(super) fn new(owner_module: Option<String>, short_name: impl Into<String>) -> Self {
+        Self {
+            owner_module,
+            short_name: short_name.into(),
+        }
+    }
+}
 use std::path::PathBuf;
 
 /// Result of type-checking a program.
@@ -303,19 +327,20 @@ pub struct Checker {
     pub(super) lambda_captures: Vec<Ty>,
     /// Tracks imported module paths with their source spans and originating module for
     /// unused-import detection and source attribution.
-    /// Key: module short name (e.g., "json"), Value: (import span, source module).
-    pub(super) import_spans: HashMap<String, (Span, Option<String>)>,
-    /// Module short names that have actually been referenced in code.
-    pub(super) used_modules: RefCell<HashSet<String>>,
+    /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
+    pub(super) import_spans: HashMap<ImportKey, (Span, Option<String>)>,
+    /// Import keys that have actually been referenced in code.
+    pub(super) used_modules: RefCell<HashSet<ImportKey>>,
     /// Module short names for user (non-stdlib) imports.
     pub(super) user_modules: HashSet<String>,
     /// Qualified callable names (`module.name`) that are intentionally exported
     /// through a module surface. Keeps module-qualified calls from resolving
     /// against private helper signatures that exist only for body checking/codegen.
     pub(super) module_fn_exports: HashSet<String>,
-    /// Maps unqualified function names to module short names (for glob/named imports).
-    /// Used to mark the module as used when the function is called.
-    pub(super) unqualified_to_module: HashMap<String, String>,
+    /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
+    /// was imported from.  Used to mark the owning import as used when an
+    /// unqualified function/type is referenced.
+    pub(super) unqualified_to_module: HashMap<(Option<String>, String), String>,
     /// Call graph: maps caller function name → set of callee function names.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).

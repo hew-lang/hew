@@ -37,7 +37,8 @@ pub use self::types::{
 };
 use self::types::{
     ConstValue, DeferredCastCheck, DeferredInferenceHole, DeferredMonomorphicSite, ImplAliasEntry,
-    ImplAliasScope, IntegerTypeInfo, TraitAssociatedTypeInfo, TraitInfo, WasmUnsupportedFeature,
+    ImplAliasScope, ImportKey, IntegerTypeInfo, TraitAssociatedTypeInfo, TraitInfo,
+    WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -223,13 +224,13 @@ impl Checker {
             .collect();
 
         // Emit unused import warnings
-        for (module_name, (import_span, stored_module)) in &self.import_spans {
-            if !self.used_modules.borrow().contains(module_name) {
+        for (key, (import_span, stored_module)) in &self.import_spans {
+            if !self.used_modules.borrow().contains(key) {
                 self.warnings.push(TypeError {
                     severity: crate::error::Severity::Warning,
                     kind: TypeErrorKind::UnusedImport,
                     span: import_span.clone(),
-                    message: format!("unused import: `{module_name}`"),
+                    message: format!("unused import: `{}`", key.short_name),
                     notes: vec![],
                     suggestions: vec!["remove this import".to_string()],
                     source_module: stored_module.clone(),

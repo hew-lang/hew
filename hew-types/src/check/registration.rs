@@ -2026,6 +2026,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "import registration consolidates stdlib, user-module, and error paths in one place"
+    )]
     pub(super) fn register_import(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
         let module_path = decl.path.join("::");
 
@@ -2077,8 +2081,10 @@ impl Checker {
                 // Register module and clean names
                 self.modules.insert(short.clone());
                 if let Some(span) = import_span {
-                    self.import_spans
-                        .insert(short.clone(), (span.clone(), self.current_module.clone()));
+                    self.import_spans.insert(
+                        ImportKey::new(self.current_module.clone(), short.clone()),
+                        (span.clone(), self.current_module.clone()),
+                    );
                 }
                 for (method, c_symbol) in &clean_names {
                     // Prefer the wrapper function's own signature (registered under
@@ -2144,8 +2150,10 @@ impl Checker {
                 self.modules.insert(short.clone());
                 self.user_modules.insert(short.clone());
                 if let Some(span) = import_span {
-                    self.import_spans
-                        .insert(short.clone(), (span.clone(), self.current_module.clone()));
+                    self.import_spans.insert(
+                        ImportKey::new(self.current_module.clone(), short.clone()),
+                        (span.clone(), self.current_module.clone()),
+                    );
                 }
                 self.register_user_module(&short, resolved_items, &decl.spec);
             }
@@ -2549,8 +2557,10 @@ impl Checker {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
                         self.fn_sigs.insert(binding_name.clone(), sig);
-                        self.unqualified_to_module
-                            .insert(binding_name, module_short.to_string());
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding_name),
+                            module_short.to_string(),
+                        );
                     }
                 }
                 Item::TypeDecl(td) => {
@@ -2598,8 +2608,10 @@ impl Checker {
                     // If glob or named import, also register unqualified (using alias if present)
                     if let Some(binding_name) = import_binding {
                         self.trait_defs.insert(binding_name.clone(), info.clone());
-                        self.unqualified_to_module
-                            .insert(binding_name, module_short.to_string());
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding_name),
+                            module_short.to_string(),
+                        );
                     }
                 }
                 Item::Const(cd) => {
@@ -2663,8 +2675,10 @@ impl Checker {
                     if Self::should_import_name(&ad.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &ad.name)
                             .unwrap_or_else(|| ad.name.clone());
-                        self.unqualified_to_module
-                            .insert(binding_name, module_short.to_string());
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding_name),
+                            module_short.to_string(),
+                        );
                     }
                 }
                 _ => {}

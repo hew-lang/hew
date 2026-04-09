@@ -640,6 +640,26 @@ static TCP_OPS: HewTransportOps = HewTransportOps {
     destroy: Some(tcp_destroy),
 };
 
+#[cfg(test)]
+pub(crate) unsafe fn hew_transport_tcp_bound_port(transport: *mut HewTransport) -> Option<u16> {
+    if transport.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `transport` is valid for the duration of this helper.
+    let transport = unsafe { &*transport };
+    if !std::ptr::eq(transport.ops, &raw const TCP_OPS) || transport.r#impl.is_null() {
+        return None;
+    }
+    // SAFETY: the TCP ops check above guarantees the impl pointer is a TcpTransport.
+    let tcp = unsafe { &*transport.r#impl.cast::<TcpTransport>() };
+    tcp.listen_sock
+        .as_ref()?
+        .local_addr()
+        .ok()?
+        .as_socket()
+        .map(|addr| addr.port())
+}
+
 /// Create a new TCP transport.
 ///
 /// # Safety

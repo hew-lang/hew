@@ -356,6 +356,67 @@ impl Checker {
         }
     }
 
+    fn is_supported_hashmap_key_type(ty: &Ty) -> bool {
+        matches!(ty, Ty::Var(_) | Ty::Error | Ty::String)
+    }
+
+    fn is_supported_hashmap_value_type(ty: &Ty) -> bool {
+        matches!(
+            ty,
+            Ty::Var(_) | Ty::Error | Ty::String | Ty::Bool | Ty::Char | Ty::Duration
+        ) || ty.is_numeric()
+    }
+
+    pub(super) fn validate_hashmap_key_value_types(
+        &mut self,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        span: &Span,
+    ) -> bool {
+        let resolved_key = self.subst.resolve(key_ty);
+        let resolved_val = self.subst.resolve(val_ty);
+        if Self::is_supported_hashmap_key_type(&resolved_key)
+            && Self::is_supported_hashmap_value_type(&resolved_val)
+        {
+            return true;
+        }
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "HashMap<{}, {}> is not supported; HashMap currently requires \
+                 String keys and scalar/string values (bool, char, integer, \
+                 float, duration, or String)",
+                resolved_key.user_facing(),
+                resolved_val.user_facing()
+            ),
+        );
+        false
+    }
+
+    fn reject_unsafe_hashmap_element_types(
+        &mut self,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        span: &Span,
+    ) -> bool {
+        self.reject_rc_collection_element("HashMap", key_ty, span);
+        self.reject_rc_collection_element("HashMap", val_ty, span);
+
+        let resolved_key = self.subst.resolve(key_ty);
+        let resolved_val = self.subst.resolve(val_ty);
+        let mut visiting = HashSet::new();
+        if ty_contains_rc_deep(&resolved_key, &self.type_defs, &mut visiting) {
+            return false;
+        }
+        let mut visiting = HashSet::new();
+        if ty_contains_rc_deep(&resolved_val, &self.type_defs, &mut visiting) {
+            return false;
+        }
+        true
+    }
+
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
         // Inferred integer literals default to i64 later, so `HashSet::new(); s.insert(42);`
@@ -567,9 +628,10 @@ impl Checker {
     }
 
     pub(super) fn validate_concrete_collection_types(&mut self, ty: &Ty, span: &Span) -> bool {
+        let hashmap_ok = self.validate_concrete_hashmap_type(ty, span);
         let hashset_ok = self.validate_concrete_hashset_type(ty, span);
         let vec_ok = self.validate_concrete_vec_type(ty, span);
-        hashset_ok && vec_ok
+        hashmap_ok && hashset_ok && vec_ok
     }
 
     pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
@@ -579,6 +641,50 @@ impl Checker {
         };
         self.validate_concrete_vec_type(&ty, span);
         ty
+    }
+
+    pub(super) fn validate_concrete_hashmap_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Named { name, args } => {
+                if name == "HashMap" && args.len() == 2 {
+                    return self.validate_hashmap_key_value_types(&args[0], &args[1], span);
+                }
+                args.iter()
+                    .all(|arg| self.validate_concrete_hashmap_type(arg, span))
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.validate_concrete_hashmap_type(elem, span)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_hashmap_type(elem, span),
+            Ty::Function { params, ret } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashmap_type(param, span))
+                    && self.validate_concrete_hashmap_type(ret, span)
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params
+                    .iter()
+                    .all(|param| self.validate_concrete_hashmap_type(param, span))
+                    && self.validate_concrete_hashmap_type(ret, span)
+                    && captures
+                        .iter()
+                        .all(|capture| self.validate_concrete_hashmap_type(capture, span))
+            }
+            Ty::Pointer { pointee, .. } => self.validate_concrete_hashmap_type(pointee, span),
+            Ty::TraitObject { traits } => traits.iter().all(|bound| {
+                bound
+                    .args
+                    .iter()
+                    .all(|arg| self.validate_concrete_hashmap_type(arg, span))
+            }),
+            _ => true,
+        }
     }
 
     fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
@@ -626,6 +732,10 @@ impl Checker {
         false
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HashMap has multiple methods plus ABI-boundary validation"
+    )]
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -652,8 +762,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &val_ty);
                 }
-                self.reject_rc_collection_element("HashMap", &key_ty, span);
-                self.reject_rc_collection_element("HashMap", &val_ty, span);
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Unit
             }
             "get" => {
@@ -661,6 +775,12 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
+                }
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
                 }
                 Ty::option(val_ty)
             }
@@ -670,6 +790,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
                 }
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Bool
             }
             "contains_key" => {
@@ -678,25 +804,53 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &key_ty);
                 }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Bool
             }
             "keys" => {
                 self.check_arity(args, 0, "`HashMap::keys`", span);
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 self.make_vec_type(key_ty, span)
             }
             "values" => {
                 self.check_arity(args, 0, "`HashMap::values`", span);
+                if !self.reject_unsafe_hashmap_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 self.make_vec_type(val_ty, span)
             }
             "clone" => {
                 self.check_arity(args, 0, "`HashMap::clone`", span);
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
                 Ty::Named {
                     name: "HashMap".to_string(),
                     args: vec![key_ty.clone(), val_ty.clone()],
                 }
             }
-            "len" => Ty::I64,
-            "is_empty" => Ty::Bool,
+            "len" => {
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::I64
+            }
+            "is_empty" => {
+                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                Ty::Bool
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,

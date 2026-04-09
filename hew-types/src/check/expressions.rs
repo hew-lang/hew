@@ -159,7 +159,7 @@ impl Checker {
             }
             Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count, span),
 
-            Expr::MapLiteral { entries } => self.synthesize_map_literal(entries),
+            Expr::MapLiteral { entries } => self.synthesize_map_literal(entries, span),
 
             // Struct init
             Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
@@ -460,6 +460,7 @@ impl Checker {
     pub(super) fn synthesize_map_literal(
         &mut self,
         entries: &[(Spanned<Expr>, Spanned<Expr>)],
+        span: &Span,
     ) -> Ty {
         if entries.is_empty() {
             let k = TypeVar::fresh();
@@ -477,6 +478,7 @@ impl Checker {
                 self.check_against(&k.0, &k.1, &first_key_ty);
                 self.check_against(&v.0, &v.1, &first_val_ty);
             }
+            self.validate_hashmap_key_value_types(&first_key_ty, &first_val_ty, span);
             Ty::Named {
                 name: "HashMap".to_string(),
                 args: vec![first_key_ty, first_val_ty],

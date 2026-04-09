@@ -1940,7 +1940,6 @@ pub unsafe extern "C" fn hew_node_api_ask(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
     use std::time::Duration;
 
     struct ResetCurrentNode(usize);
@@ -1975,10 +1974,24 @@ mod tests {
         }
     }
 
-    fn reserve_tcp_port() -> (u16, TcpListener) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local ephemeral port");
-        let port = listener.local_addr().expect("read local address").port();
-        (port, listener)
+    fn start_tcp_test_listener_node(node_id: u16) -> (TestNode, u16) {
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "test node allocation failed");
+        // SAFETY: the node pointer came from TestNode::new and stays valid until drop.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "hew_node_start({node_id}) failed: {:?}",
+            hew_cabi::sink::take_last_error()
+        );
+        // SAFETY: the node was started successfully and uses the default TCP transport in these tests.
+        let port =
+            unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
+                .expect("started TCP test node must expose its bound listener port");
+        (node, port)
     }
 
     unsafe extern "C" fn noop_dispatch(
@@ -2149,25 +2162,13 @@ mod tests {
 
         crate::registry::hew_registry_clear();
 
-        // Hold the listener to prevent port reuse until node2 binds.
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").expect("valid bind addr");
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).expect("valid bind addr");
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(201, &node1_bind) };
-        // Drop the listener so node2 can bind to the port.
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node2 = unsafe { TestNode::new(202, &node2_bind) };
         assert!(!node1.as_ptr().is_null());
-        assert!(!node2.as_ptr().is_null());
+        let (node2, node2_port) = start_tcp_test_listener_node(202);
 
-        // Start node2 first (listener) then node1 (connector).
-        // SAFETY: pointers are valid for this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
-        }
         // Allow node2 listener to initialise before node1 connects.
         thread::sleep(Duration::from_millis(50));
         // SAFETY: pointers are valid for this scope.
@@ -2784,23 +2785,18 @@ mod tests {
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 301.
         // Node 2 (responder) starts after; CURRENT_NODE is already non-zero so
         // hew_node_start does NOT overwrite LOCAL_NODE_ID.
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(301, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(302, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 301
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0); // CURRENT_NODE stays node1
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(302); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
         assert_eq!(
@@ -2921,23 +2917,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(313, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node2 = unsafe { TestNode::new(314, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(314);
 
         assert_eq!(
             crate::scheduler::hew_sched_init(),
@@ -2987,23 +2978,18 @@ mod tests {
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
         // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(311, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(312, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 311
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0); // CURRENT_NODE stays node1
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
         assert_eq!(
@@ -3081,23 +3067,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(317, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(318, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(318);
 
         assert_eq!(
             crate::scheduler::hew_sched_init(),
@@ -3150,23 +3131,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(315, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node2 = unsafe { TestNode::new(316, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(316);
 
         assert_eq!(
             crate::scheduler::hew_sched_init(),
@@ -3250,23 +3226,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node2 = unsafe { TestNode::new(321, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(321);
 
         assert_eq!(
             crate::scheduler::hew_sched_init(),
@@ -3376,23 +3347,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the duration of this test.
         let node1 = unsafe { TestNode::new(318, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node2 = unsafe { TestNode::new(319, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: both node pointers come from TestNode::new and are valid for start-up here.
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, _node2_port) = start_tcp_test_listener_node(319);
 
         let (request_id, pending) = REPLY_TABLE.register(ConnectionKey {
             conn_mgr: 1,
@@ -3566,23 +3532,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(321, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(321);
 
         assert_eq!(
             crate::scheduler::hew_sched_init(),
@@ -3676,23 +3637,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(322, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(323, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(323);
         assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
 
         // Spawn a void-reply actor on node2.
@@ -3754,23 +3710,18 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
-        let (node2_port, port_guard) = reserve_tcp_port();
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
         // SAFETY: bind addresses are valid C strings for the test scope.
         let node1 = unsafe { TestNode::new(324, &node1_bind) };
-        drop(port_guard);
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node2 = unsafe { TestNode::new(325, &node2_bind) };
-        assert!(!node1.as_ptr().is_null() && !node2.as_ptr().is_null());
+        assert!(!node1.as_ptr().is_null());
 
-        // SAFETY: node pointers are valid for each call in this scope.
+        // SAFETY: node1 is valid for each call in this scope.
         unsafe {
             assert_eq!(hew_node_start(node1.as_ptr()), 0);
-            thread::sleep(Duration::from_millis(50));
-            assert_eq!(hew_node_start(node2.as_ptr()), 0);
         }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(325);
         assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
 
         // Spawn a u32-echo actor on node2.

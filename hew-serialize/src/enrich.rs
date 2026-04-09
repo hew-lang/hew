@@ -1231,7 +1231,7 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
-/// Infer a missing type annotation for a let/var binding from the type checker.
+/// Fill in a missing or explicit-infer type annotation from the type checker.
 fn infer_binding_type(
     ty: &mut Option<Spanned<TypeExpr>>,
     value: Option<&Spanned<Expr>>,
@@ -1239,7 +1239,8 @@ fn infer_binding_type(
     diagnostics: &mut Vec<TypeExprConversionError>,
     context: impl Into<String>,
 ) {
-    if ty.is_none() {
+    let needs_infer = ty.is_none() || matches!(ty, Some((TypeExpr::Infer, _)));
+    if needs_infer {
         if let Some(val) = value {
             match lookup_inferred_type(tco, &val.1, context) {
                 Ok(Some(inferred)) => *ty = Some(inferred),
@@ -2531,6 +2532,85 @@ mod tests {
     // -----------------------------------------------------------------------
     // normalize_all_types integration test
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_infer_binding_type_explicit_infer_annotation_is_filled_in() {
+        use hew_parser::ast::{IntRadix, Literal, Pattern, Visibility};
+
+        let value_span = 13..14;
+        let infer_span = 9..10;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("x".into()), 4..5),
+                                ty: Some((TypeExpr::Infer, infer_span.clone())),
+                                value: Some((
+                                    Expr::Literal(Literal::Integer {
+                                        value: 5,
+                                        radix: IntRadix::Decimal,
+                                    }),
+                                    value_span.clone(),
+                                )),
+                            },
+                            0..15,
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey {
+                start: value_span.start,
+                end: value_span.end,
+            },
+            Ty::I32,
+        );
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.diagnostics().is_empty(),
+            "no diagnostics expected when infer annotation can be resolved: {:?}",
+            diagnostics.diagnostics()
+        );
+        if let Item::Function(f) = &program.items[0].0 {
+            match &f.body.stmts[0].0 {
+                Stmt::Let { ty, .. } => {
+                    assert!(
+                        matches!(ty, Some((TypeExpr::Named { name, .. }, _)) if name == "i32"),
+                        "infer annotation must be replaced with resolved i32 type, got: {ty:?}"
+                    );
+                }
+                other => panic!("expected let statement, got {other:?}"),
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
 
     #[test]
     fn test_normalize_all_types_fn_return() {

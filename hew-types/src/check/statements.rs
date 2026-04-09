@@ -548,6 +548,14 @@ impl Checker {
                         if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
                             && args.len() == 1 =>
                     {
+                        if *is_await {
+                            let _ = self.validate_stream_sink_element_type(
+                                args,
+                                BuiltinNamedType::Stream.canonical_name(),
+                                "next",
+                                &iterable.1,
+                            );
+                        }
                         args[0].clone()
                     }
                     Ty::Named { name, args } if name == "Vec" => {

@@ -576,6 +576,38 @@ fn for_await_receiver_unsupported_type_errors() {
     );
 }
 
+/// `for await item in input` over `Stream<Row>` must reuse the stream element
+/// validation boundary instead of lowering through the text ABI.
+#[test]
+fn for_await_stream_unsupported_type_errors() {
+    let output = typecheck_inline(
+        r#"
+        import std::stream;
+
+        type Row { value: int }
+
+        extern "C" {
+            fn fake_stream() -> Stream<Row>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await row in input {
+                println("seen");
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Stream<Row>` is not supported")
+        }),
+        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in vec` must error — Vec is a sync iterable.
 #[test]
 fn for_await_over_vec_errors() {

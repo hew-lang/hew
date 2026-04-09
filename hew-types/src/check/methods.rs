@@ -882,6 +882,7 @@ impl Checker {
             }
             "map" => {
                 self.check_arity(args, 1, "`Vec::map`", span);
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
@@ -892,10 +893,12 @@ impl Checker {
                     self.check_against(expr, sp, &expected_fn);
                 }
                 let resolved_ret = self.subst.resolve(&ret_ty);
+                self.reject_rc_collection_element("Vec", &resolved_ret, span);
                 self.make_vec_type(resolved_ret, span)
             }
             "filter" => {
                 self.check_arity(args, 1, "`Vec::filter`", span);
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
@@ -908,6 +911,7 @@ impl Checker {
             }
             "fold" => {
                 self.check_arity(args, 2, "`Vec::fold`", span);
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let acc_ty = if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)

@@ -2100,6 +2100,42 @@ fn rc_vec_remove_rejected() {
 }
 
 #[test]
+fn rc_vec_map_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder { v: Vec<Rc<int>> }
+        fn extract(h: Holder) -> Vec<Rc<int>> {
+            h.v.map((x: Rc<int>) => x)
+        }",
+        "Vec.map(_) on Vec<Rc<int>>",
+    );
+}
+
+#[test]
+fn rc_vec_filter_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder { v: Vec<Rc<int>> }
+        fn extract(h: Holder) -> Vec<Rc<int>> {
+            h.v.filter((x: Rc<int>) => x.get() > 0)
+        }",
+        "Vec.filter(_) on Vec<Rc<int>>",
+    );
+}
+
+#[test]
+fn rc_vec_fold_rejected() {
+    assert_unsafe_collection_element(
+        r"
+        type Holder { v: Vec<Rc<int>> }
+        fn extract(h: Holder) -> Rc<int> {
+            h.v.fold(Rc::new(0), (acc: Rc<int>, x: Rc<int>) => x)
+        }",
+        "Vec.fold(_, _) on Vec<Rc<int>>",
+    );
+}
+
+#[test]
 fn rc_hashmap_insert_value_rejected() {
     assert_unsafe_collection_element(
         r#"

@@ -581,6 +581,51 @@ impl Checker {
         ty
     }
 
+    fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Error) {
+            return true;
+        }
+        if matches!(resolved, Ty::Var(_)) {
+            return false;
+        }
+        match &resolved {
+            Ty::String | Ty::Bytes => true,
+            Ty::Named { name, args } if name == "Rc" && args.len() == 1 => {
+                self.rc_payload_drop_supported(&args[0])
+            }
+            // Arbitrary `impl Drop` payloads stay fail-closed for now: the
+            // current Rc lowering only proves safe inner-drop trampolines for
+            // runtime drop functions (String/bytes/nested Rc), not named
+            // user-defined drop bodies. Check this before `Copy` so local
+            // `impl Drop` types do not slip through structural Copy inference.
+            Ty::Named { name, .. } if self.type_implements_trait(name, "Drop") => false,
+            _ => self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Copy),
+        }
+    }
+
+    pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if self.rc_payload_drop_supported(&resolved) {
+            return true;
+        }
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads, \
+                `String`, `bytes`, and nested `Rc` values because the current Rc \
+                drop path does not recursively drop owned contents or forward \
+                arbitrary user-defined drop impls",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],

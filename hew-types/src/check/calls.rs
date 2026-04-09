@@ -547,6 +547,14 @@ impl Checker {
                 self.record_concrete_call_type_args(span, &resolved_type_args);
             }
 
+            if resolved_fn_name == "Rc::new" {
+                if let (Some(payload_ty), Some(arg)) = (freshened_params.first(), args.first()) {
+                    let (_, arg_span) = arg.expr();
+                    let resolved_payload = self.subst.resolve(payload_ty);
+                    self.validate_rc_payload_type(&resolved_payload, arg_span);
+                }
+            }
+
             return freshened_ret;
         }
 

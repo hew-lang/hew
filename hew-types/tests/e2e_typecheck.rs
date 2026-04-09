@@ -1031,6 +1031,170 @@ fn rc_non_copy_construction_ok() {
 }
 
 #[test]
+fn rc_copy_struct_construction_ok() {
+    let output = typecheck_inline(
+        r"
+        type Point {
+            x: int
+            y: int
+        }
+
+        fn main() {
+            let _rc = Rc::new(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with a Copy struct payload should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_nested_payload_construction_ok() {
+    let output =
+        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<String>> = Rc::new(Rc::new("hello")); }"#);
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with nested supported Rc payloads should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_option_payload_rejected() {
+    let output = typecheck_inline(r#"fn main() { let _rc = Rc::new(Some("hello")); }"#);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc::new with Option<String> should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_struct_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn main() {
+            let _rc = Rc::new(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc::new with a struct containing owned fields should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_user_drop_payload_rejected() {
+    let output = typecheck_inline(
+        r"
+        type Token {
+            id: int
+        }
+
+        impl Drop for Token {
+            fn drop(token: Token) {
+                print(token.id);
+            }
+        }
+
+        fn main() {
+            let _rc = Rc::new(Token { id: 1 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Rc<Token>` is not currently supported")
+        }),
+        "Rc::new with an explicit Drop payload should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_owned_payload_annotation_rejected() {
+    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<String>>) {}");
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("does not recursively drop owned contents")
+        }),
+        "Rc<Option<String>> annotations should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_generic_wrapper_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn wrap<T>(val: T) -> Rc<T> {
+            Rc::new(val)
+        }
+
+        fn main() {
+            let _ = wrap(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("Rc only accepts Copy payloads")
+        }),
+        "generic Rc<T> wrappers should fail closed until payload support is proven, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_generic_lambda_payload_rejected() {
+    let output = typecheck_inline(
+        r#"
+        type Labelled {
+            name: String
+        }
+
+        fn main() {
+            let wrap = <T>(val: T) -> Rc<T> => Rc::new(val);
+            let _ = wrap(Labelled { name: "hello" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("Rc only accepts Copy payloads")
+        }),
+        "generic Rc<T> lambdas should fail closed until payload support is proven, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
     // Copy types.  Calling it on Rc<String> must be rejected.

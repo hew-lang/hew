@@ -657,6 +657,15 @@ impl Checker {
                             }
                             _ => args,
                         };
+                        if resolved_name == "Rc" {
+                            if let Some(type_args) = type_args.as_ref() {
+                                if let (Some(payload_ty), Some((_, payload_span))) =
+                                    (args.first(), type_args.first())
+                                {
+                                    self.validate_rc_payload_type(payload_ty, payload_span);
+                                }
+                            }
+                        }
                         Ty::normalize_named(resolved_name, args)
                     }
                 }

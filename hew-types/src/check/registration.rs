@@ -231,6 +231,20 @@ impl Checker {
         );
     }
 
+    fn resolve_registered_type_member_ty(
+        &mut self,
+        type_expr: &Spanned<TypeExpr>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> Ty {
+        let ty = self.resolve_type_expr_tracking_holes(&type_expr.0, hole_vars);
+        if let Ty::Named { name, args } = &ty {
+            if name == "HashSet" && args.len() == 1 {
+                self.validate_hashset_element_type(&args[0], &type_expr.1);
+            }
+        }
+        ty
+    }
+
     /// Pass 1: Collect type definitions
     pub(super) fn collect_types(&mut self, program: &Program) {
         // Pre-register TypeDecls from non-root module_graph modules into
@@ -391,7 +405,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
+                    let field_ty = self.resolve_registered_type_member_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -415,22 +429,19 @@ impl Checker {
                         VariantKind::Tuple(tfields) => {
                             let variant_tys: Vec<Ty> = tfields
                                 .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                .map(|field| {
+                                    self.resolve_registered_type_member_ty(field, &mut hole_vars)
                                 })
                                 .collect();
-                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
-                            let constructor_params: Vec<Ty> = tfields
-                                .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
-                                })
-                                .collect();
+                            variants.insert(
+                                variant.name.clone(),
+                                VariantDef::Tuple(variant_tys.clone()),
+                            );
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
-                                    params: constructor_params,
+                                    params: variant_tys,
                                     return_type,
                                     ..FnSig::default()
                                 },
@@ -439,10 +450,13 @@ impl Checker {
                         VariantKind::Struct(sfields) => {
                             let variant_fields: Vec<(String, Ty)> = sfields
                                 .iter()
-                                .map(|(name, (te, _))| {
+                                .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                        self.resolve_registered_type_member_ty(
+                                            field,
+                                            &mut hole_vars,
+                                        ),
                                     )
                                 })
                                 .collect();
@@ -542,7 +556,7 @@ impl Checker {
         for item in &td.body {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_type_expr_tracking_holes(&ty.0, &mut hole_vars);
+                    let field_ty = self.resolve_registered_type_member_ty(ty, &mut hole_vars);
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -566,25 +580,22 @@ impl Checker {
                         VariantKind::Tuple(fields) => {
                             let variant_tys: Vec<Ty> = fields
                                 .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
+                                .map(|field| {
+                                    self.resolve_registered_type_member_ty(field, &mut hole_vars)
                                 })
                                 .collect();
-                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+                            variants.insert(
+                                variant.name.clone(),
+                                VariantDef::Tuple(variant_tys.clone()),
+                            );
 
                             // Register variant constructor as function
-                            let constructor_params: Vec<Ty> = fields
-                                .iter()
-                                .map(|(te, _)| {
-                                    self.resolve_type_expr_tracking_holes(te, &mut hole_vars)
-                                })
-                                .collect();
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
-                                    params: constructor_params,
+                                    params: variant_tys,
                                     return_type,
                                     ..FnSig::default()
                                 },
@@ -593,10 +604,13 @@ impl Checker {
                         VariantKind::Struct(fields) => {
                             let variant_fields: Vec<(String, Ty)> = fields
                                 .iter()
-                                .map(|(name, (te, _))| {
+                                .map(|(name, field)| {
                                     (
                                         name.clone(),
-                                        self.resolve_type_expr_tracking_holes(te, &mut hole_vars),
+                                        self.resolve_registered_type_member_ty(
+                                            field,
+                                            &mut hole_vars,
+                                        ),
                                     )
                                 })
                                 .collect();

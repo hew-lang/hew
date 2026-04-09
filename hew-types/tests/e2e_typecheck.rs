@@ -1890,6 +1890,26 @@ fn hashset_i32_len_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_bool_type_field_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        type Config {
+            flags: HashSet<bool>;
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected HashSet<bool> field annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

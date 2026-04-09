@@ -1888,6 +1888,11 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `HashMap<K, V>` is also built in. In v0.2.0, `HashMap.get()` returns
 `Option<V>`.
 
+**Current implementation boundary** — although the surface spelling is generic,
+the shipped runtime/codegen ABI currently supports only `HashMap<String, V>`
+where `V` is `String`, `bool`, `char`, any integer type, any float type, or
+`duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
+
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:

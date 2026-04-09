@@ -2831,6 +2831,94 @@ fn hashset_i32_nested_in_wire_enum_struct_variant_rejected_before_codegen() {
 }
 
 #[test]
+fn hashmap_string_i64_annotation_typechecks_before_codegen() {
+    assert_inline_typechecks_cleanly(
+        r#"
+        fn main() {
+            let m: HashMap<String, i64> = HashMap::new();
+            m.insert("answer", 42);
+            println(m.len());
+        }"#,
+        "HashMap<String, i64> should stay within the current ABI",
+    );
+}
+
+#[test]
+fn inferred_hashmap_string_string_map_literal_typechecks_before_codegen() {
+    assert_inline_typechecks_cleanly(
+        r#"
+        fn main() {
+            let env = {"HOST": "localhost", "PORT": "8080"};
+            println(env.contains_key("HOST"));
+        }"#,
+        "inferred HashMap<String, String> map literal should stay within the current ABI",
+    );
+}
+
+#[test]
+fn hashmap_i64_key_len_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<i64, i64> = HashMap::new();
+            println(m.len());
+        }",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashMap<int, int> is not supported")
+                && e.message.contains("String keys and scalar/string values")
+        ),
+        "expected HashMap<i64, i64> to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_tuple_value_annotation_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        type Config {
+            points: HashMap<String, (i32, i32)>;
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("HashMap<String, (i32, i32)> is not supported")
+        ),
+        "expected HashMap<String, (i32, i32)> field annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inferred_hashmap_tuple_value_map_literal_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let x: i32 = 1;
+            let y: i32 = 2;
+            let points = {"origin": (x, y)};
+            println(points.len());
+        }"#,
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("HashMap<String, (i32, i32)> is not supported")
+        ),
+        "expected inferred HashMap<String, (i32, i32)> literal to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

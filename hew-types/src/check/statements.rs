@@ -545,18 +545,30 @@ impl Checker {
                         args[0].clone()
                     }
                     Ty::Named { name, args }
-                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
-                            && args.len() == 1 =>
+                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream) =>
                     {
+                        let inner = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
                         if *is_await {
-                            let _ = self.validate_stream_sink_element_type(
-                                args,
-                                BuiltinNamedType::Stream.canonical_name(),
-                                "next",
-                                &iterable.1,
-                            );
+                            if args.is_empty() {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    &iterable.1,
+                                    "`for await` over a stream requires a resolved element type"
+                                        .to_string(),
+                                );
+                                Ty::Error
+                            } else {
+                                let _ = self.validate_stream_sink_element_type(
+                                    args,
+                                    BuiltinNamedType::Stream.canonical_name(),
+                                    "next",
+                                    &iterable.1,
+                                );
+                                inner
+                            }
+                        } else {
+                            inner
                         }
-                        args[0].clone()
                     }
                     Ty::Named { name, args } if name == "Vec" => {
                         if *is_await {

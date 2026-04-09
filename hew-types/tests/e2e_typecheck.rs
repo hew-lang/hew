@@ -608,6 +608,32 @@ fn for_await_stream_unsupported_type_errors() {
     );
 }
 
+/// `for await item in input` over a bare `Stream` annotation must fail closed
+/// instead of bypassing stream element validation and lowering as text.
+#[test]
+fn for_await_stream_missing_element_type_errors() {
+    let output = typecheck_inline(
+        r#"
+        extern "C" { fn make_stream() -> Stream; }
+
+        fn main() {
+            let s = unsafe { make_stream() };
+            for await x in s {
+                println("bypassed!");
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("requires a resolved element type")
+        }),
+        "expected InvalidOperation for bare Stream in for await, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in vec` must error — Vec is a sync iterable.
 #[test]
 fn for_await_over_vec_errors() {

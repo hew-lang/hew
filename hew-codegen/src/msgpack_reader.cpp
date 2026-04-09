@@ -4,6 +4,7 @@
 // DO NOT EDIT - changes will be overwritten.
 //
 //===----------------------------------------------------------------------===//
+// clang-format off
 
 #include "hew/msgpack_reader.h"
 
@@ -845,7 +846,7 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     return ast::TypeExpr{std::move(e)};
   }
   if (name == "TraitObject") return ast::TypeExpr{ast::TypeTraitObject{parseVec<ast::TraitBound>(*payload, parseTraitBound)}};
-  if (name == "Infer") return ast::TypeExpr{ast::TypeInfer{}};
+  if (name == "Infer") fail("TypeInfer (`_`) reached the wire: inference must be complete before serialization");
   fail("unknown TypeExpr variant: " + name);
 }
 

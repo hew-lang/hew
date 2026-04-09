@@ -11,6 +11,16 @@ use crate::type_map::{self, TypeMap};
 /// these, but the C++ header uses `vector<unique_ptr<Spanned<T>>>`.
 const VEC_PTR_TYPES: &[&str] = &["Expr", "Stmt", "Pattern"];
 
+/// Variants that must never reach the wire.  The generated parser emits a
+/// `fail(...)` for each (enum, variant) pair instead of constructing the
+/// C++ value.  This enforces fail-closed invariants at the deserialization
+/// boundary (e.g. unresolved inference holes must not survive serialization).
+const WIRE_REJECTED_VARIANTS: &[(&str, &str, &str)] = &[(
+    "TypeExpr",
+    "Infer",
+    "TypeInfer (`_`) reached the wire: inference must be complete before serialization",
+)];
+
 /// Transitive dependency closures for forward-declared types.
 ///
 /// For a forward-declared type F (e.g., Expr), `dep_closures[F]` contains all types
@@ -355,10 +365,17 @@ fn write_variant_handler(
 
     match variant {
         EnumVariant::Unit { .. } => {
-            let _ = writeln!(
-                out,
-                "  if (name == \"{variant_name}\") return {cpp_enum_type}{{ast::{cpp_struct}{{}}}};",
-            );
+            if let Some(&(_, _, msg)) = WIRE_REJECTED_VARIANTS
+                .iter()
+                .find(|&&(e, v, _)| e == enum_name && v == variant_name)
+            {
+                let _ = writeln!(out, "  if (name == \"{variant_name}\") fail(\"{msg}\");",);
+            } else {
+                let _ = writeln!(
+                    out,
+                    "  if (name == \"{variant_name}\") return {cpp_enum_type}{{ast::{cpp_struct}{{}}}};",
+                );
+            }
         }
         EnumVariant::Newtype { ty, .. } => {
             // For Item enum, the variant struct IS the inner type, so we parse directly

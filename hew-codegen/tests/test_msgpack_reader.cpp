@@ -459,6 +459,64 @@ static void test_assign_target_shapes_roundtrip() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TypeInfer in wire: must be rejected
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void test_type_infer_in_wire_rejects() {
+  TEST(type_infer_in_wire_rejects);
+
+  // Build a minimal valid program with an expr_types entry whose TypeExpr
+  // is "Infer".  This represents an inference hole that was not resolved
+  // before serialization — the fail-closed invariant requires rejection.
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+
+  pk.pack_map(8);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+
+  // expr_types: one entry with type "Infer"
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(1);
+  // ExprTypeEntry: {start, end, ty}
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(0));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(1));
+  pk.pack(std::string("ty"));
+  // Spanned<TypeExpr>: [TypeExpr, Span]
+  pk.pack_array(2);
+  // TypeExpr "Infer" variant (no payload → plain string)
+  pk.pack(std::string("Infer"));
+  // Span: {start, end}
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(0));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(1));
+
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+
+  EXPECT_REJECTS(hew::parseMsgpackAST(data.data(), data.size()));
+  PASS();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Entry point
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -485,6 +543,9 @@ int main() {
 
   // assign_target_shapes field
   test_assign_target_shapes_roundtrip();
+
+  // TypeInfer must not survive in the wire
+  test_type_infer_in_wire_rejects();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

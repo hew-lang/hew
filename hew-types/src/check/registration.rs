@@ -929,8 +929,8 @@ impl Checker {
                     .map(|(name, spanned_te)| {
                         (
                             name.clone(),
-                            self.resolve_type_expr_tracking_holes(
-                                &spanned_te.0,
+                            self.resolve_registered_annotation_ty(
+                                spanned_te,
                                 &mut machine_hole_vars,
                             ),
                         )
@@ -978,10 +978,7 @@ impl Checker {
                     .map(|(name, spanned_te)| {
                         (
                             name.clone(),
-                            self.resolve_type_expr_tracking_holes(
-                                &spanned_te.0,
-                                &mut event_hole_vars,
-                            ),
+                            self.resolve_registered_annotation_ty(spanned_te, &mut event_hole_vars),
                         )
                     })
                     .collect();
@@ -1193,7 +1190,7 @@ impl Checker {
         let mut fields = HashMap::new();
         let mut hole_vars = Vec::new();
         for field in &ad.fields {
-            let field_ty = self.resolve_type_expr_tracking_holes(&field.ty.0, &mut hole_vars);
+            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
             fields.insert(field.name.clone(), field_ty);
         }
 
@@ -2476,7 +2473,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let ty = self.resolve_type_expr(&cd.ty.0);
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
                     self.env.define(cd.name.clone(), ty, false);
                 }
                 Item::TypeDecl(td) => {
@@ -2714,7 +2711,7 @@ impl Checker {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
-                    let ty = self.resolve_type_expr(&cd.ty.0);
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
                     let qualified = format!("{module_short}.{}", cd.name);
                     self.env.define(qualified, ty.clone(), false);
                     if Self::should_import_name(&cd.name, spec) {

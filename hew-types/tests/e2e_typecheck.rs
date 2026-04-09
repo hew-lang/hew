@@ -2037,6 +2037,50 @@ fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
 }
 
 #[test]
+fn hashset_bool_nested_in_actor_field_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        actor Worker {
+            let flags: Vec<HashSet<bool>>;
+
+            receive fn ping() {}
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<bool> is not supported")
+        ),
+        "expected actor field annotation with nested HashSet<bool> to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_i32_nested_in_machine_state_field_rejected_before_codegen() {
+    let output = typecheck_inline(
+        r"
+        machine Traffic {
+            state Red { flags: Option<HashSet<i32>>; }
+            event Tick;
+            on Tick: Red -> Red;
+        }
+
+        fn main() {}",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("HashSet<i32> is not supported")
+        ),
+        "expected machine state field annotation with nested HashSet<i32> to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"

@@ -3416,8 +3416,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       key = coerceType(key, keyType, location);
       if (!key)
         return true;
-      hew::HashMapRemoveOp::create(builder, location, mapValue, key);
-      resultOut = nullptr;
+      resultOut =
+          hew::HashMapRemoveOp::create(builder, location, builder.getI1Type(), mapValue, key)
+              .getResult();
       return true;
     }
     if (method == "contains_key" || method == "contains") {

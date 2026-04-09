@@ -1,7 +1,6 @@
-// Test: HashMap with Option returns — proves HashMap.get() returns
-// Option<T> and pattern matching on it works correctly.
+// Test: HashMap.get() returns Option<T> while HashMap.remove() returns bool.
 // Exercises: HashMap construction, insert, get, Option matching,
-// Some/None patterns, HashMap.contains_key, HashMap.remove.
+// Some/None patterns, HashMap.contains_key, and remove success/failure.
 
 fn main() {
     let m: HashMap<String, int> = HashMap::new();
@@ -28,8 +27,9 @@ fn main() {
     println(m.contains_key("beta"));
     println(m.contains_key("omega"));
 
-    // remove
-    m.remove("beta");
+    // remove returns bool
+    println(m.remove("beta"));
+    println(m.remove("beta"));
     let after_remove = m.get("beta");
     match after_remove {
         Some(_) => println("beta still exists"),

@@ -1173,8 +1173,7 @@ static void test_collection_free_effects() {
 
   // VecIsEmptyOp — MemRead only
   auto isEmptyOp = hew::VecIsEmptyOp::create(builder, loc, builder.getI1Type(), vec);
-  auto isEmptyEffects =
-      mlir::dyn_cast<mlir::MemoryEffectOpInterface>(isEmptyOp.getOperation());
+  auto isEmptyEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(isEmptyOp.getOperation());
   if (!isEmptyEffects || !isEmptyEffects.hasEffect<mlir::MemoryEffects::Read>()) {
     FAIL("VecIsEmptyOp should have MemRead effect");
     module->destroy();
@@ -1220,8 +1219,7 @@ static void test_collection_free_effects() {
   }
 
   // DropOp — MemRead + MemWrite
-  auto dropOp = hew::DropOp::create(builder, loc, ptr,
-                                    builder.getStringAttr("hew_rc_drop"),
+  auto dropOp = hew::DropOp::create(builder, loc, ptr, builder.getStringAttr("hew_rc_drop"),
                                     /*is_user_drop=*/false);
   auto dropEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(dropOp.getOperation());
   if (!dropEffects || !dropEffects.hasEffect<mlir::MemoryEffects::Read>() ||
@@ -1899,7 +1897,7 @@ static void test_cast_unsigned_constant_fold() {
   auto module = mlir::ModuleOp::create(loc);
   builder.setInsertionPointToStart(module.getBody());
 
-  auto i8Type  = builder.getIntegerType(8);
+  auto i8Type = builder.getIntegerType(8);
   auto i32Type = builder.getI32Type();
   auto f64Type = builder.getF64Type();
   auto funcType = builder.getFunctionType({}, {i32Type});
@@ -1913,8 +1911,9 @@ static void test_cast_unsigned_constant_fold() {
   llvm::ArrayRef<mlir::Attribute> operands(src);
 
   // ---- Test 1: unsigned u8(255) → u32  must zero-extend to 255 ----
-  auto castUnsigned = hew::CastOp::create(builder, loc, i32Type,
-      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  auto castUnsigned =
+      hew::CastOp::create(builder, loc, i32Type,
+                          hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
   castUnsigned->setAttr("is_unsigned", builder.getBoolAttr(true));
 
   auto fold1 = castUnsigned.fold(hew::CastOp::FoldAdaptor(operands, castUnsigned));
@@ -1932,8 +1931,9 @@ static void test_cast_unsigned_constant_fold() {
   }
 
   // ---- Test 2: signed i8(255/-1) → i32  must sign-extend to -1 ----
-  auto castSigned = hew::CastOp::create(builder, loc, i32Type,
-      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  auto castSigned =
+      hew::CastOp::create(builder, loc, i32Type,
+                          hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
   // No is_unsigned attribute → signed path.
 
   auto fold2 = castSigned.fold(hew::CastOp::FoldAdaptor(operands, castSigned));
@@ -1951,8 +1951,9 @@ static void test_cast_unsigned_constant_fold() {
   }
 
   // ---- Test 3: unsigned u8(255) → f64  must convert as 255.0, not -1.0 ----
-  auto castToFloat = hew::CastOp::create(builder, loc, f64Type,
-      hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
+  auto castToFloat =
+      hew::CastOp::create(builder, loc, f64Type,
+                          hew::ConstantOp::create(builder, loc, i8Type, int64_t(255)).getResult());
   castToFloat->setAttr("is_unsigned", builder.getBoolAttr(true));
 
   auto fold3 = castToFloat.fold(hew::CastOp::FoldAdaptor(operands, castToFloat));
@@ -1969,8 +1970,7 @@ static void test_cast_unsigned_constant_fold() {
     return;
   }
 
-  mlir::func::ReturnOp::create(builder, loc,
-      mlir::ValueRange{castUnsigned.getResult()});
+  mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{castUnsigned.getResult()});
   module->destroy();
   PASS();
 }
@@ -2129,8 +2129,8 @@ static void test_enum_construct_err_implicit_slot_verifier_rejects() {
   // the ODS builder does not store it. verify() falls back to pos = 0+1 = 1.
   // Field 1 has type i32 (the Ok slot), but errPayload is i64 → type mismatch.
   hew::EnumConstructOp::create(builder, loc, resultStruct, uint32_t(1), "__Result",
-                                mlir::ValueRange{errPayload},
-                                /*payload_positions=*/mlir::ArrayAttr{});
+                               mlir::ValueRange{errPayload},
+                               /*payload_positions=*/mlir::ArrayAttr{});
   mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{errPayload});
 
   if (mlir::succeeded(mlir::verify(module))) {
@@ -2175,7 +2175,7 @@ static void test_enum_construct_err_explicit_slot_verifier_accepts() {
   // Err(i64) WITH explicit payload_positions=[2]: field 2 is i64 → passes.
   auto posAttr = builder.getI64ArrayAttr({2});
   hew::EnumConstructOp::create(builder, loc, resultStruct, uint32_t(1), "__Result",
-                                mlir::ValueRange{errPayload}, posAttr);
+                               mlir::ValueRange{errPayload}, posAttr);
   mlir::func::ReturnOp::create(builder, loc, mlir::ValueRange{errPayload});
 
   if (mlir::failed(mlir::verify(module))) {
@@ -3053,7 +3053,8 @@ static void test_hashmap_remove_verifier_wrong_key_type() {
   auto *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
 
-  hew::HashMapRemoveOp::create(builder, loc, block->getArgument(0), block->getArgument(1));
+  hew::HashMapRemoveOp::create(builder, loc, builder.getI1Type(), block->getArgument(0),
+                               block->getArgument(1));
   mlir::func::ReturnOp::create(builder, loc);
 
   mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });

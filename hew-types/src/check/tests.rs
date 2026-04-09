@@ -1098,6 +1098,39 @@ fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
 }
 
 #[test]
+fn typecheck_bool_scrutinee_constructor_pattern_errors() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    match true {\n",
+        "        Some(v) => 1,\n",
+        "        None => 0,\n",
+        "        _ => 2,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "bool" && actual == "Some"
+        )),
+        "expected constructor-pattern mismatch on bool scrutinee, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("constructor pattern `Some`")),
+        "expected fail-closed constructor-pattern diagnostic, got: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "wildcard arm should suppress exhaustiveness follow-ons: {warnings:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
     let (errors, warnings) = parse_and_check(concat!(
         "fn main() {\n",

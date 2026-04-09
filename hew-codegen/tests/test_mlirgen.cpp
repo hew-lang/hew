@@ -507,6 +507,56 @@ static hew::ast::StmtFor *findFirstForStmt(hew::ast::FnDecl &fn) {
   return nullptr;
 }
 
+static hew::ast::StmtMatch *findFirstMatchStmt(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *matchStmt = std::get_if<hew::ast::StmtMatch>(&stmt->value.kind))
+      return matchStmt;
+  }
+  return nullptr;
+}
+
+static hew::ast::StmtIfLet *findFirstIfLetStmt(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *ifLetStmt = std::get_if<hew::ast::StmtIfLet>(&stmt->value.kind))
+      return ifLetStmt;
+  }
+  return nullptr;
+}
+
+static hew::ast::StmtWhileLet *findFirstWhileLetStmt(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *whileLetStmt = std::get_if<hew::ast::StmtWhileLet>(&stmt->value.kind))
+      return whileLetStmt;
+  }
+  return nullptr;
+}
+
+static hew::ast::Spanned<hew::ast::Expr> *findReturnedMatchExpr(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+    if (!retStmt || !retStmt->value)
+      continue;
+    if (std::holds_alternative<hew::ast::ExprMatch>(retStmt->value->value.kind))
+      return &*retStmt->value;
+  }
+  return nullptr;
+}
+
+static hew::ast::ExprIfLet *findReturnedIfLetExpr(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+    if (!retStmt || !retStmt->value)
+      continue;
+    return std::get_if<hew::ast::ExprIfLet>(&retStmt->value->value.kind);
+  }
+  return nullptr;
+}
+
+static bool hasMissingIndirectEnumScrutineeDiag(const std::string &stderrText) {
+  return stderrText.find("missing expr_types entry for") != std::string::npos &&
+         stderrText.find("indirect enum") != std::string::npos;
+}
+
 static hew::ast::Program
 makeIdentifierAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKind) {
   using namespace hew::ast;
@@ -3329,6 +3379,346 @@ fn broken_materialized_range(lo: u64, hi: u64) -> int {
   if (stderrText.find("module verification failed") != std::string::npos) {
     FAIL("unexpected downstream verifier failure for materialized range metadata");
     return;
+  }
+
+  PASS();
+}
+
+static void test_indirect_enum_match_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_match_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn head_or_zero(list: List) -> int {
+    match list {
+        Nil => 0,
+        Cons(head, _) => head,
+    }
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "head_or_zero");
+  if (!fn) {
+    FAIL("head_or_zero function not found");
+    return;
+  }
+
+  auto *matchStmt = findFirstMatchStmt(*fn);
+  if (!matchStmt) {
+    FAIL("expected indirect enum trailing match statement");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, matchStmt->scrutinee.span)) {
+    FAIL("failed to remove expr_types entry for indirect enum match scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum scrutinee metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasMissingIndirectEnumScrutineeDiag(stderrText)) {
+    FAIL("expected indirect enum match fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum match metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn head_or_zero(list: List) -> int {
+    if let Cons(head, _) = list {
+        return head;
+    } else {
+        return 0;
+    }
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "head_or_zero");
+  if (!fn) {
+    FAIL("head_or_zero function not found");
+    return;
+  }
+
+  auto *ifLetStmt = findFirstIfLetStmt(*fn);
+  if (!ifLetStmt || !ifLetStmt->expr) {
+    FAIL("expected indirect enum if-let statement");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, ifLetStmt->expr->span)) {
+    FAIL("failed to remove expr_types entry for indirect enum if-let scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum if-let metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasMissingIndirectEnumScrutineeDiag(stderrText)) {
+    FAIL("expected indirect enum if-let fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum if-let metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_indirect_enum_iflet_expr_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_iflet_expr_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn head_or_zero_expr(list: List) -> int {
+    return if let Cons(head, _) = list { head } else { 0 };
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "head_or_zero_expr");
+  if (!fn) {
+    FAIL("head_or_zero_expr function not found");
+    return;
+  }
+
+  auto *ifLetExpr = findReturnedIfLetExpr(*fn);
+  if (!ifLetExpr || !ifLetExpr->expr) {
+    FAIL("expected returned indirect enum if-let expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, ifLetExpr->expr->span)) {
+    FAIL("failed to remove expr_types entry for indirect enum if-let expression scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum if-let expression metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasMissingIndirectEnumScrutineeDiag(stderrText)) {
+    FAIL("expected indirect enum if-let expression fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum if-let expression metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_indirect_enum_whilelet_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_whilelet_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn length(seed: List) -> int {
+    var list: List = seed;
+    var n: int = 0;
+    while let Cons(_, tail) = list {
+        n = n + 1;
+        list = tail;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "length");
+  if (!fn) {
+    FAIL("length function not found");
+    return;
+  }
+
+  auto *whileLetStmt = findFirstWhileLetStmt(*fn);
+  if (!whileLetStmt || !whileLetStmt->expr) {
+    FAIL("expected indirect enum while-let statement");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, whileLetStmt->expr->span)) {
+    FAIL("failed to remove expr_types entry for indirect enum while-let scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum while-let metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasMissingIndirectEnumScrutineeDiag(stderrText)) {
+    FAIL("expected indirect enum while-let fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum while-let metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_option_result_match_expr_missing_result_type_fails_closed() {
+  TEST(option_result_match_expr_missing_result_type_fails_closed);
+
+  struct MatchCase {
+    const char *label;
+    const char *fnName;
+    const char *source;
+  };
+  const MatchCase cases[] = {
+      {"Option", "unwrap_or_zero", R"(
+fn unwrap_or_zero(opt: Option<int>) -> int {
+    return match opt {
+        Some(value) => value,
+        None => 0,
+    };
+}
+  )"},
+      {"Result", "unwrap_result", R"(
+fn unwrap_result(res: Result<int, int>) -> int {
+    return match res {
+        Ok(value) => value,
+        Err(err) => err,
+    };
+}
+  )"},
+  };
+
+  for (const auto &testCase : cases) {
+    hew::ast::Program program;
+    if (!loadProgramFromSource(testCase.source, program)) {
+      FAIL("failed to load typed program");
+      return;
+    }
+
+    auto *fn = findFunctionDecl(program, testCase.fnName);
+    if (!fn) {
+      FAIL("match expression function not found");
+      return;
+    }
+
+    auto *matchExpr = findReturnedMatchExpr(*fn);
+    if (!matchExpr) {
+      FAIL("expected returned match expression");
+      return;
+    }
+
+    if (!eraseExprTypeEntryForSpan(program, matchExpr->span)) {
+      FAIL("failed to remove expr_types entry for match expression");
+      return;
+    }
+
+    mlir::MLIRContext ctx;
+    initContext(ctx);
+
+    hew::MLIRGen mlirGen(ctx);
+    mlir::ModuleOp module;
+    auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+    if (module) {
+      FAIL("expected MLIR generation failure when match expression metadata is missing");
+      module.getOperation()->destroy();
+      return;
+    }
+
+    if (stderrText.find("missing expr_types entry for match expression result type") ==
+        std::string::npos) {
+      FAIL("expected match-expression fail-closed diagnostic");
+      return;
+    }
+
+    if (stderrText.find("module verification failed") != std::string::npos) {
+      FAIL("unexpected downstream verifier failure for match expression metadata");
+      return;
+    }
   }
 
   PASS();
@@ -7231,6 +7621,11 @@ int main() {
   test_direct_unsigned_range_missing_expr_type_fails_closed();
   test_direct_unsigned_range_missing_upper_expr_type_fails_closed();
   test_materialized_unsigned_range_missing_expr_type_fails_closed();
+  test_indirect_enum_match_missing_scrutinee_expr_type_fails_closed();
+  test_indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed();
+  test_indirect_enum_iflet_expr_missing_scrutinee_expr_type_fails_closed();
+  test_indirect_enum_whilelet_missing_scrutinee_expr_type_fails_closed();
+  test_option_result_match_expr_missing_result_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
   test_println_int_missing_expr_type_fails_closed();

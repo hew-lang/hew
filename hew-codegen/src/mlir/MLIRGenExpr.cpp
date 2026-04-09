@@ -5955,12 +5955,14 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se, bool statementP
           if (scrutinee) {
             scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, loc_,
                                                    &matchNode->arms);
-            mlir::Type resultType;
-            if (currentFunction && currentFunction.getResultTypes().size() == 1)
-              resultType = currentFunction.getResultTypes()[0];
-            else
-              resultType = builder.getI32Type();
-            bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+            if (scrutinee) {
+              mlir::Type resultType;
+              if (currentFunction && currentFunction.getResultTypes().size() == 1)
+                resultType = currentFunction.getResultTypes()[0];
+              else
+                resultType = builder.getI32Type();
+              bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+            }
           }
         } else if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
                    std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||

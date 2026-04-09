@@ -135,11 +135,10 @@ mlir::Value MLIRGen::emitTagEqualCondition(mlir::Value scrutinee, int64_t varian
 // ============================================================================
 
 /// Look up the indirect enum info for a given pointer-typed scrutinee.
-/// Tries the expression type map first; if that fails, inspects the first
-/// constructor pattern in the match arms to determine the enum type.
+/// Uses only the type checker's expression type metadata.
 const MLIRGen::EnumTypeInfo *
 MLIRGen::findIndirectEnumForScrutinee(mlir::Value scrutinee, const ast::Span &span,
-                                      const std::vector<ast::MatchArm> *arms) const {
+                                      const std::vector<ast::MatchArm> * /*arms*/) const {
   // Only applies to pointer-typed scrutinees
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(scrutinee.getType()))
     return nullptr;
@@ -153,28 +152,20 @@ MLIRGen::findIndirectEnumForScrutinee(mlir::Value scrutinee, const ast::Span &sp
     }
   }
 
-  // Strategy 2: Inspect match arm patterns to find a constructor name,
-  // then look it up to determine which indirect enum we're matching on.
-  if (arms) {
-    for (const auto &arm : *arms) {
-      auto *ctorPat = std::get_if<ast::PatConstructor>(&arm.pattern.value.kind);
-      if (!ctorPat)
-        continue;
-      auto variantIt = variantLookup.find(ctorPat->name);
-      if (variantIt == variantLookup.end())
-        continue;
-      auto enumIt = enumTypes.find(variantIt->second.first);
-      if (enumIt != enumTypes.end() && enumIt->second.isIndirect && enumIt->second.innerStructType)
-        return &enumIt->second;
-    }
-  }
-
   return nullptr;
 }
 
 mlir::Value MLIRGen::derefIndirectEnumScrutinee(mlir::Value scrutinee, const ast::Span &span,
                                                 mlir::Location location,
                                                 const std::vector<ast::MatchArm> *arms) {
+  if (!mlir::isa<mlir::LLVM::LLVMPointerType>(scrutinee.getType()))
+    return scrutinee;
+
+  if (!resolvedTypeOf(span)) {
+    requireResolvedTypeOf(span, "indirect enum scrutinee", location);
+    return nullptr;
+  }
+
   auto *info = findIndirectEnumForScrutinee(scrutinee, span, arms);
   if (!info)
     return scrutinee;
@@ -194,6 +185,8 @@ void MLIRGen::generateMatchStmt(const ast::StmtMatch &stmt) {
 
   // Indirect enum: dereference pointer to get the inner struct
   scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.scrutinee.span, location, &stmt.arms);
+  if (!scrutinee)
+    return;
 
   // Generate match as chain of if/else (no result needed)
   generateMatchImpl(scrutinee, stmt.arms, /*resultType=*/nullptr, location);
@@ -210,35 +203,22 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
 
   // Indirect enum: dereference pointer to get the inner struct
   scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.scrutinee->span, location, &expr.arms);
+  if (!scrutinee)
+    return nullptr;
 
   // Use the type checker's resolved type for this match expression.
-  // The frontend type-checks all arms, unifies their types, and records
-  // the result type in the expression type map keyed by span.
-  mlir::Type resultType = nullptr;
-  bool resolvedTypeKnown = false;
-  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-    resolvedTypeKnown = true;
-    resultType = convertType(*resolvedType);
-    // NoneType means the match arms all return void — treat as a
-    // statement-style match with no result value (resultType == nullptr).
-    if (mlir::isa<mlir::NoneType>(resultType))
-      resultType = nullptr;
-  }
-
-  // If the type checker didn't record a type, infer from the scrutinee for
-  // Result/Option matches where the natural result is the inner type.
-  if (!resultType && !resolvedTypeKnown) {
-    if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(scrutinee.getType()))
-      resultType = rt.getOkType();
-    else if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(scrutinee.getType()))
-      resultType = ot.getInnerType();
-  }
-
-  if (!resultType && !resolvedTypeKnown) {
-    emitError(location) << "cannot determine result type for match expression"
-                        << " (scrutinee type: " << scrutinee.getType() << ")";
+  // The frontend type-checks all arms, unifies their types, and records the
+  // result type in the expression type map keyed by span. Missing metadata is
+  // a codegen boundary failure; do not reconstruct it from lowered scrutinee
+  // types.
+  auto *resolvedType = requireResolvedTypeOf(exprSpan, "match expression result type", location);
+  if (!resolvedType)
     return nullptr;
-  }
+  mlir::Type resultType = convertType(*resolvedType);
+  // NoneType means the match arms all return void — treat as a statement-style
+  // match with no result value (resultType == nullptr).
+  if (mlir::isa<mlir::NoneType>(resultType))
+    resultType = nullptr;
 
   return generateMatchImpl(scrutinee, expr.arms, resultType, location);
 }

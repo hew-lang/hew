@@ -45,6 +45,8 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
 
   // Indirect enum: dereference pointer to get the inner struct
   scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.expr->span, location);
+  if (!scrutinee)
+    return;
 
   const auto &pattern = stmt.pattern.value;
 
@@ -111,6 +113,8 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
 
   // Indirect enum: dereference pointer to get the inner struct
   scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.expr->span, location);
+  if (!scrutinee)
+    return nullptr;
 
   // Use the type checker's resolved type for this if-let expression
   mlir::Type resultType = nullptr;

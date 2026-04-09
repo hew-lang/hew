@@ -8202,4 +8202,251 @@ mod warning_source_attribution {
             "fn_def_spans entry for 'main' must have source_module=None; got {stored_module:?}",
         );
     }
+
+    // ── ImportKey: same short-name across different owning modules ─────────────
+
+    fn make_named_import_decl(short_name: &str) -> ImportDecl {
+        ImportDecl {
+            path: vec![short_name.to_string()],
+            spec: None,
+            file_path: None,
+            resolved_items: Some(vec![]),
+            resolved_item_source_paths: vec![],
+            resolved_source_paths: vec![],
+        }
+    }
+
+    /// Two different owning modules both import a module with the same short
+    /// name.  Neither module uses the import, so both must get an
+    /// `UnusedImport` warning — the use-site in one must not suppress the
+    /// warning for the other.
+    #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "mod_a_id / mod_b_id are intentionally symmetric"
+    )]
+    fn same_short_name_imports_in_different_owners_each_warn_unused() {
+        let root_id = ModuleId::root();
+        let mod_a_id = ModuleId::new(vec!["mod_a".to_string()]);
+        let mod_b_id = ModuleId::new(vec!["mod_b".to_string()]);
+
+        let import_a = make_named_import_decl("fakemod");
+        let import_b = make_named_import_decl("fakemod");
+
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_a = Module {
+            id: mod_a_id.clone(),
+            items: vec![(Item::Import(import_a), 0..20)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_b = Module {
+            id: mod_b_id.clone(),
+            items: vec![(Item::Import(import_b), 100..120)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module);
+        mg.add_module(module_a);
+        mg.add_module(module_b);
+        mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("fakemod"))
+            .collect();
+
+        assert_eq!(
+            unused.len(),
+            2,
+            "expected exactly 2 UnusedImport warnings (one per owning module), got {}: {:?}",
+            unused.len(),
+            unused
+        );
+
+        let owners: std::collections::HashSet<Option<&str>> =
+            unused.iter().map(|w| w.source_module.as_deref()).collect();
+        assert!(
+            owners.contains(&Some("mod_a")),
+            "expected an UnusedImport attributed to 'mod_a'; got: {owners:?}",
+        );
+        assert!(
+            owners.contains(&Some("mod_b")),
+            "expected an UnusedImport attributed to 'mod_b'; got: {owners:?}",
+        );
+    }
+
+    /// When one owning module *uses* `fakemod` (via a module-qualified call
+    /// registered through `import_spans`) and another owning module imports the
+    /// same short name but never uses it, only the second module's import must
+    /// be warned as unused.
+    ///
+    /// This is the core clobber regression: before the `ImportKey` fix, marking
+    /// `fakemod` as used in `mod_a` would also suppress the warning for `mod_b`.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "inline AST construction for the import-clobber regression scenario"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "mod_a_id / mod_b_id are intentionally symmetric"
+    )]
+    fn used_import_in_one_owner_does_not_suppress_unused_in_another() {
+        let root_id = ModuleId::root();
+        let mod_a_id = ModuleId::new(vec!["mod_a".to_string()]);
+        let mod_b_id = ModuleId::new(vec!["mod_b".to_string()]);
+
+        // mod_a: import fakemod  +  fn caller() { fakemod.helper() }
+        // The call to fakemod.helper() marks fakemod as used in mod_a's context.
+
+        // Register a pub fn "helper" in fakemod so module_fn_exports and fn_sigs
+        // contain "fakemod.helper" — that is what the method-dispatch path checks.
+        let helper_fn = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Pub,
+            is_pure: false,
+            name: "helper".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+        };
+
+        // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
+        let call_stmt = Stmt::Expression((
+            Expr::MethodCall {
+                receiver: Box::new((
+                    Expr::Identifier("fakemod".to_string()),
+                    Span::from(200..206),
+                )),
+                method: "helper".to_string(),
+                args: vec![],
+            },
+            Span::from(200..215),
+        ));
+        let caller_fn = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name: "caller".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(call_stmt, 200..215)],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 150..200,
+        };
+
+        // Import of fakemod in mod_a must carry resolved_items that include
+        // the pub helper fn so the module is actually registered and
+        // module_fn_exports gets "fakemod.helper".
+        let import_a_with_items = ImportDecl {
+            path: vec!["fakemod".to_string()],
+            spec: None,
+            file_path: None,
+            resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
+            resolved_item_source_paths: vec![],
+            resolved_source_paths: vec![],
+        };
+
+        // mod_b: import fakemod  (unused — no code references it)
+        let import_b = make_named_import_decl("fakemod");
+
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_a = Module {
+            id: mod_a_id.clone(),
+            items: vec![
+                (Item::Import(import_a_with_items), 0..30),
+                (Item::Function(caller_fn), 150..220),
+            ],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_b = Module {
+            id: mod_b_id.clone(),
+            items: vec![(Item::Import(import_b), 300..320)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module);
+        mg.add_module(module_a);
+        mg.add_module(module_b);
+        mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("fakemod"))
+            .collect();
+
+        // mod_b's import is unused; mod_a's is used (caller() calls fakemod.helper())
+        // so exactly one warning, attributed to mod_b.
+        assert_eq!(
+            unused.len(),
+            1,
+            "expected exactly 1 UnusedImport warning (for mod_b), got {}: {:?}",
+            unused.len(),
+            unused
+        );
+        assert_eq!(
+            unused[0].source_module.as_deref(),
+            Some("mod_b"),
+            "the single UnusedImport must be attributed to 'mod_b'; got: {:?}",
+            unused[0].source_module
+        );
+    }
 }

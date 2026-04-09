@@ -55,7 +55,9 @@ impl Checker {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
-                self.used_modules.borrow_mut().insert("regex".to_string());
+                self.used_modules
+                    .borrow_mut()
+                    .insert(ImportKey::new(self.current_module.clone(), "regex"));
                 Ty::Named {
                     name: "regex.Pattern".to_string(),
                     args: vec![],
@@ -2669,7 +2671,9 @@ impl Checker {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     if self.modules.contains(module) {
-                        self.used_modules.borrow_mut().insert(module.clone());
+                        self.used_modules
+                            .borrow_mut()
+                            .insert(ImportKey::new(self.current_module.clone(), module.clone()));
                         Some(field.clone())
                     } else {
                         None

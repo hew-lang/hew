@@ -698,7 +698,9 @@ impl Checker {
                     || self.fn_sigs.contains_key(&key));
             if looks_like_module_call {
                 if self.modules.contains(name) {
-                    self.used_modules.borrow_mut().insert(name.clone());
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), name.clone()));
                 }
                 if !self.module_fn_exports.contains(&key) {
                     self.report_error(

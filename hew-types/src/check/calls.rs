@@ -470,8 +470,14 @@ impl Checker {
                     .insert(resolved_fn_name.clone());
             }
             // Mark the originating module as used for unqualified imports
-            if let Some(module) = self.unqualified_to_module.get(&func_name) {
-                self.used_modules.borrow_mut().insert(module.clone());
+            if let Some(module) = self
+                .unqualified_to_module
+                .get(&(self.current_module.clone(), func_name.clone()))
+                .cloned()
+            {
+                self.used_modules
+                    .borrow_mut()
+                    .insert(ImportKey::new(self.current_module.clone(), module));
             }
             let (freshened_params, freshened_ret, resolved_type_args) =
                 self.instantiate_fn_sig_for_call(&sig, type_args, span);

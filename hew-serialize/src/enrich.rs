@@ -1567,6 +1567,15 @@ fn enrich_method_call(
     //
     // When the receiver type IS a known dispatch category but the method
     // cannot be resolved, emit a diagnostic rather than silently no-oping.
+    //
+    // Normalization invariant: Ty::normalize_named (called by every Ty::stream /
+    // Ty::sink / Ty::sender / Ty::receiver constructor, and by all type-checking
+    // paths that produce these types) always maps qualified spellings like
+    // "stream.Stream" to their short canonical names ("Stream") before types are
+    // stored in tco.expr_types.  Therefore only the short-name constants (STREAM,
+    // SINK, SENDER, RECEIVER) will ever match in practice.  The QUALIFIED_*
+    // guards are defence-in-depth: they cannot be reached under normal operation
+    // but ensure correctness if a hypothetical future path bypasses normalization.
     let c_fn: Option<String> = match receiver_ty {
         Some(recv_ty @ Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
             let elem = args.first().and_then(ty_element_name);
@@ -4068,6 +4077,61 @@ mod tests {
         assert_eq!(diag.kind(), TypeExprConversionKind::MethodCallRewriteFailed);
         // Confirm it is distinct from the Unsupported kind (which is non-fatal).
         assert_ne!(diag.kind(), TypeExprConversionKind::Unsupported);
+    }
+
+    /// Regression guard for the normalization-invariant review concern:
+    ///
+    /// `Ty::normalize_named` (called by every `Ty::stream/sink/sender/receiver`
+    /// constructor and all type-checking paths) maps QUALIFIED_* spellings
+    /// ("stream.Stream", "stream.Sink", "channel.Sender", "channel.Receiver")
+    /// to their short canonical names before storage in `tco.expr_types`.
+    /// Therefore the SHORT-name guards are the ones that matter in practice, and
+    /// the QUALIFIED_* guards are defence-in-depth.
+    ///
+    /// This test verifies that even if a qualified name *did* reach `expr_types`
+    /// (it never does in practice), the specific match arms still catch it and
+    /// emit the correct diagnostic — the qualified form does NOT fall through to
+    /// the generic `Ty::Named` arm where the diagnostic would be skipped.
+    #[test]
+    fn test_enrich_method_call_qualified_builtin_name_still_caught() {
+        // Put "stream.Stream" (QUALIFIED_STREAM) directly into expr_types — this
+        // bypasses normalize_named and simulates the "what-if" scenario.
+        let tco = make_tco_with_receiver_ty(
+            2,
+            hew_types::Ty::Named {
+                name: QUALIFIED_STREAM.to_string(),
+                args: vec![hew_types::Ty::String],
+            },
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+
+        // Known method → no diagnostic, rewritten to Call.
+        let mut expr_ok = make_method_call_expr("s", 2, "next");
+        let mut diag_ok = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_ok, &tco, &mut diag_ok, &registry).unwrap();
+        assert!(
+            diag_ok.is_empty(),
+            "qualified-name stream.next() must emit no diagnostic"
+        );
+        assert!(
+            matches!(&expr_ok.0, Expr::Call { .. }),
+            "qualified-name stream.next() must be rewritten to a Call"
+        );
+
+        // Unknown method → MethodCallRewriteFailed (NOT silently skipped).
+        let mut expr_bad = make_method_call_expr("s", 2, "bogus_method");
+        let mut diag_bad = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr_bad, &tco, &mut diag_bad, &registry).unwrap();
+        assert_eq!(
+            diag_bad.len(),
+            1,
+            "qualified-name stream with unknown method must emit exactly one diagnostic"
+        );
+        assert_eq!(
+            diag_bad[0].kind(),
+            TypeExprConversionKind::MethodCallRewriteFailed,
+            "qualified-name dispatch must produce MethodCallRewriteFailed, not be silently skipped"
+        );
     }
 
     // -----------------------------------------------------------------------

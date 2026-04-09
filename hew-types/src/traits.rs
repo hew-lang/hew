@@ -155,6 +155,14 @@ impl TraitRegistry {
         self.rc_free_members.insert(name, member_types);
     }
 
+    /// Look up `RcFree` members by exact or module-qualified/unqualified name.
+    fn rc_free_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
+        self.rc_free_members.get(name).or_else(|| {
+            name.rsplit_once('.')
+                .and_then(|(_, unqualified)| self.rc_free_members.get(unqualified))
+        })
+    }
+
     fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
         match ty {
             Ty::Named { name, args } if name == "Rc" => args.is_empty(),
@@ -168,7 +176,7 @@ impl TraitRegistry {
                 if !visiting.insert(name.clone()) {
                     return true;
                 }
-                let result = self.rc_free_members.get(name).is_none_or(|members| {
+                let result = self.rc_free_members_any(name).is_none_or(|members| {
                     members
                         .iter()
                         .all(|member| self.implements_rc_free(member, visiting))
@@ -715,6 +723,18 @@ mod tests {
         registry.register_rcfree_members("List".to_string(), vec![Ty::option(list.clone())]);
 
         assert!(registry.implements_marker(&list, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn test_rcfree_falls_back_to_unqualified_registered_name() {
+        let mut registry = TraitRegistry::new();
+        registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
+        let qualified_holder = Ty::Named {
+            name: "widgets.Holder".to_string(),
+            args: vec![],
+        };
+
+        assert!(!registry.implements_marker(&qualified_holder, MarkerTrait::RcFree));
     }
 
     #[test]

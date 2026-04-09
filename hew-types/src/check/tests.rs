@@ -112,6 +112,23 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
 }
 
 #[test]
+fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
+
+    let holder_ty = Ty::Named {
+        name: "widgets.Holder".to_string(),
+        args: vec![],
+    };
+    assert!(!checker.validate_hashset_owned_element_type(&holder_ty, &(0..0)));
+    assert!(checker.errors.iter().any(|err| {
+        err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
+    }));
+}
+
+#[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker

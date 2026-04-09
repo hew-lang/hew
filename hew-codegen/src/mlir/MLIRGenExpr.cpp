@@ -2182,7 +2182,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(call.args[i]).value.kind);
           if (!id)
             continue;
-          if (streamHandleVarTypes.count(id->name))
+          if (lookupTrackedStreamHandleInfo(id->name))
             consumedArgIndices.push_back(i);
         }
       }
@@ -3557,17 +3557,12 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   // ── Stream<T> functional operators: map, filter, take ──────────────────────
-  // Stream maps to raw LLVM pointer; use the resolved type to identify stream receivers.
+  // Stream maps to raw LLVM pointer; prefer checker metadata, but fall back to
+  // MLIRGen-local tracked stream metadata when bytes-vs-string ABI selection
+  // would otherwise depend on missing resolvedTypeOf entries.
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType)) {
-    bool isStream = false;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      isStream = typeExprStreamKind(*typeExpr) == "Stream";
-    if (!isStream) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto sit = streamHandleVarTypes.find(ie->name);
-        isStream = (sit != streamHandleVarTypes.end() && sit->second == "Stream");
-      }
-    }
+    auto streamInfo = resolveStreamHandleInfo(mc.receiver->value, &mc.receiver->span);
+    bool isStream = streamInfo && streamInfo->kind == "Stream";
     if (isStream) {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       auto strType = hew::StringRefType::get(&context);
@@ -3577,9 +3572,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           return mlir::Value{};
         }
         // Determine the stream's element type to pick the right ABI.
-        bool isBytesStream = false;
-        if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-          isBytesStream = typeExprStreamElement(*typeExpr) == "bytes";
+        bool isBytesStream = streamInfo && streamInfo->isBytesStream();
         // Set the expected closure type so that parameter types in unannotated
         // lambdas can be inferred.
         // For bytes streams the closure receives/returns hew.vec<i32> (bytes).

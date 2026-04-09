@@ -211,6 +211,23 @@ private:
                                 const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
                                 const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
                                 bool isMutable, mlir::Location location);
+  struct StreamHandleInfo {
+    std::string kind;
+    std::string elementType;
+
+    bool isTracked() const { return !kind.empty(); }
+    bool isBytesStream() const { return kind == "Stream" && elementType == "bytes"; }
+  };
+  std::optional<StreamHandleInfo> streamHandleInfoFromTypeExpr(const ast::TypeExpr &typeExpr) const;
+  std::optional<StreamHandleInfo> resolveKnownCallStreamHandleInfo(const ast::ExprCall &call) const;
+  std::optional<StreamHandleInfo>
+  resolveChainedStreamHandleInfo(const ast::ExprMethodCall &methodCall) const;
+  std::optional<StreamHandleInfo> resolveStreamHandleInfo(const ast::Expr &expr,
+                                                          const ast::Span *span = nullptr) const;
+  std::vector<StreamHandleInfo>
+  resolveTuplePatternStreamHandleInfos(const ast::StmtLet &stmt) const;
+  const StreamHandleInfo *lookupTrackedStreamHandleInfo(llvm::StringRef name) const;
+  void rememberTrackedStreamHandleInfo(const std::string &name, const StreamHandleInfo &info);
   void generateAssignStmt(const ast::StmtAssign &stmt);
   void generateIfStmt(const ast::StmtIf &stmt);
   mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statementPosition = false);
@@ -785,9 +802,10 @@ private:
   std::unordered_map<std::string, StreamInfo> streamVarTypes;
 
   // ── First-class Stream<T> / Sink<T> tracking ───────────────────
-  // Maps variable name → "Stream" or "Sink" for first-class stream handles.
-  // Separate from the actor-generator streamVarTypes above.
-  std::unordered_map<std::string, std::string> streamHandleVarTypes;
+  // Keeps MLIRGen-local stream handle kind/element metadata for current
+  // bindings. Separate from the actor-generator streamVarTypes above.
+  std::unordered_map<std::string, StreamHandleInfo> streamHandleVarTypes;
+  llvm::DenseMap<mlir::Value, StreamHandleInfo> streamHandleBindingTypes;
 
   void generateForStreamStmt(const ast::StmtFor &stmt);
   void generateForReceiverStmt(const ast::StmtFor &stmt, const ast::TypeNamed *receiverType);

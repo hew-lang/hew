@@ -196,13 +196,15 @@ fn ty_element_name(ty: &Ty) -> Option<&str> {
     }
 }
 
-fn is_quic_handle_type(
+fn is_runtime_special_handle_type(
     receiver_ty: Option<&Ty>,
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> bool {
-    fn is_quic_handle_name(name: &str) -> bool {
+    fn is_runtime_special_name(name: &str) -> bool {
         matches!(
             name,
+            // QUIC handles: methods are rewritten here to direct `hew_quic_*` C
+            // calls via registry.resolve_handle_method (enrich_method_call path).
             "QUICEndpoint"
                 | "QUICConnection"
                 | "QUICStream"
@@ -211,21 +213,30 @@ fn is_quic_handle_type(
                 | "quic.QUICConnection"
                 | "quic.QUICStream"
                 | "quic.QUICEvent"
+                // http / regex / process handles: also rewritten here via
+                // registry.resolve_handle_method to their `hew_*` C symbols.
+                // generateHandleMethodCall in C++ is only a fallback for any
+                // MethodCall node that was not pre-rewritten by the enricher.
+                | "regex.Pattern"
+                | "http.Server"
+                | "http.Request"
+                | "process.Child"
         )
     }
 
     let Some(Ty::Named { name, .. }) = receiver_ty else {
         return false;
     };
-    // QUIC handle methods still need the pre-#829 direct-call rewrite so probe
-    // programs keep lowering through the stable `hew_quic_*` surface instead of
-    // switching to generic named-type impl dispatch.
-    is_quic_handle_name(name)
+    // When a method_call_receiver_kinds entry exists for a call whose receiver
+    // is one of these runtime-special handle families (regex, http, process, quic),
+    // the early-return guard in enrich_method_call must NOT fire: these methods
+    // still need the pre-#829 direct C-function rewrite path.  Unqualified source
+    // names are resolved via qualify_handle_type without needing an explicit list.
+    is_runtime_special_name(name)
         || registry
             .qualify_handle_type(name)
-            .is_some_and(|qualified| is_quic_handle_name(&qualified))
+            .is_some_and(|qualified| is_runtime_special_name(&qualified))
 }
-
 /// Map primitive `Ty` variants to their serialized type name.
 fn primitive_name(ty: &Ty) -> Option<&'static str> {
     ty.canonical_lowering_name()
@@ -1478,7 +1489,7 @@ fn enrich_method_call(
     if tco
         .method_call_receiver_kinds
         .contains_key(&method_call_key)
-        && !is_quic_handle_type(receiver_ty, registry)
+        && !is_runtime_special_handle_type(receiver_ty, registry)
     {
         return;
     }
@@ -2918,7 +2929,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_quic_handle_type_accepts_unqualified_name_without_qualification() {
+    fn test_is_runtime_special_handle_type_accepts_quic_unqualified_name() {
         let registry = test_registry_with(&[]);
         let receiver_ty = hew_types::Ty::Named {
             name: "QUICEvent".to_string(),
@@ -2926,8 +2937,37 @@ mod tests {
         };
 
         assert!(
-            is_quic_handle_type(Some(&receiver_ty), &registry),
-            "bare QUIC handle name should still trigger the QUIC rewrite exception"
+            is_runtime_special_handle_type(Some(&receiver_ty), &registry),
+            "bare QUIC handle name should trigger the runtime-special rewrite exception"
+        );
+    }
+
+    #[test]
+    fn test_is_runtime_special_handle_type_accepts_regex_pattern_unqualified() {
+        let registry = test_registry_with(&["std::text::regex"]);
+        let receiver_ty = hew_types::Ty::Named {
+            name: "Pattern".to_string(),
+            args: vec![],
+        };
+
+        assert!(
+            is_runtime_special_handle_type(Some(&receiver_ty), &registry),
+            "unqualified regex.Pattern must be a runtime-special type so the guard \
+             does not skip the C-rewrite path for actor receive parameters"
+        );
+    }
+
+    #[test]
+    fn test_is_runtime_special_handle_type_accepts_regex_pattern_qualified() {
+        let registry = test_registry_with(&["std::text::regex"]);
+        let receiver_ty = hew_types::Ty::Named {
+            name: "regex.Pattern".to_string(),
+            args: vec![],
+        };
+
+        assert!(
+            is_runtime_special_handle_type(Some(&receiver_ty), &registry),
+            "fully-qualified regex.Pattern must also be a runtime-special type"
         );
     }
 

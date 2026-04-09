@@ -522,6 +522,37 @@ mod tests {
     }
 
     #[test]
+    fn load_net_module_skips_nontrivial_handle_wrappers() {
+        let info = load_module("std::net", &test_root());
+        assert!(info.is_some(), "should load net module");
+        let info = info.unwrap();
+
+        let has_read = info.handle_methods.iter().any(|((ty, method), sym)| {
+            ty == "net.Connection" && method == "read" && sym == "hew_tcp_read"
+        });
+        assert!(
+            has_read,
+            "net.Connection.read should rewrite to hew_tcp_read"
+        );
+
+        let rewrites_read_string = info.handle_methods.iter().any(|((ty, method), sym)| {
+            ty == "net.Connection" && method == "read_string" && sym == "hew_bytes_to_string"
+        });
+        assert!(
+            !rewrites_read_string,
+            "net.Connection.read_string should remain a Hew wrapper, not alias hew_bytes_to_string"
+        );
+
+        let rewrites_write_string = info.handle_methods.iter().any(|((ty, method), sym)| {
+            ty == "net.Connection" && method == "write_string" && sym == "hew_tcp_write"
+        });
+        assert!(
+            !rewrites_write_string,
+            "net.Connection.write_string should remain a Hew wrapper, not alias hew_tcp_write"
+        );
+    }
+
+    #[test]
     fn load_fs_module() {
         let info = load_module("std::fs", &test_root());
         assert!(info.is_some(), "should load fs module");

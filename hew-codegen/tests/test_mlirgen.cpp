@@ -4458,6 +4458,63 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: direct TypeInfer in function signature fails closed at convertType
+// ============================================================================
+static void test_function_signature_type_infer_fails_closed() {
+  TEST(function_signature_type_infer_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn id(x: i32) -> i32 {
+    x
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "id");
+  if (!fn) {
+    FAIL("id function not found");
+    return;
+  }
+
+  if (fn->params.empty()) {
+    FAIL("id function has no parameters");
+    return;
+  }
+
+  fn->params[0].ty.value.kind = hew::ast::TypeInfer{};
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when function parameter type becomes TypeInfer");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("unresolved type inference placeholder `_` reached MLIR codegen boundary") ==
+      std::string::npos) {
+    FAIL("expected convertType TypeInfer boundary diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for function signature TypeInfer");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Return statement
 // ============================================================================
 static void test_return_stmt() {
@@ -8027,6 +8084,7 @@ int main() {
   test_for_await_bytes_stream_binding_fallback_uses_bytes_abi();
   test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type();
   test_for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi();
+  test_function_signature_type_infer_fails_closed();
   test_return_stmt();
   test_logical_ops();
   test_unary_ops();

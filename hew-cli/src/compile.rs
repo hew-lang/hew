@@ -255,6 +255,7 @@ fn inferred_type_serialization_diagnostic_is_fatal(
             | hew_serialize::TypeExprConversionKind::ErrorSentinel
             | hew_serialize::TypeExprConversionKind::LiteralKind
             | hew_serialize::TypeExprConversionKind::MethodCallRewriteFailed
+            | hew_serialize::TypeExprConversionKind::Unsupported
     )
 }
 
@@ -1985,7 +1986,7 @@ fn main() {
                 start: expr_span.start,
                 end: expr_span.end,
             },
-            Ty::generator(Ty::I32, Ty::Unit),
+            Ty::option(Ty::Var(hew_types::ty::TypeVar(7))),
         );
 
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -2746,6 +2747,34 @@ fn helper() -> int { 41 }
                 .iter()
                 .map(|e| &e.source_module)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// Regression guard for issue #789: internal generator handle metadata must
+    /// be suppressed before the CLI serializer boundary instead of surfacing as
+    /// a fatal inferred-type diagnostic from `build_expr_type_map`.
+    #[test]
+    fn internal_generator_expr_type_entries_are_suppressed_before_boundary() {
+        use hew_types::check::SpanKey;
+
+        // Generator handles are internal metadata for native codegen surfaces.
+        // The serializer rescue must drop them before expr-type-map emission so
+        // the CLI boundary only reports truly user-visible unresolved/invalid
+        // inferred types.
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey { start: 0, end: 1 },
+            Ty::generator(Ty::I32, Ty::String),
+        );
+
+        let build = hew_serialize::build_expr_type_map(&tco);
+        assert!(
+            build.diagnostics().is_empty(),
+            "internal generator expr_types must be suppressed before the CLI boundary"
+        );
+        assert!(
+            build.entries.is_empty(),
+            "internal generator expr_types must not be serialized into expr_type_map entries"
         );
     }
 }

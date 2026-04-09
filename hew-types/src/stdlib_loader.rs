@@ -10,7 +10,7 @@ use hew_parser::ast::{
 };
 use hew_parser::parse;
 
-use crate::check::admissibility::signature_uses_unsupported_type;
+use crate::check::admissibility::signature_contains_error_type;
 use crate::ty::Ty;
 
 /// All type information extracted from a single `.hew` module file.
@@ -124,7 +124,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             Item::ExternBlock(block) => {
                 for func in &block.functions {
                     let (params, ret) = extern_fn_sig(func, module_short);
-                    if signature_uses_unsupported_type(&params, &ret) {
+                    if signature_contains_error_type(&params, &ret) {
                         info.unsupported_type_signatures
                             .push(format!("extern function `{}`", func.name));
                     }
@@ -147,7 +147,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 // Extract wrapper function's own signature
                 let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
-                if signature_uses_unsupported_type(&params, &ret) {
+                if signature_contains_error_type(&params, &ret) {
                     info.unsupported_type_signatures
                         .push(format!("public function `{}`", fn_decl.name));
                 }

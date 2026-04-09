@@ -624,16 +624,7 @@ impl Checker {
         for (type_name, td) in &self.type_defs {
             if let Some(variant) = td.variants.get(name) {
                 if matches!(variant, VariantDef::Unit) {
-                    let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                        Ty::Machine {
-                            name: type_name.clone(),
-                        }
-                    } else {
-                        Ty::Named {
-                            name: type_name.clone(),
-                            args: vec![],
-                        }
-                    };
+                    let ty = Ty::normalize_named(type_name.clone(), vec![]);
                     found = Some(ty);
                     break;
                 }
@@ -647,16 +638,7 @@ impl Checker {
                 if let Some(td) = self.type_defs.get(type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
-                            let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                                Ty::Machine {
-                                    name: type_prefix.to_string(),
-                                }
-                            } else {
-                                Ty::Named {
-                                    name: type_prefix.to_string(),
-                                    args: vec![],
-                                }
-                            };
+                            let ty = Ty::normalize_named(type_prefix.to_string(), vec![]);
                             found = Some(ty);
                         }
                     }
@@ -666,12 +648,8 @@ impl Checker {
                     if let Some(sig) = self.fn_sigs.get(variant_name) {
                         if sig.params.is_empty() {
                             let ret = &sig.return_type;
-                            let matches_type = match ret {
-                                Ty::Machine { name: n } | Ty::Named { name: n, .. } => {
-                                    n == type_prefix
-                                }
-                                _ => false,
-                            };
+                            let matches_type =
+                                ret.type_name().is_some_and(|name| name == type_prefix);
                             if matches_type {
                                 found = Some(sig.return_type.clone());
                             }
@@ -2190,8 +2168,21 @@ impl Checker {
                             result_ty = self.substitute_named_param(&result_ty, param, arg);
                         }
                         result_ty
-                    } else if let Some((ref mn, _, ref evt_name)) = self.current_machine_transition
+                    } else if let Some((ref mn, ref src_state, ref evt_name)) =
+                        self.current_machine_transition
                     {
+                        if td.kind == TypeDefKind::Machine && mn == name {
+                            if let Some(VariantDef::Struct(variant_fields)) =
+                                td.variants.get(src_state).cloned()
+                            {
+                                if let Some((_, field_ty)) =
+                                    variant_fields.iter().find(|(fname, _)| fname == field)
+                                {
+                                    return field_ty.clone();
+                                }
+                            }
+                        }
+
                         // Inside a machine transition: resolve `event.field` on the event enum type
                         let event_type_name = format!("{mn}Event");
                         if *name == event_type_name && evt_name != "_" {
@@ -2245,34 +2236,6 @@ impl Checker {
                 } else {
                     Ty::Error
                 }
-            }
-            Ty::Machine { name } => {
-                // Allow `state.field` inside a transition body when the source
-                // state is known and has the requested field.
-                if let Some((ref mn, ref src_state, _)) = self.current_machine_transition {
-                    if mn == name {
-                        if let Some(td) = self.lookup_type_def(name) {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(src_state).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedField,
-                    span,
-                    format!(
-                        "cannot access field `{field}` on `{}`",
-                        resolved.user_facing()
-                    ),
-                );
-                Ty::Error
             }
             _ => {
                 if resolved != Ty::Error {
@@ -2584,7 +2547,7 @@ impl Checker {
                 name: name.to_string(),
                 args: type_args,
             }
-        } else if let Some((enum_name, variant_fields, is_machine)) =
+        } else if let Some((enum_name, variant_fields)) =
             self.type_defs.iter().find_map(|(type_name, td)| {
                 let short = name.rsplit("::").next().unwrap_or(name);
                 // For qualified names (e.g., Keeper::Holding), verify prefix
@@ -2595,11 +2558,7 @@ impl Checker {
                     }
                 }
                 match td.variants.get(name).or_else(|| td.variants.get(short)) {
-                    Some(VariantDef::Struct(fields)) => Some((
-                        type_name.clone(),
-                        fields.clone(),
-                        td.kind == TypeDefKind::Machine,
-                    )),
+                    Some(VariantDef::Struct(fields)) => Some((type_name.clone(), fields.clone())),
                     _ => None,
                 }
             })
@@ -2632,13 +2591,9 @@ impl Checker {
                     );
                 }
             }
-            if is_machine {
-                Ty::Machine { name: enum_name }
-            } else {
-                Ty::Named {
-                    name: enum_name,
-                    args: vec![],
-                }
+            Ty::Named {
+                name: enum_name,
+                args: vec![],
             }
         } else {
             let similar = crate::error::find_similar(

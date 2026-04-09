@@ -898,9 +898,7 @@ impl Checker {
         reason = "machine registration covers states, events, and generated methods"
     )]
     pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
-        let machine_ty = Ty::Machine {
-            name: md.name.clone(),
-        };
+        let machine_ty = Ty::normalize_named(md.name.clone(), vec![]);
         let event_type_name = format!("{}Event", md.name);
         let event_ty = Ty::Named {
             name: event_type_name.clone(),
@@ -1129,9 +1127,7 @@ impl Checker {
             self.env.push_scope();
             self.env.define(
                 "state".to_string(),
-                Ty::Machine {
-                    name: md.name.clone(),
-                },
+                Ty::normalize_named(md.name.clone(), vec![]),
                 false,
             );
             // Bind `event` as the event companion enum type so that

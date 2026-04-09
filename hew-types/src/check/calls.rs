@@ -4,20 +4,6 @@
 )]
 use super::*;
 
-fn constructor_names_match(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let a_qualified = a.contains('.');
-    let b_qualified = b.contains('.');
-    if a_qualified && b_qualified {
-        return false;
-    }
-    let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
-    let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
-    a_bare == b_bare
-}
-
 impl Checker {
     fn lookup_variant_constructor(
         &self,
@@ -63,12 +49,9 @@ impl Checker {
     ) -> Option<Vec<Ty>> {
         match expected {
             Ty::Named { name, args }
-                if constructor_names_match(name, type_name) && args.len() == arity =>
+                if Ty::names_match_qualified(name, type_name) && args.len() == arity =>
             {
                 Some(args.clone())
-            }
-            Ty::Machine { name } if constructor_names_match(name, type_name) && arity == 0 => {
-                Some(vec![])
             }
             _ => None,
         }

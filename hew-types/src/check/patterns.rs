@@ -36,16 +36,14 @@ impl Checker {
                         Ty::Named {
                             name: type_name, ..
                         } => {
-                            self.report_error(
-                                TypeErrorKind::Mismatch {
-                                    expected: type_name.clone(),
-                                    actual: name.clone(),
-                                },
-                                span,
-                                format!("variant `{name}` is not a member of enum `{type_name}`"),
-                            );
-                        }
-                        Ty::Machine { name: type_name } => {
+                            let container_kind =
+                                self.lookup_type_def(type_name).map_or("enum", |td| {
+                                    if td.kind == TypeDefKind::Machine {
+                                        "machine"
+                                    } else {
+                                        "enum"
+                                    }
+                                });
                             self.report_error(
                                 TypeErrorKind::Mismatch {
                                     expected: type_name.clone(),
@@ -53,7 +51,7 @@ impl Checker {
                                 },
                                 span,
                                 format!(
-                                    "variant `{name}` is not a member of machine `{type_name}`"
+                                    "variant `{name}` is not a member of {container_kind} `{type_name}`"
                                 ),
                             );
                         }
@@ -76,13 +74,7 @@ impl Checker {
             }
             Pattern::Struct { name, fields } => {
                 // Bind field patterns to field types
-                let type_name_opt = match ty {
-                    Ty::Named {
-                        name: type_name, ..
-                    } => Some(type_name.as_str()),
-                    Ty::Machine { name } => Some(name.as_str()),
-                    _ => None,
-                };
+                let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
                     if let Some(td) = self.lookup_type_def(type_name) {
                         // Strip enum prefix for qualified patterns (e.g. "Shape::Move" → "Move")
@@ -200,14 +192,7 @@ impl Checker {
                 _ => None,
             };
         }
-        // Extract the type name from Named or Machine types
-        let type_name_opt = match enum_ty {
-            Ty::Named {
-                name: type_name, ..
-            } => Some(type_name.as_str()),
-            Ty::Machine { name } => Some(name.as_str()),
-            _ => None,
-        };
+        let type_name_opt = enum_ty.type_name();
         if let Some(type_name) = type_name_opt {
             if let Some(td) = self.lookup_type_def(type_name) {
                 if let Some(v) = td.variants.get(short_name) {

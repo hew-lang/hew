@@ -305,7 +305,6 @@ impl Checker {
                             visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                                 Pattern::Constructor { name, .. }
                                 | Pattern::Struct { name, .. } => {
-                                    // Strip enum prefix for qualified patterns
                                     let short = name.rsplit("::").next().unwrap_or(name);
                                     covered.push(short.to_string());
                                 }
@@ -327,50 +326,6 @@ impl Checker {
                             .variants
                             .keys()
                             .filter(|v| !covered.contains(*v))
-                            .collect();
-                        if !missing.is_empty() {
-                            let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.error_non_exhaustive(
-                                span,
-                                &format!("missing {}", names.join(", ")),
-                            );
-                        }
-                    }
-                }
-            }
-            Ty::Machine { name } => {
-                if let Some(td) = self.lookup_type_def(name) {
-                    if !td.variants.is_empty() {
-                        let mut has_binding_identifier = false;
-                        let mut covered = Vec::new();
-                        for arm in arms {
-                            if arm.guard.is_some() {
-                                continue;
-                            }
-                            visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                                Pattern::Constructor { name, .. }
-                                | Pattern::Struct { name, .. } => {
-                                    let short = name.rsplit("::").next().unwrap_or(name);
-                                    covered.push(short.to_string());
-                                }
-                                Pattern::Identifier(id) => {
-                                    let short = id.rsplit("::").next().unwrap_or(id);
-                                    if td.variants.contains_key(short) {
-                                        covered.push(short.to_string());
-                                    } else {
-                                        has_binding_identifier = true;
-                                    }
-                                }
-                                _ => {}
-                            });
-                        }
-                        if has_binding_identifier {
-                            return;
-                        }
-                        let missing: Vec<_> = td
-                            .variants
-                            .keys()
-                            .filter(|v| !covered.contains(v))
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();

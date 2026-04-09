@@ -83,7 +83,6 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::Duration
         | Ty::Unit
         | Ty::Never
-        | Ty::Machine { .. }
         | Ty::Error => false,
     }
 }

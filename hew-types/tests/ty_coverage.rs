@@ -190,8 +190,9 @@ fn display_trait_object_multi_trait_with_args() {
 
 #[test]
 fn display_machine() {
-    let ty = Ty::Machine {
+    let ty = Ty::Named {
         name: "MyMachine".to_string(),
+        args: vec![],
     };
     assert_eq!(ty.to_string(), "MyMachine");
 }
@@ -708,10 +709,11 @@ fn contains_var_in_trait_object() {
 }
 
 #[test]
-fn contains_var_in_machine_and_error() {
+fn contains_var_in_named_machine_and_error() {
     let v = TypeVar(5050);
-    assert!(!Ty::Machine {
-        name: "M".to_string()
+    assert!(!Ty::Named {
+        name: "M".to_string(),
+        args: vec![],
     }
     .contains_var(v));
     assert!(!Ty::Error.contains_var(v));
@@ -824,16 +826,18 @@ fn substitute_in_function() {
 }
 
 #[test]
-fn substitute_in_machine_is_identity() {
+fn substitute_in_named_machine_is_identity() {
     let v = TypeVar(6060);
-    let ty = Ty::Machine {
+    let ty = Ty::Named {
         name: "SM".to_string(),
+        args: vec![],
     };
     let result = ty.substitute(v, &Ty::I32);
     assert_eq!(
         result,
-        Ty::Machine {
-            name: "SM".to_string()
+        Ty::Named {
+            name: "SM".to_string(),
+            args: vec![],
         }
     );
 }
@@ -1103,18 +1107,20 @@ fn apply_subst_through_array() {
 }
 
 #[test]
-fn apply_subst_machine_unchanged() {
+fn apply_subst_named_machine_unchanged() {
     let v = TypeVar(9050);
     let mut subst = Substitution::new();
     subst.insert(v, Ty::I32);
 
-    let ty = Ty::Machine {
+    let ty = Ty::Named {
         name: "SM".to_string(),
+        args: vec![],
     };
     assert_eq!(
         ty.apply_subst(&subst),
-        Ty::Machine {
-            name: "SM".to_string()
+        Ty::Named {
+            name: "SM".to_string(),
+            args: vec![],
         }
     );
 }

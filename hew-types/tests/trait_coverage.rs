@@ -499,8 +499,9 @@ fn negative_impl_overrides_auto_derivation() {
 fn machine_type_derives_from_fields() {
     let mut reg = TraitRegistry::new();
     reg.register_type("CounterMachine".to_string(), vec![Ty::I32, Ty::Bool]);
-    let machine = Ty::Machine {
+    let machine = Ty::Named {
         name: "CounterMachine".to_string(),
+        args: vec![],
     };
     assert!(reg.implements_marker(&machine, MarkerTrait::Copy));
     assert!(reg.implements_marker(&machine, MarkerTrait::Send));

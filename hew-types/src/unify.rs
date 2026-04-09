@@ -83,24 +83,6 @@ pub fn bind(subst: &mut Substitution, var: TypeVar, ty: &Ty) -> Result<(), Unify
     Ok(())
 }
 
-/// Check if two type names refer to the same type, accounting for module prefixes.
-/// e.g., "json.Value" and "Value" are the same type (bare name matches qualified).
-/// But "auth.User" and "billing.User" are NOT the same type (both qualified, different).
-fn names_match_qualified(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let a_qualified = a.contains('.');
-    let b_qualified = b.contains('.');
-    // If both are qualified and already differ, they're different types
-    if a_qualified && b_qualified {
-        return false;
-    }
-    let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
-    let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
-    a_bare == b_bare
-}
-
 fn literal_kind_can_unify_with_concrete(literal: &Ty, concrete: &Ty) -> bool {
     match literal {
         Ty::IntLiteral => concrete.is_integer() || concrete.is_float(),
@@ -275,7 +257,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
 
         // Also handles module-qualified names: "json.Value" matches "Value"
         (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
-            if an == bn || names_match_qualified(an, bn) =>
+            if an == bn || Ty::names_match_qualified(an, bn) =>
         {
             if aa.len() != ba.len() {
                 return Err(UnifyError::ArityMismatch {
@@ -333,17 +315,6 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                     unify(subst, a_arg, b_arg)?;
                 }
             }
-            Ok(())
-        }
-
-        // Machine types: same name
-        (Ty::Machine { name: an }, Ty::Machine { name: bn }) if an == bn => Ok(()),
-
-        // Machine unifies with Named of the same name (interop with pattern matching)
-        (Ty::Machine { name: mn }, Ty::Named { name: nn, args })
-        | (Ty::Named { name: nn, args }, Ty::Machine { name: mn })
-            if mn == nn && args.is_empty() =>
-        {
             Ok(())
         }
 

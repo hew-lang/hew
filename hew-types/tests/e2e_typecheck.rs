@@ -2168,13 +2168,17 @@ fn hashmap_string_string_insert_ok() {
 
 #[test]
 fn hashset_int_insert_ok() {
-    assert_no_unsafe_collection_element(
+    let output = typecheck_inline(
         r"
         fn main() {
             var s = HashSet::new();
             s.insert(42);
         }",
-        "HashSet<int> insert should be fine",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected inferred HashSet<int> insert to typecheck cleanly, got: {:#?}",
+        output.errors
     );
 }
 
@@ -2294,6 +2298,29 @@ fn hashset_u32_insert_rejected_before_codegen() {
         "expected HashSet<u32> to fail before lowering, got: {:#?}",
         output.errors
     );
+}
+
+#[test]
+fn hashset_small_integer_inserts_rejected_before_codegen() {
+    for elem_ty in ["i8", "u8", "i16", "u16"] {
+        let source = format!(
+            r"
+        fn main() {{
+            let s: HashSet<{elem_ty}> = HashSet::new();
+            s.insert(7);
+        }}"
+        );
+        let expected = format!("HashSet<{elem_ty}> is not supported");
+        let output = typecheck_inline(&source);
+        assert!(
+            output.errors.iter().any(|e| {
+                e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                    && e.message.contains(&expected)
+            }),
+            "expected HashSet<{elem_ty}> to fail before lowering, got: {:#?}",
+            output.errors
+        );
+    }
 }
 
 #[test]

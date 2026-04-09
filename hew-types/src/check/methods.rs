@@ -358,9 +358,11 @@ impl Checker {
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
+        // Inferred integer literals default to i64 later, so `HashSet::new(); s.insert(42);`
+        // must stay on the supported path.
         if matches!(
             resolved,
-            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64
+            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral
         ) {
             return true;
         }

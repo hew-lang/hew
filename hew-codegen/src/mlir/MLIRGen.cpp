@@ -1690,7 +1690,7 @@ void MLIRGen::generateImport(const ast::ImportDecl &decl) {
 
 mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                                          const std::vector<ast::CallArg> &args,
-                                         mlir::Location location) {
+                                         mlir::Location location, mlir::Type typeHint) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
   // println_str / print_str: takes a string (ptr), prints it
@@ -1971,11 +1971,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       auto bytesType = hew::VecType::get(&context, builder.getI32Type());
       return hew::VecNewOp::create(builder, location, bytesType).getResult();
     }
-    // Use the declared type from the enclosing let/var if available
+    // Use the declared type passed in as typeHint (from the enclosing let/var)
     mlir::Type vecType;
-    if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
-      vecType = *pendingDeclaredType;
-      pendingDeclaredType.reset();
+    if (typeHint && mlir::isa<hew::VecType>(typeHint)) {
+      vecType = typeHint;
     } else {
       emitError(location) << "cannot determine element type for Vec; add explicit type annotation";
       return nullptr;
@@ -1986,9 +1985,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // HashMap::new() -> !hew.hashmap<K,V>
   if (name == "HashMap::new") {
     mlir::Type hmType;
-    if (pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
-      hmType = *pendingDeclaredType;
-      pendingDeclaredType.reset();
+    if (typeHint && mlir::isa<hew::HashMapType>(typeHint)) {
+      hmType = typeHint;
     } else {
       emitError(location)
           << "cannot determine key/value types for HashMap; add explicit type annotation";
@@ -2000,9 +1998,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // HashSet::new() -> !hew.handle<"HashSet">
   if (name == "HashSet::new") {
     mlir::Type setType;
-    if (pendingDeclaredType && mlir::isa<hew::HandleType>(*pendingDeclaredType)) {
-      setType = *pendingDeclaredType;
-      pendingDeclaredType.reset();
+    if (typeHint && mlir::isa<hew::HandleType>(typeHint)) {
+      setType = typeHint;
     } else {
       emitError(location)
           << "cannot determine element type for HashSet; add explicit type annotation";

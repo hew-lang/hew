@@ -432,8 +432,10 @@ private:
   mlir::func::FuncOp getOrCreateExternFunc(llvm::StringRef name, mlir::FunctionType type);
 
   /// Check if a name is a builtin function and handle it.
+  /// typeHint carries the declared type from the enclosing let/var for
+  /// collection builtins (Vec::new, HashMap::new, HashSet::new).
   mlir::Value generateBuiltinCall(const std::string &name, const std::vector<ast::CallArg> &args,
-                                  mlir::Location location);
+                                  mlir::Location location, mlir::Type typeHint = {});
 
   /// Look up a variable name: returns the current SSA value (for immutable
   /// bindings) or loads from the memref slot (for mutable variables).

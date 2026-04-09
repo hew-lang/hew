@@ -2948,6 +2948,58 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Collection builtin type hints do not leak into sibling literals
+// ============================================================================
+static void test_collection_builtin_hint_does_not_leak_to_sibling_literals() {
+  TEST(collection_builtin_hint_does_not_leak_to_sibling_literals);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn choose(v: Vec<int>, arr: [int; 3]) -> Vec<int> {
+    v
+}
+
+fn main() -> int {
+    let v: Vec<int> = choose(Vec::new(), [1, 2, 3]);
+    v.len()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("collection builtin hint leakage test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int vecNewCount = 0;
+  int arrayCreateCount = 0;
+  mainFn.walk([&](hew::VecNewOp) { vecNewCount++; });
+  mainFn.walk([&](hew::ArrayCreateOp) { arrayCreateCount++; });
+
+  if (vecNewCount != 1) {
+    FAIL("expected only Vec::new to lower as VecNewOp");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (arrayCreateCount != 1) {
+    FAIL("expected sibling array literal to lower as ArrayCreateOp");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Discarded if-expressions zero-init user-drop struct branch temporaries
 // ============================================================================
 static void test_discarded_if_expr_user_drop_branch_temp_zero_init() {
@@ -8190,6 +8242,7 @@ int main() {
   test_nested_discarded_scope_expr_tail_match_no_extra_results();
   test_if_expr_branch_temporaries_drop();
   test_if_stmt_branch_temporaries_drop();
+  test_collection_builtin_hint_does_not_leak_to_sibling_literals();
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();

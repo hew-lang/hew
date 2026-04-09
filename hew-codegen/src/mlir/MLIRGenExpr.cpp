@@ -1853,8 +1853,13 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                    "Node::register",
                                                    "Node::lookup",
                                                    "to_float"};
-    if (builtinNames.contains(calleeName))
-      return generateBuiltinCall(calleeName, call.args, location);
+    if (builtinNames.contains(calleeName)) {
+      // Capture and clear before delegating so the hint cannot leak into
+      // sibling subexpressions evaluated inside generateBuiltinCall.
+      mlir::Type typeHint = pendingDeclaredType.value_or(mlir::Type{});
+      pendingDeclaredType.reset();
+      return generateBuiltinCall(calleeName, call.args, location, typeHint);
+    }
   }
 
   // Check if this is an enum variant constructor: Some(42), Ok(val), etc.

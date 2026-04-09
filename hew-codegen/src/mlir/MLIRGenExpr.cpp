@@ -749,19 +749,48 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(operand.getType())) {
       auto resultPtr = hew::ScopeAwaitOp::create(builder, location, ptrType, operand);
 
-      mlir::Type resultType = builder.getI32Type();
-      bool resolvedScopeAwaitType = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&awaitE->inner->value.kind)) {
-        auto it = taskResultTypes.find(ie->name);
-        if (it != taskResultTypes.end()) {
-          resultType = it->second;
-          resolvedScopeAwaitType = true;
+      auto resolveScopeAwaitResultType = [&]() -> mlir::Type {
+        if (auto *ie = std::get_if<ast::ExprIdentifier>(&awaitE->inner->value.kind)) {
+          auto it = taskResultTypes.find(ie->name);
+          if (it != taskResultTypes.end())
+            return it->second;
         }
-      }
-      if (!resolvedScopeAwaitType) {
-        emitError(location) << "cannot determine scope.await result type";
+
+        const auto *resolvedTaskType =
+            requireResolvedTypeOf(awaitE->inner->span, "scope.await operand", location);
+        if (!resolvedTaskType)
+          return nullptr;
+
+        auto *taskNamed = std::get_if<ast::TypeNamed>(&resolvedTaskType->kind);
+        if (!taskNamed) {
+          ++errorCount_;
+          emitError(location) << "scope.await operand must resolve to Task<T>";
+          return nullptr;
+        }
+
+        if ((!taskNamed->type_args || taskNamed->type_args->size() != 1) &&
+            resolveTypeAlias(taskNamed->name) != taskNamed->name) {
+          if (const auto *aliasType = resolveTypeAliasExpr(taskNamed->name)) {
+            if (const auto *aliasNamed = std::get_if<ast::TypeNamed>(&aliasType->kind))
+              taskNamed = aliasNamed;
+          }
+        }
+
+        auto taskName = resolveTypeAlias(taskNamed->name);
+        if ((taskName != "Task" && taskName != "scope.Task") ||
+            !(taskNamed->type_args && taskNamed->type_args->size() == 1)) {
+          ++errorCount_;
+          emitError(location) << "scope.await operand must resolve to Task<T>";
+          return nullptr;
+        }
+
+        return convertTypeOrError((*taskNamed->type_args)[0].value,
+                                  "cannot determine scope.await result type", location);
+      };
+
+      auto resultType = resolveScopeAwaitResultType();
+      if (!resultType)
         return nullptr;
-      }
 
       auto loadedResult = mlir::LLVM::LoadOp::create(builder, location, resultType, resultPtr);
       return loadedResult;

@@ -435,6 +435,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
           return nullptr;
         scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
                                                &matchNode->arms);
+        if (!scrutinee)
+          return nullptr;
         auto resultType = currentFunction.getResultTypes()[0];
         return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
       }
@@ -3566,7 +3568,16 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
         mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{val});
       } else {
         emitAllDrops();
-        mlir::func::ReturnOp::create(builder, location);
+        if (stmt.value && std::holds_alternative<ast::ExprMatch>(stmt.value->value.kind) &&
+            currentFunction && currentFunction.getResultTypes().size() == 1) {
+          // Match-expression failures should still leave a well-formed return
+          // while the earlier diagnostic aborts codegen.
+          auto fallback =
+              createDefaultValue(builder, location, currentFunction.getResultTypes()[0]);
+          mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{fallback});
+        } else {
+          mlir::func::ReturnOp::create(builder, location);
+        }
       }
     } else {
       emitAllDrops();

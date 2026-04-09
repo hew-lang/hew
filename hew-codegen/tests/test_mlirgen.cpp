@@ -507,6 +507,25 @@ static hew::ast::StmtFor *findFirstForStmt(hew::ast::FnDecl &fn) {
   return nullptr;
 }
 
+static hew::ast::StmtMatch *findFirstMatchStmt(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *matchStmt = std::get_if<hew::ast::StmtMatch>(&stmt->value.kind))
+      return matchStmt;
+  }
+  return nullptr;
+}
+
+static hew::ast::Spanned<hew::ast::Expr> *findReturnedMatchExpr(hew::ast::FnDecl &fn) {
+  for (auto &stmt : fn.body.stmts) {
+    auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+    if (!retStmt || !retStmt->value)
+      continue;
+    if (std::holds_alternative<hew::ast::ExprMatch>(retStmt->value->value.kind))
+      return &*retStmt->value;
+  }
+  return nullptr;
+}
+
 static hew::ast::Program
 makeIdentifierAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKind) {
   using namespace hew::ast;
@@ -3329,6 +3348,151 @@ fn broken_materialized_range(lo: u64, hi: u64) -> int {
   if (stderrText.find("module verification failed") != std::string::npos) {
     FAIL("unexpected downstream verifier failure for materialized range metadata");
     return;
+  }
+
+  PASS();
+}
+
+static void test_indirect_enum_match_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_match_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn head_or_zero(list: List) -> int {
+    match list {
+        Nil => 0,
+        Cons(head, _) => head,
+    }
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "head_or_zero");
+  if (!fn) {
+    FAIL("head_or_zero function not found");
+    return;
+  }
+
+  auto *matchStmt = findFirstMatchStmt(*fn);
+  if (!matchStmt) {
+    FAIL("expected indirect enum trailing match statement");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, matchStmt->scrutinee.span)) {
+    FAIL("failed to remove expr_types entry for indirect enum match scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum scrutinee metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for match scrutinee indirect enum") ==
+      std::string::npos) {
+    FAIL("expected indirect enum match fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum match metadata");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_option_result_match_expr_missing_result_type_fails_closed() {
+  TEST(option_result_match_expr_missing_result_type_fails_closed);
+
+  struct MatchCase {
+    const char *label;
+    const char *fnName;
+    const char *source;
+  };
+  const MatchCase cases[] = {
+      {"Option", "unwrap_or_zero", R"(
+fn unwrap_or_zero(opt: Option<int>) -> int {
+    return match opt {
+        Some(value) => value,
+        None => 0,
+    };
+}
+  )"},
+      {"Result", "unwrap_result", R"(
+fn unwrap_result(res: Result<int, int>) -> int {
+    return match res {
+        Ok(value) => value,
+        Err(err) => err,
+    };
+}
+  )"},
+  };
+
+  for (const auto &testCase : cases) {
+    hew::ast::Program program;
+    if (!loadProgramFromSource(testCase.source, program)) {
+      FAIL("failed to load typed program");
+      return;
+    }
+
+    auto *fn = findFunctionDecl(program, testCase.fnName);
+    if (!fn) {
+      FAIL("match expression function not found");
+      return;
+    }
+
+    auto *matchExpr = findReturnedMatchExpr(*fn);
+    if (!matchExpr) {
+      FAIL("expected returned match expression");
+      return;
+    }
+
+    if (!eraseExprTypeEntryForSpan(program, matchExpr->span)) {
+      FAIL("failed to remove expr_types entry for match expression");
+      return;
+    }
+
+    mlir::MLIRContext ctx;
+    initContext(ctx);
+
+    hew::MLIRGen mlirGen(ctx);
+    mlir::ModuleOp module;
+    auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+    if (module) {
+      FAIL("expected MLIR generation failure when match expression metadata is missing");
+      module.getOperation()->destroy();
+      return;
+    }
+
+    if (stderrText.find("missing expr_types entry for match expression result type") ==
+        std::string::npos) {
+      FAIL("expected match-expression fail-closed diagnostic");
+      return;
+    }
+
+    if (stderrText.find("module verification failed") != std::string::npos) {
+      FAIL("unexpected downstream verifier failure for match expression metadata");
+      return;
+    }
   }
 
   PASS();
@@ -7231,6 +7395,8 @@ int main() {
   test_direct_unsigned_range_missing_expr_type_fails_closed();
   test_direct_unsigned_range_missing_upper_expr_type_fails_closed();
   test_materialized_unsigned_range_missing_expr_type_fails_closed();
+  test_indirect_enum_match_missing_scrutinee_expr_type_fails_closed();
+  test_option_result_match_expr_missing_result_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
   test_println_int_missing_expr_type_fails_closed();

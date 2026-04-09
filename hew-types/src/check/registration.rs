@@ -2130,95 +2130,102 @@ impl Checker {
         // `self.module_registry` borrow ends before we mutate `self.errors`.
         let load_error_detail: Option<String> = match self.module_registry.load(&module_path) {
             Ok(info) => {
-                // Clone all data from ModuleInfo before mutating self, because
-                // info borrows from self.module_registry.
-                let functions = info.functions.clone();
-                let wrapper_fns = info.wrapper_fns.clone();
-                let clean_names = info.clean_names.clone();
-                let handle_types = info.handle_types.clone();
-                let drop_types = info.drop_types.clone();
+                if info.unsupported_type_signatures.is_empty() {
+                    // Clone all data from ModuleInfo before mutating self, because
+                    // info borrows from self.module_registry.
+                    let functions = info.functions.clone();
+                    let wrapper_fns = info.wrapper_fns.clone();
+                    let clean_names = info.clean_names.clone();
+                    let handle_types = info.handle_types.clone();
+                    let drop_types = info.drop_types.clone();
 
-                let short = module_path
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&module_path)
-                    .to_string();
+                    let short = module_path
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&module_path)
+                        .to_string();
 
-                // Register extern C function signatures
-                for (name, params, ret) in functions {
-                    let accepts_kwargs = module_path == "std::misc::log"
-                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                    let sig = FnSig {
-                        params,
-                        return_type: ret,
-                        accepts_kwargs,
-                        ..FnSig::default()
-                    };
-                    self.unsafe_functions.insert(name.clone());
-                    self.fn_sigs.insert(name, sig);
-                }
+                    // Register extern C function signatures
+                    for (name, params, ret) in functions {
+                        let accepts_kwargs = module_path == "std::misc::log"
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                        let sig = FnSig {
+                            params,
+                            return_type: ret,
+                            accepts_kwargs,
+                            ..FnSig::default()
+                        };
+                        self.unsafe_functions.insert(name.clone());
+                        self.fn_sigs.insert(name, sig);
+                    }
 
-                // Register wrapper pub fn signatures
-                for (name, params, ret) in wrapper_fns {
-                    let accepts_kwargs = module_path == "std::misc::log"
-                        && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
-                    let sig = FnSig {
-                        params,
-                        return_type: ret,
-                        accepts_kwargs,
-                        ..FnSig::default()
-                    };
-                    self.fn_sigs.insert(name, sig);
-                }
+                    // Register wrapper pub fn signatures
+                    for (name, params, ret) in wrapper_fns {
+                        let accepts_kwargs = module_path == "std::misc::log"
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                        let sig = FnSig {
+                            params,
+                            return_type: ret,
+                            accepts_kwargs,
+                            ..FnSig::default()
+                        };
+                        self.fn_sigs.insert(name, sig);
+                    }
 
-                // Register module and clean names
-                self.modules.insert(short.clone());
-                if let Some(span) = import_span {
-                    self.import_spans.insert(
-                        ImportKey::new(self.current_module.clone(), short.clone()),
-                        (span.clone(), self.current_module.clone()),
-                    );
-                }
-                for (method, c_symbol) in &clean_names {
-                    // Prefer the wrapper function's own signature (registered under
-                    // the method name) over the extern C function's signature.
-                    // E.g. `log.setup()` should have 0 params (the wrapper's sig),
-                    // not 1 param (the extern `hew_log_set_level(level)` sig).
-                    let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
-                    let sig = wrapper_sig
-                        .clone()
-                        .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
-                    if let Some(sig) = sig {
-                        let key = format!("{short}.{method}");
-                        self.module_fn_exports.insert(key.clone());
-                        self.fn_sigs.insert(key.clone(), sig);
-                        if wrapper_sig.is_none() {
-                            self.unsafe_functions.insert(key);
+                    // Register module and clean names
+                    self.modules.insert(short.clone());
+                    if let Some(span) = import_span {
+                        self.import_spans.insert(
+                            ImportKey::new(self.current_module.clone(), short.clone()),
+                            (span.clone(), self.current_module.clone()),
+                        );
+                    }
+                    for (method, c_symbol) in &clean_names {
+                        // Prefer the wrapper function's own signature (registered under
+                        // the method name) over the extern C function's signature.
+                        // E.g. `log.setup()` should have 0 params (the wrapper's sig),
+                        // not 1 param (the extern `hew_log_set_level(level)` sig).
+                        let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                        let sig = wrapper_sig
+                            .clone()
+                            .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                        if let Some(sig) = sig {
+                            let key = format!("{short}.{method}");
+                            self.module_fn_exports.insert(key.clone());
+                            self.fn_sigs.insert(key.clone(), sig);
+                            if wrapper_sig.is_none() {
+                                self.unsafe_functions.insert(key);
+                            }
                         }
                     }
-                }
 
-                // Register handle type names so they can be used in type annotations
-                for type_name in &handle_types {
-                    self.known_types.insert(type_name.clone());
-                }
-
-                // Populate TraitRegistry with handle/drop types
-                for ht in &handle_types {
-                    self.registry.register_handle_type(ht.clone());
-                }
-                for dt in &drop_types {
-                    self.registry.register_drop_type(dt.clone());
-                }
-
-                // Process resolved Hew source items from stdlib modules that ship
-                // alongside their C/Rust bindings so trait methods stay visible.
-                if let Some(ref resolved_items) = decl.resolved_items {
-                    if !self.stdlib_hew_source_already_registered(decl, &module_path) {
-                        self.register_stdlib_hew_items(&short, resolved_items);
+                    // Register handle type names so they can be used in type annotations
+                    for type_name in &handle_types {
+                        self.known_types.insert(type_name.clone());
                     }
+
+                    // Populate TraitRegistry with handle/drop types
+                    for ht in &handle_types {
+                        self.registry.register_handle_type(ht.clone());
+                    }
+                    for dt in &drop_types {
+                        self.registry.register_drop_type(dt.clone());
+                    }
+
+                    // Process resolved Hew source items from stdlib modules that ship
+                    // alongside their C/Rust bindings so trait methods stay visible.
+                    if let Some(ref resolved_items) = decl.resolved_items {
+                        if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                            self.register_stdlib_hew_items(&short, resolved_items);
+                        }
+                    }
+                    return;
                 }
-                return;
+                Some(format!(
+                    "module file contains unsupported slice annotations in signature(s): {}. \
+                     MLIR lowering cannot lower slice types yet",
+                    info.unsupported_type_signatures.join(", ")
+                ))
             }
             Err(ModuleError::NotFound { .. }) => {
                 Some("module not found in any search path".to_string())

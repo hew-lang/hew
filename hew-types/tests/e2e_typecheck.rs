@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hew_types::error::TypeErrorKind;
 
@@ -1921,6 +1922,49 @@ fn slice_param_annotation_rejected_before_codegen() {
                 && e.message.contains("slice annotations are not supported")
         ),
         "expected slice parameter annotation to fail before lowering, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn loader_registered_module_slice_signature_rejected_before_registration() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let search_root = repo_root()
+        .join("target")
+        .join(format!("issue856-loader-{unique}"));
+    let module_dir = search_root.join("std").join("issue856mod");
+    fs::create_dir_all(&module_dir).expect("create module dir");
+    fs::write(
+        module_dir.join("issue856mod.hew"),
+        "pub fn take(xs: [i32]) {}\n",
+    )
+    .expect("write module file");
+
+    let parse_result = hew_parser::parse("import std::issue856mod;\n\nfn main() {}\n");
+    assert!(
+        parse_result.errors.is_empty(),
+        "parse errors: {:#?}",
+        parse_result.errors
+    );
+
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
+            search_root.clone(),
+        ]));
+    let output = checker.check_program(&parse_result.program);
+    let _ = fs::remove_dir_all(&search_root);
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::UnresolvedImport
+                && e.message.contains(
+                    "unsupported slice annotations in signature(s): public function `take`",
+                )
+        }),
+        "expected registry-loaded module slice signature to fail closed at import, got: {:#?}",
         output.errors
     );
 }

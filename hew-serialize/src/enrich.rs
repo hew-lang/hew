@@ -285,7 +285,7 @@ fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bo
         return false;
     };
     if name == STREAM || name == QUALIFIED_STREAM {
-        return matches!(method, "map" | "filter" | "take" | "chunks" | "decode");
+        return matches!(method, "map" | "filter" | "take" | "decode");
     }
     if name == SINK || name == QUALIFIED_SINK {
         return matches!(method, "encode");
@@ -4063,20 +4063,6 @@ mod tests {
         assert!(
             matches!(&expr_take.0, Expr::MethodCall { .. }),
             "stream.take() must remain a MethodCall for later lowering"
-        );
-
-        let mut expr_chunks = make_method_call_expr("s", 2, "chunks");
-        let mut diagnostics_chunks = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_chunks, &tco, &mut diagnostics_chunks, &registry)
-            .unwrap();
-
-        assert!(
-            diagnostics_chunks.is_empty(),
-            "stream.chunks() is lowered by codegen and must not emit a serializer diagnostic"
-        );
-        assert!(
-            matches!(&expr_chunks.0, Expr::MethodCall { .. }),
-            "stream.chunks() must remain a MethodCall for later lowering"
         );
     }
 

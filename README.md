@@ -159,9 +159,9 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 - **hew-cli/** — Compiler driver (`hew` binary)
 - **hew-lexer/** — Tokenizer
 - **hew-parser/** — Recursive-descent + Pratt precedence parser
-- **hew-types/** — Bidirectional type checker with Hindley-Milner inference
+- **hew-types/** — Bidirectional type checker with Hindley-Milner inference; warnings carry source-module attribution so diagnostics in multi-module programs identify which module triggered each warning
 - **hew-serialize/** — MessagePack AST serialization
-- **hew-codegen/** — MLIR middle layer + LLVM backend (Hew dialect ops, lowering, code generation)
+- **hew-codegen/** — MLIR middle layer + LLVM backend (Hew dialect ops, lowering, code generation); built as a C++ library and **embedded inside the `hew` binary** — not a separately shipped executable
 - **hew-astgen/** — Generates C++ msgpack deserialization from AST definitions
 - **hew-runtime/** — Pure Rust actor runtime (`libhew_runtime.a`) with node mesh networking, QUIC transport, SWIM cluster membership, and cross-node actor registry; also compiles for WASM targets
 - **hew-cabi/** — C ABI bridge for stdlib FFI bindings

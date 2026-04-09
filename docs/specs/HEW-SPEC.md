@@ -9,12 +9,12 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 
 This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, `machine` types, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
 
-**Release alignment note (v0.2.0):**
+**Release alignment note (v0.2.2):**
 
 This document has been re-audited against the shipped compiler/runtime in
-release **v0.2.0**. Where earlier drafts described aspirational APIs, the text
-below now prefers what the parser, type-checker, codegen, runtime, and shipped
-stdlib implement today.
+release **v0.2.0** and incrementally updated through **v0.2.2**. Where earlier
+drafts described aspirational APIs, the text below now prefers what the
+parser, type-checker, codegen, runtime, and shipped stdlib implement today.
 
 Key corrections in this audit:
 
@@ -5090,6 +5090,13 @@ If you want this to be directly executable as an engineering project, the next m
 ---
 
 ## Changelog
+
+### v0.2.2 (user-facing-docs-update)
+
+- **Updated release alignment note** — bumped framing from v0.2.0 to v0.2.2
+  to match the current `Cargo.toml` workspace version.
+- No semantic changes to the language specification in this revision; all
+  constructs documented below remain as specified in v0.2.1.
 
 ### v0.2.1 (spec-machine-map-alignment)
 

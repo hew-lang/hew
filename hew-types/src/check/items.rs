@@ -491,7 +491,7 @@ impl Checker {
                             "define the trait or the type in this module".to_string(),
                             "this may be disallowed in a future version (orphan rule)".to_string(),
                         ],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
             }

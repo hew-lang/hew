@@ -51,7 +51,7 @@ impl Checker {
                     suggestions: vec![
                         "remove this code or restructure the control flow".to_string()
                     ],
-                    source_module: None,
+                    source_module: self.current_module.clone(),
                 });
                 // Still type-check the remaining statements for error coverage,
                 // but only emit the unreachable warning once per block.
@@ -123,7 +123,7 @@ impl Checker {
                     suggestions: vec![
                         "remove this code or restructure the control flow".to_string()
                     ],
-                    source_module: None,
+                    source_module: self.current_module.clone(),
                 });
             }
             // When the block has a known expected type, use check_against so that
@@ -299,7 +299,7 @@ impl Checker {
                             message: format!("binding `{name}` has unit type and carries no value"),
                             notes: vec![],
                             suggestions: vec!["prefix with underscore: `_name`".to_string()],
-                            source_module: None,
+                            source_module: self.current_module.clone(),
                         });
                     }
                     self.check_shadowing(name, &pattern.1);
@@ -697,7 +697,7 @@ impl Checker {
                         suggestions: vec![
                             "use `loop { ... }` instead of `while true { ... }`".to_string()
                         ],
-                        source_module: None,
+                        source_module: self.current_module.clone(),
                     });
                 }
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);

@@ -634,6 +634,65 @@ fn for_await_stream_missing_element_type_errors() {
     );
 }
 
+/// `for await item in actor.receive_gen()` must keep the actor mailbox path and
+/// not reuse first-class `Stream<T>` element restrictions.
+#[test]
+fn for_await_receive_generator_int_stream_typechecks() {
+    let output = typecheck_inline(
+        r"
+        actor Counter {
+            receive gen fn count_up() -> int {
+                yield 1;
+            }
+        }
+
+        fn main() {
+            let c = spawn Counter();
+            for await val in c.count_up() {
+                println(val);
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "for await over receive gen Stream<int> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Actor method calls in `for await` must target `receive gen fn`, even if the
+/// method's return type is `Stream<T>`.
+#[test]
+fn for_await_actor_method_stream_requires_receive_gen() {
+    let output = typecheck_inline(
+        r#"
+        extern "C" { fn fake_stream() -> Stream<String>; }
+
+        actor Reader {
+            receive fn lines() -> Stream<String> {
+                unsafe { fake_stream() }
+            }
+        }
+
+        fn main() {
+            let r = spawn Reader();
+            for await line in r.lines() {
+                println(line);
+            }
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("requires a `receive gen fn`")
+        }),
+        "expected InvalidOperation for actor method Stream<T> without receive gen, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in vec` must error — Vec is a sync iterable.
 #[test]
 fn for_await_over_vec_errors() {

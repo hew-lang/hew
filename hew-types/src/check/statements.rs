@@ -6,6 +6,32 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 
 impl Checker {
+    fn for_await_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
+        let Expr::MethodCall {
+            receiver, method, ..
+        } = iterable
+        else {
+            return None;
+        };
+        let receiver_ty = {
+            let ty = self.synthesize(&receiver.0, &receiver.1);
+            self.subst.resolve(&ty)
+        };
+        let actor_ty = match receiver_ty.as_actor_handle() {
+            Some(actor_ty) => self.subst.resolve(actor_ty),
+            None => return None,
+        };
+        let Ty::Named { name, .. } = actor_ty else {
+            return None;
+        };
+        let actor_name = self
+            .type_defs
+            .get(&name)
+            .filter(|def| def.kind == TypeDefKind::Actor)
+            .map_or(name, |def| def.name.clone());
+        Some(format!("{actor_name}::{method}"))
+    }
+
     pub(super) fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {
         self.env.push_scope();
         // Snapshot const_values so let-bound literal entries added in this
@@ -557,6 +583,32 @@ impl Checker {
                                         .to_string(),
                                 );
                                 Ty::Error
+                            } else if let Some(method_name) =
+                                self.for_await_actor_method_name(&iterable.0)
+                            {
+                                if self.receive_generator_methods.contains(&method_name) {
+                                    let resolved_inner = self.subst.resolve(&inner);
+                                    if ty_has_unresolved_inference_var(&resolved_inner) {
+                                        self.report_error(
+                                            TypeErrorKind::InvalidOperation,
+                                            &iterable.1,
+                                            "`for await` over a generator receive fn requires a resolved element type"
+                                                .to_string(),
+                                        );
+                                        Ty::Error
+                                    } else {
+                                        resolved_inner
+                                    }
+                                } else {
+                                    self.report_error(
+                                        TypeErrorKind::InvalidOperation,
+                                        &iterable.1,
+                                        format!(
+                                            "`for await` over actor method `{method_name}` requires a `receive gen fn`"
+                                        ),
+                                    );
+                                    Ty::Error
+                                }
                             } else {
                                 let _ = self.validate_stream_sink_element_type(
                                     args,

@@ -2022,6 +2022,9 @@ impl Checker {
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
+        if rf.is_generator {
+            self.receive_generator_methods.insert(method_name.clone());
+        }
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
         self.fn_sigs.insert(method_name, sig);
     }

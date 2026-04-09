@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "../src/mlir/MLIRGenHelpers.h"
+#include "hew/ast_helpers.h"
 #include "hew/codegen.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
@@ -3449,6 +3450,224 @@ fn broken_unsigned_cmp() -> bool {
 
   if (stderrText.find("module verification failed") != std::string::npos) {
     FAIL("unexpected downstream verifier failure for missing expr_types");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: println_int missing expr_type metadata fails closed
+// ============================================================================
+static void test_println_int_missing_expr_type_fails_closed() {
+  TEST(println_int_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_print(x: int) {
+    println_int(x);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_print");
+  if (!fn) {
+    FAIL("broken_print function not found");
+    return;
+  }
+
+  // println_int(x) is a statement expression: stmts[0] -> StmtExpression -> ExprCall.
+  if (fn->body.stmts.empty()) {
+    FAIL("expected at least one statement in broken_print");
+    return;
+  }
+  auto *stmtExpr = std::get_if<hew::ast::StmtExpression>(&fn->body.stmts[0]->value.kind);
+  if (!stmtExpr) {
+    FAIL("expected first statement to be an expression statement");
+    return;
+  }
+  auto *call = std::get_if<hew::ast::ExprCall>(&stmtExpr->expr.value.kind);
+  if (!call || call->args.empty()) {
+    FAIL("expected expression statement to be a call with arguments");
+    return;
+  }
+
+  const auto &argSpan = hew::ast::callArgExpr(call->args[0]).span;
+  if (!eraseExprTypeEntryForSpan(program, argSpan)) {
+    FAIL("failed to remove expr_types entry for println_int argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when println_int argument type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for println_int argument signedness") ==
+      std::string::npos) {
+    FAIL("expected println_int fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for println_int missing type");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: int_to_string missing expr_type metadata fails closed
+// ============================================================================
+static void test_int_to_string_missing_expr_type_fails_closed() {
+  TEST(int_to_string_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_to_string(x: int) -> string {
+    int_to_string(x)
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_to_string");
+  if (!fn) {
+    FAIL("broken_to_string function not found");
+    return;
+  }
+
+  // int_to_string(x) is the trailing expression of the function body.
+  auto *call = fn->body.trailing_expr
+                   ? std::get_if<hew::ast::ExprCall>(&fn->body.trailing_expr->value.kind)
+                   : nullptr;
+  if (!call || call->args.empty()) {
+    FAIL("expected trailing ExprCall in broken_to_string");
+    return;
+  }
+
+  const auto &argSpan = hew::ast::callArgExpr(call->args[0]).span;
+  if (!eraseExprTypeEntryForSpan(program, argSpan)) {
+    FAIL("failed to remove expr_types entry for int_to_string argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when int_to_string argument type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for int_to_string argument signedness") ==
+      std::string::npos) {
+    FAIL("expected int_to_string fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for int_to_string missing type");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: for await on Receiver<T> with unresolved element type fails closed
+// ============================================================================
+static void test_for_await_receiver_missing_elem_type_fails_closed() {
+  TEST(for_await_receiver_missing_elem_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::channel::channel;
+
+fn drain(rx: channel.Receiver<String>) {
+    for await msg in rx {
+        println(msg);
+    }
+    rx.close();
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "drain");
+  if (!fn) {
+    FAIL("drain function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected for-await statement inside drain");
+    return;
+  }
+
+  // Corrupt the Receiver<T> parameter type by replacing its inner type arg
+  // with TypeInfer, simulating an unresolved channel element type leaking
+  // to the codegen boundary.
+  if (fn->params.empty()) {
+    FAIL("drain function has no parameters");
+    return;
+  }
+  auto *rxNamed = std::get_if<hew::ast::TypeNamed>(&fn->params[0].ty.value.kind);
+  if (!rxNamed || !rxNamed->type_args || rxNamed->type_args->empty()) {
+    FAIL("rx parameter does not have a qualified Receiver type with type arg");
+    return;
+  }
+  // Replace the inner type arg (String) with TypeInfer to simulate a leaked
+  // inference hole on the channel element type.
+  (*rxNamed->type_args)[0].value.kind = hew::ast::TypeInfer{};
+
+  // Also erase the iterable span from expr_types so the first resolution
+  // strategy (resolvedTypeOf) cannot supply a well-formed type.
+  eraseExprTypeEntryForSpan(program, forStmt->iterable.span);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when Receiver<T> has TypeInfer element type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("requires a resolved named element type") == std::string::npos) {
+    FAIL("expected Receiver<TypeInfer> fail-closed diagnostic");
+    return;
+  }
+
+  // No downstream verifier failures expected.
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for Receiver<TypeInfer>");
     return;
   }
 
@@ -6955,6 +7174,9 @@ int main() {
   test_materialized_unsigned_range_missing_expr_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
+  test_println_int_missing_expr_type_fails_closed();
+  test_int_to_string_missing_expr_type_fails_closed();
+  test_for_await_receiver_missing_elem_type_fails_closed();
   test_return_stmt();
   test_logical_ops();
   test_unary_ops();

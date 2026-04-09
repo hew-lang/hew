@@ -1513,9 +1513,12 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       return nullptr;
     bool newline = (name == "println_int");
     auto printOp = hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
-    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
-      if (isUnsignedTypeExpr(*argType))
-        printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+    auto *argType = requireResolvedTypeOf(ast::callArgExpr(args[0]).span,
+                                          name + " argument signedness", location);
+    if (!argType)
+      return nullptr;
+    if (isUnsignedTypeExpr(*argType))
+      printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
     return nullptr;
   }
 
@@ -2261,9 +2264,12 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!n)
       return nullptr;
     auto toStr = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context), n);
-    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
-      if (isUnsignedTypeExpr(*argType))
-        toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
+    auto *argType = requireResolvedTypeOf(ast::callArgExpr(args[0]).span,
+                                          name + " argument signedness", location);
+    if (!argType)
+      return nullptr;
+    if (isUnsignedTypeExpr(*argType))
+      toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
     return toStr.getResult();
   }
 

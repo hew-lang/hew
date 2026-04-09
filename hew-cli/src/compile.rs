@@ -319,52 +319,6 @@ fn build_module_search_paths() -> Vec<PathBuf> {
     hew_types::module_registry::build_module_search_paths()
 }
 
-/// Build a map from dotted module name (e.g. `"net.http"`) to
-/// `(source_text, display_filename)` for every non-root module in the program.
-///
-/// Used by `typecheck_program` to route diagnostics from non-root module
-/// bodies to the correct source file when rendering them.
-///
-/// Source texts are read on demand from `module.source_paths[0]`; modules
-/// with no source path on disk (e.g. in-memory unit-test programs) are
-/// silently skipped — their diagnostics fall back to the root source.
-///
-/// # Platform notes
-///
-/// This function uses `std::fs::read_to_string`, which requires filesystem
-/// access.
-///
-/// // WASM-TODO: `std::fs` is unavailable in WASM / no-fs contexts, so this
-/// // map will always be empty there and all diagnostics will fall back to
-/// // the root-source rendering (matching pre-fix behaviour — no regression,
-/// // but non-root module errors still show the wrong file in WASM mode).
-/// // Tracked for the WASM render pass.
-fn build_module_source_map(
-    program: &hew_parser::ast::Program,
-) -> HashMap<String, (String, String)> {
-    let Some(ref mg) = program.module_graph else {
-        return HashMap::new();
-    };
-    let mut map = HashMap::new();
-    for mod_id in &mg.topo_order {
-        if *mod_id == mg.root {
-            continue;
-        }
-        let Some(module) = mg.modules.get(mod_id) else {
-            continue;
-        };
-        let Some(path) = module.source_paths.first() else {
-            continue;
-        };
-        if let Ok(text) = std::fs::read_to_string(path) {
-            let display = path.display().to_string();
-            let key = mod_id.path.join(".");
-            map.insert(key, (text, display));
-        }
-    }
-    map
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline stage helpers
 // ---------------------------------------------------------------------------
@@ -519,42 +473,19 @@ fn typecheck_program(
     // Build a map from dotted module name → (source_text, display_filename) so
     // diagnostics from non-root module bodies are rendered against the correct
     // source file rather than the root compilation unit.
-    let module_source_map = build_module_source_map(program);
-
-    // Helper: pick the right (source, filename) for a diagnostic.
-    let source_for = |diag: &hew_types::TypeError| -> (&str, &str) {
-        if let Some(ref mod_name) = diag.source_module {
-            if let Some((mod_src, mod_file)) = module_source_map.get(mod_name.as_str()) {
-                return (mod_src.as_str(), mod_file.as_str());
-            }
-        }
-        (source, input)
-    };
-
-    for err in &tco.errors {
-        let (src, fname) = source_for(err);
-        super::diagnostic::render_diagnostic_with_raw_notes(
-            src,
-            fname,
-            &err.span,
-            &err.message,
-            &err.notes,
-            &err.suggestions,
-        );
-    }
-
-    // Render warnings (these don't block compilation).
-    for warn in &tco.warnings {
-        let (src, fname) = source_for(warn);
-        super::diagnostic::render_warning_with_raw_notes(
-            src,
-            fname,
-            &warn.span,
-            &warn.message,
-            &warn.notes,
-            &warn.suggestions,
-        );
-    }
+    let module_source_map = super::diagnostic::build_module_source_map(program);
+    super::diagnostic::render_type_diagnostics_with_sources(
+        source,
+        input,
+        &tco.errors,
+        &module_source_map,
+    );
+    super::diagnostic::render_type_diagnostics_with_sources(
+        source,
+        input,
+        &tco.warnings,
+        &module_source_map,
+    );
 
     if has_errors {
         return Err("type errors found".into());
@@ -2579,8 +2510,8 @@ fn helper() -> int { 41 }
     // ── multi-file diagnostic source routing ───────────────────────────────────
     //
     // These tests prove that type errors originating in non-root module bodies
-    // carry the correct `source_module` tag AND that `build_module_source_map`
-    // correctly maps module names to their source files.
+    // carry the correct `source_module` tag AND that the shared diagnostic
+    // module-source map correctly maps module names to their source files.
 
     /// A type error in an imported module body must have `source_module` set to
     /// the imported module's dotted name, not `None`.
@@ -2643,7 +2574,7 @@ fn helper() -> int { 41 }
         }
     }
 
-    /// `build_module_source_map` must populate an entry for each non-root
+    /// `diagnostic::build_module_source_map` must populate an entry for each non-root
     /// module that has a source file on disk.
     #[test]
     fn build_module_source_map_populates_non_root_entries() {
@@ -2678,7 +2609,7 @@ fn helper() -> int { 41 }
         .expect("fixture must build a module graph");
         program.module_graph = Some(module_graph);
 
-        let source_map = build_module_source_map(&program);
+        let source_map = crate::diagnostic::build_module_source_map(&program);
 
         assert!(
             !source_map.is_empty(),

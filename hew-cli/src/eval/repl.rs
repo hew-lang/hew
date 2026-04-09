@@ -77,6 +77,7 @@ enum EvalCheckFailure {
         source: String,
         diagnostic_view: Option<SyntheticDiagnosticView>,
         errors: Vec<hew_types::TypeError>,
+        module_source_map: Box<crate::diagnostic::ModuleSourceMap>,
     },
 }
 
@@ -130,19 +131,28 @@ fn render_eval_type_diagnostics(
     input_name: &str,
     diagnostic_view: Option<&SyntheticDiagnosticView>,
     diagnostics: &[hew_types::TypeError],
+    module_source_map: &crate::diagnostic::ModuleSourceMap,
 ) {
+    let (remapped, original) = split_eval_type_diagnostics(diagnostic_view, diagnostics);
+
     if let Some(diagnostic_view) = diagnostic_view {
-        if let Some(diagnostics) = remap_type_diagnostics(diagnostic_view, diagnostics) {
+        if !remapped.is_empty() {
             crate::diagnostic::render_type_diagnostics(
                 &diagnostic_view.source,
                 input_name,
-                &diagnostics,
+                &remapped,
             );
-            return;
         }
     }
 
-    crate::diagnostic::render_type_diagnostics(source, input_name, diagnostics);
+    if !original.is_empty() {
+        crate::diagnostic::render_type_diagnostics_with_sources(
+            source,
+            input_name,
+            &original,
+            module_source_map,
+        );
+    }
 }
 
 fn remap_parse_errors(
@@ -174,29 +184,47 @@ fn remap_parse_errors(
     Some(remapped)
 }
 
-fn remap_type_diagnostics(
+fn remap_type_diagnostic(
     diagnostic_view: &SyntheticDiagnosticView,
-    diagnostics: &[hew_types::TypeError],
-) -> Option<Vec<hew_types::TypeError>> {
-    diagnostics
+    diagnostic: &hew_types::TypeError,
+) -> Option<hew_types::TypeError> {
+    let span = remap_type_span(diagnostic_view, &diagnostic.span)?;
+    let notes = diagnostic
+        .notes
         .iter()
-        .map(|diagnostic| {
-            let span = remap_type_span(diagnostic_view, &diagnostic.span)?;
-            let notes = diagnostic
-                .notes
-                .iter()
-                .map(|(span, message)| {
-                    Some((remap_type_span(diagnostic_view, span)?, message.clone()))
-                })
-                .collect::<Option<Vec<_>>>()?;
+        .map(|(span, message)| Some((remap_type_span(diagnostic_view, span)?, message.clone())))
+        .collect::<Option<Vec<_>>>()?;
 
-            Some(hew_types::TypeError {
-                span,
-                notes,
-                ..diagnostic.clone()
-            })
-        })
-        .collect()
+    Some(hew_types::TypeError {
+        span,
+        notes,
+        ..diagnostic.clone()
+    })
+}
+
+fn split_eval_type_diagnostics(
+    diagnostic_view: Option<&SyntheticDiagnosticView>,
+    diagnostics: &[hew_types::TypeError],
+) -> (Vec<hew_types::TypeError>, Vec<hew_types::TypeError>) {
+    let mut remapped = Vec::new();
+    let mut original = Vec::new();
+
+    for diagnostic in diagnostics {
+        if diagnostic.source_module.is_none() {
+            if let Some(diagnostic_view) = diagnostic_view {
+                if let Some(remapped_diagnostic) =
+                    remap_type_diagnostic(diagnostic_view, diagnostic)
+                {
+                    remapped.push(remapped_diagnostic);
+                    continue;
+                }
+            }
+        }
+
+        original.push(diagnostic.clone());
+    }
+
+    (remapped, original)
 }
 
 enum RemappedParseSpan {
@@ -360,12 +388,14 @@ impl ReplSession {
                 source,
                 diagnostic_view,
                 errors,
+                module_source_map,
             }) => {
                 render_eval_type_diagnostics(
                     &source,
                     input_name,
                     diagnostic_view.as_ref(),
                     &errors,
+                    &module_source_map,
                 );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
@@ -419,12 +449,15 @@ impl ReplSession {
             && !program_has_imports(&parse_result.program)
         {
             let tco = typecheck_program(&parse_result.program);
+            let module_source_map =
+                crate::diagnostic::build_module_source_map(&parse_result.program);
             if !tco.errors.is_empty() {
                 render_eval_type_diagnostics(
                     &synthetic_program.source,
                     input_name,
                     synthetic_program.diagnostic_view.as_ref(),
                     &tco.errors,
+                    &module_source_map,
                 );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
@@ -474,11 +507,13 @@ impl ReplSession {
         }
 
         let tco = typecheck_program(&parse_result.program);
+        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
         if !tco.errors.is_empty() {
             return Err(EvalCheckFailure::Type {
                 source,
                 diagnostic_view: None,
                 errors: tco.errors,
+                module_source_map: Box::new(module_source_map),
             });
         }
 
@@ -554,12 +589,14 @@ impl ReplSession {
                 source,
                 diagnostic_view,
                 errors,
+                module_source_map,
             }) => {
                 render_eval_type_diagnostics(
                     &source,
                     input_name,
                     diagnostic_view.as_ref(),
                     &errors,
+                    &module_source_map,
                 );
                 Err(CliEvalError::DiagnosticsRendered)
             }
@@ -701,12 +738,14 @@ impl ReplSession {
         }
 
         let tco = typecheck_program(&parse_result.program);
+        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
 
         if !tco.errors.is_empty() {
             return Err(EvalCheckFailure::Type {
                 source: synthetic_program.source,
                 diagnostic_view,
                 errors: tco.errors,
+                module_source_map: Box::new(module_source_map),
             });
         }
 
@@ -1348,6 +1387,43 @@ mod tests {
 
         assert_eq!(remap_type_span(&diagnostic_view, &(18..19)), Some(6..7));
         assert_eq!(remap_type_span(&diagnostic_view, &(19..20)), None);
+    }
+
+    #[test]
+    fn split_eval_type_diagnostics_keeps_non_root_attribution() {
+        let diagnostic_view = SyntheticDiagnosticView {
+            source: "1 + \"x\"".to_string(),
+            input_span: 12..19,
+        };
+        let root_diagnostic = hew_types::TypeError::new(
+            hew_types::error::TypeErrorKind::InvalidOperation,
+            12..19,
+            "cannot apply `+` to `int` and `String`",
+        );
+        let dep_diagnostic = hew_types::TypeError::new(
+            hew_types::error::TypeErrorKind::ReturnTypeMismatch,
+            0..4,
+            "return type mismatch: expected `int`, found `bool`",
+        )
+        .with_source_module("dep");
+
+        let (remapped, original) = split_eval_type_diagnostics(
+            Some(&diagnostic_view),
+            &[root_diagnostic, dep_diagnostic.clone()],
+        );
+
+        assert_eq!(remapped.len(), 1);
+        assert_eq!(remapped[0].span, 0..7);
+        assert_eq!(original.len(), 1);
+        assert_eq!(original[0].span, dep_diagnostic.span);
+        assert_eq!(
+            original[0].message.as_str(),
+            dep_diagnostic.message.as_str()
+        );
+        assert_eq!(
+            original[0].source_module.as_deref(),
+            dep_diagnostic.source_module.as_deref()
+        );
     }
 
     #[test]

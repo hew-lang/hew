@@ -669,6 +669,36 @@ fn eval_repl_load_parse_errors_render_cli_diagnostics() {
 }
 
 #[test]
+fn eval_repl_load_non_root_type_errors_render_imported_filename() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.hew");
+    let dep_path = dir.path().join("dep.hew");
+    std::fs::write(&path, "import \"dep.hew\";\n\nfn main() {}\n").unwrap();
+    std::fs::write(&dep_path, "pub fn mistyped() -> i64 { true }\n").unwrap();
+
+    let output = run_eval_with_stdin(&["eval"], &format!(":load {}\n:quit\n", path.display()));
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let dep_header = format!("{}:1:", dep_path.display());
+    assert!(stderr.contains(&dep_header), "stderr: {stderr}");
+    assert!(
+        stderr.contains("pub fn mistyped() -> i64 { true }"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("diagnostics already rendered"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn eval_repl_load_valid_file_succeeds() {
     if !require_codegen() {
         return;

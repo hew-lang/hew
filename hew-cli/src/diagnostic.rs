@@ -3,6 +3,7 @@
 //! Produces Rust/Elm-style diagnostics with `^^^` underlines pointing at the
 //! relevant source location.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 // ANSI colour helpers
@@ -19,6 +20,8 @@ pub struct DiagnosticNote<'a> {
     pub span: &'a Range<usize>,
     pub message: &'a str,
 }
+
+pub(crate) type ModuleSourceMap = HashMap<String, (String, String)>;
 
 /// Render a diagnostic message with source context and span underline.
 ///
@@ -138,6 +141,49 @@ pub fn render_warning_with_raw_notes(
     render_warning(source, filename, span, message, &notes, suggestions);
 }
 
+/// Build a map from dotted module path to `(source_text, display_filename)` for
+/// every non-root module in the program that has an on-disk source file.
+///
+/// // WASM-TODO: `std::fs` is unavailable in WASM / no-fs contexts, so this
+/// // map is empty there and non-root diagnostics fall back to root-source
+/// // rendering until the WASM diagnostic pass grows a source-provider hook.
+pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> ModuleSourceMap {
+    let Some(ref module_graph) = program.module_graph else {
+        return ModuleSourceMap::new();
+    };
+
+    let mut map = ModuleSourceMap::new();
+    for mod_id in &module_graph.topo_order {
+        if *mod_id == module_graph.root {
+            continue;
+        }
+        let Some(module) = module_graph.modules.get(mod_id) else {
+            continue;
+        };
+        let Some(path) = module.source_paths.first() else {
+            continue;
+        };
+        if let Ok(text) = std::fs::read_to_string(path) {
+            map.insert(mod_id.path.join("."), (text, path.display().to_string()));
+        }
+    }
+    map
+}
+
+fn type_diagnostic_source<'a>(
+    root_source: &'a str,
+    root_filename: &'a str,
+    diagnostic: &hew_types::TypeError,
+    module_source_map: &'a ModuleSourceMap,
+) -> (&'a str, &'a str) {
+    if let Some(ref mod_name) = diagnostic.source_module {
+        if let Some((mod_src, mod_file)) = module_source_map.get(mod_name.as_str()) {
+            return (mod_src.as_str(), mod_file.as_str());
+        }
+    }
+    (root_source, root_filename)
+}
+
 /// Render parser diagnostics using the shared CLI diagnostic layout.
 pub fn render_parse_diagnostics(source: &str, filename: &str, errors: &[hew_parser::ParseError]) {
     for err in errors {
@@ -155,7 +201,21 @@ pub fn render_parse_diagnostics(source: &str, filename: &str, errors: &[hew_pars
 
 /// Render type-check diagnostics using the shared CLI diagnostic layout.
 pub fn render_type_diagnostics(source: &str, filename: &str, diagnostics: &[hew_types::TypeError]) {
+    let module_source_map = ModuleSourceMap::new();
+    render_type_diagnostics_with_sources(source, filename, diagnostics, &module_source_map);
+}
+
+/// Render type-check diagnostics, routing non-root diagnostics to their source
+/// modules when `source_module` attribution is available.
+pub(crate) fn render_type_diagnostics_with_sources(
+    root_source: &str,
+    root_filename: &str,
+    diagnostics: &[hew_types::TypeError],
+    module_source_map: &ModuleSourceMap,
+) {
     for diagnostic in diagnostics {
+        let (source, filename) =
+            type_diagnostic_source(root_source, root_filename, diagnostic, module_source_map);
         match diagnostic.severity {
             hew_types::error::Severity::Warning => render_warning_with_raw_notes(
                 source,
@@ -273,4 +333,56 @@ fn line_start_offset(source: &str, line: usize) -> usize {
     }
     // Past end — return source length
     source.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_type_error() -> hew_types::TypeError {
+        hew_types::TypeError::new(
+            hew_types::error::TypeErrorKind::UndefinedFunction,
+            0..4,
+            "cannot find function `oops` in this scope",
+        )
+    }
+
+    #[test]
+    fn type_diagnostic_source_prefers_attributed_module_source() {
+        let mut diagnostic = sample_type_error();
+        diagnostic.source_module = Some("dep".to_string());
+
+        let mut module_source_map = ModuleSourceMap::new();
+        module_source_map.insert(
+            "dep".to_string(),
+            ("pub fn oops() {}\n".to_string(), "dep.hew".to_string()),
+        );
+
+        let (source, filename) = type_diagnostic_source(
+            "fn main() {}\n",
+            "main.hew",
+            &diagnostic,
+            &module_source_map,
+        );
+
+        assert_eq!(source, "pub fn oops() {}\n");
+        assert_eq!(filename, "dep.hew");
+    }
+
+    #[test]
+    fn type_diagnostic_source_falls_back_to_root_when_module_missing() {
+        let mut diagnostic = sample_type_error();
+        diagnostic.source_module = Some("dep".to_string());
+        let module_source_map = ModuleSourceMap::new();
+
+        let (source, filename) = type_diagnostic_source(
+            "fn main() {}\n",
+            "main.hew",
+            &diagnostic,
+            &module_source_map,
+        );
+
+        assert_eq!(source, "fn main() {}\n");
+        assert_eq!(filename, "main.hew");
+    }
 }

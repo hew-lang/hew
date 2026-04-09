@@ -15,7 +15,7 @@ use hew_types::builtin_names::{
     QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
     STREAM,
 };
-use hew_types::check::{SpanKey, TypeCheckOutput};
+use hew_types::check::{MethodCallRewrite, SpanKey, TypeCheckOutput};
 use hew_types::Ty;
 use std::fmt;
 
@@ -239,6 +239,7 @@ fn ty_element_name(ty: &Ty) -> Option<&str> {
     }
 }
 
+#[cfg(test)]
 fn is_runtime_special_handle_type(
     receiver_ty: Option<&Ty>,
     registry: &hew_types::module_registry::ModuleRegistry,
@@ -279,16 +280,6 @@ fn is_runtime_special_handle_type(
         || registry
             .qualify_handle_type(name)
             .is_some_and(|qualified| is_runtime_special_name(&qualified))
-}
-
-fn is_deferred_builtin_method_call(receiver_ty: Option<&Ty>, method: &str) -> bool {
-    let Some(Ty::Named { name, .. }) = receiver_ty else {
-        return false;
-    };
-    if name == STREAM || name == QUALIFIED_STREAM {
-        return matches!(method, "map" | "filter" | "take");
-    }
-    false
 }
 
 fn missing_stream_lowering_metadata_context(
@@ -1619,137 +1610,94 @@ fn enrich_method_call(
     };
     let receiver_ty = tco.expr_types.get(&key);
     let method_call_key = SpanKey::from(&expr.1);
+    if let Some(rewrite) = tco.method_call_rewrites.get(&method_call_key) {
+        match rewrite {
+            MethodCallRewrite::RewriteToFunction { c_symbol } => {
+                let span = expr.1.clone();
+                let recv = std::mem::replace(
+                    receiver.as_mut(),
+                    (
+                        Expr::Literal(hew_parser::ast::Literal::Integer {
+                            value: 0,
+                            radix: hew_parser::ast::IntRadix::Decimal,
+                        }),
+                        0..0,
+                    ),
+                );
+                let old_args = std::mem::take(args);
+                let mut all_args = Vec::with_capacity(1 + old_args.len());
+                all_args.push(hew_parser::ast::CallArg::Positional(recv));
+                all_args.extend(old_args);
+                expr.0 = Expr::Call {
+                    function: Box::new((Expr::Identifier(c_symbol.clone()), span)),
+                    type_args: None,
+                    args: all_args,
+                    is_tail_call: false,
+                };
+            }
+            MethodCallRewrite::DeferToLowering => {}
+        }
+        return;
+    }
+
     if tco
         .method_call_receiver_kinds
         .contains_key(&method_call_key)
-        && !is_runtime_special_handle_type(receiver_ty, registry)
     {
         return;
     }
-    // Stream combinators like map/filter/take are intentionally left as
-    // MethodCall nodes for later lowering; only direct runtime entry points are
-    // rewritten here.
-    if is_deferred_builtin_method_call(receiver_ty, method) {
-        return;
-    }
 
-    // Rewrite handle method calls to C function calls.
-    // The receiver type is looked up from the type checker output;
-    // if it's a handle type (e.g. http.Request), the method call is
-    // rewritten to a plain function call with the receiver prepended
-    // as the first argument.
-    //
-    // When the receiver type IS a known dispatch category but the method
-    // cannot be resolved, emit a diagnostic rather than silently no-oping.
-    //
-    // Normalization invariant: Ty::normalize_named (called by every Ty::stream /
-    // Ty::sink / Ty::sender / Ty::receiver constructor, and by all type-checking
-    // paths that produce these types) always maps qualified spellings like
-    // "stream.Stream" to their short canonical names ("Stream") before types are
-    // stored in tco.expr_types.  Therefore only the short-name constants (STREAM,
-    // SINK, SENDER, RECEIVER) will ever match in practice.  The QUALIFIED_*
-    // guards are defence-in-depth: they cannot be reached under normal operation
-    // but ensure correctness if a hypothetical future path bypasses normalization.
-    let c_fn: Option<String> = match receiver_ty {
+    // Rewrite ownership for builtin/channel/handle receivers now lives in the
+    // checker. Serialization only validates the contract fail-closed.
+    match receiver_ty {
         Some(recv_ty @ Ty::Named { name, args }) if name == STREAM || name == QUALIFIED_STREAM => {
             let elem = args.first().and_then(ty_element_name);
-            let resolved =
-                hew_types::stdlib::resolve_stream_method(STREAM, method, elem).map(String::from);
-            if resolved.is_none() {
-                let context = missing_stream_lowering_metadata_context(STREAM, method, elem)
-                    .unwrap_or_else(|| format!("unknown method `{method}` on `Stream`"));
-                diagnostics.push(
-                    TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(context)
-                        .with_span(expr.1.clone()),
-                );
-            }
-            resolved
+            let context = missing_stream_lowering_metadata_context(STREAM, method, elem)
+                .unwrap_or_else(|| format!("unknown method `{method}` on `Stream`"));
+            diagnostics.push(
+                TypeExprConversionError::unresolvable_method_call(recv_ty)
+                    .with_context(context)
+                    .with_span(expr.1.clone()),
+            );
         }
         Some(recv_ty @ Ty::Named { name, args }) if name == SINK || name == QUALIFIED_SINK => {
             let elem = args.first().and_then(ty_element_name);
-            let resolved =
-                hew_types::stdlib::resolve_stream_method(SINK, method, elem).map(String::from);
-            if resolved.is_none() {
-                let context = missing_stream_lowering_metadata_context(SINK, method, elem)
-                    .unwrap_or_else(|| format!("unknown method `{method}` on `Sink`"));
-                diagnostics.push(
-                    TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(context)
-                        .with_span(expr.1.clone()),
-                );
-            }
-            resolved
+            let context = missing_stream_lowering_metadata_context(SINK, method, elem)
+                .unwrap_or_else(|| format!("unknown method `{method}` on `Sink`"));
+            diagnostics.push(
+                TypeExprConversionError::unresolvable_method_call(recv_ty)
+                    .with_context(context)
+                    .with_span(expr.1.clone()),
+            );
         }
-        Some(recv_ty @ Ty::Named { name, args }) if name == SENDER || name == QUALIFIED_SENDER => {
-            let resolved = hew_types::stdlib::resolve_channel_method(SENDER, method, args.first())
-                .map(String::from);
-            if resolved.is_none() {
-                diagnostics.push(
-                    TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(format!("unknown method `{method}` on `Sender`"))
-                        .with_span(expr.1.clone()),
-                );
-            }
-            resolved
+        Some(recv_ty @ Ty::Named { name, .. }) if name == SENDER || name == QUALIFIED_SENDER => {
+            diagnostics.push(
+                TypeExprConversionError::unresolvable_method_call(recv_ty)
+                    .with_context(format!("unknown method `{method}` on `Sender`"))
+                    .with_span(expr.1.clone()),
+            );
         }
-        Some(recv_ty @ Ty::Named { name, args })
+        Some(recv_ty @ Ty::Named { name, .. })
             if name == RECEIVER || name == QUALIFIED_RECEIVER =>
         {
-            let resolved =
-                hew_types::stdlib::resolve_channel_method(RECEIVER, method, args.first())
-                    .map(String::from);
-            if resolved.is_none() {
-                diagnostics.push(
-                    TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(format!("unknown method `{method}` on `Receiver`"))
-                        .with_span(expr.1.clone()),
-                );
-            }
-            resolved
+            diagnostics.push(
+                TypeExprConversionError::unresolvable_method_call(recv_ty)
+                    .with_context(format!("unknown method `{method}` on `Receiver`"))
+                    .with_span(expr.1.clone()),
+            );
         }
-        Some(recv_ty @ Ty::Named { name, .. }) => {
-            let resolved = registry.resolve_handle_method(name, method);
-            // Only emit a diagnostic when the type is a registered C handle —
-            // plain user-defined named types are not expected to be rewritten.
-            if resolved.is_none()
-                && (registry.is_handle_type(name) || registry.qualify_handle_type(name).is_some())
-            {
-                diagnostics.push(
-                    TypeExprConversionError::unresolvable_method_call(recv_ty)
-                        .with_context(format!("unknown method `{method}` on handle type `{name}`"))
-                        .with_span(expr.1.clone()),
-                );
-            }
-            resolved
+        Some(recv_ty @ Ty::Named { name, .. })
+            if registry.is_handle_type(name) || registry.qualify_handle_type(name).is_some() =>
+        {
+            diagnostics.push(
+                TypeExprConversionError::unresolvable_method_call(recv_ty)
+                    .with_context(format!("unknown method `{method}` on handle type `{name}`"))
+                    .with_span(expr.1.clone()),
+            );
         }
         // No type entry (e.g. identity-mapped module wrappers whose receiver is
         // a plain identifier) or a non-Named type: no rewrite is expected here.
-        _ => None,
-    };
-
-    if let Some(c_fn) = c_fn {
-        let span = expr.1.clone();
-        let recv = std::mem::replace(
-            receiver.as_mut(),
-            (
-                Expr::Literal(hew_parser::ast::Literal::Integer {
-                    value: 0,
-                    radix: hew_parser::ast::IntRadix::Decimal,
-                }),
-                0..0,
-            ),
-        );
-        let old_args = std::mem::take(args);
-        let mut all_args = Vec::with_capacity(1 + old_args.len());
-        all_args.push(hew_parser::ast::CallArg::Positional(recv));
-        all_args.extend(old_args);
-        expr.0 = Expr::Call {
-            function: Box::new((Expr::Identifier(c_fn), span)),
-            type_args: None,
-            args: all_args,
-            is_tail_call: false,
-        };
+        _ => {}
     }
 }
 
@@ -3423,6 +3371,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
         }
     }
 
@@ -3579,6 +3528,7 @@ mod tests {
                 args: vec![],
             },
         );
+        record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "endpoint_observe");
         let registry = test_registry_with(&["std::net::quic"]);
 
         let mut expr: Spanned<Expr> = (
@@ -3670,6 +3620,7 @@ mod tests {
                 type_name: "quic.QUICEndpoint".to_string(),
             },
         );
+        record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "hew_quic_endpoint_on_event");
         let registry = test_registry_with(&["std::net::quic"]);
 
         let mut expr: Spanned<Expr> = (
@@ -3718,6 +3669,7 @@ mod tests {
                 type_name: "QUICEvent".to_string(),
             },
         );
+        record_runtime_method_call_rewrite_for_span(&mut tco, 0..9, "hew_quic_event_free");
         let registry = test_registry_with(&["std::net::quic"]);
 
         let mut expr: Spanned<Expr> = (
@@ -3799,6 +3751,7 @@ mod tests {
                 args: vec![],
             },
         );
+        record_runtime_method_call_rewrite_for_span(&mut tco, 0..10, "endpoint_observe");
         let registry = test_registry_with(&["std::net::quic"]);
 
         let mut expr: Spanned<Expr> = (
@@ -4142,6 +4095,43 @@ mod tests {
         tco
     }
 
+    fn record_runtime_method_call_rewrite_for_span(
+        tco: &mut TypeCheckOutput,
+        span: std::ops::Range<usize>,
+        c_symbol: &str,
+    ) {
+        tco.method_call_rewrites.insert(
+            hew_types::check::SpanKey {
+                start: span.start,
+                end: span.end,
+            },
+            hew_types::MethodCallRewrite::RewriteToFunction {
+                c_symbol: c_symbol.to_string(),
+            },
+        );
+    }
+
+    fn record_runtime_method_call_rewrite(tco: &mut TypeCheckOutput, c_symbol: &str) {
+        record_runtime_method_call_rewrite_for_span(tco, 0..20, c_symbol);
+    }
+
+    fn record_deferred_method_call_rewrite_for_span(
+        tco: &mut TypeCheckOutput,
+        span: std::ops::Range<usize>,
+    ) {
+        tco.method_call_rewrites.insert(
+            hew_types::check::SpanKey {
+                start: span.start,
+                end: span.end,
+            },
+            hew_types::MethodCallRewrite::DeferToLowering,
+        );
+    }
+
+    fn record_deferred_method_call_rewrite(tco: &mut TypeCheckOutput) {
+        record_deferred_method_call_rewrite_for_span(tco, 0..20);
+    }
+
     #[test]
     fn test_enrich_method_call_unknown_stream_method_emits_diagnostic() {
         let tco = make_tco_with_receiver_ty(
@@ -4241,13 +4231,14 @@ mod tests {
     #[test]
     fn test_enrich_method_call_known_stream_method_no_diagnostic() {
         // stream.next() is a valid method — must not produce a diagnostic
-        let tco = make_tco_with_receiver_ty(
+        let mut tco = make_tco_with_receiver_ty(
             2,
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::String],
             },
         );
+        record_runtime_method_call_rewrite(&mut tco, "hew_stream_next");
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "next");
         let mut diagnostics = Vec::new();
@@ -4294,13 +4285,14 @@ mod tests {
 
     #[test]
     fn test_enrich_method_call_stream_combinators_are_left_for_later_lowering() {
-        let tco = make_tco_with_receiver_ty(
+        let mut tco = make_tco_with_receiver_ty(
             2,
             hew_types::Ty::Named {
                 name: STREAM.to_string(),
                 args: vec![hew_types::Ty::Bytes],
             },
         );
+        record_deferred_method_call_rewrite(&mut tco);
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "map");
         let mut diagnostics = Vec::new();
@@ -4433,13 +4425,14 @@ mod tests {
 
     #[test]
     fn test_enrich_method_call_known_sender_send_no_diagnostic() {
-        let tco = make_tco_with_receiver_ty(
+        let mut tco = make_tco_with_receiver_ty(
             2,
             hew_types::Ty::Named {
                 name: SENDER.to_string(),
                 args: vec![hew_types::Ty::String],
             },
         );
+        record_runtime_method_call_rewrite(&mut tco, "hew_channel_send");
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("tx", 2, "send");
         let mut diagnostics = Vec::new();
@@ -4556,9 +4549,11 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
 
         // Known method → no diagnostic, rewritten to Call.
+        let mut tco_ok = tco.clone();
+        record_runtime_method_call_rewrite(&mut tco_ok, "hew_stream_next");
         let mut expr_ok = make_method_call_expr("s", 2, "next");
         let mut diag_ok = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_ok, &tco, &mut diag_ok, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr_ok, &tco_ok, &mut diag_ok, &registry).unwrap();
         assert!(
             diag_ok.is_empty(),
             "qualified-name stream.next() must emit no diagnostic"

@@ -1802,6 +1802,7 @@ mod tests {
                     },
                 ),
             ]),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1874,6 +1875,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(
                 SpanKey {
                     start: assign_target_span.start,
@@ -1972,6 +1974,7 @@ mod tests {
                     type_name: "json.Value".to_string(),
                 },
             )]),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -2093,6 +2096,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),
@@ -2168,6 +2172,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
                 key.clone(),

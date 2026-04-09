@@ -220,6 +220,82 @@ fn use_greeter(g: dyn Greeter) -> String {
 }
 
 #[test]
+fn method_call_rewrites_record_builtin_runtime_dispatch() {
+    let output = typecheck_inline(
+        r"
+fn consume(s: Stream<String>) {
+    let _ = s.next();
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_stream_next"
+        )),
+        "expected checker-owned builtin rewrite metadata, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn method_call_rewrites_record_deferred_stream_lowering() {
+    let output = typecheck_inline(
+        r"
+fn consume(s: Stream<bytes>) {
+    let _ = s.take(1);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(rewrite, hew_types::MethodCallRewrite::DeferToLowering)),
+        "expected checker-owned deferred rewrite metadata, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn method_call_rewrites_record_handle_runtime_dispatch() {
+    let output = typecheck_inline(
+        r#"
+import std::net::http;
+
+fn respond(req: http.Request) -> int {
+    req.respond_text(200, "ok")
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_http_respond_text"
+        )),
+        "expected checker-owned handle rewrite metadata, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
 fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"

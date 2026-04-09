@@ -59,6 +59,15 @@ impl TypeExprConversionError {
         }
     }
 
+    fn explicit_infer(detail: &'static str) -> Self {
+        Self {
+            ty: Ty::Error,
+            detail,
+            contexts: Vec::new(),
+            span: None,
+        }
+    }
+
     fn with_context(mut self, context: impl Into<String>) -> Self {
         self.contexts.push(context.into());
         self
@@ -426,6 +435,58 @@ fn lookup_inferred_type(
     ty_to_type_expr(ty)
         .map(Some)
         .map_err(|diagnostic| diagnostic.with_context(context).with_span(span.clone()))
+}
+
+fn lookup_inferred_fn_return_type(
+    tco: &TypeCheckOutput,
+    fn_sig_name: &str,
+    bare_name: &str,
+    span: &Span,
+    context: impl Into<String>,
+) -> Result<Option<Spanned<TypeExpr>>, TypeExprConversionError> {
+    let context = context.into();
+    let sig = tco
+        .fn_sigs
+        .get(fn_sig_name)
+        .or_else(|| {
+            if fn_sig_name == bare_name {
+                None
+            } else {
+                tco.fn_sigs.get(bare_name)
+            }
+        })
+        .or_else(|| {
+            let mut matches = tco
+                .fn_sigs
+                .iter()
+                .filter(|(name, _)| name.rsplit("::").next() == Some(bare_name));
+            match (matches.next(), matches.next()) {
+                (Some((_name, sig)), None) => Some(sig),
+                _ => None,
+            }
+        });
+    let Some(sig) = sig else {
+        return Ok(None);
+    };
+
+    ty_to_type_expr(&sig.return_type)
+        .map(Some)
+        .map_err(|diagnostic| diagnostic.with_context(context).with_span(span.clone()))
+}
+
+fn explicit_infer_survivor_diagnostic(
+    span: &Span,
+    context: impl Into<String>,
+    detail: &'static str,
+    reason: Option<&TypeExprConversionError>,
+) -> TypeExprConversionError {
+    let mut diagnostic = TypeExprConversionError::explicit_infer(detail)
+        .with_context(context)
+        .with_span(span.clone());
+    if let Some(reason) = reason {
+        diagnostic = diagnostic.with_context(reason.to_string());
+    }
+    diagnostic
 }
 
 /// Enrich a program's AST with inferred types from the type checker.
@@ -1120,7 +1181,8 @@ fn enrich_item_with_diagnostics(
 ) -> Result<(), TypeExprConversionError> {
     match item {
         Item::Function(fn_decl) => {
-            enrich_fn_decl_with_diagnostics(fn_decl, tco, diagnostics, registry)?;
+            let fn_sig_name = fn_decl.name.clone();
+            enrich_fn_decl_with_diagnostics(fn_decl, &fn_sig_name, tco, diagnostics, registry)?;
         }
         Item::Actor(actor) => {
             enrich_actor_with_diagnostics(actor, tco, diagnostics, registry)?;
@@ -1131,8 +1193,16 @@ fn enrich_item_with_diagnostics(
             }
         }
         Item::Impl(impl_decl) => {
+            let target_type_name = match &impl_decl.target_type.0 {
+                TypeExpr::Named { name, .. } => Some(name.clone()),
+                _ => None,
+            };
             for method in &mut impl_decl.methods {
-                enrich_fn_decl_with_diagnostics(method, tco, diagnostics, registry)?;
+                let fn_sig_name = target_type_name.as_ref().map_or_else(
+                    || method.name.clone(),
+                    |type_name| format!("{type_name}::{}", method.name),
+                );
+                enrich_fn_decl_with_diagnostics(method, &fn_sig_name, tco, diagnostics, registry)?;
             }
         }
         Item::Const(const_decl) => {
@@ -1150,7 +1220,8 @@ fn enrich_item_with_diagnostics(
         Item::TypeDecl(td) => {
             for body_item in &mut td.body {
                 if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
-                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics, registry)?;
+                    let fn_sig_name = format!("{}::{}", td.name, m.name);
+                    enrich_fn_decl_with_diagnostics(m, &fn_sig_name, tco, diagnostics, registry)?;
                 }
             }
         }
@@ -1168,15 +1239,20 @@ fn enrich_item_with_diagnostics(
 
 fn enrich_fn_decl_with_diagnostics(
     fn_decl: &mut FnDecl,
+    fn_sig_name: &str,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics, registry)?;
 
-    let needs_infer =
-        fn_decl.return_type.is_none() || matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _)));
+    let explicit_infer_span = match &fn_decl.return_type {
+        Some((TypeExpr::Infer, span)) => Some(span.clone()),
+        _ => None,
+    };
+    let needs_infer = fn_decl.return_type.is_none() || explicit_infer_span.is_some();
     if needs_infer {
+        let mut explicit_infer_reason = None;
         if let Some(ref expr) = fn_decl.body.trailing_expr {
             match lookup_inferred_type(
                 tco,
@@ -1188,7 +1264,46 @@ fn enrich_fn_decl_with_diagnostics(
             ) {
                 Ok(Some(inferred)) => fn_decl.return_type = Some(inferred),
                 Ok(None) => {}
-                Err(diagnostic) => diagnostics.push(diagnostic),
+                Err(diagnostic) => {
+                    if explicit_infer_span.is_some() {
+                        explicit_infer_reason = Some(diagnostic);
+                    } else {
+                        diagnostics.push(diagnostic);
+                    }
+                }
+            }
+        }
+
+        if matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _))) {
+            if let Some(ref infer_span) = explicit_infer_span {
+                match lookup_inferred_fn_return_type(
+                    tco,
+                    fn_sig_name,
+                    &fn_decl.name,
+                    infer_span,
+                    format!(
+                        "function `{}` return type inferred from checker signature",
+                        fn_decl.name
+                    ),
+                ) {
+                    Ok(Some(inferred)) => fn_decl.return_type = Some(inferred),
+                    Ok(None) => {}
+                    Err(diagnostic) => {
+                        explicit_infer_reason.get_or_insert(diagnostic);
+                    }
+                }
+            }
+        }
+
+        if let Some(ref infer_span) = explicit_infer_span {
+            if matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _))) {
+                diagnostics.push(explicit_infer_survivor_diagnostic(
+                    infer_span,
+                    format!("function `{}` explicit `_` return type", fn_decl.name),
+                    "explicit `_` return type annotation reached serializer without a serializable resolved return type",
+                    explicit_infer_reason.as_ref(),
+                ));
+                fn_decl.return_type = None;
             }
         }
     }
@@ -1211,7 +1326,8 @@ fn enrich_actor_with_diagnostics(
         enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics, registry)?;
     }
     for method in &mut actor.methods {
-        enrich_fn_decl_with_diagnostics(method, tco, diagnostics, registry)?;
+        let fn_sig_name = format!("{}::{}", actor.name, method.name);
+        enrich_fn_decl_with_diagnostics(method, &fn_sig_name, tco, diagnostics, registry)?;
     }
     Ok(())
 }
@@ -1232,6 +1348,10 @@ fn enrich_block_with_diagnostics(
 }
 
 /// Fill in a missing or explicit-infer type annotation from the type checker.
+///
+/// Explicit `_` annotations must never survive past enrichment. When the
+/// checker cannot provide a serializable type, emit a fatal diagnostic and
+/// clear the placeholder so codegen never sees `TypeExpr::Infer`.
 fn infer_binding_type(
     ty: &mut Option<Spanned<TypeExpr>>,
     value: Option<&Spanned<Expr>>,
@@ -1239,14 +1359,49 @@ fn infer_binding_type(
     diagnostics: &mut Vec<TypeExprConversionError>,
     context: impl Into<String>,
 ) {
-    let needs_infer = ty.is_none() || matches!(ty, Some((TypeExpr::Infer, _)));
+    let explicit_infer_span = match &*ty {
+        Some((TypeExpr::Infer, span)) => Some(span.clone()),
+        _ => None,
+    };
+    let context = context.into();
+    let needs_infer = ty.is_none() || explicit_infer_span.is_some();
     if needs_infer {
         if let Some(val) = value {
-            match lookup_inferred_type(tco, &val.1, context) {
+            match lookup_inferred_type(tco, &val.1, context.clone()) {
                 Ok(Some(inferred)) => *ty = Some(inferred),
-                Ok(None) => {}
-                Err(diagnostic) => diagnostics.push(diagnostic),
+                Ok(None) => {
+                    if let Some(ref infer_span) = explicit_infer_span {
+                        diagnostics.push(explicit_infer_survivor_diagnostic(
+                            infer_span,
+                            context.clone(),
+                            "explicit `_` binding type annotation reached serializer without a serializable resolved initializer type",
+                            None,
+                        ));
+                        *ty = None;
+                    }
+                }
+                Err(diagnostic) => {
+                    if let Some(ref infer_span) = explicit_infer_span {
+                        diagnostics.push(explicit_infer_survivor_diagnostic(
+                            infer_span,
+                            context.clone(),
+                            "explicit `_` binding type annotation reached serializer without a serializable resolved initializer type",
+                            Some(&diagnostic),
+                        ));
+                        *ty = None;
+                    } else {
+                        diagnostics.push(diagnostic);
+                    }
+                }
             }
+        } else if let Some(ref infer_span) = explicit_infer_span {
+            diagnostics.push(explicit_infer_survivor_diagnostic(
+                infer_span,
+                context,
+                "explicit `_` binding type annotation reached serializer without an initializer to resolve it",
+                None,
+            ));
+            *ty = None;
         }
     }
 }
@@ -2609,6 +2764,262 @@ mod tests {
             }
         } else {
             panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_infer_binding_type_explicit_infer_without_initializer_is_fatal() {
+        use hew_parser::ast::{Pattern, Visibility};
+
+        let infer_span = 9..10;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("x".into()), 4..5),
+                                ty: Some((TypeExpr::Infer, infer_span.clone())),
+                                value: None,
+                            },
+                            0..10,
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &empty_tco(),
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert_eq!(diagnostics.diagnostics().len(), 1);
+        let diagnostic = &diagnostics.diagnostics()[0];
+        assert_eq!(diagnostic.kind(), TypeExprConversionKind::ErrorSentinel);
+        assert_eq!(diagnostic.span(), Some(&infer_span));
+        assert!(
+            diagnostic
+                .to_string()
+                .contains("explicit `_` binding type annotation reached serializer without an initializer to resolve it"),
+            "unexpected diagnostic: {diagnostic}"
+        );
+        if let Item::Function(f) = &program.items[0].0 {
+            match &f.body.stmts[0].0 {
+                Stmt::Let { ty, .. } => assert!(ty.is_none(), "explicit infer should be cleared"),
+                other => panic!("expected let statement, got {other:?}"),
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_explicit_infer_return_without_trailing_expr_uses_signature() {
+        use hew_parser::ast::Visibility;
+
+        let infer_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: Some((TypeExpr::Infer, infer_span.clone())),
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.fn_sigs
+            .insert("foo".into(), hew_types::check::FnSig::default());
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.diagnostics().is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics.diagnostics()
+        );
+        if let Item::Function(f) = &program.items[0].0 {
+            assert!(matches!(
+                f.return_type.as_ref(),
+                Some((TypeExpr::Tuple(elems), _)) if elems.is_empty()
+            ));
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_explicit_infer_return_without_resolution_is_fatal() {
+        use hew_parser::ast::Visibility;
+
+        let infer_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: Some((TypeExpr::Infer, infer_span.clone())),
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &empty_tco(),
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert_eq!(diagnostics.diagnostics().len(), 1);
+        let diagnostic = &diagnostics.diagnostics()[0];
+        assert_eq!(diagnostic.kind(), TypeExprConversionKind::ErrorSentinel);
+        assert_eq!(diagnostic.span(), Some(&infer_span));
+        assert!(
+            diagnostic
+                .to_string()
+                .contains("explicit `_` return type annotation reached serializer without a serializable resolved return type"),
+            "unexpected diagnostic: {diagnostic}"
+        );
+        if let Item::Function(f) = &program.items[0].0 {
+            assert!(
+                f.return_type.is_none(),
+                "explicit infer return placeholder should be cleared"
+            );
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_explicit_infer_method_return_uses_qualified_signature() {
+        use hew_parser::ast::{TypeBodyItem, TypeDeclKind, Visibility};
+
+        let infer_span = 10..11;
+        let mut program = Program {
+            items: vec![(
+                Item::TypeDecl(hew_parser::ast::TypeDecl {
+                    visibility: Visibility::Private,
+                    kind: TypeDeclKind::Struct,
+                    name: "Widget".into(),
+                    type_params: None,
+                    where_clause: None,
+                    body: vec![TypeBodyItem::Method(FnDecl {
+                        attributes: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        visibility: Visibility::Private,
+                        is_pure: false,
+                        name: "size".into(),
+                        type_params: None,
+                        params: vec![],
+                        return_type: Some((TypeExpr::Infer, infer_span.clone())),
+                        where_clause: None,
+                        body: Block {
+                            stmts: vec![],
+                            trailing_expr: None,
+                        },
+                        doc_comment: None,
+                        decl_span: 0..0,
+                    })],
+                    doc_comment: None,
+                    wire: None,
+                    is_indirect: false,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.fn_sigs.insert(
+            "Widget::size".into(),
+            hew_types::check::FnSig {
+                return_type: Ty::I32,
+                ..hew_types::check::FnSig::default()
+            },
+        );
+        tco.fn_sigs.insert(
+            "Other::size".into(),
+            hew_types::check::FnSig {
+                return_type: Ty::Bool,
+                ..hew_types::check::FnSig::default()
+            },
+        );
+
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
+        assert!(
+            diagnostics.diagnostics().is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics.diagnostics()
+        );
+        if let Item::TypeDecl(type_decl) = &program.items[0].0 {
+            let TypeBodyItem::Method(method) = &type_decl.body[0] else {
+                panic!("expected method");
+            };
+            assert!(matches!(
+                method.return_type.as_ref(),
+                Some((TypeExpr::Named { name, type_args: None }, _)) if name == "i32"
+            ));
+        } else {
+            panic!("expected type declaration");
         }
     }
 

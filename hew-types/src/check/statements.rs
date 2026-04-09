@@ -610,13 +610,15 @@ impl Checker {
                                     Ty::Error
                                 }
                             } else {
-                                let _ = self.validate_stream_sink_element_type(
+                                match self.validate_stream_sink_element_type(
                                     args,
                                     BuiltinNamedType::Stream.canonical_name(),
                                     "next",
                                     &iterable.1,
-                                );
-                                inner
+                                ) {
+                                    Some(validated_inner) => validated_inner,
+                                    None => Ty::Error,
+                                }
                             }
                         } else {
                             inner

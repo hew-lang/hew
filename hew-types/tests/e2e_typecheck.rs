@@ -608,6 +608,42 @@ fn for_await_stream_unsupported_type_errors() {
     );
 }
 
+/// Unsupported first-class `Stream<T>` element types in `for await` must fail
+/// closed without cascading into loop-body field/type errors.
+#[test]
+fn for_await_stream_unsupported_type_does_not_cascade() {
+    let output = typecheck_inline(
+        r#"
+        type Row { value: int }
+
+        extern "C" {
+            fn fake_stream() -> Stream<Row>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await row in input {
+                println(row.missing);
+            }
+        }
+        "#,
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the fail-closed Stream<Row> error, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Stream<Row>` is not supported")
+        }),
+        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for await item in input` over a bare `Stream` annotation must fail closed
 /// instead of bypassing stream element validation and lowering as text.
 #[test]

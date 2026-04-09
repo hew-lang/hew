@@ -986,6 +986,11 @@ fn inference_hole_function_parameter_signature_is_rejected() {
         "Expected InferenceFailed, got errors: {:?}",
         output.errors
     );
+    assert!(
+        !output.fn_sigs.contains_key("f"),
+        "failing function signature should be stripped from checker output: {:?}",
+        output.fn_sigs
+    );
 }
 
 #[test]
@@ -1141,6 +1146,40 @@ fn inference_hole_type_field_is_rejected() {
             .any(|e| e.kind == TypeErrorKind::InferenceFailed),
         "Expected InferenceFailed, got errors: {:?}",
         output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Box"),
+        "failing type definition should be stripped from checker output: {:?}",
+        output.type_defs
+    );
+}
+
+#[test]
+fn inference_hole_enum_variant_constructor_is_stripped_from_output() {
+    let output = typecheck(
+        r"
+        enum Maybe {
+            Some(_);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Maybe"),
+        "failing enum definition should be stripped from checker output: {:?}",
+        output.type_defs
+    );
+    assert!(
+        !output.fn_sigs.contains_key("Some"),
+        "failing variant constructor should be stripped from checker output: {:?}",
+        output.fn_sigs
     );
 }
 

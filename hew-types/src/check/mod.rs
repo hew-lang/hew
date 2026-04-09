@@ -123,6 +123,48 @@ fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
     }
 }
 
+fn ty_references_tracked_inference_var(ty: &Ty, tracked_vars: &HashSet<TypeVar>) -> bool {
+    let mut unresolved = HashSet::new();
+    collect_unresolved_inference_vars(ty, &mut unresolved);
+    !unresolved.is_disjoint(tracked_vars)
+}
+
+fn fn_sig_references_tracked_inference_var(sig: &FnSig, tracked_vars: &HashSet<TypeVar>) -> bool {
+    sig.params
+        .iter()
+        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
+        || ty_references_tracked_inference_var(&sig.return_type, tracked_vars)
+}
+
+fn variant_def_references_tracked_inference_var(
+    variant: &VariantDef,
+    tracked_vars: &HashSet<TypeVar>,
+) -> bool {
+    match variant {
+        VariantDef::Unit => false,
+        VariantDef::Tuple(fields) => fields
+            .iter()
+            .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars)),
+        VariantDef::Struct(fields) => fields
+            .iter()
+            .any(|(_, ty)| ty_references_tracked_inference_var(ty, tracked_vars)),
+    }
+}
+
+fn type_def_shape_references_tracked_inference_var(
+    type_def: &TypeDef,
+    tracked_vars: &HashSet<TypeVar>,
+) -> bool {
+    type_def
+        .fields
+        .values()
+        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
+        || type_def
+            .variants
+            .values()
+            .any(|variant| variant_def_references_tracked_inference_var(variant, tracked_vars))
+}
+
 impl Checker {
     /// Log function names that accept keyword arguments for structured fields.
     const LOG_KWARGS_FUNCTIONS: &'static [&'static str] = &[
@@ -370,14 +412,34 @@ impl Checker {
             resolved_expr_types.remove(&span);
         }
 
+        // Fail-closed boundary for checker-owned signatures/type defs:
+        // user-authored unresolved inference holes must not survive into the
+        // serialized metadata tables.  Keep generic builtin placeholders that
+        // are not tied to tracked inference-hole vars.
         let resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
             .into_iter()
-            .map(|(name, type_def)| (name, self.resolve_type_def(&type_def)))
+            .filter_map(|(name, type_def)| {
+                let mut resolved = self.resolve_type_def(&type_def);
+                if type_def_shape_references_tracked_inference_var(
+                    &resolved,
+                    &covered_inference_vars,
+                ) {
+                    return None;
+                }
+                resolved.methods.retain(|_, sig| {
+                    !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
+                });
+                Some((name, resolved))
+            })
             .collect();
 
         let resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
-            .map(|(name, sig)| (name, self.resolve_fn_sig(&sig)))
+            .filter_map(|(name, sig)| {
+                let resolved = self.resolve_fn_sig(&sig);
+                (!fn_sig_references_tracked_inference_var(&resolved, &covered_inference_vars))
+                    .then_some((name, resolved))
+            })
             .collect();
 
         self.report_unresolved_inference_holes(program);

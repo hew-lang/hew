@@ -1199,8 +1199,10 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// Stop an actor, sending a system shutdown message.
 ///
 /// Closes the mailbox, transitions idle actors directly to `Stopped`, and
-/// otherwise enqueues a single system message (`msg_type = -1`) so an active
-/// dispatch can observe the stop signal while draining its remaining work.
+/// only enqueues a shutdown system message (`msg_type = -1`) when the actor is
+/// already `Running`. Runnable actors already have a queued activation, so
+/// closing their mailbox is enough to let that activation drain naturally to
+/// `Stopped` without fabricating an extra system-queue entry.
 ///
 /// # Safety
 ///
@@ -1232,18 +1234,15 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state == HewActorState::Stopped as i32
-        || state == HewActorState::Crashed as i32
-        || state == HewActorState::Stopping as i32
-    {
+    if state != HewActorState::Running as i32 {
         return;
     }
 
     if !mb.is_null() {
-        // If actor is still RUNNABLE or RUNNING, let it drain naturally.
-        // Enqueue a sys message (-1) so the dispatch function sees the stop
-        // signal. Track this separately from `closed` so close→stop still
-        // delivers exactly one shutdown message.
+        // Running actors are already inside a dispatch; enqueue one sys
+        // message (-1) so the next mailbox poll observes the shutdown
+        // request. Runnable actors already have queued work and do not need an
+        // extra wake-up signal just to notice that the mailbox closed.
         // SAFETY: Mailbox is valid for the actor's lifetime.
         unsafe {
             let _ = mailbox::mailbox_send_stop_sys_once(mb);
@@ -2669,14 +2668,13 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state == HewActorState::Stopped as i32
-        || state == HewActorState::Crashed as i32
-        || state == HewActorState::Stopping as i32
-    {
+    if state != HewActorState::Running as i32 {
         return;
     }
 
-    // Send a system shutdown message (-1).
+    // Running actors are already inside a dispatch; enqueue one sys message so
+    // the next mailbox poll observes the shutdown request. Runnable actors
+    // already have queued work and do not need an extra wake-up signal.
     if !a.mailbox.is_null() {
         // SAFETY: a.mailbox is a valid mailbox pointer.
         unsafe {
@@ -2888,7 +2886,7 @@ mod tests {
         hew_panic();
     }
 
-    fn make_runnable_stop_test_actor() -> (*mut HewActor, *mut HewMailbox) {
+    fn make_stop_test_actor(initial_state: HewActorState) -> (*mut HewActor, *mut HewMailbox) {
         // SAFETY: test helper fully owns the returned actor/mailbox and never publishes them.
         unsafe {
             let mailbox = mailbox::hew_mailbox_new();
@@ -2901,7 +2899,7 @@ mod tests {
                 state_size: 0,
                 dispatch: Some(noop_dispatch),
                 mailbox: mailbox.cast(),
-                actor_state: AtomicI32::new(HewActorState::Runnable as i32),
+                actor_state: AtomicI32::new(initial_state as i32),
                 budget: AtomicI32::new(HEW_MSG_BUDGET),
                 init_state: ptr::null_mut(),
                 init_state_size: 0,
@@ -3239,17 +3237,21 @@ mod tests {
     }
 
     #[test]
-    fn stop_runnable_actor_enqueues_at_most_one_shutdown_signal() {
-        let (actor, mailbox) = make_runnable_stop_test_actor();
+    fn stop_runnable_actor_does_not_enqueue_shutdown_signal() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
         unsafe {
             hew_actor_stop(actor);
             hew_actor_stop(actor);
+            assert!(
+                mailbox::mailbox_is_closed(mailbox),
+                "stop must close runnable actors before they drain their queued activation"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
-                1,
-                "only the first stop call should enqueue a shutdown system message"
+                0,
+                "runnable actors already have a queued activation and should not receive an extra shutdown signal"
             );
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
@@ -3257,8 +3259,8 @@ mod tests {
     }
 
     #[test]
-    fn close_then_stop_runnable_actor_enqueues_shutdown_signal_once() {
-        let (actor, mailbox) = make_runnable_stop_test_actor();
+    fn close_then_stop_runnable_actor_keeps_shutdown_queue_empty() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
         unsafe {
@@ -3276,15 +3278,69 @@ mod tests {
             hew_actor_stop(actor);
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
+                0,
+                "stop after close should not enqueue a redundant shutdown signal for runnable actors"
+            );
+
+            hew_actor_stop(actor);
+            assert_eq!(
+                mailbox::hew_mailbox_sys_len(mailbox),
+                0,
+                "repeated stop after close must keep runnable actors' shutdown queue empty"
+            );
+
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn stop_running_actor_enqueues_at_most_one_shutdown_signal() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+
+        // SAFETY: actor/mailbox pointers are valid for the duration of the test.
+        unsafe {
+            hew_actor_stop(actor);
+            hew_actor_stop(actor);
+            assert_eq!(
+                mailbox::hew_mailbox_sys_len(mailbox),
                 1,
-                "stop after close must still enqueue one shutdown system message"
+                "only the first stop call should enqueue a shutdown system message for a running actor"
+            );
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn close_then_stop_running_actor_enqueues_shutdown_signal_once() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+
+        // SAFETY: actor/mailbox pointers are valid for the duration of the test.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(
+                (*actor).actor_state.load(Ordering::Acquire),
+                HewActorState::Running as i32,
+                "close should leave running actors running while only closing the mailbox"
+            );
+            assert!(
+                mailbox::mailbox_is_closed(mailbox),
+                "close must mark the mailbox closed before stop is requested"
             );
 
             hew_actor_stop(actor);
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
                 1,
-                "repeated stop after close must not accumulate shutdown system messages"
+                "stop after close must still enqueue one shutdown system message for a running actor"
+            );
+
+            hew_actor_stop(actor);
+            assert_eq!(
+                mailbox::hew_mailbox_sys_len(mailbox),
+                1,
+                "repeated stop after close must not accumulate shutdown system messages for a running actor"
             );
 
             mailbox::hew_mailbox_free(mailbox);

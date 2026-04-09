@@ -1,3 +1,173 @@
+#![allow(
+    dead_code,
+    reason = "shared integration-test helpers are not used by every test target"
+)]
+
+use fd_lock::RwLock;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::OnceLock;
+
+static CODEGEN_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
+
+pub fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-cli crate should live under the repo root")
+}
+
+pub fn hew_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
+}
+
+pub fn require_codegen() {
+    if let Err(error) = CODEGEN_STATUS.get_or_init(bootstrap_codegen) {
+        panic!("{error}");
+    }
+}
+
+fn bootstrap_codegen() -> Result<(), String> {
+    let target_dir = target_dir()?;
+    fs::create_dir_all(&target_dir).map_err(|error| {
+        format!(
+            "failed to create target dir {}: {error}",
+            target_dir.display()
+        )
+    })?;
+
+    let build_profile = build_profile();
+    let lock_path = target_dir.join("hew-cli-codegen-bootstrap.lock");
+    let stamp_path = target_dir.join(format!("hew-cli-codegen-bootstrap-{build_profile}.stamp"));
+    let run_id =
+        std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| format!("pid:{}", std::process::id()));
+
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "failed to open codegen bootstrap lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    let mut lock = RwLock::new(lock_file);
+    let _guard = lock.write().map_err(|error| {
+        format!(
+            "failed to lock codegen bootstrap {}: {error}",
+            lock_path.display()
+        )
+    })?;
+
+    if fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == run_id)
+        && hew_library_path().is_file()
+    {
+        return Ok(());
+    }
+
+    let output = build_codegen_artifacts(&target_dir, build_profile)?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to bootstrap hew-cli codegen artifacts with `cargo build -p hew-lib{}`\n{}",
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            },
+            describe_output(&output)
+        ));
+    }
+
+    let hew_library = hew_library_path();
+    if !hew_library.is_file() {
+        return Err(format!(
+            "codegen bootstrap succeeded but {} was not created",
+            hew_library.display()
+        ));
+    }
+
+    fs::write(&stamp_path, run_id).map_err(|error| {
+        format!(
+            "failed to write codegen bootstrap stamp {}: {error}",
+            stamp_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn build_codegen_artifacts(target_dir: &Path, build_profile: &str) -> Result<Output, String> {
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "-q", "-p", "hew-lib"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root());
+    if build_profile == "release" {
+        command.arg("--release");
+    }
+
+    command.output().map_err(|error| {
+        format!(
+            "failed to invoke `cargo build -p hew-lib{}`: {error}",
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            }
+        )
+    })
+}
+
+fn target_dir() -> Result<PathBuf, String> {
+    hew_binary()
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "hew binary path {} is not under a Cargo target directory",
+                hew_binary().display()
+            )
+        })
+}
+
+fn hew_library_path() -> PathBuf {
+    hew_binary()
+        .parent()
+        .expect("hew binary should have a parent directory")
+        .join(hew_lib_name())
+}
+
+fn build_profile() -> &'static str {
+    match hew_binary()
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+    {
+        Some("release") => "release",
+        _ => "debug",
+    }
+}
+
+fn hew_lib_name() -> &'static str {
+    if cfg!(windows) {
+        "hew.lib"
+    } else {
+        "libhew.a"
+    }
+}
+
+fn describe_output(output: &Output) -> String {
+    format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    )
+}
+
 pub fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();

@@ -1467,6 +1467,7 @@ version = "0.2.2"
 dependencies = [
  "clap",
  "clap_complete",
+ "fd-lock",
  "hew-lexer",
  "hew-parser",
  "hew-serialize",

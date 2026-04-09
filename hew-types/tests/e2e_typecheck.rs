@@ -1052,6 +1052,17 @@ fn rc_copy_struct_construction_ok() {
 }
 
 #[test]
+fn rc_nested_payload_construction_ok() {
+    let output =
+        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<String>> = Rc::new(Rc::new("hello")); }"#);
+    assert!(
+        output.errors.is_empty(),
+        "Rc::new with nested supported Rc payloads should succeed; got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn rc_owned_option_payload_rejected() {
     let output = typecheck_inline(r#"fn main() { let _rc = Rc::new(Some("hello")); }"#);
     assert!(
@@ -1085,6 +1096,35 @@ fn rc_owned_struct_payload_rejected() {
                     .contains("does not recursively drop owned contents")
         }),
         "Rc::new with a struct containing owned fields should fail closed, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_user_drop_payload_rejected() {
+    let output = typecheck_inline(
+        r"
+        type Token {
+            id: int
+        }
+
+        impl Drop for Token {
+            fn drop(token: Token) {
+                print(token.id);
+            }
+        }
+
+        fn main() {
+            let _rc = Rc::new(Token { id: 1 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("`Rc<Token>` is not currently supported")
+        }),
+        "Rc::new with an explicit Drop payload should fail closed, got: {:#?}",
         output.errors
     );
 }

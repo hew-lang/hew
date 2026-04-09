@@ -571,18 +571,20 @@ impl Checker {
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return true;
         }
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Copy)
-        {
-            return true;
-        }
-        match resolved {
+        match &resolved {
             Ty::String | Ty::Bytes => true,
             Ty::Named { name, args } if name == "Rc" && args.len() == 1 => {
                 self.rc_payload_drop_supported(&args[0])
             }
-            _ => false,
+            // Arbitrary `impl Drop` payloads stay fail-closed for now: the
+            // current Rc lowering only proves safe inner-drop trampolines for
+            // runtime drop functions (String/bytes/nested Rc), not named
+            // user-defined drop bodies. Check this before `Copy` so local
+            // `impl Drop` types do not slip through structural Copy inference.
+            Ty::Named { name, .. } if self.type_implements_trait(name, "Drop") => false,
+            _ => self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Copy),
         }
     }
 
@@ -597,8 +599,9 @@ impl Checker {
             span,
             format!(
                 "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads, \
-                 `String`, `bytes`, and nested `Rc` values because the current Rc \
-                 drop path does not recursively drop owned contents",
+                `String`, `bytes`, and nested `Rc` values because the current Rc \
+                drop path does not recursively drop owned contents or forward \
+                arbitrary user-defined drop impls",
                 resolved.user_facing()
             ),
         );

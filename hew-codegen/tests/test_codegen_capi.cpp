@@ -810,6 +810,38 @@ static void test_rc_string_inner_drop_trampoline() {
   PASS();
 }
 
+// Regression: nested Rc payloads are supported because the outer Rc only needs
+// to forward its inner slot to hew_rc_drop, which in turn runs the inner Rc's
+// own trampoline for String.
+static void test_rc_nested_inner_drop_trampolines() {
+  TEST(rc_nested_inner_drop_trampolines);
+  auto ast =
+      hewToMsgpack("fn main() { let rc = Rc::new(Rc::new(\"hello\")); print(rc.strong_count()); }");
+  if (ast.empty()) {
+    printf("SKIPPED (hew CLI not available)\n");
+    tests_passed++;
+    return;
+  }
+  auto opts = makeOptions(HEW_CODEGEN_EMIT_MLIR);
+  HewCodegenBuffer buf{};
+  int rc = hew_codegen_compile_msgpack(ast.data(), ast.size(), &opts, &buf);
+  if (rc != 0) {
+    FAIL(hew_codegen_last_error());
+    return;
+  }
+  std::string mlir(buf.data, buf.len);
+  hew_codegen_buffer_free(buf);
+  if (mlir.find("__rc_inner_drop_hew_rc_drop") == std::string::npos) {
+    FAIL("nested Rc payload missing outer __rc_inner_drop_hew_rc_drop trampoline");
+    return;
+  }
+  if (mlir.find("__rc_inner_drop_hew_string_drop") == std::string::npos) {
+    FAIL("nested Rc<String> payload missing inner __rc_inner_drop_hew_string_drop trampoline");
+    return;
+  }
+  PASS();
+}
+
 // Rc<T> call-boundary ownership contract: borrow semantics.
 // When an Rc<T> variable is passed to a function, the raw pointer is
 // forwarded WITHOUT an RcCloneOp — the callee borrows the reference for
@@ -1139,6 +1171,7 @@ int main() {
   test_rc_owned_payload_fails_closed();
   test_rc_outlive_block_drop_registered();
   test_rc_string_inner_drop_trampoline();
+  test_rc_nested_inner_drop_trampolines();
   test_rc_call_boundary_borrow_no_clone();
   test_rc_callee_param_no_drop_registered();
   test_struct_init_closure_field_clones_bound_owner();

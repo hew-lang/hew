@@ -4293,23 +4293,10 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         handleType != "regex.Pattern" && handleType != "process.Child")
       return std::nullopt;
 
-    bool haveResolvedHandleReceiver = false;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      haveResolvedHandleReceiver =
-          !typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr).empty();
-    if (!haveResolvedHandleReceiver && !currentActorName.empty()) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto key = currentActorName + "." + ie->name;
-        auto aft = actorFieldTypes.find(key);
-        if (aft != actorFieldTypes.end())
-          haveResolvedHandleReceiver = true;
-      }
-    }
-    if (!haveResolvedHandleReceiver) {
-      requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
-      return nullptr;
-    }
-
+    // The receiver is already confirmed as hew::HandleType with a known handleType
+    // (see the cast above). No second TypeExpr verification is needed: the MLIR
+    // type carries the authoritative handle kind, even when the source wrote the
+    // short unqualified form (e.g. `pat: Pattern` instead of `pat: regex.Pattern`).
     const auto &method = methodName;
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     auto i32Type = builder.getI32Type();
@@ -4633,7 +4620,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     if (structType && structType.isIdentified()) {
       resolvedTypeName = structType.getName().str();
     } else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
-      resolvedTypeName = handleTy.getHandleKind().str();
+      resolvedTypeName =
+          fallbackTypeName.empty() ? handleTy.getHandleKind().str() : fallbackTypeName.str();
     } else {
       resolvedTypeName = fallbackTypeName.str();
     }

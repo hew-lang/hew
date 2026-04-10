@@ -223,12 +223,34 @@ impl Checker {
                 let ty = self.synthesize(&inner.0, &inner.1);
                 // Build an error message if the enclosing function's return type
                 // cannot propagate via `?`.  Computed before any mutable borrow.
+                //
+                // JUSTIFIED: Ty::Var(_) is bypassed because the return type is
+                // still being inferred — reporting a context error would be a false
+                // positive.  Ty::Error is bypassed for the same reason: it means the
+                // return-type annotation failed to resolve (e.g. references an
+                // unknown type), so we cannot know whether `?` propagation would be
+                // valid.  The annotation-resolution error is already reported
+                // separately; adding a second "? cannot be used here" error would be
+                // confusing rather than helpful.  Inner-type errors ("`?` requires
+                // Result or Option, found X`") are reported unconditionally via the
+                // else branch below and are NOT affected by this bypass.
+                //
+                // Ty::Named where the name is not builtin and not in type_defs or
+                // type_aliases is also bypassed: this arises when a return-type
+                // annotation references an undefined type (resolution falls through
+                // to Ty::normalize_named rather than returning Ty::Error). Emitting
+                // the context error in this case is a false positive — we cannot
+                // know whether the intended type would have been a Result/Option.
                 let bad_ctx_msg: Option<String> =
                     self.current_return_type.as_ref().and_then(|ret| {
                         let r = self.subst.resolve(ret);
                         if r.as_option().is_some()
                             || r.as_result().is_some()
                             || matches!(r, Ty::Var(_) | Ty::Error)
+                            || matches!(&r, Ty::Named { name, .. }
+                                if !Ty::is_named_builtin(name)
+                                    && !self.type_defs.contains_key(name)
+                                    && !self.type_aliases.contains_key(name))
                         {
                             None
                         } else {

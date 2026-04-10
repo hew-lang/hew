@@ -761,6 +761,50 @@ static bool eraseMethodCallReceiverKindEntryForSpan(hew::ast::Program &program,
   return program.method_call_receiver_kinds.size() != oldSize;
 }
 
+static bool eraseAssignTargetKindEntryForSpan(hew::ast::Program &program,
+                                              const hew::ast::Span &span) {
+  auto oldSize = program.assign_target_kinds.size();
+  program.assign_target_kinds.erase(
+      std::remove_if(program.assign_target_kinds.begin(), program.assign_target_kinds.end(),
+                     [&](const hew::ast::AssignTargetKindEntry &entry) {
+                       return entry.start == span.start && entry.end == span.end;
+                     }),
+      program.assign_target_kinds.end());
+  return program.assign_target_kinds.size() != oldSize;
+}
+
+static bool eraseAssignTargetShapeEntryForSpan(hew::ast::Program &program,
+                                               const hew::ast::Span &span) {
+  auto oldSize = program.assign_target_shapes.size();
+  program.assign_target_shapes.erase(
+      std::remove_if(program.assign_target_shapes.begin(), program.assign_target_shapes.end(),
+                     [&](const hew::ast::AssignTargetShapeEntry &entry) {
+                       return entry.start == span.start && entry.end == span.end;
+                     }),
+      program.assign_target_shapes.end());
+  return program.assign_target_shapes.size() != oldSize;
+}
+
+static bool eraseLoweringFactEntryForSpan(hew::ast::Program &program, const hew::ast::Span &span) {
+  auto oldSize = program.lowering_facts.size();
+  program.lowering_facts.erase(
+      std::remove_if(program.lowering_facts.begin(), program.lowering_facts.end(),
+                     [&](const hew::ast::LoweringFactEntry &entry) {
+                       return entry.start == span.start && entry.end == span.end;
+                     }),
+      program.lowering_facts.end());
+  return program.lowering_facts.size() != oldSize;
+}
+
+static std::optional<hew::ast::Span> findFunctionAssignTargetSpan(const hew::ast::FnDecl &fn) {
+  for (const auto &stmt : fn.body.stmts) {
+    const auto *assign = std::get_if<hew::ast::StmtAssign>(&stmt->value.kind);
+    if (assign)
+      return assign->target.span;
+  }
+  return std::nullopt;
+}
+
 static std::optional<hew::ast::Span> restoreReturnedHandleMethodCall(hew::ast::FnDecl &fn,
                                                                      llvm::StringRef callee,
                                                                      llvm::StringRef methodName) {
@@ -8109,6 +8153,216 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: assignment with missing assign_target_kinds entry fails closed
+// ============================================================================
+static void test_assignment_missing_target_kind_fails_closed() {
+  TEST(assignment_missing_target_kind_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> i64 {
+    var x: i64;
+    x = 1;
+    x
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run assign_target_kinds negative test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("failed to find main function for assign_target_kinds negative test");
+    return;
+  }
+
+  auto targetSpan = findFunctionAssignTargetSpan(*fn);
+  if (!targetSpan || !eraseAssignTargetKindEntryForSpan(program, *targetSpan)) {
+    FAIL("failed to remove assign_target_kinds entry for assignment target");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for assignment without target-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing assign_target_kinds entry for assignment") == std::string::npos) {
+    FAIL("expected missing assign_target_kinds diagnostic for assignment without metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: assignment with missing assign_target_shapes entry fails closed
+// ============================================================================
+static void test_assignment_missing_target_shape_fails_closed() {
+  TEST(assignment_missing_target_shape_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> i64 {
+    var x: i64;
+    x = 1;
+    x
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run assign_target_shapes negative test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("failed to find main function for assign_target_shapes negative test");
+    return;
+  }
+
+  auto targetSpan = findFunctionAssignTargetSpan(*fn);
+  if (!targetSpan || !eraseAssignTargetShapeEntryForSpan(program, *targetSpan)) {
+    FAIL("failed to remove assign_target_shapes entry for assignment target");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for assignment without target-shape metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing assign_target_shapes entry for assignment") == std::string::npos) {
+    FAIL("expected missing assign_target_shapes diagnostic for assignment without metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: HashSet method call with missing lowering_facts entry fails closed
+// ============================================================================
+static void test_hashset_method_missing_lowering_fact_fails_closed() {
+  TEST(hashset_method_missing_lowering_fact_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> i64 {
+    let s: HashSet<i64> = HashSet::new();
+    s.len()
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run lowering_facts negative test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("failed to find main function for lowering_facts negative test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*fn, "len");
+  if (!methodCallSpan || !eraseLoweringFactEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove lowering_facts entry for HashSet::len call");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for HashSet::len without lowering-fact metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing lowering_facts entry for HashSet::len") == std::string::npos) {
+    FAIL("expected missing lowering_facts diagnostic for HashSet::len without metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: unsigned division missing expr_types entry fails closed
+// (covers the "binary signedness decision" path distinct from widening/comparison)
+// ============================================================================
+static void test_unsigned_division_missing_expr_type_fails_closed() {
+  TEST(unsigned_division_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_unsigned_div() -> u32 {
+    let a: u32 = 10;
+    let b: u32 = 3;
+    a / b
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for unsigned division expr_types test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_unsigned_div");
+  if (!fn || !fn->body.trailing_expr) {
+    FAIL("broken_unsigned_div body missing trailing expression");
+    return;
+  }
+
+  auto *binary = std::get_if<hew::ast::ExprBinary>(&fn->body.trailing_expr->value.kind);
+  if (!binary) {
+    FAIL("expected trailing binary expression in broken_unsigned_div");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, binary->left->span)) {
+    FAIL("failed to remove expr_types entry for left operand of unsigned division");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when unsigned division signedness metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for binary signedness decision for the left "
+                      "operand") == std::string::npos) {
+    FAIL("expected missing expr_types fail-closed diagnostic for unsigned division signedness");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 
 static void test_remote_actor_alias_ask_is_recognized() {
   TEST(remote_actor_alias_ask_is_recognized);
@@ -8654,6 +8908,10 @@ int main() {
   test_discarded_scope_tail_if_side_effect_branches_lower();
   test_statement_style_match_arm_bad_body_fails_closed();
   test_statement_style_match_arm_block_tail_if_fails_closed();
+  test_assignment_missing_target_kind_fails_closed();
+  test_assignment_missing_target_shape_fails_closed();
+  test_hashset_method_missing_lowering_fact_fails_closed();
+  test_unsigned_division_missing_expr_type_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();
   test_statement_style_match_arm_statement_only_if_tail_lowers();
   test_statement_style_match_arm_statement_only_match_tail_lowers();

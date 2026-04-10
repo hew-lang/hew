@@ -1431,69 +1431,10 @@ fn severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
-/// Map a `TypeErrorKind` to an LSP diagnostic severity.
-///
-/// This is kept for tests and any code path that only has a kind available.
-/// Prefer `severity_to_lsp` when a full `TypeError` is in scope, because
-/// `NonExhaustiveMatch` can now be either Error (enum-like) or Warning (scalar
-/// catch-all) depending on the scrutinee type.
-#[cfg(test)]
-fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
-    match kind {
-        TypeErrorKind::ActorRefCycle
-        | TypeErrorKind::UnusedVariable
-        | TypeErrorKind::UnusedMut
-        | TypeErrorKind::StyleSuggestion
-        | TypeErrorKind::UnusedImport
-        | TypeErrorKind::UnreachableCode
-        | TypeErrorKind::DeadCode
-        | TypeErrorKind::OrphanImpl
-        | TypeErrorKind::PlatformLimitation
-        | TypeErrorKind::BlockingCallInReceiveFn
-        | TypeErrorKind::Shadowing => DiagnosticSeverity::WARNING,
-        _ => DiagnosticSeverity::ERROR,
-    }
-}
-
 /// Encode a `TypeErrorKind` discriminant and suggestions as JSON for `Diagnostic.data`.
 fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::Value {
-    let kind_str = match kind {
-        TypeErrorKind::Mismatch { .. } => "Mismatch",
-        TypeErrorKind::UndefinedVariable => "UndefinedVariable",
-        TypeErrorKind::UndefinedType => "UndefinedType",
-        TypeErrorKind::UndefinedFunction => "UndefinedFunction",
-        TypeErrorKind::UndefinedField => "UndefinedField",
-        TypeErrorKind::UndefinedMethod => "UndefinedMethod",
-        TypeErrorKind::InvalidSend => "InvalidSend",
-        TypeErrorKind::InvalidOperation => "InvalidOperation",
-        TypeErrorKind::ArityMismatch => "ArityMismatch",
-        TypeErrorKind::BoundsNotSatisfied => "BoundsNotSatisfied",
-        TypeErrorKind::InferenceFailed => "InferenceFailed",
-        TypeErrorKind::NonExhaustiveMatch => "NonExhaustiveMatch",
-        TypeErrorKind::DuplicateDefinition => "DuplicateDefinition",
-        TypeErrorKind::MutabilityError => "MutabilityError",
-        TypeErrorKind::ReturnTypeMismatch => "ReturnTypeMismatch",
-        TypeErrorKind::UseAfterMove => "UseAfterMove",
-        TypeErrorKind::YieldOutsideGenerator => "YieldOutsideGenerator",
-        TypeErrorKind::ActorRefCycle => "ActorRefCycle",
-        TypeErrorKind::UnusedVariable => "UnusedVariable",
-        TypeErrorKind::UnusedMut => "UnusedMut",
-        TypeErrorKind::StyleSuggestion => "StyleSuggestion",
-        TypeErrorKind::UnusedImport => "UnusedImport",
-        TypeErrorKind::UnreachableCode => "UnreachableCode",
-        TypeErrorKind::Shadowing => "Shadowing",
-        TypeErrorKind::DeadCode => "DeadCode",
-        TypeErrorKind::PurityViolation => "PurityViolation",
-        TypeErrorKind::OrphanImpl => "OrphanImpl",
-        TypeErrorKind::PlatformLimitation => "PlatformLimitation",
-        TypeErrorKind::MachineExhaustivenessError => "MachineExhaustivenessError",
-        TypeErrorKind::UnresolvedImport => "UnresolvedImport",
-        TypeErrorKind::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
-        TypeErrorKind::BorrowedParamReturn => "BorrowedParamReturn",
-        TypeErrorKind::UnsafeCollectionElement => "UnsafeCollectionElement",
-    };
     serde_json::json!({
-        "kind": kind_str,
+        "kind": kind.as_kind_str(),
         "suggestions": suggestions,
     })
 }
@@ -3651,18 +3592,6 @@ impl Worker {
     }
 
     #[test]
-    fn error_kind_severity_mapping() {
-        let severity = error_kind_severity(&TypeErrorKind::UndefinedVariable);
-        assert_eq!(severity, DiagnosticSeverity::ERROR);
-    }
-
-    #[test]
-    fn actor_ref_cycle_severity_is_warning() {
-        let severity = error_kind_severity(&TypeErrorKind::ActorRefCycle);
-        assert_eq!(severity, DiagnosticSeverity::WARNING);
-    }
-
-    #[test]
     fn find_refs_scope_aware_separates_same_name_locals() {
         let source = "fn foo(x: i64) { println(x); }\nfn bar(x: i64) { println(x); }";
         let parse_result = hew_parser::parse(source);
@@ -4247,72 +4176,6 @@ impl Worker {
             let data = diagnostic_data(kind, &[]);
             let kind_str = data["kind"].as_str().unwrap();
             assert!(!kind_str.is_empty(), "kind string should not be empty");
-        }
-    }
-
-    #[test]
-    fn error_kind_severity_warning_kinds() {
-        // NonExhaustiveMatch is intentionally absent here: its severity depends on
-        // the scrutinee type (enum-like → Error, scalar → Warning) and is determined
-        // by the TypeError.severity field, not by `error_kind_severity`.
-        let warning_kinds = [
-            TypeErrorKind::ActorRefCycle,
-            TypeErrorKind::UnusedVariable,
-            TypeErrorKind::UnusedMut,
-            TypeErrorKind::StyleSuggestion,
-            TypeErrorKind::UnusedImport,
-            TypeErrorKind::UnreachableCode,
-            TypeErrorKind::DeadCode,
-            TypeErrorKind::OrphanImpl,
-            TypeErrorKind::PlatformLimitation,
-            TypeErrorKind::Shadowing,
-        ];
-        for kind in &warning_kinds {
-            assert_eq!(
-                error_kind_severity(kind),
-                DiagnosticSeverity::WARNING,
-                "{kind:?} should be WARNING"
-            );
-        }
-    }
-
-    #[test]
-    fn nonexhaustive_match_kind_falls_through_to_error_in_kind_fn() {
-        // error_kind_severity no longer hard-codes NonExhaustiveMatch as WARNING.
-        // The kind alone is insufficient — severity_to_lsp / TypeError.severity
-        // is the authoritative source for this kind.
-        assert_eq!(
-            error_kind_severity(&TypeErrorKind::NonExhaustiveMatch),
-            DiagnosticSeverity::ERROR,
-            "NonExhaustiveMatch falls through to ERROR in error_kind_severity; \
-             use severity_to_lsp with the full TypeError for the correct value"
-        );
-    }
-
-    #[test]
-    fn severity_to_lsp_mapping() {
-        assert_eq!(severity_to_lsp(Severity::Error), DiagnosticSeverity::ERROR);
-        assert_eq!(
-            severity_to_lsp(Severity::Warning),
-            DiagnosticSeverity::WARNING
-        );
-    }
-
-    #[test]
-    fn error_kind_severity_error_kinds() {
-        let error_kinds = [
-            TypeErrorKind::UndefinedVariable,
-            TypeErrorKind::UndefinedType,
-            TypeErrorKind::UndefinedFunction,
-            TypeErrorKind::MutabilityError,
-            TypeErrorKind::ArityMismatch,
-        ];
-        for kind in &error_kinds {
-            assert_eq!(
-                error_kind_severity(kind),
-                DiagnosticSeverity::ERROR,
-                "{kind:?} should be ERROR"
-            );
         }
     }
 

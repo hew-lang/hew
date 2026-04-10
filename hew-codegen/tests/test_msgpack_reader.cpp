@@ -602,8 +602,75 @@ static void test_type_infer_in_wire_rejects() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Entry point
+// Wire declaration kind rejection
+//
+// Verifies that a WireDecl with an unrecognised "kind" field is rejected by
+// the reader.  parseWireDeclKind calls fail() for any string other than
+// "Struct" or "Enum", so a future third variant that is not yet handled in
+// the C++ codegen cannot silently pass as one of the known kinds.
 // ═══════════════════════════════════════════════════════════════════════════
+
+static void test_wire_unknown_decl_kind_rejects() {
+  TEST(wire_unknown_decl_kind_rejects);
+
+  // Build a minimal valid program that contains one Wire item whose "kind"
+  // field is an unrecognised string.  The WireDecl is the minimal shape the
+  // reader expects: {kind, name, fields, variants}.
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+
+  pk.pack_map(9);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(6));
+
+  // items: one Wire item with an unknown kind.
+  // Items are Spanned<Item> = [item_value, span], where item_value is
+  // a single-key enum-variant map like {"Wire": <WireDecl>}.
+  pk.pack(std::string("items"));
+  pk.pack_array(1);
+  // Spanned<Item> = [item, span]
+  pk.pack_array(2);
+  // item = {"Wire": <WireDecl>}
+  pk.pack_map(1);
+  pk.pack(std::string("Wire"));
+  // WireDecl map: kind, name, fields, variants (required fields)
+  pk.pack_map(4);
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("UnknownWireDeclKind")); // not "Struct" or "Enum"
+  pk.pack(std::string("name"));
+  pk.pack(std::string("BadDecl"));
+  pk.pack(std::string("fields"));
+  pk.pack_array(0);
+  pk.pack(std::string("variants"));
+  pk.pack_array(0);
+  // span = {start, end}
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(0));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(1));
+
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+
+  EXPECT_REJECTS(hew::parseMsgpackAST(data.data(), data.size()));
+  PASS();
+}
 
 int main() {
   printf("Running msgpack reader tests...\n");
@@ -632,6 +699,9 @@ int main() {
 
   // TypeInfer must not survive in the wire
   test_type_infer_in_wire_rejects();
+
+  // Wire declaration with unknown kind must be rejected
+  test_wire_unknown_decl_kind_rejects();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

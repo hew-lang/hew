@@ -27,13 +27,19 @@ impl Checker {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Tasks);
             }
             Expr::Select { .. } => {
-                let supports_single_arm_timeout = matches!(
+                // No-timeout selects are now supported on WASM via the cooperative
+                // scheduler (hew_select_first / hew_reply_wait).
+                // Timed single-arm selects are lowered to hew_actor_ask with a timeout.
+                // Only timed multi-arm selects remain unsupported (WASM-TODO: requires
+                // WASI clock_time_get); codegen will reject those with an error.
+                let is_no_timeout = matches!(expr, Expr::Select { timeout: None, .. });
+                let is_single_arm_timed = matches!(
                     expr,
                     Expr::Select { arms, timeout: Some(timeout) }
                         if arms.len() == 1
                             && matches!(timeout.duration.0, Expr::Literal(Literal::Duration(_)))
                 );
-                if !supports_single_arm_timeout {
+                if !is_no_timeout && !is_single_arm_timed {
                     self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
                 }
             }

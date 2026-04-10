@@ -146,6 +146,7 @@ impl BuildArgs {
             extra_libs: self.link_libs.clone(),
             debug: self.debug,
             pkg_path: self.common.pkg_path.clone(),
+            project_dir: None,
         }
     }
 }
@@ -193,6 +194,7 @@ impl RunArgs {
             extra_libs: self.link_libs.clone(),
             debug: self.debug,
             pkg_path: self.common.pkg_path.clone(),
+            project_dir: None,
         }
     }
 }
@@ -230,6 +232,7 @@ impl DebugArgs {
             extra_libs: self.link_libs.clone(),
             debug: true,
             pkg_path: self.common.pkg_path.clone(),
+            project_dir: None,
         }
     }
 }

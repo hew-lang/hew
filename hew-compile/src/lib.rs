@@ -17,6 +17,11 @@ pub struct FrontendOptions {
     pub no_typecheck: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
+    /// Anchor the in-memory compile to a specific project directory, enabling
+    /// manifest-aware import resolution (local `src/` lookup, manifest dep
+    /// validation, lockfile) identical to `compile_file`.  When `None` the
+    /// old cwd-fallback with no manifest is used.
+    pub project_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,13 +286,22 @@ fn load_project_context(input: &str) -> Result<ProjectContext, FrontendFailure> 
     })
 }
 
-fn project_context_for_program(source: &str) -> ProjectContext {
-    ProjectContext {
-        source: source.to_string(),
-        project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        manifest_deps: None,
-        package_name: None,
-        locked_versions: None,
+fn project_context_for_program(source: &str, options: &FrontendOptions) -> ProjectContext {
+    match &options.project_dir {
+        Some(dir) => ProjectContext {
+            source: source.to_string(),
+            project_dir: dir.clone(),
+            manifest_deps: load_dependencies(dir),
+            package_name: load_package_name(dir),
+            locked_versions: load_lockfile(dir),
+        },
+        None => ProjectContext {
+            source: source.to_string(),
+            project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            manifest_deps: None,
+            package_name: None,
+            locked_versions: None,
+        },
     }
 }
 
@@ -1430,7 +1444,7 @@ pub fn compile_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<FrontendArtifacts, FrontendFailure> {
-    let project = project_context_for_program(source);
+    let project = project_context_for_program(source, options);
     let mut diagnostics = Vec::new();
 
     if let Err(failure) = resolve_imports_internal(

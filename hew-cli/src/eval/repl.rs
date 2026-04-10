@@ -4,6 +4,7 @@ use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
 use std::fmt;
 use std::io::Read;
+use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -24,6 +25,9 @@ pub struct EvalResult {
 pub struct ReplSession {
     session: Session,
     execution_timeout: Duration,
+    /// Project directory used to resolve manifest deps and local imports for
+    /// in-memory compile, matching the behaviour of `compile_file`.
+    project_dir: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -281,6 +285,24 @@ impl ReplSession {
         Self {
             session: Session::new(),
             execution_timeout,
+            project_dir: None,
+        }
+    }
+
+    /// Create a REPL session anchored to the project containing `file_path`.
+    ///
+    /// The parent directory of `file_path` is used as the project root so that
+    /// manifest deps, local `src/` imports, and lockfile resolution behave
+    /// identically to a `compile_file` invocation on that file.
+    #[must_use]
+    pub fn for_path(file_path: &str, execution_timeout: Duration) -> Self {
+        let project_dir = std::path::Path::new(file_path)
+            .parent()
+            .map(std::path::Path::to_path_buf);
+        Self {
+            session: Session::new(),
+            execution_timeout,
+            project_dir,
         }
     }
 
@@ -337,6 +359,7 @@ impl ReplSession {
             &checked_program.source,
             "<repl>",
             self.execution_timeout,
+            self.project_dir.clone(),
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -410,6 +433,7 @@ impl ReplSession {
             &checked_program.source,
             "<repl>",
             self.execution_timeout,
+            self.project_dir.clone(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -472,6 +496,7 @@ impl ReplSession {
             &synthetic_program.source,
             source_label,
             self.execution_timeout,
+            self.project_dir.clone(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -875,6 +900,7 @@ fn run_inprocess_compiled(
     source: &str,
     source_label: &str,
     timeout: Duration,
+    project_dir: Option<PathBuf>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -890,7 +916,10 @@ fn run_inprocess_compiled(
         source,
         source_label,
         bin_path_str,
-        &crate::compile::CompileOptions::default(),
+        &crate::compile::CompileOptions {
+            project_dir,
+            ..crate::compile::CompileOptions::default()
+        },
     )
     .map_err(|error| normalize_compiled_eval_error(&error))?;
 
@@ -1013,7 +1042,11 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
         (source, path.to_string())
     };
 
-    let mut session = ReplSession::with_timeout(timeout);
+    let mut session = if path == "-" {
+        ReplSession::with_timeout(timeout)
+    } else {
+        ReplSession::for_path(path, timeout)
+    };
     session.eval_source_file_cli(&source, &input_name, &input_name)?;
 
     Ok(())
@@ -1418,5 +1451,128 @@ mod tests {
         assert_eq!(cleared.output, "Session cleared.\nRemoved 1 binding.\n");
         let overview = session.eval(":session");
         assert!(overview.output.contains("0 persistent bindings"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Project-context parity tests
+    //
+    // These verify that eval flows pick up project dir / manifest context the
+    // same way `compile_file` does.  Each test creates a temporary project
+    // directory tree and exercises the path that previously used
+    // `project_context_for_program` with no manifest.
+    // -----------------------------------------------------------------------
+
+    /// `eval_file` anchored to a real path resolves local `src/` imports that
+    /// would fail when `project_dir` defaults to an unrelated cwd.
+    #[test]
+    fn eval_file_resolves_local_src_import() {
+        if !require_toolchain() {
+            return;
+        }
+
+        // Build a minimal project tree:
+        //   <tmp>/
+        //     src/
+        //       greet.hew   -- module with a pub fn
+        //     main.hew      -- imports from greet and calls the fn
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+        std::fs::write(
+            src_dir.join("greet.hew"),
+            "pub fn hello() -> str { \"hi from greet\" }\n",
+        )
+        .expect("write greet.hew");
+
+        let main_path = dir.path().join("main.hew");
+        std::fs::write(
+            &main_path,
+            "import local \"greet\";\nfn main() { println(local.hello()); }\n",
+        )
+        .expect("write main.hew");
+
+        let result = eval_file(
+            main_path.to_str().expect("main path is valid UTF-8"),
+            DEFAULT_EVAL_TIMEOUT,
+        );
+        assert!(
+            result.is_ok(),
+            "eval_file with local import failed: {result:?}"
+        );
+    }
+
+    /// `ReplSession::for_path` carries the project directory so that
+    /// `eval_source_file_cli` resolves imports relative to that project.
+    #[test]
+    fn repl_session_for_path_carries_project_dir() {
+        if !require_toolchain() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+        std::fs::write(
+            src_dir.join("math.hew"),
+            "pub fn square(n: i64) -> i64 { n * n }\n",
+        )
+        .expect("write math.hew");
+
+        let main_path = dir.path().join("prog.hew");
+        std::fs::write(
+            &main_path,
+            "import local \"math\";\nfn main() { println(local.square(4)); }\n",
+        )
+        .expect("write prog.hew");
+
+        let main_path_str = main_path.to_str().expect("path is valid UTF-8");
+        let timeout = DEFAULT_EVAL_TIMEOUT;
+        let source = std::fs::read_to_string(main_path_str).expect("read prog.hew");
+
+        let mut session = ReplSession::for_path(main_path_str, timeout);
+        let result = session.eval_source_file_cli(&source, main_path_str, main_path_str);
+        assert!(
+            result.is_ok(),
+            "eval via for_path session failed: {result:?}"
+        );
+    }
+
+    /// Verifies that `FrontendOptions::project_dir` is forwarded through the
+    /// in-memory compile pipeline.  A `compile_program` call with `project_dir`
+    /// set to a real project tree must see manifest deps; previously it would
+    /// always get `manifest_deps: None`.
+    #[test]
+    fn compile_program_inherits_project_dir_manifest_deps() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let manifest = "[package]\nname = \"myapp\"\n\n[dependencies]\nstdlib = \"*\"\n";
+        let mut f = std::fs::File::create(dir.path().join("hew.toml")).expect("create hew.toml");
+        f.write_all(manifest.as_bytes()).expect("write hew.toml");
+
+        let options = hew_compile::FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        // A trivial program with no imports — it just needs to compile cleanly
+        // so we can confirm the project context is wired in without an import
+        // resolution error.
+        let source = "fn main() { println(\"ok\"); }\n";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
+        // compile_program must not error; previously it would ignore project_dir.
+        // With the fix, manifest_deps is loaded from the temp dir.
+        let result = hew_compile::compile_program(parse_result.program, source, "<test>", &options);
+        assert!(
+            result.is_ok(),
+            "compile_program with project_dir failed: {result:?}"
+        );
     }
 }

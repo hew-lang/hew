@@ -261,6 +261,10 @@ impl Checker {
         self.resolve_registered_annotation_ty(type_expr, &mut hole_vars)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "type registration handles all root item variants in one place"
+    )]
     /// Pass 1: Collect type definitions
     pub(super) fn collect_types(&mut self, program: &Program) {
         // Pre-register TypeDecls from non-root module_graph modules into
@@ -379,7 +383,11 @@ impl Checker {
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
                 }
-                _ => {}
+                Item::Import(_)
+                | Item::Const(_)
+                | Item::Impl(_)
+                | Item::Function(_)
+                | Item::ExternBlock(_) => {}
             }
         }
     }
@@ -1741,7 +1749,11 @@ impl Checker {
                 // in `import_spans` tells the diagnostic renderer which file owns the span.
                 self.register_import(id, Some(span));
             }
-            _ => {}
+            Item::Const(_)
+            | Item::TypeAlias(_)
+            | Item::Wire(_)
+            | Item::Supervisor(_)
+            | Item::Machine(_) => {}
         }
     }
 

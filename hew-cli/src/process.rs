@@ -303,11 +303,16 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
 
 /// Kill the process tree rooted at `child` on Windows using `taskkill /T /F`.
 ///
-/// Returns `true` if the tree was definitively terminated (exit 0 or exit 128
-/// meaning the process was already gone), so the caller knows it is safe to
-/// join pipe-drain threads.  Returns `false` if `taskkill` was unavailable or
-/// reported partial/unexpected failure, in which case a child-only kill is
-/// attempted as a fallback and drain threads must be detached to avoid a hang.
+/// Returns `true` only when `taskkill` exits 0, which means it positively
+/// identified and terminated every process in the tree.  All other outcomes
+/// return `false` so the caller detaches drain threads rather than joining:
+///
+/// - Exit 128 ("PID not found"): the root child exited on its own between
+///   `try_wait()` and this call.  Its descendants may still be alive and
+///   holding inherited pipe write-ends open, so we cannot claim the tree is
+///   dead.
+/// - Any other non-zero exit or spawn failure: partial or no kill; fall back
+///   to `child.kill()` for the root and return `false`.
 #[cfg(windows)]
 fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<bool, String> {
     match kill_target {
@@ -322,11 +327,12 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
                 .status()
             {
                 Ok(s) if s.success() => Ok(true),
-                // Exit 128: "The process with PID <n> not found." — already gone,
-                // so its pipe handles are closed.
-                Ok(s) if s.code() == Some(128) => Ok(true),
                 Ok(s) => {
-                    // Unexpected taskkill failure; fall back to child-only kill.
+                    // Exit 128 means the root PID was not found — the child
+                    // exited naturally, but its descendants may still be alive.
+                    // Any other non-zero code means partial or no kill.
+                    // In both cases fall back to a best-effort child kill and
+                    // return false so drain threads are detached, not joined.
                     kill_child_only(child).map_err(|kill_error| {
                         format!(
                             "taskkill exited with {s}; \

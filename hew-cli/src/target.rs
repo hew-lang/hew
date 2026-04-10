@@ -122,7 +122,7 @@ impl TargetSpec {
     }
 
     pub fn can_link_with_host_tools(&self) -> bool {
-        self.is_wasm() || self.matches_host_environment()
+        self.is_wasm() || self.matches_host_environment() || self.can_cross_link_on_darwin_host()
     }
 
     pub fn cross_target_run_error(&self, verb: &str) -> String {
@@ -147,6 +147,14 @@ impl TargetSpec {
     fn matches_host_environment(&self) -> bool {
         let host = host_platform();
         self.arch == host.arch && self.os == host.os && self.env == host.env
+    }
+
+    fn can_cross_link_on_darwin_host(&self) -> bool {
+        let host = host_platform();
+        host.os == TargetOs::Darwin
+            && self.os == TargetOs::Darwin
+            && self.env == host.env
+            && self.arch != host.arch
     }
 }
 
@@ -394,5 +402,25 @@ mod tests {
     fn linux_linker_triple_passes_normalized_triple_unchanged() {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         assert_eq!(spec.linker_triple(), "x86_64-unknown-linux-gnu");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_cross_arch_can_link_with_host_tools() {
+        let triple = if cfg!(target_arch = "aarch64") {
+            "x86_64-apple-darwin"
+        } else {
+            "aarch64-apple-darwin"
+        };
+        let spec = TargetSpec::from_requested(Some(triple)).expect("target");
+        assert!(spec.can_link_with_host_tools());
+        assert!(!spec.can_run_on_host());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_darwin_foreign_targets_still_cannot_link_with_host_tools() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        assert!(!spec.can_link_with_host_tools());
     }
 }

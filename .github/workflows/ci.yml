@@ -482,7 +482,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: env.RUN_CODE_PATH == 'true'
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: taiki-e/install-action@nextest
         if: env.RUN_CODE_PATH == 'true'

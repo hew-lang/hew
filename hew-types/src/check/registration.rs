@@ -1626,18 +1626,11 @@ impl Checker {
                                             .iter()
                                             .skip(sig_skip)
                                             .map(|ty| {
-                                                self.substitute_named_param(
-                                                    ty,
-                                                    "Self",
-                                                    &concrete_self,
-                                                )
+                                                ty.substitute_named_param("Self", &concrete_self)
                                             })
                                             .collect::<Vec<_>>(),
-                                        self.substitute_named_param(
-                                            &sig.return_type,
-                                            "Self",
-                                            &concrete_self,
-                                        ),
+                                        sig.return_type
+                                            .substitute_named_param("Self", &concrete_self),
                                     )
                                 } else {
                                     (

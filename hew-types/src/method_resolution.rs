@@ -17,83 +17,12 @@ fn generic_ty(name: &str) -> Ty {
     }
 }
 
-fn substitute_named_param(ty: &Ty, param_name: &str, replacement: &Ty) -> Ty {
-    match ty {
-        Ty::Named { name, args } if args.is_empty() && name == param_name => replacement.clone(),
-        Ty::Named { name, args } => Ty::Named {
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|arg| substitute_named_param(arg, param_name, replacement))
-                .collect(),
-        },
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(|elem| substitute_named_param(elem, param_name, replacement))
-                .collect(),
-        ),
-        Ty::Array(inner, len) => Ty::Array(
-            Box::new(substitute_named_param(inner, param_name, replacement)),
-            *len,
-        ),
-        Ty::Slice(inner) => Ty::Slice(Box::new(substitute_named_param(
-            inner,
-            param_name,
-            replacement,
-        ))),
-        Ty::Function { params, ret } => Ty::Function {
-            params: params
-                .iter()
-                .map(|param| substitute_named_param(param, param_name, replacement))
-                .collect(),
-            ret: Box::new(substitute_named_param(ret, param_name, replacement)),
-        },
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => Ty::Closure {
-            params: params
-                .iter()
-                .map(|param| substitute_named_param(param, param_name, replacement))
-                .collect(),
-            ret: Box::new(substitute_named_param(ret, param_name, replacement)),
-            captures: captures
-                .iter()
-                .map(|capture| substitute_named_param(capture, param_name, replacement))
-                .collect(),
-        },
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => Ty::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(substitute_named_param(pointee, param_name, replacement)),
-        },
-        Ty::TraitObject { traits } => Ty::TraitObject {
-            traits: traits
-                .iter()
-                .map(|bound| crate::TraitObjectBound {
-                    trait_name: bound.trait_name.clone(),
-                    args: bound
-                        .args
-                        .iter()
-                        .map(|arg| substitute_named_param(arg, param_name, replacement))
-                        .collect(),
-                })
-                .collect(),
-        },
-        _ => ty.clone(),
-    }
-}
-
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
     for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
         for param_ty in &mut sig.params {
-            *param_ty = substitute_named_param(param_ty, type_param, type_arg);
+            *param_ty = param_ty.substitute_named_param(type_param, type_arg);
         }
-        sig.return_type = substitute_named_param(&sig.return_type, type_param, type_arg);
+        sig.return_type = sig.return_type.substitute_named_param(type_param, type_arg);
     }
     sig
 }

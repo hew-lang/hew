@@ -169,7 +169,7 @@ impl Checker {
             !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
-        call_type_args.retain(|_, args| args.iter().all(|ty| !ty_has_unresolved_inference_var(ty)));
+        call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
         self.validate_assign_target_output_contract();
     }
 
@@ -446,12 +446,12 @@ impl Checker {
         self.validate_hashset_element_type(elem_ty, span)
     }
 
-    fn instantiate_type_def_member(&self, ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+    fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
         type_params
             .iter()
             .zip(type_args.iter())
             .fold(ty.clone(), |instantiated, (param, arg)| {
-                self.substitute_named_param(&instantiated, param, arg)
+                instantiated.substitute_named_param(param, arg)
             })
     }
 
@@ -481,16 +481,16 @@ impl Checker {
                 visiting.insert(type_def.name.clone());
                 let result = type_def.fields.values().any(|field_ty| {
                     let field_ty =
-                        self.instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
                     self.vec_element_contains_structural_array(&field_ty, visiting)
                 }) || type_def.variants.values().any(|variant| match variant {
                     VariantDef::Unit => false,
                     VariantDef::Tuple(tys) => tys.iter().any(|ty| {
-                        let ty = self.instantiate_type_def_member(ty, &type_def.type_params, args);
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
                         self.vec_element_contains_structural_array(&ty, visiting)
                     }),
                     VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
-                        let ty = self.instantiate_type_def_member(ty, &type_def.type_params, args);
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
                         self.vec_element_contains_structural_array(&ty, visiting)
                     }),
                 });

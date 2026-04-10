@@ -123,3 +123,9 @@ into the explicit results, and blending is no longer needed.
 - Re-audited the wire codec method names against `hew-types/src/check/registration.rs` instead of preserving the older aspirational `encode_hbf` / `decode_hbf` / `encode_json_pretty` surface from the spec.
 - Documented the current stream codec boundary in `docs/specs/HEW-SPEC.md` as fail-closed rather than runtime-available, because `hew-types/src/check/methods.rs` rejects `Stream.decode()` and `Sink.encode()` as unlowerable.
 - Left RcFree and collection-surface doc cleanup out of this lane on purpose so the wire codec spec correction stays small and matches the separate planner lane split.
+
+## 2026-04-10 — refactor/ty-subst-dedup
+
+- Verified the checker-owned and method-resolution `substitute_named_param` walkers matched in variant coverage and replacement guards before deduplicating them.
+- Moved named-parameter substitution and inference-variable detection onto `hew-types/src/ty.rs` so all structurally identical `Ty` recursion now has one owner in the type model.
+- Kept the lane behaviour-preserving and `hew-types`-local: call sites now dispatch through `Ty` methods, but the recursive walk itself is unchanged.

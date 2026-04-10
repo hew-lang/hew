@@ -45,13 +45,13 @@ use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
     first_infer_span_in_extern_fn, first_infer_span_in_type_expr, float_fits_type,
     integer_fits_type, integer_type_info, integer_type_range, is_float_literal, is_integer_literal,
-    lookup_scoped_item, scoped_module_item_name, ty_has_unresolved_inference_var,
+    lookup_scoped_item, scoped_module_item_name,
 };
 use crate::lowering_facts::{LoweringFact, LoweringFactError};
 
 fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {
-    let ok_unresolved = ty_has_unresolved_inference_var(&ok_ty);
-    let err_unresolved = ty_has_unresolved_inference_var(&err_ty);
+    let ok_unresolved = ok_ty.has_inference_var();
+    let err_unresolved = err_ty.has_inference_var();
     match (ok_unresolved, err_unresolved) {
         (false, false) => Some((ok_ty, err_ty)),
         (false, true) => Some((ok_ty.clone(), ok_ty)),

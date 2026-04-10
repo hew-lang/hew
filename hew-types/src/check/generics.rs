@@ -109,9 +109,9 @@ impl Checker {
             for (tp, ta) in sig.type_params.iter().zip(resolved_type_args.iter()) {
                 params = params
                     .iter()
-                    .map(|param| self.substitute_named_param(param, tp, ta))
+                    .map(|param| param.substitute_named_param(tp, ta))
                     .collect();
-                ret = self.substitute_named_param(&ret, tp, ta);
+                ret = ret.substitute_named_param(tp, ta);
             }
         }
 
@@ -275,8 +275,9 @@ impl Checker {
             }
 
             // Return-type mismatch.
-            let expected_ret =
-                self.substitute_named_param(&trait_sig.return_type, "Self", &concrete_ty);
+            let expected_ret = trait_sig
+                .return_type
+                .substitute_named_param("Self", &concrete_ty);
             if expected_ret != type_sig.return_type {
                 return vec![format!(
                     "`{type_name}::{method_name}` returns `{}` but trait `{trait_name}` \
@@ -293,7 +294,7 @@ impl Checker {
                 .zip(type_sig.params.iter())
                 .enumerate()
             {
-                let expected = self.substitute_named_param(trait_param, "Self", &concrete_ty);
+                let expected = trait_param.substitute_named_param("Self", &concrete_ty);
                 if expected != *type_param {
                     return vec![format!(
                         "`{type_name}::{method_name}` parameter {} has type `{}` but \
@@ -610,15 +611,16 @@ impl Checker {
             }
 
             // Return-type check (Self → concrete type in trait side).
-            let expected_ret =
-                self.substitute_named_param(&trait_sig.return_type, "Self", &concrete_ty);
+            let expected_ret = trait_sig
+                .return_type
+                .substitute_named_param("Self", &concrete_ty);
             if expected_ret != type_sig.return_type {
                 return false;
             }
 
             // Per-parameter type check (Self → concrete type in trait side).
             for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter()) {
-                let expected = self.substitute_named_param(trait_param, "Self", &concrete_ty);
+                let expected = trait_param.substitute_named_param("Self", &concrete_ty);
                 if expected != *type_param {
                     return false;
                 }
@@ -686,84 +688,5 @@ impl Checker {
             }
         }
         None
-    }
-
-    /// Substitute a named type parameter (e.g. `T`) with a concrete type in a type expression.
-    /// Used to resolve generic fields/methods on instantiated types.
-    #[expect(
-        clippy::self_only_used_in_recursion,
-        reason = "method for consistency with other type helpers"
-    )]
-    pub(super) fn substitute_named_param(&self, ty: &Ty, param_name: &str, replacement: &Ty) -> Ty {
-        match ty {
-            Ty::Named { name, args } if args.is_empty() && name == param_name => {
-                replacement.clone()
-            }
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.substitute_named_param(a, param_name, replacement))
-                    .collect(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| self.substitute_named_param(e, param_name, replacement))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => Ty::Array(
-                Box::new(self.substitute_named_param(inner, param_name, replacement)),
-                *n,
-            ),
-            Ty::Slice(inner) => Ty::Slice(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| self.substitute_named_param(p, param_name, replacement))
-                    .collect(),
-                ret: Box::new(self.substitute_named_param(ret, param_name, replacement)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| self.substitute_named_param(p, param_name, replacement))
-                    .collect(),
-                ret: Box::new(self.substitute_named_param(ret, param_name, replacement)),
-                captures: captures
-                    .iter()
-                    .map(|c| self.substitute_named_param(c, param_name, replacement))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(self.substitute_named_param(pointee, param_name, replacement)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|a| self.substitute_named_param(a, param_name, replacement))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            _ => ty.clone(),
-        }
     }
 }

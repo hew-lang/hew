@@ -157,7 +157,7 @@ impl Checker {
         hole_vars
             .iter()
             .map(|var| self.subst.resolve(&Ty::Var(*var)))
-            .any(|ty| ty_has_unresolved_inference_var(&ty))
+            .any(|ty| ty.has_inference_var())
     }
 
     pub(super) fn report_unresolved_inference_holes(&mut self, program: &Program) {
@@ -200,8 +200,8 @@ impl Checker {
             .filter_map(|check| {
                 let actual = self.subst.resolve(&check.actual);
                 let target = self.subst.resolve(&check.target);
-                (!ty_has_unresolved_inference_var(&actual)
-                    && !ty_has_unresolved_inference_var(&target)
+                (!actual.has_inference_var()
+                    && !target.has_inference_var()
                     && !cast_is_valid(&actual, &target))
                 .then(|| {
                     let mut err = TypeError::new(

@@ -399,6 +399,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn entropy_seeded_states_diverge() {
         let mut st1 = MtState::new();
         let mut st2 = MtState::new();

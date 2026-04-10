@@ -568,13 +568,13 @@ pub mod log_core;
 // Provides `_start` for WASI command modules. The compiler renames the user's
 // `main()` to `__original_main` when targeting WASM.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 extern "C" {
     fn __original_main() -> i32;
 }
 
 /// WASI entry point — delegates to the compiler-generated `__original_main`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 #[no_mangle]
 pub extern "C" fn _start() {
     // SAFETY: `__original_main` is always emitted by hew-codegen for every

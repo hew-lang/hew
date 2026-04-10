@@ -83,6 +83,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
+        crate::scheduler_wasm::mark_current_reply_channel_consumed(ch.cast());
         debug_assert!(
             !(*ch).replied,
             "WASM reply channels must not be replied to more than once"

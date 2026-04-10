@@ -160,13 +160,49 @@ impl PendingLoweringFact {
     }
 }
 
+/// WASM-unsupported feature classes.
+///
+/// Variants in the **warning group** (`SupervisionTrees`, `LinkMonitor`,
+/// `StructuredConcurrency`, `Tasks`, `Select`) are emitted as diagnostics at
+/// warning severity.  They reach codegen via a controlled path where codegen
+/// can emit grouped diagnostics.
+///
+/// Variants in the **reject group** (`Channels`, `Timers`, `Streams`) are
+/// emitted as compile-time **errors**.  Their runtime entry points trap via
+/// `unreachable!` on wasm32 (see `hew-runtime/src/lib.rs` `wasm_stubs`), so
+/// allowing them through type checking would produce a program that traps
+/// silently at runtime.  Making them errors ensures WASM programs fail loudly
+/// at check time rather than at the first use at runtime.
+///
+/// `link`/`unlink`/`monitor`/`demonitor` are bundled together under
+/// `LinkMonitor` because they share the same OS-thread dependency.
+///
+/// See `docs/wasm-capability-matrix.md` for the authoritative Tier 1 / Tier 2
+/// capability split and feature disposition table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum WasmUnsupportedFeature {
+    // ── Warning group (diagnostic path; codegen groups these) ──────────────
     SupervisionTrees,
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
     Select,
+    // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
+    /// `channel.new`, `Sender<T>::*`, `Receiver<T>::*`: MPSC channels require
+    /// OS mutexes/condvars unavailable on the wasm32 cooperative scheduler.
+    /// All `hew_channel_*` C symbols trap via `unreachable!` on wasm32.
+    /// WASM-TODO: implement single-threaded channel queues backed by the actor
+    /// mailbox infrastructure.
+    Channels,
+    /// `sleep_ms`, `sleep`: the wasm32 shim returns immediately (no blocking),
+    /// silently violating the expected delay semantics.
+    /// WASM-TODO: integrate with host timer API / WASI `clock_nanosleep`.
+    Timers,
+    /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
+    /// runtime module is not compiled for wasm32
+    /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
+    /// WASM-TODO: implement I/O-stream adapters over WASI fd/socket APIs.
+    Streams,
 }
 
 impl WasmUnsupportedFeature {
@@ -177,6 +213,9 @@ impl WasmUnsupportedFeature {
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
             Self::Select => "Select expressions",
+            Self::Channels => "Channel operations",
+            Self::Timers => "Timer/sleep operations",
+            Self::Streams => "Stream operations",
         }
     }
 
@@ -191,6 +230,18 @@ impl WasmUnsupportedFeature {
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
             Self::Select => "timed multi-arm selects require WASI clock_time_get (WASM-TODO); use a no-timeout select or single-arm timed ask",
+            Self::Channels => {
+                "MPSC channels require OS mutexes/condvars not available on wasm32; \
+                 use the actor ask pattern instead"
+            }
+            Self::Timers => {
+                "blocking sleep is a no-op on wasm32; \
+                 WASM-TODO: integrate with host timer / WASI clock_nanosleep"
+            }
+            Self::Streams => {
+                "I/O streams require the OS threading and networking stack; \
+                 the stream runtime module is not compiled for wasm32"
+            }
         }
     }
 }
@@ -421,6 +472,9 @@ pub struct Checker {
     pub(super) wasm_target: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
+    /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
+    /// Separate from `wasm_warning_spans` to allow independent deduplication.
+    pub(super) wasm_reject_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
     pub(super) unsupported_slice_spans: HashSet<SpanKey>,
@@ -527,6 +581,7 @@ impl Checker {
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),
+            wasm_reject_spans: HashSet::new(),
             unsupported_slice_spans: HashSet::new(),
             current_machine_transition: None,
             const_values: HashMap::new(),

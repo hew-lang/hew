@@ -84,6 +84,40 @@ impl Checker {
         });
     }
 
+    /// Emit a compile-time **error** for a WASM-incompatible feature.
+    ///
+    /// Used for features whose runtime stubs `unreachable!`-trap on wasm32
+    /// (channels, timers, streams).  Unlike [`warn_wasm_limitation`], this
+    /// makes the program fail at check time rather than silently compiling to a
+    /// program that traps at first use.
+    ///
+    /// See `docs/wasm-capability-matrix.md` for the full disposition table.
+    pub(super) fn reject_wasm_feature(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        if !self.wasm_target {
+            return;
+        }
+        let key = (SpanKey::from(span), feature);
+        if !self.wasm_reject_spans.insert(key) {
+            return;
+        }
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::PlatformLimitation,
+            span: span.clone(),
+            message: format!(
+                "{} are not supported on WASM32 — {}",
+                feature.label(),
+                feature.reason()
+            ),
+            notes: vec![],
+            suggestions: vec![
+                "See docs/wasm-capability-matrix.md for the capability tier table.".to_string(),
+                "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
+            ],
+            source_module: self.current_module.clone(),
+        });
+    }
+
     pub(super) fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
         self.errors.push(TypeError {
             severity: crate::error::Severity::Error,

@@ -1589,3 +1589,119 @@ fn load_dependencies(dir: &Path) -> Option<Vec<String>> {
     };
     Some(manifest.dependencies.into_keys().collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{load_dependencies, load_lockfile, load_package_name};
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+
+    fn write_toml(dir: &Path, content: &str) {
+        let mut file = File::create(dir.join("hew.toml")).expect("create hew.toml");
+        file.write_all(content.as_bytes()).expect("write hew.toml");
+    }
+
+    fn write_lockfile(dir: &Path, content: &str) {
+        let mut file = File::create(dir.join("adze.lock")).expect("create adze.lock");
+        file.write_all(content.as_bytes()).expect("write adze.lock");
+    }
+
+    #[test]
+    fn no_manifest_returns_none() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert!(load_dependencies(dir.path()).is_none());
+    }
+
+    #[test]
+    fn package_name_loaded() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[package]\nname = \"myapp\"\n");
+        assert_eq!(load_package_name(dir.path()), Some("myapp".to_string()));
+    }
+
+    #[test]
+    fn package_name_missing_section() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[dependencies]\n");
+        assert_eq!(load_package_name(dir.path()), None);
+    }
+
+    #[test]
+    fn package_name_no_manifest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert_eq!(load_package_name(dir.path()), None);
+    }
+
+    #[test]
+    fn manifest_no_deps_returns_some_empty() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[package]\nname = \"foo\"\n");
+        let deps = load_dependencies(dir.path()).expect("manifest should load");
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn manifest_with_deps_returns_keys() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(
+            dir.path(),
+            "[dependencies]\nstd_utils = \"1.0\"\nmath = \"0.2\"\n",
+        );
+        let mut deps = load_dependencies(dir.path()).expect("manifest should load");
+        deps.sort();
+        assert_eq!(deps, vec!["math", "std_utils"]);
+    }
+
+    #[test]
+    fn no_lockfile_returns_none() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert!(load_lockfile(dir.path()).is_none());
+    }
+
+    #[test]
+    fn empty_lockfile_returns_some_empty() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_lockfile(dir.path(), "# empty\n");
+        let entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn lockfile_with_packages() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_lockfile(
+            dir.path(),
+            "[[package]]\nname = \"ecosystem::db::postgres\"\nversion = \"1.0.0\"\n\n\
+             [[package]]\nname = \"std::net::http\"\nversion = \"2.1.0\"\n",
+        );
+        let mut entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                ("ecosystem::db::postgres".to_string(), "1.0.0".to_string()),
+                ("std::net::http".to_string(), "2.1.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lockfile_ignores_extra_fields() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_lockfile(
+            dir.path(),
+            "[[package]]\nname = \"mypkg\"\nversion = \"0.1.0\"\nchecksum = \"sha256:abc\"\n",
+        );
+        let entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], ("mypkg".to_string(), "0.1.0".to_string()));
+    }
+
+    #[test]
+    fn lockfile_invalid_toml_returns_none() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_lockfile(dir.path(), "this is not valid toml {{{\n");
+        assert!(load_lockfile(dir.path()).is_none());
+    }
+}

@@ -104,3 +104,36 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
         "expected explicit supervisor lowering failure\nstderr:\n{stderr}",
     );
 }
+
+#[test]
+fn wasi_run_timeout_terminates_a_non_terminating_program() {
+    require_wasi_runner();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("timeout_wasi.hew");
+    fs::write(
+        &source,
+        "fn main() {\n    var i = 0;\n    loop {\n        i = i + 1;\n    }\n}\n",
+    )
+    .expect("write source");
+
+    let output = Command::new(hew_binary())
+        .args(["run", "--timeout", "1"])
+        .arg(&source)
+        .arg("--target")
+        .arg("wasm32-wasi")
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew --target wasm32-wasi --timeout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "timeout should exit with code 1\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("Error: program timed out after 1s"),
+        "expected explicit timeout diagnostic\nstderr:\n{stderr}",
+    );
+}

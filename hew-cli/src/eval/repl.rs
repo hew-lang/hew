@@ -29,7 +29,7 @@ pub struct ReplSession {
     /// in-memory compile, matching the behaviour of `compile_file`.
     project_dir: Option<PathBuf>,
     /// Target triple for compilation (e.g. `wasm32-wasi`). When `None` the
-    /// host native target is used. Non-interactive paths only.
+    /// host native target is used.
     eval_target: Option<String>,
 }
 

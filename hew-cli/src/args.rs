@@ -298,7 +298,7 @@ pub struct EvalArgs {
     /// Per-evaluation timeout in seconds.
     #[arg(long, default_value = "30")]
     pub timeout: u64,
-    /// Compilation target triple (e.g. `wasm32-wasi`). Non-interactive only.
+    /// Compilation target triple (e.g. `wasm32-wasi`).
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
     /// Expression to evaluate (if no -f given).

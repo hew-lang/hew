@@ -30,6 +30,11 @@ hew run main.hew
 hew eval
 ```
 
+Inside `hew eval`, top-level items and `let`/`var` bindings stay in session across
+inputs. Use `:session` to see what is remembered, `:items` / `:bindings` to
+inspect it, `:load path/to/file.hew` to bring a file into the session, and
+`:clear` (or `:reset`) to start over.
+
 Need a lighter source-only scaffold instead? `hew init my_project` writes
 `main.hew` + `README.md`, but no `hew.toml`.
 

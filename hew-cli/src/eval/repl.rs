@@ -1,7 +1,7 @@
 //! Main REPL loop — interactive read-eval-print for Hew.
 
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
-use super::session::{Session, SyntheticDiagnosticView};
+use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
@@ -611,6 +611,7 @@ impl ReplSession {
     fn load_file(&mut self, path: &str) -> Result<String, LoadFileError> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
+        let before = self.session.counts();
 
         self.eval_source_file_cli(&source, path, path)
             .map_err(|error| match error {
@@ -618,7 +619,8 @@ impl ReplSession {
                 CliEvalError::Message(message) => LoadFileError::Message(message),
             })?;
 
-        Ok(format!("Loaded {path}"))
+        let added = session_count_delta(before, self.session.counts());
+        Ok(format!("Loaded {path} ({})", describe_load_result(added)))
     }
 
     /// Reset the session.
@@ -662,10 +664,26 @@ impl ReplSession {
                 had_errors: false,
                 errors: Vec::new(),
             },
+            ReplCommand::Session => EvalResult {
+                output: self.session.render_overview(),
+                had_errors: false,
+                errors: Vec::new(),
+            },
+            ReplCommand::Items => EvalResult {
+                output: self.session.render_items(),
+                had_errors: false,
+                errors: Vec::new(),
+            },
+            ReplCommand::Bindings => EvalResult {
+                output: self.session.render_bindings(),
+                had_errors: false,
+                errors: Vec::new(),
+            },
             ReplCommand::Clear => {
+                let removed = self.session.counts();
                 self.clear();
                 EvalResult {
-                    output: "Session cleared.\n".to_string(),
+                    output: describe_clear_result(removed),
                     had_errors: false,
                     errors: Vec::new(),
                 }
@@ -1079,7 +1097,7 @@ pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Erro
     let mut session = ReplSession::with_timeout(timeout);
 
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
-    println!("Type :help for help, :quit to exit.\n");
+    println!("Type :help for commands, :session to inspect state, :quit to exit.\n");
 
     loop {
         let prompt = "hew> ";
@@ -1166,8 +1184,11 @@ fn help_text() -> &'static str {
     "\
 Commands:
   :help, :h         Show this help message
+  :session, :show   Summarize remembered session state
+  :items            List remembered top-level items
+  :bindings         List persistent let/var bindings
   :quit, :q         Exit the REPL
-  :clear            Reset session (clear all definitions)
+  :clear, :reset    Reset session (clear all definitions)
   :type <expr>      Show the inferred type of an expression
   :load <file>      Load a .hew file into the session
 
@@ -1176,6 +1197,56 @@ Input types:
   let x = ...;      Bindings persist in the session
   <expression>      Bare expressions are evaluated and printed
 "
+}
+
+fn session_count_delta(before: SessionCounts, after: SessionCounts) -> SessionCounts {
+    SessionCounts {
+        items: after.items.saturating_sub(before.items),
+        bindings: after.bindings.saturating_sub(before.bindings),
+    }
+}
+
+fn describe_load_result(added: SessionCounts) -> String {
+    if added.items == 0 && added.bindings == 0 {
+        "no persistent session changes".to_string()
+    } else {
+        format!("added {}", describe_session_entries(added))
+    }
+}
+
+fn describe_clear_result(removed: SessionCounts) -> String {
+    if removed.items == 0 && removed.bindings == 0 {
+        "Session cleared.\n".to_string()
+    } else {
+        format!(
+            "Session cleared.\nRemoved {}.\n",
+            describe_session_entries(removed)
+        )
+    }
+}
+
+fn describe_session_entries(counts: SessionCounts) -> String {
+    let mut parts = Vec::new();
+    if counts.items > 0 {
+        parts.push(pluralize_session_entry(counts.items, "item"));
+    }
+    if counts.bindings > 0 {
+        parts.push(pluralize_session_entry(counts.bindings, "binding"));
+    }
+
+    if parts.is_empty() {
+        "no session entries".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn pluralize_session_entry(count: usize, singular: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
 }
 
 #[cfg(test)]
@@ -1289,7 +1360,7 @@ mod tests {
         let mut session = ReplSession::new();
         let _ = session.eval("let x = 10;");
         let r = session.eval(":clear");
-        assert_eq!(r.output, "Session cleared.\n");
+        assert_eq!(r.output, "Session cleared.\nRemoved 1 binding.\n");
         let r2 = session.eval("x + 1");
         assert!(r2.had_errors);
     }
@@ -1308,6 +1379,8 @@ mod tests {
         let result = session.eval(":help");
         assert!(!result.had_errors);
         assert!(result.output.contains(":quit"));
+        assert!(result.output.contains(":session"));
+        assert!(result.output.contains(":bindings"));
     }
 
     #[test]
@@ -1453,5 +1526,58 @@ mod tests {
 
         let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
+    }
+
+    #[test]
+    fn eval_session_command_reports_counts() {
+        let mut session = ReplSession::new();
+        let result = session.eval(":session");
+        assert!(!result.had_errors);
+        assert!(
+            result.output.contains("Session state:"),
+            "output: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("0 remembered items"),
+            "output: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("0 persistent bindings"),
+            "output: {}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn eval_items_and_bindings_commands_list_entries() {
+        let mut session = ReplSession::new();
+        session.session.add_item("async fn answer() -> i64 { 42 }");
+        session
+            .session
+            .add_binding("let (left, right) = pair();\nvar total = 0;");
+
+        let items = session.eval(":items");
+        assert!(!items.had_errors);
+        assert!(items.output.contains("Remembered items (1):"));
+        assert!(items.output.contains("async fn answer"));
+
+        let bindings = session.eval(":bindings");
+        assert!(!bindings.had_errors);
+        assert!(bindings.output.contains("Persistent bindings (2):"));
+        assert!(bindings.output.contains("let left, right"));
+        assert!(bindings.output.contains("var total"));
+    }
+
+    #[test]
+    fn eval_reset_alias_clears_session() {
+        let mut session = ReplSession::new();
+        session.session.add_binding("let value = 1;");
+
+        let cleared = session.eval(":reset");
+        assert_eq!(cleared.output, "Session cleared.\nRemoved 1 binding.\n");
+        let overview = session.eval(":session");
+        assert!(overview.output.contains("0 persistent bindings"));
     }
 }

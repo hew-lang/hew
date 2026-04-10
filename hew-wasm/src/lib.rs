@@ -247,8 +247,12 @@ fn run_analysis(source: &str) -> AnalysisResult {
     let mut diagnostics = Vec::new();
 
     for err in &analysis.parse_result.errors {
+        let severity = match err.severity {
+            hew_parser::Severity::Warning => "warning",
+            hew_parser::Severity::Error => "error",
+        };
         diagnostics.push(WasmDiagnostic {
-            severity: "error".to_string(),
+            severity: severity.to_string(),
             message: err.message.clone(),
             start_offset: err.span.start,
             end_offset: err.span.end,
@@ -258,12 +262,16 @@ fn run_analysis(source: &str) -> AnalysisResult {
 
     if let Some(type_output) = analysis.type_output.as_ref() {
         for err in &type_output.errors {
+            let severity = match err.severity {
+                hew_types::error::Severity::Warning => "warning",
+                hew_types::error::Severity::Error => "error",
+            };
             diagnostics.push(WasmDiagnostic {
-                severity: "error".to_string(),
+                severity: severity.to_string(),
                 message: err.message.clone(),
                 start_offset: err.span.start,
                 end_offset: err.span.end,
-                kind: format!("{:?}", err.kind),
+                kind: err.kind.as_kind_str().to_string(),
             });
         }
     }

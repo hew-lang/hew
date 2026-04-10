@@ -379,6 +379,51 @@ pub enum TypeErrorKind {
     UnsafeCollectionElement,
 }
 
+impl TypeErrorKind {
+    /// Return the stable string key for this error kind.
+    ///
+    /// These keys are part of the LSP/WASM diagnostic protocol and must not
+    /// change without a corresponding update to editor integrations.
+    #[must_use]
+    pub fn as_kind_str(&self) -> &'static str {
+        match self {
+            Self::Mismatch { .. } => "Mismatch",
+            Self::UndefinedVariable => "UndefinedVariable",
+            Self::UndefinedType => "UndefinedType",
+            Self::UndefinedFunction => "UndefinedFunction",
+            Self::UndefinedField => "UndefinedField",
+            Self::UndefinedMethod => "UndefinedMethod",
+            Self::InvalidSend => "InvalidSend",
+            Self::InvalidOperation => "InvalidOperation",
+            Self::ArityMismatch => "ArityMismatch",
+            Self::BoundsNotSatisfied => "BoundsNotSatisfied",
+            Self::InferenceFailed => "InferenceFailed",
+            Self::NonExhaustiveMatch => "NonExhaustiveMatch",
+            Self::DuplicateDefinition => "DuplicateDefinition",
+            Self::MutabilityError => "MutabilityError",
+            Self::ReturnTypeMismatch => "ReturnTypeMismatch",
+            Self::UseAfterMove => "UseAfterMove",
+            Self::YieldOutsideGenerator => "YieldOutsideGenerator",
+            Self::ActorRefCycle => "ActorRefCycle",
+            Self::UnusedVariable => "UnusedVariable",
+            Self::UnusedMut => "UnusedMut",
+            Self::StyleSuggestion => "StyleSuggestion",
+            Self::UnusedImport => "UnusedImport",
+            Self::UnreachableCode => "UnreachableCode",
+            Self::Shadowing => "Shadowing",
+            Self::DeadCode => "DeadCode",
+            Self::PurityViolation => "PurityViolation",
+            Self::OrphanImpl => "OrphanImpl",
+            Self::PlatformLimitation => "PlatformLimitation",
+            Self::MachineExhaustivenessError => "MachineExhaustivenessError",
+            Self::UnresolvedImport => "UnresolvedImport",
+            Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
+            Self::BorrowedParamReturn => "BorrowedParamReturn",
+            Self::UnsafeCollectionElement => "UnsafeCollectionElement",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

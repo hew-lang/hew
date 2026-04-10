@@ -161,6 +161,56 @@ pub fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
     Some(word.to_string())
 }
 
+/// Find the byte span of `name` within `source`, scanning forward from `search_from`.
+///
+/// Matches only at word boundaries (surrounded by non-ident bytes or start/end of
+/// string). Returns the first match, falling back to `search_from..search_from+name.len()`
+/// if none is found.
+#[must_use]
+pub fn find_name_span(source: &str, search_from: usize, name: &str) -> OffsetSpan {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = source.as_bytes();
+    let search_region = source.get(search_from..).unwrap_or("");
+    let name_bytes = name.as_bytes();
+
+    let mut i = 0;
+    while i + name_bytes.len() <= search_region.len() {
+        if search_region.as_bytes()[i..i + name_bytes.len()] == *name_bytes {
+            // Check left word boundary
+            let left_ok = if i == 0 {
+                true
+            } else {
+                !is_ident(search_region.as_bytes()[i - 1])
+            };
+            // Check right word boundary
+            let right_ok = match search_region.as_bytes().get(i + name_bytes.len()) {
+                None => true,
+                Some(&b) => !is_ident(b),
+            };
+            if left_ok && right_ok {
+                let abs_start = search_from + i;
+                return OffsetSpan {
+                    start: abs_start,
+                    end: abs_start + name_bytes.len(),
+                };
+            }
+        }
+        // Advance by one byte (safe: we work on ASCII identifier bytes in practice)
+        i += 1;
+        // Skip to next valid ident start to avoid partial UTF-8 issues
+        while i < search_region.len() && (bytes[search_from + i] & 0b1100_0000) == 0b1000_0000 {
+            i += 1;
+        }
+    }
+
+    // Fallback: point to search_from
+    let end = (search_from + name_bytes.len()).min(source.len());
+    OffsetSpan {
+        start: search_from,
+        end,
+    }
+}
+
 /// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
 /// Returns the word and its byte-offset span.
 #[must_use]

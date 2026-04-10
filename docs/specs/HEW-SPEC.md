@@ -4127,22 +4127,39 @@ The Rust frontend processes source code into a typed AST, serializes it to Messa
 
 ### 8.0 WASM32 target capabilities
 
-**Works on wasm32-wasi:**
+> **Authoritative reference:** [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md)
+> contains the full Tier 1 / Tier 2 feature disposition table, including
+> compiler enforcement details and the WASM-TODO backlog.
+
+There are two WASM target tiers:
+
+- **Tier 1** (`hew-wasm`, `wasm32-unknown-unknown` via `wasm-bindgen`): analysis-only browser surface — lexer, parser, and type checker only.  Powers the online playground and editor tooling.
+- **Tier 2** (`hew-runtime`, `wasm32-wasip1`): WASI execution runtime with a single-threaded cooperative actor scheduler.
+
+**Works on wasm32-wasi (Tier 2):**
 
 - Basic actors (`spawn`, `send`, `receive`, `ask/await`) and message passing
-- Generators/async streams plus pattern matching and algebraic data types
+- Generators (purely computational; generators that use blocking I/O hit the stream/channel restrictions below)
+- Pattern matching and algebraic data types
 - Arithmetic, collections, and general-purpose stdlib modules
 - HTTP/TCP clients and servers routed through WASI sockets
+- Single-arm `select {}` with a literal timeout duration
 
-**Unavailable on wasm32-wasi (native-only features):**
+**Compile-time errors on wasm32-wasi (runtime traps → rejected at check time):**
+
+- `channel.new`, `Sender<T>::*`, `Receiver<T>::*` — MPSC channels require OS mutexes/condvars; all `hew_channel_*` C symbols `unreachable!()`-trap on wasm32.  WASM-TODO: single-threaded channel queues backed by the actor mailbox.
+- `sleep_ms`, `sleep` — the wasm32 shim returns immediately (silent no-op), violating expected delay semantics.  WASM-TODO: integrate with host timer / WASI `clock_nanosleep`.
+- `stream.*` constructors and `Stream<T>::*` methods — the stream runtime module is not compiled for wasm32.  WASM-TODO: I/O stream adapters over WASI fd/socket APIs.
+
+**Diagnostic warnings on wasm32-wasi (architectural limits; codegen diagnostic path):**
 
 - Supervision trees (`supervisor` declarations and `supervisor_*` helpers)
-- Actor `link` / `monitor` fault-propagation APIs
+- Actor `link` / `unlink` / `monitor` / `demonitor` fault-propagation APIs
 - Structured concurrency scopes (`scope {}`, `scope.launch`, `scope.await`, `scope.cancel`)
 - Scope-spawned `Task` handles that rely on scoped schedulers
-- `select {}` expressions that wait on multiple mailboxes concurrently
+- `select {}` expressions with multiple arms or computed timeouts
 
-These operations require preemptive OS threads, which the current WASM runtime does not expose. When you compile with `--target=wasm32-wasi`, the type checker emits warnings for these constructs and codegen fails with grouped diagnostics if they reach lowering. Prefer the basic actor primitives above or run the program on a native target when advanced supervision is required.
+When you compile with `--target=wasm32-wasi`, the type checker emits errors for the first group (preventing silent runtime traps) and warnings for the second group (preserving the diagnostic path through codegen).  Prefer the basic actor primitives above or run the program on a native target when advanced supervision is required.
 
 ### 8.1 Pipeline Overview
 

@@ -13,7 +13,12 @@ impl Checker {
             Item::Impl(id) => self.check_impl(id, span),
             Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
             Item::Trait(td) => self.check_trait_defaults(td),
-            _ => {} // Imports, types, extern — already collected
+            Item::Import(_)
+            | Item::TypeDecl(_)
+            | Item::TypeAlias(_)
+            | Item::Wire(_)
+            | Item::ExternBlock(_)
+            | Item::Supervisor(_) => {} // Already handled during earlier checker passes
         }
     }
 

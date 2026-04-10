@@ -14,6 +14,18 @@ It powers browser-based tooling such as:
 - In-browser syntax highlighting
 - Client-side type checking
 
+## Capability tier
+
+`hew-wasm` is the **Tier 1** WASM surface: `wasm32-unknown-unknown` compiled
+via `wasm-bindgen` for browser consumption.  It exposes the analysis pipeline
+(lex / parse / typecheck) only.
+
+For **Tier 2** (WASI execution via `hew build --target=wasm32-wasi`), see
+[`docs/wasm-capability-matrix.md`](../docs/wasm-capability-matrix.md) for the
+authoritative feature disposition table, including which runtime features are
+currently rejected at compile time (channels, timers, streams) and which emit
+diagnostic warnings (supervision trees, structured concurrency, link/monitor).
+
 ## Build
 
 From the repo root:

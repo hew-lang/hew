@@ -3,6 +3,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Result of running a native binary under a timeout.
@@ -53,6 +54,10 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
 }
 
 /// Execute a native binary with bounded wall-clock time.
+///
+/// Both stdout and stderr are drained concurrently in background threads to
+/// prevent pipe-buffer deadlocks when a process produces large output on
+/// either stream before exiting.
 pub(crate) fn run_binary_with_timeout(
     binary: &Path,
     timeout: Duration,
@@ -61,17 +66,100 @@ pub(crate) fn run_binary_with_timeout(
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = spawn_bounded_child(&mut command)?;
-    match wait_for_child_with_timeout(&mut child, timeout, TimeoutKillTarget::ProcessGroup)? {
-        ChildWaitOutcome::Exited(status) => {
-            let (stdout, stderr) = collect_child_output(&mut child)?;
-            if status.success() {
-                Ok(BinaryRunOutcome::Success { stdout })
-            } else {
-                Ok(BinaryRunOutcome::Failed { stdout, stderr })
+    let drain = ConcurrentChildOutput::spawn(&mut child)?;
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr) = drain.finish()?;
+                if status.success() {
+                    return Ok(BinaryRunOutcome::Success { stdout });
+                }
+                return Ok(BinaryRunOutcome::Failed { stdout, stderr });
             }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    terminate_timed_out_child(&mut child, TimeoutKillTarget::ProcessGroup)?;
+                    // Best-effort drain after kill; ignore errors since the
+                    // pipes may have been forcibly closed.
+                    let _ = drain.finish();
+                    return Ok(BinaryRunOutcome::Timeout);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("cannot poll child process: {e}")),
         }
-        ChildWaitOutcome::Timeout => Ok(BinaryRunOutcome::Timeout),
     }
+}
+
+/// Drains stdout and stderr from a child process concurrently.
+///
+/// Each pipe is read on its own background thread so that a child filling one
+/// pipe buffer cannot prevent the other from being drained, avoiding the
+/// classic deadlock where `try_wait` never returns because the child is blocked
+/// on a full pipe.
+pub(crate) struct ConcurrentChildOutput {
+    stdout: ChildPipeReader,
+    stderr: ChildPipeReader,
+}
+
+impl ConcurrentChildOutput {
+    /// Spawn background drain threads for both pipes.
+    ///
+    /// Takes ownership of the child's stdout and stderr handles, so they must
+    /// not have been taken previously.
+    pub(crate) fn spawn(child: &mut Child) -> Result<Self, String> {
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "child stdout pipe missing".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "child stderr pipe missing".to_string())?;
+
+        Ok(Self {
+            stdout: ChildPipeReader::spawn(stdout, "stdout"),
+            stderr: ChildPipeReader::spawn(stderr, "stderr"),
+        })
+    }
+
+    /// Join both drain threads and return `(stdout, stderr)`.
+    pub(crate) fn finish(self) -> Result<(String, String), String> {
+        Ok((self.stdout.finish()?, self.stderr.finish()?))
+    }
+}
+
+struct ChildPipeReader {
+    name: &'static str,
+    handle: JoinHandle<Result<String, String>>,
+}
+
+impl ChildPipeReader {
+    fn spawn<T>(stream: T, name: &'static str) -> Self
+    where
+        T: Read + Send + 'static,
+    {
+        Self {
+            name,
+            handle: std::thread::spawn(move || drain_pipe(stream, name)),
+        }
+    }
+
+    fn finish(self) -> Result<String, String> {
+        self.handle
+            .join()
+            .map_err(|_| format!("child {} reader panicked", self.name))?
+    }
+}
+
+fn drain_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read child {name}: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Wait for a child process to exit before `timeout`, terminating it otherwise.
@@ -95,28 +183,6 @@ pub(crate) fn wait_for_child_with_timeout(
             Err(e) => return Err(format!("cannot poll child process: {e}")),
         }
     }
-}
-
-fn collect_child_output(child: &mut Child) -> Result<(String, String), String> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "child stdout pipe missing".to_string())
-        .and_then(|stream| read_pipe(stream, "stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "child stderr pipe missing".to_string())
-        .and_then(|stream| read_pipe(stream, "stderr"))?;
-    Ok((stdout, stderr))
-}
-
-fn read_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read child {name}: {e}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn terminate_timed_out_child(

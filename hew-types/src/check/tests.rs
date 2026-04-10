@@ -129,6 +129,59 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
 }
 
 #[test]
+fn concrete_vec_validation_reaches_function_wrapped_vec() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let ty = Ty::Function {
+        params: vec![Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::Array(Box::new(Ty::I64), 4)],
+        }],
+        ret: Box::new(Ty::Unit),
+    };
+
+    assert!(!checker.validate_concrete_vec_type(&ty, &(0..0)));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|err| err.kind == TypeErrorKind::InvalidOperation && err.message.contains("Vec<")));
+}
+
+#[test]
+fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let ty = Ty::Pointer {
+        is_mutable: false,
+        pointee: Box::new(Ty::Named {
+            name: "HashSet".to_string(),
+            args: vec![Ty::Bool],
+        }),
+    };
+
+    assert!(!checker.validate_concrete_hashset_type(&ty, &(0..0)));
+    assert!(checker.errors.iter().any(|err| {
+        err.kind == TypeErrorKind::InvalidOperation && err.message.contains("HashSet<bool>")
+    }));
+}
+
+#[test]
+fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let ty = Ty::Tuple(vec![
+        Ty::Named {
+            name: "HashMap".to_string(),
+            args: vec![Ty::I64, Ty::String],
+        },
+        Ty::Unit,
+    ]);
+
+    assert!(!checker.validate_concrete_hashmap_type(&ty, &(0..0)));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|err| err.kind == TypeErrorKind::InvalidOperation && err.message.contains("HashMap")));
+}
+
+#[test]
 fn non_root_private_type_rcfree_is_registered_during_body_checking() {
     let parsed = hew_parser::parse(
         r"

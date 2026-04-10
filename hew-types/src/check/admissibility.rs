@@ -114,6 +114,36 @@ fn type_def_shape_references_tracked_inference_var(
             .any(|variant| variant_def_references_tracked_inference_var(variant, tracked_vars))
 }
 
+#[derive(Clone, Copy)]
+enum ConcreteCollectionKind {
+    Vec,
+    HashSet,
+    HashMap,
+}
+
+impl ConcreteCollectionKind {
+    fn validate_named_collection(
+        self,
+        checker: &mut Checker,
+        name: &str,
+        args: &[Ty],
+        span: &Span,
+    ) -> Option<bool> {
+        match self {
+            Self::Vec if name == "Vec" && args.len() == 1 => {
+                Some(checker.validate_vec_element_type(&args[0], span))
+            }
+            Self::HashSet if name == "HashSet" && args.len() == 1 => {
+                Some(checker.validate_hashset_element_type(&args[0], span))
+            }
+            Self::HashMap if name == "HashMap" && args.len() == 2 => {
+                Some(checker.validate_hashmap_key_value_types(&args[0], &args[1], span))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl Checker {
     pub(super) fn validate_checker_output_contract(
         &mut self,
@@ -497,25 +527,34 @@ impl Checker {
         true
     }
 
-    pub(super) fn validate_concrete_vec_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    fn validate_concrete_collection_type(
+        &mut self,
+        ty: &Ty,
+        span: &Span,
+        collection: ConcreteCollectionKind,
+    ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
             Ty::Named { name, args } => {
-                if name == "Vec" && args.len() == 1 {
-                    return self.validate_vec_element_type(&args[0], span);
+                if let Some(result) =
+                    collection.validate_named_collection(self, name.as_str(), args, span)
+                {
+                    return result;
                 }
                 args.iter()
-                    .all(|arg| self.validate_concrete_vec_type(arg, span))
+                    .all(|arg| self.validate_concrete_collection_type(arg, span, collection))
             }
             Ty::Tuple(elems) => elems
                 .iter()
-                .all(|elem| self.validate_concrete_vec_type(elem, span)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_vec_type(elem, span),
+                .all(|elem| self.validate_concrete_collection_type(elem, span, collection)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.validate_concrete_collection_type(elem, span, collection)
+            }
             Ty::Function { params, ret } => {
                 params
                     .iter()
-                    .all(|param| self.validate_concrete_vec_type(param, span))
-                    && self.validate_concrete_vec_type(ret, span)
+                    .all(|param| self.validate_concrete_collection_type(param, span, collection))
+                    && self.validate_concrete_collection_type(ret, span, collection)
             }
             Ty::Closure {
                 params,
@@ -524,65 +563,31 @@ impl Checker {
             } => {
                 params
                     .iter()
-                    .all(|param| self.validate_concrete_vec_type(param, span))
-                    && self.validate_concrete_vec_type(ret, span)
-                    && captures
-                        .iter()
-                        .all(|capture| self.validate_concrete_vec_type(capture, span))
+                    .all(|param| self.validate_concrete_collection_type(param, span, collection))
+                    && self.validate_concrete_collection_type(ret, span, collection)
+                    && captures.iter().all(|capture| {
+                        self.validate_concrete_collection_type(capture, span, collection)
+                    })
             }
-            Ty::Pointer { pointee, .. } => self.validate_concrete_vec_type(pointee, span),
+            Ty::Pointer { pointee, .. } => {
+                self.validate_concrete_collection_type(pointee, span, collection)
+            }
             Ty::TraitObject { traits } => traits.iter().all(|bound| {
                 bound
                     .args
                     .iter()
-                    .all(|arg| self.validate_concrete_vec_type(arg, span))
+                    .all(|arg| self.validate_concrete_collection_type(arg, span, collection))
             }),
             _ => true,
         }
     }
 
+    pub(super) fn validate_concrete_vec_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        self.validate_concrete_collection_type(ty, span, ConcreteCollectionKind::Vec)
+    }
+
     pub(super) fn validate_concrete_hashset_type(&mut self, ty: &Ty, span: &Span) -> bool {
-        let resolved = self.subst.resolve(ty);
-        match &resolved {
-            Ty::Named { name, args } => {
-                if name == "HashSet" && args.len() == 1 {
-                    return self.validate_hashset_element_type(&args[0], span);
-                }
-                args.iter()
-                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
-            }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.validate_concrete_hashset_type(elem, span)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_hashset_type(elem, span),
-            Ty::Function { params, ret } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_hashset_type(param, span))
-                    && self.validate_concrete_hashset_type(ret, span)
-            }
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_hashset_type(param, span))
-                    && self.validate_concrete_hashset_type(ret, span)
-                    && captures
-                        .iter()
-                        .all(|capture| self.validate_concrete_hashset_type(capture, span))
-            }
-            Ty::Pointer { pointee, .. } => self.validate_concrete_hashset_type(pointee, span),
-            Ty::TraitObject { traits } => traits.iter().all(|bound| {
-                bound
-                    .args
-                    .iter()
-                    .all(|arg| self.validate_concrete_hashset_type(arg, span))
-            }),
-            _ => true,
-        }
+        self.validate_concrete_collection_type(ty, span, ConcreteCollectionKind::HashSet)
     }
 
     pub(super) fn validate_concrete_collection_types(&mut self, ty: &Ty, span: &Span) -> bool {
@@ -602,47 +607,7 @@ impl Checker {
     }
 
     pub(super) fn validate_concrete_hashmap_type(&mut self, ty: &Ty, span: &Span) -> bool {
-        let resolved = self.subst.resolve(ty);
-        match &resolved {
-            Ty::Named { name, args } => {
-                if name == "HashMap" && args.len() == 2 {
-                    return self.validate_hashmap_key_value_types(&args[0], &args[1], span);
-                }
-                args.iter()
-                    .all(|arg| self.validate_concrete_hashmap_type(arg, span))
-            }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.validate_concrete_hashmap_type(elem, span)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.validate_concrete_hashmap_type(elem, span),
-            Ty::Function { params, ret } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_hashmap_type(param, span))
-                    && self.validate_concrete_hashmap_type(ret, span)
-            }
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_hashmap_type(param, span))
-                    && self.validate_concrete_hashmap_type(ret, span)
-                    && captures
-                        .iter()
-                        .all(|capture| self.validate_concrete_hashmap_type(capture, span))
-            }
-            Ty::Pointer { pointee, .. } => self.validate_concrete_hashmap_type(pointee, span),
-            Ty::TraitObject { traits } => traits.iter().all(|bound| {
-                bound
-                    .args
-                    .iter()
-                    .all(|arg| self.validate_concrete_hashmap_type(arg, span))
-            }),
-            _ => true,
-        }
+        self.validate_concrete_collection_type(ty, span, ConcreteCollectionKind::HashMap)
     }
 
     fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {

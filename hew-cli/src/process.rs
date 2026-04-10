@@ -81,9 +81,7 @@ pub(crate) fn run_binary_with_timeout(
             Ok(None) => {
                 if start.elapsed() > timeout {
                     terminate_timed_out_child(&mut child, TimeoutKillTarget::ProcessGroup)?;
-                    // Best-effort drain after kill; ignore errors since the
-                    // pipes may have been forcibly closed.
-                    let _ = drain.finish();
+                    drain.abandon();
                     return Ok(BinaryRunOutcome::Timeout);
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -128,6 +126,27 @@ impl ConcurrentChildOutput {
     /// Join both drain threads and return `(stdout, stderr)`.
     pub(crate) fn finish(self) -> Result<(String, String), String> {
         Ok((self.stdout.finish()?, self.stderr.finish()?))
+    }
+
+    /// Dispose of the drain threads on the timeout path without blocking.
+    ///
+    /// On Unix, `terminate_timed_out_child` sends `SIGKILL` to the entire
+    /// process group, so every process that could hold a write end of the
+    /// pipes is dead before this is called.  The reader threads will observe
+    /// EOF promptly; joining them is safe and drains any buffered bytes.
+    ///
+    /// On non-Unix, only the direct child is killed.  Descendant processes
+    /// that inherited the pipe write ends may still be running, so joining
+    /// the reader threads would block indefinitely.  Dropping a `JoinHandle`
+    /// detaches the thread — it continues in the background and finishes
+    /// when the OS eventually closes the pipe — avoiding a hang.
+    pub(crate) fn abandon(self) {
+        #[cfg(unix)]
+        {
+            // Group kill guarantees all write-end holders are gone; safe to join.
+            let _ = self.finish();
+        }
+        // On non-Unix: drop(self) detaches the reader threads without joining.
     }
 }
 

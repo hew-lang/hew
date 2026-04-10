@@ -9226,6 +9226,127 @@ actor MyActor {
             output.errors
         );
     }
+
+    #[test]
+    fn error_return_type_question_mark_on_non_result_still_reports() {
+        // fn foo() -> UnknownType { let x: i64 = 1; x? }
+        //
+        // The inner-type check for `?` ("? requires Result or Option, found i64")
+        // fires unconditionally via the else branch of the PostfixTry handler.
+        // It must not be suppressed even when the enclosing return annotation
+        // resolves to Ty::Error — that only bypasses the *context* diagnostic
+        // ("? cannot be used in a function returning X"), not the inner-type check.
+        let source = r"fn foo() -> UnknownType { let x: i64 = 1; x? }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let has_try_err = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("requires Result or Option"));
+        assert!(
+            has_try_err,
+            "? on non-Result/non-Option must still report \
+             '? requires Result or Option' even when return annotation is \
+             Ty::Error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_question_mark_on_result_no_false_context_error() {
+        // fn foo() -> UnknownType { let r: Result<i64, String> = Ok(1); r? }
+        //
+        // When the return annotation is unresolvable (Ty::Error) and `?` is
+        // used on a valid Result, the *context* diagnostic ("? cannot be used
+        // in a function returning <error>") must NOT fire — we cannot know
+        // whether the intended return type would have supported `?`.  Only the
+        // annotation-resolution error should appear.
+        let source = r"fn foo() -> UnknownType { let r: Result<i64, String> = Ok(1); r? }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let has_ctx_err = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot be used in a function returning"));
+        assert!(
+            !has_ctx_err,
+            "? on valid Result in bad-annotation function must NOT emit a \
+             spurious context error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_question_mark_in_lambda_no_false_context_error() {
+        // fn foo() { let r: Result<i64, String> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
+        //
+        // Same invariant as the plain-function case but inside a lambda whose
+        // return annotation is Ty::Error.  The `?` context check sees the
+        // lambda's own `current_return_type` (Ty::Error), so the Ty::Error
+        // bypass must apply there too.
+        let source = r"fn foo() { let r: Result<i64, String> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let has_ctx_err = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot be used in a function returning"));
+        assert!(
+            !has_ctx_err,
+            "? on valid Result inside a lambda with bad return annotation must \
+             NOT emit a spurious context error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn valid_return_annotation_good_path_regression_guard() {
+        // fn foo() -> i32 { 42 }
+        //
+        // A function with a valid, resolvable return annotation must typecheck
+        // cleanly.  This guards against regressions introduced by the Ty::Error
+        // seeding fix inadvertently breaking the happy path (literal coercion,
+        // trailing-expression checking, and expect_type alignment).
+        let source = r"fn _foo() -> i32 { 42 }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "valid typed-return function must not produce type errors; \
+             got: {:?}",
+            output.errors
+        );
+        assert!(
+            output.warnings.is_empty(),
+            "valid typed-return function must not produce warnings; \
+             got: {:?}",
+            output.warnings
+        );
+    }
 }
 
 // ── WASM compile-time reject tests ──────────────────────────────────────────

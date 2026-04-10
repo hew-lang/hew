@@ -4,6 +4,17 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+const EVAL_AFTER_HELP: &str = "\
+REPL commands:
+  :help, :h           Show command help
+  :session, :show     Summarize remembered session state
+  :items              List remembered top-level items
+  :bindings           List persistent let/var bindings
+  :type <expr>        Show the inferred type of an expression
+  :load <file>        Evaluate a file in the current session
+  :clear, :reset      Drop all remembered session state
+";
+
 /// The Hew programming language compiler.
 #[derive(Debug, Parser)]
 #[command(name = "hew", version, about, propagate_version = true)]
@@ -276,6 +287,7 @@ pub struct DocArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
+#[command(after_help = EVAL_AFTER_HELP)]
 pub struct EvalArgs {
     /// Execute file in REPL context (`-` reads from stdin).
     #[arg(short = 'f')]

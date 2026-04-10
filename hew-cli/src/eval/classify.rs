@@ -36,6 +36,12 @@ pub enum ReplCommand {
     Help,
     /// `:quit` or `:q` — exit the REPL.
     Quit,
+    /// `:session` or `:show` — summarize remembered state.
+    Session,
+    /// `:items` — list remembered top-level items.
+    Items,
+    /// `:bindings` — list persistent bindings.
+    Bindings,
     /// `:clear` — reset session state.
     Clear,
     /// `:type <expr>` — show the inferred type of an expression.
@@ -95,7 +101,10 @@ fn parse_command(cmd: &str) -> ReplCommand {
     match name {
         "help" | "h" => ReplCommand::Help,
         "quit" | "q" | "exit" => ReplCommand::Quit,
-        "clear" => ReplCommand::Clear,
+        "session" | "show" => ReplCommand::Session,
+        "items" => ReplCommand::Items,
+        "bindings" => ReplCommand::Bindings,
+        "clear" | "reset" => ReplCommand::Clear,
         "type" | "t" => ReplCommand::Type(arg.unwrap_or_default()),
         "load" | "l" => ReplCommand::Load(arg.unwrap_or_default()),
         other => ReplCommand::Unknown(other.to_string()),
@@ -228,7 +237,18 @@ mod tests {
         assert_eq!(classify(":help"), InputKind::Command(ReplCommand::Help));
         assert_eq!(classify(":quit"), InputKind::Command(ReplCommand::Quit));
         assert_eq!(classify(":q"), InputKind::Command(ReplCommand::Quit));
+        assert_eq!(
+            classify(":session"),
+            InputKind::Command(ReplCommand::Session)
+        );
+        assert_eq!(classify(":show"), InputKind::Command(ReplCommand::Session));
+        assert_eq!(classify(":items"), InputKind::Command(ReplCommand::Items));
+        assert_eq!(
+            classify(":bindings"),
+            InputKind::Command(ReplCommand::Bindings)
+        );
         assert_eq!(classify(":clear"), InputKind::Command(ReplCommand::Clear));
+        assert_eq!(classify(":reset"), InputKind::Command(ReplCommand::Clear));
         assert_eq!(
             classify(":type x + 1"),
             InputKind::Command(ReplCommand::Type("x + 1".to_string()))

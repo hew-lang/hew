@@ -671,6 +671,7 @@ fn eval_repl_load_valid_file_succeeds() {
         stdout.contains(&format!("Loaded {}", path.display())),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("added 1 item"), "stdout: {stdout}");
     assert!(stdout.contains("42\n"), "stdout: {stdout}");
 }
 
@@ -749,6 +750,90 @@ fn eval_repl_clear_resets_session_state() {
     assert!(stdout.contains("42\n"), "stdout: {stdout}");
     assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
     assert!(stdout.contains("99\n"), "stdout: {stdout}");
+}
+
+#[test]
+fn eval_repl_session_commands_introspect_state() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "let base = 41;\nfn answer(x: i64) -> i64 { x + 1 }\n:session\n:items\n:bindings\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Session state:"), "stdout: {stdout}");
+    assert!(stdout.contains("1 remembered item"), "stdout: {stdout}");
+    assert!(stdout.contains("1 persistent binding"), "stdout: {stdout}");
+    assert!(stdout.contains("Remembered items (1):"), "stdout: {stdout}");
+    assert!(stdout.contains("fn answer"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Persistent bindings (1):"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("let base"), "stdout: {stdout}");
+}
+
+#[test]
+fn eval_repl_load_reports_session_delta() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("load_session_delta.hew");
+    std::fs::write(
+        &path,
+        "let base = 41;\nfn answer(x: i64) -> i64 {\n    x + 1\n}\n",
+    )
+    .unwrap();
+
+    let output = run_eval_with_stdin(&["eval"], &format!(":load {}\n:quit\n", path.display()));
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "Loaded {} (added 1 item, 1 binding)",
+            path.display()
+        )),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn eval_repl_clear_reports_removed_session_delta() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "let base = 41;\nfn answer(x: i64) -> i64 { x + 1 }\n:clear\n:quit\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Removed 1 item, 1 binding."),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]

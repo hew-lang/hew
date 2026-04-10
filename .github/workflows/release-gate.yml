@@ -157,7 +157,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: taiki-e/install-action@nextest
 
       - name: Install LLVM/MLIR

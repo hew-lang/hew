@@ -95,6 +95,11 @@ WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
+ifeq ($(shell uname -s),Darwin)
+DARWIN_NATIVE_LIB_TRIPLES := aarch64-apple-darwin x86_64-apple-darwin
+else
+DARWIN_NATIVE_LIB_TRIPLES :=
+endif
 
 # Sanitizer targets mirror .github/workflows/nightly-sanitizers.yml as closely
 # as possible while remaining usable as local entrypoints.
@@ -296,13 +301,21 @@ assemble: | hew adze runtime stdlib
 		ln -sfn ../../../$(WASM_DEBUG_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@# Native per-triple lib symlink — mirrors the wasm32-wasip1 pattern and
-	@# primes find_hew_lib() for target-aware path lookups (issue #254).
-	@if [ -n "$(HOST_TRIPLE)" ]; then \
-		mkdir -p $(BUILD_DIR)/lib/$(HOST_TRIPLE); \
-		ln -sfn ../../../$(DEBUG_DIR)/libhew.a \
-			$(BUILD_DIR)/lib/$(HOST_TRIPLE)/libhew.a; \
-	fi
+	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern and
+	@# lets Darwin same-OS cross-arch linking pick up prebuilt libhew.a slices.
+	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+		[ -n "$$triple" ] || continue; \
+		lib_path=""; \
+		if [ -f target/$$triple/debug/libhew.a ]; then \
+			lib_path="target/$$triple/debug/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(DEBUG_DIR)/libhew.a ]; then \
+			lib_path="$(DEBUG_DIR)/libhew.a"; \
+		else \
+			continue; \
+		fi; \
+		mkdir -p $(BUILD_DIR)/lib/$$triple; \
+		ln -sfn ../../../$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+	done
 	@# Standard library stubs (one symlink per file so the dir stays flat)
 	@for f in std/*.hew; do \
 		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
@@ -350,12 +363,20 @@ assemble-release:
 		ln -sfn ../../../$(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@# Native per-triple lib symlink — mirrors the wasm32-wasip1 pattern.
-	@if [ -n "$(HOST_TRIPLE)" ]; then \
-		mkdir -p $(BUILD_DIR)/lib/$(HOST_TRIPLE); \
-		ln -sfn ../../../$(RELEASE_DIR)/libhew.a \
-			$(BUILD_DIR)/lib/$(HOST_TRIPLE)/libhew.a; \
-	fi
+	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern.
+	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+		[ -n "$$triple" ] || continue; \
+		lib_path=""; \
+		if [ -f target/$$triple/release/libhew.a ]; then \
+			lib_path="target/$$triple/release/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_DIR)/libhew.a ]; then \
+			lib_path="$(RELEASE_DIR)/libhew.a"; \
+		else \
+			continue; \
+		fi; \
+		mkdir -p $(BUILD_DIR)/lib/$$triple; \
+		ln -sfn ../../../$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+	done
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std
 	@echo "build/ assembled (release)."

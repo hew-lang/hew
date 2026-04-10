@@ -30,6 +30,16 @@ hew version                       # Print version info
 
 `hew file.hew` is shorthand for `hew build file.hew`.
 
+### WASI runner prototype
+
+`hew run --target wasm32-wasi file.hew` now uses the existing WASI build path
+to produce a `.wasm` module, then runs it with `wasmtime`. Compile failures
+still exit through the compile path (including the existing WASM unsupported
+diagnostics for supervision trees and similar features), while runtime failures
+come from the `wasmtime` execution step. This prototype requires `wasmtime`
+plus a `hew-runtime` build for `wasm32-wasip1` (for example via `make
+wasm-runtime`).
+
 ## Formatting
 
 `hew fmt` supports four common workflows:

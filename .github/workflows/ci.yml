@@ -504,9 +504,12 @@ jobs:
       - name: Install LLVM/MLIR
         if: env.RUN_CODE_PATH == 'true'
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          brew install llvm@${{ env.LLVM_VERSION }} lld ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          LLD_PREFIX="$(brew --prefix lld)"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
@@ -560,11 +563,21 @@ jobs:
           cargo build -p hew-cli -p hew-serialize --release
           cargo build -p hew-cli
 
+      - name: Install WASI runner prerequisites
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          rustup target add wasm32-wasip1
+          brew install wasmtime
+          wasmtime --version
+          command -v wasm-ld
+          wasm-ld --version
+
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
+        # hew-wasm stays excluded in this macOS PR gate, but hew-cli's WASI
+        # runner e2e tests now require wasmtime plus the wasm32-wasip1 target.
         # Both target/release/libhew.a and target/debug/libhew.a are pre-built
-        # above so that CLI e2e tests that invoke `hew run` find the right one.
+        # above so CLI e2e tests that invoke `hew run` find the right one.
         run: >
           cargo nextest run --workspace --exclude hew-wasm
           --profile ci

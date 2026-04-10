@@ -2589,22 +2589,19 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
 
     if reply.is_null() {
-        // Distinguish an orphaned ask (mailbox teardown retired the channel)
-        // from a legitimate null reply deposited by the handler.
+        // Distinguish an orphaned ask (mailbox teardown retired the channel via
+        // `retire_reply_channel`) from a legitimate null reply deposited by the
+        // handler.  `retire_reply_channel` sets `orphaned = true` before calling
+        // `hew_reply`; a handler that explicitly replies null does NOT set it.
+        // This is the sole discriminant — actor terminal state is intentionally
+        // NOT used here because a handler can legitimately call
+        //   hew_reply(ch, NULL, 0); hew_actor_self_stop();
+        // in the same dispatch, producing a null reply with a terminal actor.
         // SAFETY: ch is still live — we release it immediately below.
         let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
-        // Belt-and-suspenders: if `retire_reply_channel` fired but the
-        // `orphaned` flag was not observable (can happen when mailbox teardown
-        // and the reply-ready break race within a single cooperative tick),
-        // fall back to checking the actor's terminal state.  An actor in
-        // Stopped/Crashed whose reply value is null did not reply legitimately.
-        // SAFETY: actor is valid for the lifetime of this call (caller guarantee).
-        let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-        let is_terminal = actor_state == HewActorState::Stopped as i32
-            || actor_state == HewActorState::Crashed as i32;
         // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        if is_orphaned || is_terminal {
+        if is_orphaned {
             return actor_ask_null(AskError::OrphanedAsk);
         }
         actor_ask_clear();
@@ -4030,6 +4027,27 @@ mod wasm_tests {
         }
     }
 
+    /// Dispatch that replies with a null payload and then self-stops in the
+    /// same activation.  Used to verify that null-reply + self-stop is NOT
+    /// misclassified as an orphaned ask.
+    unsafe extern "C" fn null_reply_then_self_stop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        if !ch.is_null() {
+            // SAFETY: ch is the scheduler-installed reply channel; depositing
+            // a null payload is a legitimate zero-size reply.
+            unsafe {
+                crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
+            }
+        }
+        // Self-stop AFTER the explicit null reply — must NOT set orphaned.
+        hew_actor_self_stop();
+    }
+
     #[test]
     fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
         let _guard = crate::runtime_test_guard();
@@ -4201,6 +4219,7 @@ mod wasm_tests {
             LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
             let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
             assert!(!reply.is_null(), "WASM ask must succeed");
+            // SAFETY: reply was allocated by the runtime; caller takes ownership.
             unsafe { libc::free(reply) };
             assert_eq!(
                 hew_actor_ask_take_last_error(),
@@ -4208,6 +4227,48 @@ mod wasm_tests {
                 "successful WASM ask must clear error slot"
             );
 
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+        }
+    }
+
+    /// Regression: `hew_reply(ch, NULL, 0); hew_actor_self_stop()` in the same
+    /// dispatch must be treated as a legitimate null reply, NOT as OrphanedAsk.
+    ///
+    /// The `orphaned` flag is only set by `retire_reply_channel` (called when
+    /// the mailbox is torn down WITHOUT a handler reply).  When the handler
+    /// explicitly replies — even with null — `orphaned` stays false.
+    #[test]
+    fn wasm_ask_null_reply_then_self_stop_is_not_orphaned() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+
+            // SAFETY: null state + valid dispatch.
+            let actor =
+                hew_actor_spawn(ptr::null_mut(), 0, Some(null_reply_then_self_stop_dispatch));
+            assert!(!actor.is_null());
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(
+                reply.is_null(),
+                "explicit null reply must still be returned as null"
+            );
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::None as i32,
+                "null reply + self-stop must NOT be classified as OrphanedAsk"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "null reply + self-stop must not leak reply channels"
+            );
+
+            // SAFETY: actor stopped itself; pointer is still allocated.
             assert_eq!(hew_actor_free(actor), 0);
             crate::scheduler_wasm::hew_sched_shutdown();
             crate::scheduler_wasm::hew_runtime_cleanup();

@@ -244,6 +244,55 @@ fn collect_binding_starts_in_block(block: &Block, name: &str, out: &mut Vec<usiz
     }
 }
 
+/// Recurse into expressions that can introduce new bindings (block-containing
+/// expressions only). Used when an arm body or similar is `Spanned<Expr>`.
+fn collect_binding_starts_in_expr(expr: &Expr, name: &str, out: &mut Vec<usize>) {
+    match expr {
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
+            collect_binding_starts_in_block(block, name, out);
+        }
+        Expr::Scope { body, .. } => {
+            collect_binding_starts_in_block(body, name, out);
+        }
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            collect_binding_starts_in_expr(&then_block.0, name, out);
+            if let Some(eb) = else_block {
+                collect_binding_starts_in_expr(&eb.0, name, out);
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            body,
+            else_body,
+            ..
+        } => {
+            if pattern_binds_name(&pattern.0, name) {
+                out.push(pattern.1.start);
+            }
+            collect_binding_starts_in_block(body, name, out);
+            if let Some(block) = else_body {
+                collect_binding_starts_in_block(block, name, out);
+            }
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                if pattern_binds_name(&arm.pattern.0, name) {
+                    out.push(arm.pattern.1.start);
+                }
+                collect_binding_starts_in_expr(&arm.body.0, name, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_binding_starts_in_stmt(stmt: &Stmt, stmt_span: &Span, name: &str, out: &mut Vec<usize>) {
     match stmt {
         Stmt::Let { pattern, .. } => {
@@ -308,6 +357,7 @@ fn collect_binding_starts_in_stmt(stmt: &Stmt, stmt_span: &Span, name: &str, out
                 if pattern_binds_name(&arm.pattern.0, name) {
                     out.push(arm.pattern.1.start);
                 }
+                collect_binding_starts_in_expr(&arm.body.0, name, out);
             }
         }
         Stmt::Assign { .. }
@@ -1263,6 +1313,29 @@ mod tests {
             assert!(
                 span.start < second_let_x_offset,
                 "first `x` refs should not include spans after the second `let x` at {second_let_x_offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_arm_body_rebinding_scoped_separately() {
+        // A `let x` inside a match arm body re-binds `x`; references after it
+        // inside that arm belong to the inner binding, not the outer `let x`.
+        let source = "fn f() {\n    let x = 1;\n    match v { _ => { let x = 2; let y = x; } }\n}";
+        let pr = parse(source);
+        // Cursor on the outer `let x` (first occurrence).
+        let outer_x_offset = source.find("let x").unwrap() + 4;
+        let result = find_all_references(source, &pr, outer_x_offset);
+        assert!(result.is_some());
+        let (_name, spans) = result.unwrap();
+        // `let y = x` inside the arm refers to the inner `x`; the outer binding
+        // should not include spans inside the arm body after the inner `let x`.
+        let inner_let_x_offset = source.rfind("let x").unwrap();
+        for span in &spans {
+            assert!(
+                span.start < inner_let_x_offset,
+                "outer `x` refs should not cross into the inner `let x` at {inner_let_x_offset}: found span at {}",
+                span.start
             );
         }
     }

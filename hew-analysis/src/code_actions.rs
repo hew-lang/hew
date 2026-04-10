@@ -143,6 +143,12 @@ fn find_keyword(
             if !trimmed.starts_with(name) {
                 continue;
             }
+            // Word-boundary: char immediately after `name` must not be ident.
+            let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+            let after_name = &trimmed[name.len()..];
+            if after_name.as_bytes().first().is_some_and(|&b| is_ident(b)) {
+                continue;
+            }
         }
         return Some(OffsetSpan {
             start: abs_pos,
@@ -426,5 +432,13 @@ mod tests {
         let source = "var abc = 1\nabc = 2";
         let span = find_keyword(source, 12, "var", Some("abc"));
         assert_eq!(span, Some(OffsetSpan { start: 0, end: 3 }));
+    }
+
+    #[test]
+    fn find_keyword_no_false_positive_on_prefix_match() {
+        // `var abcde` must NOT match when searching for name `abc`.
+        let source = "var abcde = 1\nabc = 2";
+        let span = find_keyword(source, 14, "var", Some("abc"));
+        assert!(span.is_none(), "prefix 'abcde' should not match name 'abc'");
     }
 }

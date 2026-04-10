@@ -1979,4 +1979,294 @@ mod tests {
         assert_eq!(arr[1]["end"], 25u64);
         assert_eq!(arr[1]["is_unsigned"], false);
     }
+
+    // ── v6 reader-boundary certification tests ────────────────────────────
+
+    /// Certify that `MethodCallReceiverKindData::TraitObject` reaches the wire
+    /// with `kind = "trait_object"` and the correct `trait_name` field.
+    #[test]
+    fn trait_object_receiver_kind_serializes_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![MethodCallReceiverKindEntry {
+                start: 5,
+                end: 15,
+                kind: MethodCallReceiverKindData::TraitObject {
+                    trait_name: "Greeter".to_string(),
+                },
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let kinds = value
+            .get("method_call_receiver_kinds")
+            .and_then(serde_json::Value::as_array)
+            .expect("method_call_receiver_kinds should be present");
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(kinds[0]["start"], 5u64);
+        assert_eq!(kinds[0]["end"], 15u64);
+        assert_eq!(
+            kinds[0].get("kind").and_then(serde_json::Value::as_str),
+            Some("trait_object"),
+            "kind should be 'trait_object'"
+        );
+        assert_eq!(
+            kinds[0]
+                .get("trait_name")
+                .and_then(serde_json::Value::as_str),
+            Some("Greeter"),
+            "trait_name should be 'Greeter'"
+        );
+    }
+
+    /// Certify that `AssignTargetKindData` variants `ActorField`, `FieldAccess`,
+    /// and `Index` each reach the wire with the correct `kind` string.
+    ///
+    /// `LocalVar` is already covered by `assign_target_kinds_serialize_to_wire_field`.
+    #[test]
+    fn assign_target_kind_non_local_variants_serialize_to_wire_field() {
+        let cases: &[(&str, AssignTargetKindData)] = &[
+            ("actor_field", AssignTargetKindData::ActorField),
+            ("field_access", AssignTargetKindData::FieldAccess),
+            ("index", AssignTargetKindData::Index),
+        ];
+
+        for (expected_kind_str, variant) in cases {
+            let program = Program {
+                items: vec![],
+                module_doc: None,
+                module_graph: None,
+            };
+
+            let bytes = serialize_to_msgpack(
+                &program,
+                vec![],
+                vec![],
+                vec![AssignTargetKindEntry {
+                    start: 1,
+                    end: 5,
+                    kind: variant.clone(),
+                }],
+                vec![],
+                vec![],
+                vec![],
+                HashMap::new(),
+                vec![],
+                None,
+                None,
+            );
+            let value: serde_json::Value =
+                rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+            let kinds = value
+                .get("assign_target_kinds")
+                .and_then(serde_json::Value::as_array)
+                .expect("assign_target_kinds should be present");
+            assert_eq!(
+                kinds.len(),
+                1,
+                "variant {expected_kind_str}: expected 1 entry"
+            );
+            assert_eq!(
+                kinds[0].get("kind").and_then(serde_json::Value::as_str),
+                Some(*expected_kind_str),
+                "variant {expected_kind_str}: kind field mismatch on wire"
+            );
+        }
+    }
+
+    /// Certify that `LoweringFactEntry` with `I64`/`Int64` (integer `HashSet`)
+    /// reaches the wire with `element_type = "i64"` and `abi_variant = "int64"`.
+    #[test]
+    fn lowering_facts_i64_int64_serialize_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![LoweringFactEntry {
+                start: 0,
+                end: 8,
+                fact: CheckedLoweringFact {
+                    kind: hew_types::LoweringKind::HashSet,
+                    element_type: hew_types::HashSetElementType::I64,
+                    abi_variant: hew_types::HashSetAbi::Int64,
+                    drop_kind: hew_types::DropKind::HashSetFree,
+                },
+            }],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let facts = value
+            .get("lowering_facts")
+            .and_then(serde_json::Value::as_array)
+            .expect("lowering_facts should be present");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0]
+                .get("element_type")
+                .and_then(serde_json::Value::as_str),
+            Some("i64"),
+            "element_type should be 'i64' for I64 HashSet"
+        );
+        assert_eq!(
+            facts[0]
+                .get("abi_variant")
+                .and_then(serde_json::Value::as_str),
+            Some("int64"),
+            "abi_variant should be 'int64' for I64 HashSet"
+        );
+    }
+
+    /// Certify that `LoweringFactEntry` with `U64`/`Int64` (unsigned integer `HashSet`)
+    /// reaches the wire with `element_type = "u64"` and `abi_variant = "int64"`.
+    #[test]
+    fn lowering_facts_u64_int64_serialize_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![LoweringFactEntry {
+                start: 0,
+                end: 8,
+                fact: CheckedLoweringFact {
+                    kind: hew_types::LoweringKind::HashSet,
+                    element_type: hew_types::HashSetElementType::U64,
+                    abi_variant: hew_types::HashSetAbi::Int64,
+                    drop_kind: hew_types::DropKind::HashSetFree,
+                },
+            }],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let facts = value
+            .get("lowering_facts")
+            .and_then(serde_json::Value::as_array)
+            .expect("lowering_facts should be present");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0]
+                .get("element_type")
+                .and_then(serde_json::Value::as_str),
+            Some("u64"),
+            "element_type should be 'u64' for U64 HashSet"
+        );
+        assert_eq!(
+            facts[0]
+                .get("abi_variant")
+                .and_then(serde_json::Value::as_str),
+            Some("int64"),
+            "abi_variant should be 'int64' for U64 HashSet"
+        );
+    }
+
+    /// Certify that a populated `expr_types` entry with a concrete (non-`Infer`)
+    /// `TypeExpr::Named` reaches the wire with the correct shape that the C++
+    /// reader can parse.
+    ///
+    /// The wire shape for `Spanned<TypeExpr>` is `[TypeExpr_enum_value, span_map]`.
+    /// The wire shape for `TypeExpr::Named { name, type_args: None }` (externally
+    /// tagged) is `{"Named": {"name": "Int", "type_args": null}}`.
+    #[test]
+    fn expr_types_populated_named_entry_serializes_to_wire() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![ExprTypeEntry {
+                start: 3,
+                end: 12,
+                ty: (
+                    TypeExpr::Named {
+                        name: "Int".to_string(),
+                        type_args: None,
+                    },
+                    3..12,
+                ),
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let entries = value
+            .get("expr_types")
+            .and_then(serde_json::Value::as_array)
+            .expect("expr_types should be present on the wire");
+        assert_eq!(entries.len(), 1, "expected one expr_types entry");
+        assert_eq!(entries[0]["start"], 3u64);
+        assert_eq!(entries[0]["end"], 12u64);
+
+        // ty = [TypeExpr, Span] as a 2-element array
+        let ty_arr = entries[0]["ty"]
+            .as_array()
+            .expect("ty should be a 2-element array");
+        assert_eq!(ty_arr.len(), 2, "ty should be [TypeExpr_value, span]");
+
+        // TypeExpr::Named → {"Named": {"name": "Int", "type_args": null}}
+        let named_payload = ty_arr[0]
+            .get("Named")
+            .expect("TypeExpr should be externally tagged with 'Named' key");
+        assert_eq!(
+            named_payload
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("Int"),
+            "Named type_name should be 'Int'"
+        );
+
+        // Span in ty
+        assert_eq!(ty_arr[1]["start"], 3u64);
+        assert_eq!(ty_arr[1]["end"], 12u64);
+    }
 }

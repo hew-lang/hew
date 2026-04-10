@@ -3000,6 +3000,96 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: declared collection hints lower array and empty HashMap literals locally
+// ============================================================================
+static void test_declared_collection_hints_lower_array_and_empty_hashmap_literals() {
+  TEST(declared_collection_hints_lower_array_and_empty_hashmap_literals);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let empty_vec: Vec<int> = [];
+    let nums: Vec<int> = [1, 2, 3];
+    let empty_map: HashMap<String, int> = {};
+    empty_vec.len() + nums.len() + empty_map.len()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("declared collection hint test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int vecNewCount = 0;
+  int vecPushCount = 0;
+  int arrayCreateCount = 0;
+  int hashMapNewCount = 0;
+  mainFn.walk([&](hew::VecNewOp) { vecNewCount++; });
+  mainFn.walk([&](hew::VecPushOp) { vecPushCount++; });
+  mainFn.walk([&](hew::ArrayCreateOp) { arrayCreateCount++; });
+  mainFn.walk([&](hew::HashMapNewOp) { hashMapNewCount++; });
+
+  if (vecNewCount != 2) {
+    FAIL("expected typed array literals to lower as VecNewOp");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (vecPushCount != 3) {
+    FAIL("expected populated typed Vec literal to push each element");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (arrayCreateCount != 0) {
+    FAIL("did not expect ArrayCreateOp for typed Vec literals");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (hashMapNewCount != 1) {
+    FAIL("expected empty typed HashMap literal to lower as HashMapNewOp");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: nested Vec::new fails closed instead of capturing outer array hint
+// ============================================================================
+static void test_nested_vec_new_does_not_capture_outer_array_hint() {
+  TEST(nested_vec_new_does_not_capture_outer_array_hint);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let v: Vec<Vec<int>> = [Vec::new()];
+    v.len()
+}
+  )");
+
+  if (module) {
+    FAIL("expected nested Vec::new without a local hint to fail closed");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Discarded if-expressions zero-init user-drop struct branch temporaries
 // ============================================================================
 static void test_discarded_if_expr_user_drop_branch_temp_zero_init() {
@@ -8400,6 +8490,8 @@ int main() {
   test_if_expr_branch_temporaries_drop();
   test_if_stmt_branch_temporaries_drop();
   test_collection_builtin_hint_does_not_leak_to_sibling_literals();
+  test_declared_collection_hints_lower_array_and_empty_hashmap_literals();
+  test_nested_vec_new_does_not_capture_outer_array_hint();
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();

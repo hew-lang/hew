@@ -605,11 +605,12 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
   if (stmt.ty)
     pendingDeclaredType = convertType(stmt.ty->value);
+  std::optional<mlir::Type> typeHint = pendingDeclaredType;
 
   mlir::Value value = nullptr;
   lastScopeLaunchResultType.reset();
   if (stmt.value) {
-    value = generateExpression(stmt.value->value);
+    value = generateExpression(stmt.value->value, typeHint);
   }
   pendingDeclaredType.reset();
   if (!value)
@@ -851,13 +852,14 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
   if (stmt.ty)
     pendingDeclaredType = convertType(stmt.ty->value);
+  std::optional<mlir::Type> typeHint = pendingDeclaredType;
 
   // Determine the type
   mlir::Type varType;
   mlir::Value initValue = nullptr;
 
   if (stmt.value) {
-    initValue = generateExpression(stmt.value->value);
+    initValue = generateExpression(stmt.value->value, typeHint);
     pendingDeclaredType.reset();
     if (!initValue)
       return;

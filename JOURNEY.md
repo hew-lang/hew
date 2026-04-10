@@ -106,3 +106,8 @@ expression-type map lookups happen here."
 
 The `mergeInfo` lambda was deleted; it existed solely to blend `resolvedInfo`
 into the explicit results, and blending is no longer needed.
+
+## 2026-04-10 — refactor/mlir-typehint-array-hashmap
+
+- Goal: replace the array-literal and empty-`HashMap` MLIR lowering dependence on `pendingDeclaredType` with local explicit type hints. Fit: this stays inside the existing `MLIRGen` expression-lowering flow by threading optional MLIR type hints from let/var initializers into collection literal lowering instead of adding another side channel. Invariants preserved: typed `Vec` literals must still lower directly to `hew.vec`, empty typed `{}` must still lower to `hew.hashmap`, unresolved collection types must still fail closed, and unrelated sibling expressions must not inherit collection hints.
+- Follow-up after review: collection lowerings still have to consume and clear `pendingDeclaredType` before recursively lowering nested expressions. Reason: explicit `typeHint` is only for the current collection expression; leaving the member state live lets nested builtins like `Vec::new()` capture an outer `Vec<Vec<T>>` hint instead of failing closed.

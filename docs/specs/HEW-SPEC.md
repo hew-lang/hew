@@ -3515,6 +3515,11 @@ The contract frozen in this stage is intentionally small:
 - `stream.close()` or dropping a stream is local cancel/discard of unread items.
 - Stage-1 errors cover constructor/open failures only. Transport/runtime read/write errors after open remain wrapper-specific and out of scope here.
 
+Codec adapters are **not** part of this shipped stream runtime surface. The
+compiler currently fails closed on `Stream.decode()` and `Sink.encode()` as an
+unlowerable stream-codec boundary rather than exposing them as available
+runtime features.
+
 Both handle types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`.
 
 #### 6.5.1 Current `std::stream` surface
@@ -4083,17 +4088,32 @@ Explicit format selection:
 
 ```hew
 let msg = MyMessage { ... };
-let binary = msg.encode_hbf();      // Hew Binary Format
-let json_str = msg.encode_json();   // JSON string
-let json_pretty = msg.encode_json_pretty();  // Formatted JSON
+let binary = msg.encode();       // Hew Binary Format bytes
+let json_str = msg.to_json();    // JSON string
+let yaml_str = msg.to_yaml();    // YAML string
 ```
 
 Decoding:
 
 ```hew
-let msg1 = MyMessage::decode_hbf(binary)?;
-let msg2 = MyMessage::decode_json(json_str)?;
+let msg1 = MyMessage.decode(binary);
+let msg2 = MyMessage.from_json(json_str);
+let msg3 = MyMessage.from_yaml(yaml_str);
 ```
+
+Current shipped helper surface, as registered by the type checker:
+
+- `wire struct` instance methods: `encode() -> bytes`, `to_json() -> String`,
+  `to_yaml() -> String`
+- `wire struct` static methods: `MyMessage.decode(bytes) -> MyMessage`,
+  `MyMessage.from_json(String) -> MyMessage`,
+  `MyMessage.from_yaml(String) -> MyMessage`
+- unit-only `wire enum` helpers are JSON/YAML-only:
+  `to_json()`, `to_yaml()`, `from_json(String) -> Self`,
+  `from_yaml(String) -> Self`
+
+These constructors currently return the wire type directly rather than
+`Result<Self, E>`.
 
 ---
 

@@ -477,7 +477,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
     if (a.body) {
       auto errorsBefore = errorCount_;
-      auto bodyVal = generateExpression(a.body->value);
+      auto bodyVal = resultType ? generateExpression(a.body->value, resultType)
+                                : generateExpression(a.body->value);
       if (!resultType && failClosedDiscardedArmBody(a.body->value, bodyVal, errorsBefore))
         return nullptr;
       return bodyVal;

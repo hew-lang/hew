@@ -254,7 +254,8 @@ private:
   mlir::Value generateLiteral(const ast::Literal &lit, const ast::Span &span);
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
-  mlir::Value generateCallExpr(const ast::ExprCall &expr, const ast::Span &exprSpan);
+  mlir::Value generateCallExpr(const ast::ExprCall &expr, const ast::Span &exprSpan,
+                               std::optional<mlir::Type> typeHint = std::nullopt);
   mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan,
                              bool statementPosition = false);
   mlir::Value generateBlockExpr(const ast::Block &block);
@@ -435,10 +436,13 @@ private:
   mlir::func::FuncOp getOrCreateExternFunc(llvm::StringRef name, mlir::FunctionType type);
 
   /// Check if a name is a builtin function and handle it.
-  /// typeHint carries the declared type from the enclosing let/var for
-  /// collection builtins (Vec::new, HashMap::new, HashSet::new).
+  /// typeHint carries the local hint for a direct builtin constructor call.
   mlir::Value generateBuiltinCall(const std::string &name, const std::vector<ast::CallArg> &args,
                                   mlir::Location location, mlir::Type typeHint = {});
+  mlir::Type resolveOptionConstructorType(std::optional<mlir::Type> typeHint,
+                                          const ast::Span &exprSpan);
+  mlir::Type resolveResultConstructorType(std::optional<mlir::Type> typeHint,
+                                          const ast::Span &exprSpan);
 
   /// Look up a variable name: returns the current SSA value (for immutable
   /// bindings) or loads from the memref slot (for mutable variables).
@@ -644,9 +648,9 @@ private:
   const ast::AssignTargetShapeEntry *
   requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef context,
                              std::optional<mlir::Location> errorLoc = std::nullopt);
-  const ast::LoweringFactEntry *requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
-                                                      std::optional<mlir::Location> errorLoc =
-                                                          std::nullopt);
+  const ast::LoweringFactEntry *
+  requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
+                        std::optional<mlir::Location> errorLoc = std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can
@@ -744,14 +748,6 @@ private:
   std::unordered_map<std::string, std::string> collectionFieldTypes;
   // Extern function semantic return types before LLVM ABI erasure.
   std::unordered_map<std::string, mlir::Type> externSemanticReturnTypes;
-
-  // ── Declared type context ─────────────────────────────────────────
-  // Set before generating a let/var initializer expression.  Carries
-  // the MLIR type from the declaration's type annotation so that
-  // constructors (Vec::new, HashMap::new, None, Ok, Err) can emit the
-  // correct typed result without string matching.  Consumed and reset
-  // by the first builtin that uses it.
-  std::optional<mlir::Type> pendingDeclaredType;
 
   // ── Handle type tracking ──────────────────────────────────────────
   // Track typed handle variables: varName → "http.Server", "net.Connection", etc.

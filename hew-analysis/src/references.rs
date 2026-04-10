@@ -1,5 +1,7 @@
 //! Find-all-references analysis: scope-aware identifier reference collection.
 
+use std::collections::HashMap;
+
 use hew_parser::ast::{
     Block, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
 };
@@ -1168,6 +1170,276 @@ fn collect_refs_in_pattern(pattern: &Pattern, span: &Span, name: &str, spans: &m
         Pattern::Or(left, right) => {
             collect_refs_in_pattern(&left.0, &left.1, name, spans);
             collect_refs_in_pattern(&right.0, &right.1, name, spans);
+        }
+        _ => {}
+    }
+}
+
+// ── Identifier-count analysis ────────────────────────────────────────
+
+/// Count how many times each identifier appears across all item bodies
+/// in the parse result. Used by the LSP for code-lens reference hints.
+#[must_use]
+pub fn count_all_references(parse_result: &ParseResult) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for (item, _) in &parse_result.program.items {
+        count_idents_in_item(item, &mut counts);
+    }
+    counts
+}
+
+fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
+    match item {
+        Item::Function(f) => count_idents_in_block(&f.body, counts),
+        Item::Actor(a) => {
+            if let Some(init) = &a.init {
+                count_idents_in_block(&init.body, counts);
+            }
+            if let Some(term) = &a.terminate {
+                count_idents_in_block(&term.body, counts);
+            }
+            for recv in &a.receive_fns {
+                count_idents_in_block(&recv.body, counts);
+            }
+            for method in &a.methods {
+                count_idents_in_block(&method.body, counts);
+            }
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &td.body {
+                if let TypeBodyItem::Method(m) = body_item {
+                    count_idents_in_block(&m.body, counts);
+                }
+            }
+        }
+        Item::Impl(i) => {
+            for method in &i.methods {
+                count_idents_in_block(&method.body, counts);
+            }
+        }
+        Item::Trait(t) => {
+            for trait_item in &t.items {
+                if let TraitItem::Method(m) = trait_item {
+                    if let Some(body) = &m.body {
+                        count_idents_in_block(body, counts);
+                    }
+                }
+            }
+        }
+        Item::Const(c) => count_idents_in_expr(&c.value.0, counts),
+        Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_)
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {}
+    }
+}
+
+fn count_idents_in_block(block: &Block, counts: &mut HashMap<String, usize>) {
+    for (stmt, _) in &block.stmts {
+        count_idents_in_stmt(stmt, counts);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        count_idents_in_expr(&trailing.0, counts);
+    }
+}
+
+fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+            if let Some(val) = value {
+                count_idents_in_expr(&val.0, counts);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            count_idents_in_expr(&target.0, counts);
+            count_idents_in_expr(&value.0, counts);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            count_idents_in_expr(&condition.0, counts);
+            count_idents_in_block(then_block, counts);
+            if let Some(eb) = else_block {
+                if let Some(if_stmt) = &eb.if_stmt {
+                    count_idents_in_stmt(&if_stmt.0, counts);
+                }
+                if let Some(block) = &eb.block {
+                    count_idents_in_block(block, counts);
+                }
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            count_idents_in_expr(&expr.0, counts);
+            count_idents_in_block(body, counts);
+            if let Some(block) = else_body {
+                count_idents_in_block(block, counts);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            count_idents_in_expr(&scrutinee.0, counts);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    count_idents_in_expr(&guard.0, counts);
+                }
+                count_idents_in_expr(&arm.body.0, counts);
+            }
+        }
+        Stmt::Loop { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::For { body, .. } => {
+            count_idents_in_block(body, counts);
+        }
+        Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
+            count_idents_in_expr(&expr.0, counts);
+        }
+        Stmt::Break {
+            value: Some(val), ..
+        } => count_idents_in_expr(&val.0, counts),
+        _ => {}
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over all Expr variants for identifier counting"
+)]
+fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
+    match expr {
+        Expr::Identifier(ident) => {
+            *counts.entry(ident.clone()).or_insert(0) += 1;
+        }
+        Expr::Binary { left, right, .. } => {
+            count_idents_in_expr(&left.0, counts);
+            count_idents_in_expr(&right.0, counts);
+        }
+        Expr::Unary { operand, .. } => count_idents_in_expr(&operand.0, counts),
+        Expr::Call { function, args, .. } => {
+            count_idents_in_expr(&function.0, counts);
+            for arg in args {
+                count_idents_in_expr(&arg.expr().0, counts);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            count_idents_in_expr(&receiver.0, counts);
+            for arg in args {
+                count_idents_in_expr(&arg.expr().0, counts);
+            }
+        }
+        Expr::FieldAccess { object, .. } => count_idents_in_expr(&object.0, counts),
+        Expr::Index { object, index } => {
+            count_idents_in_expr(&object.0, counts);
+            count_idents_in_expr(&index.0, counts);
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, val) in fields {
+                count_idents_in_expr(&val.0, counts);
+            }
+        }
+        Expr::Spawn { target, args } => {
+            count_idents_in_expr(&target.0, counts);
+            for (_, val) in args {
+                count_idents_in_expr(&val.0, counts);
+            }
+        }
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => count_idents_in_block(block, counts),
+        Expr::Scope { body, .. } => count_idents_in_block(body, counts),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            count_idents_in_expr(&condition.0, counts);
+            count_idents_in_expr(&then_block.0, counts);
+            if let Some(else_expr) = else_block {
+                count_idents_in_expr(&else_expr.0, counts);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            count_idents_in_expr(&expr.0, counts);
+            count_idents_in_block(body, counts);
+            if let Some(block) = else_body {
+                count_idents_in_block(block, counts);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            count_idents_in_expr(&scrutinee.0, counts);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    count_idents_in_expr(&guard.0, counts);
+                }
+                count_idents_in_expr(&arm.body.0, counts);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            count_idents_in_expr(&body.0, counts);
+        }
+        Expr::ArrayRepeat { value, count } => {
+            count_idents_in_expr(&value.0, counts);
+            count_idents_in_expr(&count.0, counts);
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                count_idents_in_expr(&k.0, counts);
+                count_idents_in_expr(&v.0, counts);
+            }
+        }
+        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
+            for elem in elems {
+                count_idents_in_expr(&elem.0, counts);
+            }
+        }
+        Expr::Send { target, message } => {
+            count_idents_in_expr(&target.0, counts);
+            count_idents_in_expr(&message.0, counts);
+        }
+        Expr::Select {
+            arms: sel_arms,
+            timeout,
+        } => {
+            for arm in sel_arms {
+                count_idents_in_expr(&arm.body.0, counts);
+            }
+            if let Some(t) = timeout {
+                count_idents_in_expr(&t.body.0, counts);
+            }
+        }
+        Expr::Timeout { expr: e, .. } => count_idents_in_expr(&e.0, counts),
+        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
+            count_idents_in_expr(&inner.0, counts);
+        }
+        Expr::Cast { expr: inner, .. } => count_idents_in_expr(&inner.0, counts),
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                count_idents_in_expr(&s.0, counts);
+            }
+            if let Some(e) = end {
+                count_idents_in_expr(&e.0, counts);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(e) = part {
+                    count_idents_in_expr(&e.0, counts);
+                }
+            }
         }
         _ => {}
     }

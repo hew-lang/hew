@@ -9295,8 +9295,7 @@ actor MyActor {
         // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
         // return annotations. Builtin named types like Vec must still report the
         // context error even though they are not registered in type_defs/type_aliases.
-        let source =
-            r"fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }";
+        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

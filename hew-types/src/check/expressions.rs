@@ -235,12 +235,12 @@ impl Checker {
                 // Result or Option, found X`") are reported unconditionally via the
                 // else branch below and are NOT affected by this bypass.
                 //
-                // Ty::Named where the name is not in type_defs or type_aliases is
-                // also bypassed: this arises when a return-type annotation references
-                // an undefined type (resolution falls through to Ty::normalize_named
-                // rather than returning Ty::Error).  Emitting the context error in
-                // this case is a false positive — we cannot know whether the intended
-                // type would have been a Result/Option.
+                // Ty::Named where the name is not builtin and not in type_defs or
+                // type_aliases is also bypassed: this arises when a return-type
+                // annotation references an undefined type (resolution falls through
+                // to Ty::normalize_named rather than returning Ty::Error). Emitting
+                // the context error in this case is a false positive — we cannot
+                // know whether the intended type would have been a Result/Option.
                 let bad_ctx_msg: Option<String> =
                     self.current_return_type.as_ref().and_then(|ret| {
                         let r = self.subst.resolve(ret);
@@ -248,7 +248,8 @@ impl Checker {
                             || r.as_result().is_some()
                             || matches!(r, Ty::Var(_) | Ty::Error)
                             || matches!(&r, Ty::Named { name, .. }
-                                if !self.type_defs.contains_key(name)
+                                if !Ty::is_named_builtin(name)
+                                    && !self.type_defs.contains_key(name)
                                     && !self.type_aliases.contains_key(name))
                         {
                             None

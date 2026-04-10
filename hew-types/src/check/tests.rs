@@ -9289,6 +9289,35 @@ actor MyActor {
     }
 
     #[test]
+    fn builtin_named_return_type_still_reports_question_mark_context_error() {
+        // fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }
+        //
+        // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
+        // return annotations. Builtin named types like Vec must still report the
+        // context error even though they are not registered in type_defs/type_aliases.
+        let source =
+            r"fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let has_ctx_err = output.errors.iter().any(|e| {
+            e.message
+                .contains("cannot be used in a function returning `Vec<i32>`")
+        });
+        assert!(
+            has_ctx_err,
+            "? on valid Result in a function returning builtin Vec must still \
+             emit the context error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn error_return_type_question_mark_in_lambda_no_false_context_error() {
         // fn foo() { let r: Result<i64, String> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
         //

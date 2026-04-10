@@ -150,13 +150,20 @@ jobs:
   build-and-test:
     name: Build & test (Rust + codegen E2E)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
+
       - uses: actions/checkout@v4
+        if: env.RUN_CODE_PATH == 'true'
 
       - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -174,14 +181,17 @@ jobs:
             libssl-dev pkg-config
 
       - name: Configure embedded codegen toolchain (Linux)
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
           echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
           echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: taiki-e/install-action@nextest
+        if: env.RUN_CODE_PATH == 'true'
 
       # Include hew-codegen C++ sources in the cache key so that a stale cmake
       # build dir inside target/ is never reused when codegen source files change.
@@ -189,6 +199,7 @@ jobs:
       # CMakeCache.txt may contain stale LLVM paths, causing cmake re-configure to
       # fail and hew-cli to link with missing symbols.
       - uses: actions/cache@v4
+        if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
             ~/.cargo/registry/
@@ -200,6 +211,7 @@ jobs:
             build-test-${{ runner.os }}-
 
       - name: Cache hew-codegen build
+        if: env.RUN_CODE_PATH == 'true'
         uses: actions/cache@v4
         with:
           path: hew-codegen/build
@@ -212,6 +224,7 @@ jobs:
       # ensures the hew-codegen/build tree is populated on every cache miss, and
       # exercises the cmake configure path before cargo attempts to link.
       - name: Configure hew-codegen
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           cd hew-codegen
           cmake -B build -G Ninja \
@@ -220,28 +233,35 @@ jobs:
             -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
 
       - name: Build hew-codegen
+        if: env.RUN_CODE_PATH == 'true'
         run: cmake --build hew-codegen/build -j"$(nproc)"
 
       - name: Build Rust runtime and frontend (release)
+        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-cli -p hew-runtime -p hew-serialize -p hew-lsp --release
 
       - name: Smoke test hew-lsp
+        if: env.RUN_CODE_PATH == 'true'
         run: ./target/release/hew-lsp --version
 
       - name: Build hew binary (debug — needed by test_runner tests)
+        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-cli
 
       - name: Build WASM runtime
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           rustup target add wasm32-wasip1
           cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Install wasmtime
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
       - name: Build libhew.a (runtime + stdlib)
+        if: env.RUN_CODE_PATH == 'true'
         # Build both release and debug so workspace tests that run the debug
         # hew binary do not pick up a stale cached target/debug/libhew.a.
         run: |
@@ -252,28 +272,32 @@ jobs:
       # so all 33 QUIC transport tests run without an explicit flag. hew-wasm
       # browser/tooling smoke stays isolated in playground-wasm-build.
       - name: Run Rust workspace tests
+        if: env.RUN_CODE_PATH == 'true'
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cd hew-codegen/build &&
           ctest --output-on-failure --output-junit codegen-unit.xml
           -R "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (native)
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cd hew-codegen/build &&
           ctest --output-on-failure --output-junit codegen-e2e-native.xml
           -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (WASM)
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cd hew-codegen/build &&
           ctest --output-on-failure --output-junit codegen-e2e-wasm.xml
           -j"$(nproc)" -L wasm
 
       - name: Upload test reports
-        if: always()
+        if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@v5
         with:
           report_paths: |
@@ -289,20 +313,30 @@ jobs:
   coverage:
     name: Code coverage
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; skipping heavy coverage work while satisfying the required check."
+
       - uses: actions/checkout@v4
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN_CODE_PATH == 'true'
         with:
           components: llvm-tools
 
       - uses: taiki-e/install-action@cargo-llvm-cov
+        if: env.RUN_CODE_PATH == 'true'
       - uses: taiki-e/install-action@nextest
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: actions/cache@v4
+        if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
             ~/.cargo/registry/
@@ -312,6 +346,7 @@ jobs:
           restore-keys: coverage-${{ runner.os }}-
 
       - name: Run tests with coverage
+        if: env.RUN_CODE_PATH == 'true'
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests are covered without an explicit flag.
         # hew-cli is excluded because it requires LLVM/MLIR to link its
@@ -322,22 +357,24 @@ jobs:
           --lcov --output-path lcov.info
 
       - name: Generate HTML report
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cargo llvm-cov report
           --html --output-dir coverage-html
 
       - name: Coverage summary
+        if: env.RUN_CODE_PATH == 'true'
         run: cargo llvm-cov report | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage (lcov)
-        if: always()
+        if: always() && env.RUN_CODE_PATH == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
           path: lcov.info
 
       - name: Upload coverage (HTML)
-        if: always()
+        if: always() && env.RUN_CODE_PATH == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-html
@@ -349,23 +386,34 @@ jobs:
   build-and-test-windows:
     name: Build & test (Windows)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: windows-2022
     timeout-minutes: 60
+    env:
+      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
+        shell: pwsh
+
       - uses: actions/checkout@v4
+        if: env.RUN_CODE_PATH == 'true'
 
       - name: Install build tools
+        if: env.RUN_CODE_PATH == 'true'
         run: choco install ninja cmake -y
         shell: pwsh
 
       # TODO: LLVM+MLIR provisioning (build from source, pre-built artifact, or installer)
 
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: taiki-e/install-action@nextest
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: actions/cache@v4
+        if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
             ~\.cargo\registry\
@@ -375,6 +423,7 @@ jobs:
           restore-keys: build-test-${{ runner.os }}-
 
       - name: Build Rust crates
+        if: env.RUN_CODE_PATH == 'true'
         # hew-cli requires LLVM/MLIR for its embedded codegen; use check
         # (type-check only) until LLVM provisioning is set up on Windows.
         run: |
@@ -382,6 +431,7 @@ jobs:
           cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
 
       - name: Run Rust workspace tests (no codegen)
+        if: env.RUN_CODE_PATH == 'true'
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
@@ -397,7 +447,7 @@ jobs:
           --profile ci
 
       - name: Upload test reports
-        if: always()
+        if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@v5
         with:
           report_paths: target/nextest/ci/junit.xml
@@ -412,19 +462,28 @@ jobs:
   build-and-test-macos:
     name: Build & test (macOS arm64)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: macos-14
     timeout-minutes: 60
+    env:
+      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
+
       - uses: actions/checkout@v4
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: dtolnay/rust-toolchain@stable
+        if: env.RUN_CODE_PATH == 'true'
         with:
           targets: aarch64-apple-darwin
 
       - uses: taiki-e/install-action@nextest
+        if: env.RUN_CODE_PATH == 'true'
 
       - uses: actions/cache@v4
+        if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
             ~/.cargo/registry/
@@ -438,6 +497,7 @@ jobs:
             build-test-${{ runner.os }}-arm64-macos13-
 
       - name: Install LLVM/MLIR
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           brew install llvm@${{ env.LLVM_VERSION }} ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
@@ -450,6 +510,7 @@ jobs:
           echo "LLVM_VERSION_FULL=${LLVM_VERSION_FULL}" >> "$GITHUB_ENV"
 
       - name: Cache hew-codegen build
+        if: env.RUN_CODE_PATH == 'true'
         uses: actions/cache@v4
         with:
           path: hew-codegen/build
@@ -462,6 +523,7 @@ jobs:
       # ensures the hew-codegen/build tree is populated on every cache miss, and
       # exercises the cmake configure path before cargo attempts to link.
       - name: Configure hew-codegen
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           cd hew-codegen
           cmake -B build -G Ninja \
@@ -475,9 +537,11 @@ jobs:
             -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
 
       - name: Build hew-codegen
+        if: env.RUN_CODE_PATH == 'true'
         run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
 
       - name: Build libhew.a (runtime + stdlib)
+        if: env.RUN_CODE_PATH == 'true'
         # Build both release and debug so that CLI e2e tests (which run the
         # debug hew binary) can find target/debug/libhew.a without relying on
         # make runtime stdlib running inside the test process.
@@ -486,11 +550,13 @@ jobs:
           cargo build -p hew-lib
 
       - name: Build frontend (release + debug)
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           cargo build -p hew-cli -p hew-serialize --release
           cargo build -p hew-cli
 
       - name: Run Rust workspace tests
+        if: env.RUN_CODE_PATH == 'true'
         # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
         # Both target/release/libhew.a and target/debug/libhew.a are pre-built
         # above so that CLI e2e tests that invoke `hew run` find the right one.
@@ -499,12 +565,14 @@ jobs:
           --profile ci
 
       - name: Run codegen unit tests
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cd hew-codegen/build &&
           ctest --output-on-failure --output-junit codegen-unit.xml
           -R "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (native)
+        if: env.RUN_CODE_PATH == 'true'
         run: >
           cd hew-codegen/build &&
           ctest --output-on-failure --output-junit codegen-e2e-native.xml

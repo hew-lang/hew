@@ -298,7 +298,7 @@ impl ReplSession {
     pub fn for_path(file_path: &str, execution_timeout: Duration) -> Self {
         let project_dir = std::path::Path::new(file_path)
             .parent()
-            .map(|p| p.to_path_buf());
+            .map(std::path::Path::to_path_buf);
         Self {
             session: Session::new(),
             execution_timeout,
@@ -1462,8 +1462,8 @@ mod tests {
     // `project_context_for_program` with no manifest.
     // -----------------------------------------------------------------------
 
-    /// `eval_file` anchored to a real path resolves local src/ imports that
-    /// would fail when project_dir defaults to an unrelated cwd.
+    /// `eval_file` anchored to a real path resolves local `src/` imports that
+    /// would fail when `project_dir` defaults to an unrelated cwd.
     #[test]
     fn eval_file_resolves_local_src_import() {
         if !require_toolchain() {
@@ -1529,8 +1529,7 @@ mod tests {
 
         let main_path_str = main_path.to_str().expect("path is valid UTF-8");
         let timeout = DEFAULT_EVAL_TIMEOUT;
-        let source =
-            std::fs::read_to_string(main_path_str).expect("read prog.hew");
+        let source = std::fs::read_to_string(main_path_str).expect("read prog.hew");
 
         let mut session = ReplSession::for_path(main_path_str, timeout);
         let result = session.eval_source_file_cli(&source, main_path_str, main_path_str);
@@ -1550,8 +1549,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let manifest = "[package]\nname = \"myapp\"\n\n[dependencies]\nstdlib = \"*\"\n";
-        let mut f =
-            std::fs::File::create(dir.path().join("hew.toml")).expect("create hew.toml");
+        let mut f = std::fs::File::create(dir.path().join("hew.toml")).expect("create hew.toml");
         f.write_all(manifest.as_bytes()).expect("write hew.toml");
 
         let options = hew_compile::FrontendOptions {
@@ -1571,8 +1569,7 @@ mod tests {
         );
         // compile_program must not error; previously it would ignore project_dir.
         // With the fix, manifest_deps is loaded from the temp dir.
-        let result =
-            hew_compile::compile_program(parse_result.program, source, "<test>", &options);
+        let result = hew_compile::compile_program(parse_result.program, source, "<test>", &options);
         assert!(
             result.is_ok(),
             "compile_program with project_dir failed: {result:?}"

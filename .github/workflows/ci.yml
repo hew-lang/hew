@@ -507,6 +507,7 @@ jobs:
           brew install llvm@${{ env.LLVM_VERSION }} ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
@@ -566,6 +567,8 @@ jobs:
           rustup target add wasm32-wasip1
           brew install wasmtime
           wasmtime --version
+          command -v wasm-ld
+          wasm-ld --version
 
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'

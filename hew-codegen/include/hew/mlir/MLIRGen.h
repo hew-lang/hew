@@ -222,8 +222,7 @@ private:
   std::optional<StreamHandleInfo> resolveKnownCallStreamHandleInfo(const ast::ExprCall &call) const;
   std::optional<StreamHandleInfo>
   resolveChainedStreamHandleInfo(const ast::ExprMethodCall &methodCall) const;
-  std::optional<StreamHandleInfo> resolveStreamHandleInfo(const ast::Expr &expr,
-                                                          const ast::Span *span = nullptr) const;
+  std::optional<StreamHandleInfo> resolveStreamHandleInfo(const ast::Expr &expr) const;
   std::vector<StreamHandleInfo>
   resolveTuplePatternStreamHandleInfos(const ast::StmtLet &stmt) const;
   const StreamHandleInfo *lookupTrackedStreamHandleInfo(llvm::StringRef name) const;

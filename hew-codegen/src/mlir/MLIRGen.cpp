@@ -849,7 +849,7 @@ MLIRGen::resolveKnownCallStreamHandleInfo(const ast::ExprCall &call) const {
     if (call.args.empty())
       return StreamHandleInfo{"Stream", ""};
     const auto &argExpr = ast::callArgExpr(call.args[0]);
-    auto streamInfo = resolveStreamHandleInfo(argExpr.value, &argExpr.span);
+    auto streamInfo = resolveStreamHandleInfo(argExpr.value);
     if (!streamInfo || streamInfo->kind != "Stream")
       return StreamHandleInfo{"Stream", ""};
     return StreamHandleInfo{"Stream", streamInfo->elementType};
@@ -885,8 +885,7 @@ MLIRGen::resolveChainedStreamHandleInfo(const ast::ExprMethodCall &methodCall) c
   if (!methodCall.receiver)
     return std::nullopt;
 
-  auto receiverInfo =
-      resolveStreamHandleInfo(methodCall.receiver->value, &methodCall.receiver->span);
+  auto receiverInfo = resolveStreamHandleInfo(methodCall.receiver->value);
   if (!receiverInfo || receiverInfo->kind != "Stream")
     return std::nullopt;
 
@@ -899,44 +898,24 @@ MLIRGen::resolveChainedStreamHandleInfo(const ast::ExprMethodCall &methodCall) c
 }
 
 std::optional<MLIRGen::StreamHandleInfo>
-MLIRGen::resolveStreamHandleInfo(const ast::Expr &expr, const ast::Span *span) const {
-  auto mergeInfo = [](std::optional<StreamHandleInfo> primary,
-                      std::optional<StreamHandleInfo> fallback) -> std::optional<StreamHandleInfo> {
-    if (!primary)
-      return fallback;
-    if (!fallback)
-      return primary;
-    if (primary->kind.empty())
-      return fallback;
-    if (primary->kind == fallback->kind && primary->elementType.empty() &&
-        !fallback->elementType.empty())
-      primary->elementType = fallback->elementType;
-    return primary;
-  };
-
-  std::optional<StreamHandleInfo> resolvedInfo;
-  if (span) {
-    if (const auto *resolvedType = resolvedTypeOf(*span))
-      resolvedInfo = streamHandleInfoFromTypeExpr(*resolvedType);
-  }
-
-  if (auto *methodCall = std::get_if<ast::ExprMethodCall>(&expr.kind)) {
-    auto chainedInfo = resolveChainedStreamHandleInfo(*methodCall);
-    if (!chainedInfo)
-      return std::nullopt;
-    return mergeInfo(std::move(resolvedInfo), std::move(chainedInfo));
-  }
+MLIRGen::resolveStreamHandleInfo(const ast::Expr &expr) const {
+  // ABI selection is explicit-only: no resolvedTypeOf fallback.
+  // Kind and elementType come from type annotations (via rememberTrackedStreamHandleInfo),
+  // known C-ABI call names (resolveKnownCallStreamHandleInfo), or chained stream methods
+  // (resolveChainedStreamHandleInfo). If none of those apply we have no metadata.
+  if (auto *methodCall = std::get_if<ast::ExprMethodCall>(&expr.kind))
+    return resolveChainedStreamHandleInfo(*methodCall);
 
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
     if (const auto *trackedInfo = lookupTrackedStreamHandleInfo(ident->name))
-      return mergeInfo(std::move(resolvedInfo), *trackedInfo);
-    return resolvedInfo;
+      return *trackedInfo;
+    return std::nullopt;
   }
 
   if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
-    return mergeInfo(std::move(resolvedInfo), resolveKnownCallStreamHandleInfo(*call));
+    return resolveKnownCallStreamHandleInfo(*call);
 
-  return resolvedInfo;
+  return std::nullopt;
 }
 
 std::vector<MLIRGen::StreamHandleInfo>
@@ -987,12 +966,8 @@ MLIRGen::resolveTuplePatternStreamHandleInfos(const ast::StmtLet &stmt) const {
   if (stmt.ty && populateFromTupleType(stmt.ty->value, /*overwrite=*/true))
     return infos;
 
-  if (stmt.value) {
+  if (stmt.value)
     populateFromKnownProducer(stmt.value->value, /*overwrite=*/true);
-
-    if (const auto *resolvedType = resolvedTypeOf(stmt.value->span))
-      populateFromTupleType(*resolvedType, /*overwrite=*/false);
-  }
 
   return infos;
 }

@@ -96,10 +96,16 @@ impl Default for ReplSession {
     }
 }
 
-fn typecheck_program(program: &hew_parser::ast::Program) -> hew_types::check::TypeCheckOutput {
+fn typecheck_program(
+    program: &hew_parser::ast::Program,
+    enable_wasm: bool,
+) -> hew_types::check::TypeCheckOutput {
     let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
         hew_types::module_registry::build_module_search_paths(),
     ));
+    if enable_wasm {
+        checker.enable_wasm_target();
+    }
     checker.check_program(program)
 }
 
@@ -332,6 +338,14 @@ impl ReplSession {
         session
     }
 
+    fn is_wasm_target(&self) -> bool {
+        self.eval_target.as_deref().is_some_and(|t| {
+            crate::target::TargetSpec::from_requested(Some(t))
+                .map(|spec| spec.is_wasm())
+                .unwrap_or(false)
+        })
+    }
+
     /// Evaluate a line of input and return the result.
     #[cfg_attr(
         not(test),
@@ -504,7 +518,7 @@ impl ReplSession {
         if matches!(kind, InputKind::Expression | InputKind::Statement)
             && !program_has_imports(&parse_result.program)
         {
-            let tco = typecheck_program(&parse_result.program);
+            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
             let module_source_map =
                 crate::diagnostic::build_module_source_map(&parse_result.program);
             if !tco.errors.is_empty() {
@@ -564,7 +578,7 @@ impl ReplSession {
             });
         }
 
-        let tco = typecheck_program(&parse_result.program);
+        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
         let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
         if !tco.errors.is_empty() {
             return Err(EvalCheckFailure::Type {
@@ -813,7 +827,7 @@ impl ReplSession {
             });
         }
 
-        let tco = typecheck_program(&parse_result.program);
+        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
         let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
 
         if !tco.errors.is_empty() {
@@ -1069,9 +1083,12 @@ fn run_wasm_eval_compiled(
 /// # Errors
 ///
 /// Returns an error if readline fails fatally.
-pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_interactive(
+    timeout: Duration,
+    target: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
-    let mut session = ReplSession::with_timeout(timeout);
+    let mut session = ReplSession::with_timeout_and_target(timeout, target);
 
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
     println!("Type :help for commands, :session to inspect state, :quit to exit.\n");

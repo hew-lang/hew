@@ -38,14 +38,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     if args.expr.is_empty() {
         // Interactive REPL.
-        if target.is_some() {
-            eprintln!(
-                "Error: --target is not yet supported in interactive REPL mode. \
-                Use `hew eval --target <TRIPLE> <expr>` or `hew eval --target <TRIPLE> -f <file>` instead."
-            );
-            std::process::exit(1);
-        }
-        if let Err(e) = repl::run_interactive(timeout) {
+        if let Err(e) = repl::run_interactive(timeout, target.as_deref()) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }

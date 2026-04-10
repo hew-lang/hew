@@ -977,23 +977,50 @@ fn eval_wasm_unsupported_feature_reports_diagnostic() {
     );
 }
 
-/// `hew eval --target wasm32-wasi` without an expression (interactive mode)
-/// should reject the combination with a clear error message.
+/// `hew eval --target wasm32-wasi` without an expression starts the interactive
+/// REPL with WASM mode. Sending EOF immediately should exit cleanly (exit 0).
 #[test]
-fn eval_wasm_interactive_mode_is_rejected() {
-    // No codegen needed — this is rejected before any compilation.
+fn eval_wasm_interactive_mode_exits_on_eof() {
+    // No codegen needed — we just send EOF immediately.
     let output = Command::new(hew_binary())
         .args(["eval", "--target", "wasm32-wasi"])
         .current_dir(repo_root())
-        // Provide EOF on stdin so the process does not block waiting for input.
+        // Provide EOF on stdin so the REPL exits after printing the banner.
         .stdin(Stdio::null())
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "expected REPL to exit 0 on EOF with --target, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Hew REPL"),
+        "expected REPL banner, stdout: {stdout}"
+    );
+}
+
+/// `hew eval --target wasm32-wasi "scope { }"` — `scope` is not supported on
+/// WASM32. The fast typecheck pass (before codegen) should surface this
+/// diagnostic, so the process fails quickly without invoking the compiler.
+#[test]
+fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
+    // No codegen required: the fast typecheck should catch this.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "scope { }"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure for scope {{ }} on WASM target"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet supported in interactive REPL mode"),
-        "expected REPL-rejection message, stderr: {stderr}"
+        stderr.contains("WASM32") || stderr.contains("not supported"),
+        "expected WASM diagnostic from fast typecheck, stderr: {stderr}"
     );
 }

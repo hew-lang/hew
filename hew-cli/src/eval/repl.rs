@@ -288,6 +288,13 @@ impl ReplSession {
     }
 
     /// Evaluate a line of input and return the result.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "CLI entry points currently route through eval_cli"
+        )
+    )]
     pub fn eval(&mut self, input: &str) -> EvalResult {
         let trimmed = input.trim();
         if trimmed.is_empty() {

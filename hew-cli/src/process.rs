@@ -80,8 +80,9 @@ pub(crate) fn run_binary_with_timeout(
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    terminate_timed_out_child(&mut child, TimeoutKillTarget::ProcessGroup)?;
-                    drain.abandon();
+                    let tree_killed =
+                        terminate_timed_out_child(&mut child, TimeoutKillTarget::ProcessGroup)?;
+                    drain.abandon(tree_killed);
                     return Ok(BinaryRunOutcome::Timeout);
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -128,25 +129,25 @@ impl ConcurrentChildOutput {
         Ok((self.stdout.finish()?, self.stderr.finish()?))
     }
 
-    /// Dispose of the drain threads on the timeout path without blocking.
+    /// Dispose of the drain threads on the timeout path.
     ///
-    /// On Unix, `terminate_timed_out_child` sends `SIGKILL` to the entire
-    /// process group, so every process that could hold a write end of the
-    /// pipes is dead before this is called.  The reader threads will observe
-    /// EOF promptly; joining them is safe and drains any buffered bytes.
+    /// `tree_killed` must be `true` iff the entire process tree — including
+    /// all descendants that could hold a write end of the pipes — has been
+    /// terminated before this is called.  When that is the case the reader
+    /// threads will observe EOF promptly and can be joined safely.
     ///
-    /// On non-Unix, only the direct child is killed.  Descendant processes
-    /// that inherited the pipe write ends may still be running, so joining
-    /// the reader threads would block indefinitely.  Dropping a `JoinHandle`
-    /// detaches the thread — it continues in the background and finishes
-    /// when the OS eventually closes the pipe — avoiding a hang.
-    pub(crate) fn abandon(self) {
-        #[cfg(unix)]
-        {
-            // Group kill guarantees all write-end holders are gone; safe to join.
+    /// When `tree_killed` is `false` (only the direct child was killed),
+    /// joining could block indefinitely if a descendant still holds a pipe
+    /// write end.  The threads are detached instead: the thread continues in
+    /// the background and finishes when the OS eventually closes the pipe.
+    /// In practice this path is only reached on unusual targets where neither
+    /// a Unix process group nor a Windows job-tree kill is available.
+    pub(crate) fn abandon(self, tree_killed: bool) {
+        if tree_killed {
+            // All write-end holders are dead; safe to join and discard output.
             let _ = self.finish();
         }
-        // On non-Unix: drop(self) detaches the reader threads without joining.
+        // else: drop without joining — descendants may still hold pipe handles.
     }
 }
 
@@ -204,15 +205,18 @@ pub(crate) fn wait_for_child_with_timeout(
     }
 }
 
+/// Returns `true` if the entire process tree was terminated (all processes
+/// that could hold a write end of a pipe are dead), `false` if only the
+/// direct child was killed.
 fn terminate_timed_out_child(
     child: &mut Child,
     kill_target: TimeoutKillTarget,
-) -> Result<(), String> {
-    kill_timed_out_child(child, kill_target)?;
+) -> Result<bool, String> {
+    let tree_killed = kill_timed_out_child(child, kill_target)?;
     child
         .wait()
         .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-    Ok(())
+    Ok(tree_killed)
 }
 
 #[cfg(unix)]
@@ -263,9 +267,12 @@ fn kill_child_only(child: &mut Child) -> Result<(), String> {
     clippy::cast_possible_wrap,
     reason = "PIDs fit in i32 on all supported Unix platforms"
 )]
-fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<(), String> {
+fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<bool, String> {
     match kill_target {
-        TimeoutKillTarget::Child => kill_child_only(child),
+        TimeoutKillTarget::Child => {
+            kill_child_only(child)?;
+            Ok(false)
+        }
         TimeoutKillTarget::ProcessGroup => {
             let process_group = child.id() as i32;
             // SAFETY: `killpg` targets the child-created process group. If the
@@ -273,12 +280,14 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
             // reaps the child.
             let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
             if result == 0 {
-                return Ok(());
+                return Ok(true);
             }
 
             let group_error = std::io::Error::last_os_error();
             if group_error.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(());
+                // Group already gone — all processes (and their pipe handles)
+                // are already dead.
+                return Ok(true);
             }
 
             kill_child_only(child).map_err(|kill_error| {
@@ -286,12 +295,66 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
                     "cannot kill timed-out child process group: {group_error}; \
                      fallback child kill failed: {kill_error}"
                 )
-            })
+            })?;
+            Ok(false)
         }
     }
 }
 
-#[cfg(not(unix))]
-fn kill_timed_out_child(child: &mut Child, _kill_target: TimeoutKillTarget) -> Result<(), String> {
-    kill_child_only(child)
+/// Kill the process tree rooted at `child` on Windows using `taskkill /T /F`.
+///
+/// Returns `true` if the tree was definitively terminated (exit 0 or exit 128
+/// meaning the process was already gone), so the caller knows it is safe to
+/// join pipe-drain threads.  Returns `false` if `taskkill` was unavailable or
+/// reported partial/unexpected failure, in which case a child-only kill is
+/// attempted as a fallback and drain threads must be detached to avoid a hang.
+#[cfg(windows)]
+fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<bool, String> {
+    match kill_target {
+        TimeoutKillTarget::Child => {
+            kill_child_only(child)?;
+            Ok(false)
+        }
+        TimeoutKillTarget::ProcessGroup => {
+            let pid = child.id();
+            match Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .status()
+            {
+                Ok(s) if s.success() => Ok(true),
+                // Exit 128: "The process with PID <n> not found." — already gone,
+                // so its pipe handles are closed.
+                Ok(s) if s.code() == Some(128) => Ok(true),
+                Ok(s) => {
+                    // Unexpected taskkill failure; fall back to child-only kill.
+                    kill_child_only(child).map_err(|kill_error| {
+                        format!(
+                            "taskkill exited with {s}; \
+                             fallback child kill also failed: {kill_error}"
+                        )
+                    })?;
+                    Ok(false)
+                }
+                Err(spawn_error) => {
+                    // taskkill.exe not available; fall back to child-only kill.
+                    kill_child_only(child).map_err(|kill_error| {
+                        format!(
+                            "cannot spawn taskkill: {spawn_error}; \
+                             fallback child kill also failed: {kill_error}"
+                        )
+                    })?;
+                    Ok(false)
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kill_timed_out_child(
+    child: &mut Child,
+    _kill_target: TimeoutKillTarget,
+) -> Result<bool, String> {
+    kill_child_only(child)?;
+    Ok(false)
 }

@@ -4220,17 +4220,11 @@ static mlir::LogicalResult validateWasmUnsupportedOps(mlir::ModuleOp module) {
        "task completion APIs require OS threads to drive child scopes"},
       {"hew.task.complete", "task",
        "task completion APIs require OS threads to drive child scopes"},
-      // Select
-      {"hew.select.create", "select",
-       "select waits on multiple mailboxes using OS threads for blocking"},
-      {"hew.select.add", "select",
-       "select waits on multiple mailboxes using OS threads for blocking"},
-      {"hew.select.first", "select",
-       "select waits on multiple mailboxes using OS threads for blocking"},
-      {"hew.select.destroy", "select",
-       "select waits on multiple mailboxes using OS threads for blocking"},
-      {"hew.select.wait", "select",
-       "select waits on multiple mailboxes using OS threads for blocking"},
+      // Select: infinite-wait select is now supported on WASM via the cooperative
+      // scheduler (hew_select_first / hew_reply_wait in reply_channel_wasm.rs).
+      // Timed select (hew.select.first with timeout_ms >= 0) remains unsupported
+      // until WASI clock_time_get is available; that rejection is handled at the
+      // runtime level (hew_select_first returns -1 immediately for finite timeouts).
   };
 
   module.walk([&](mlir::Operation *op) {

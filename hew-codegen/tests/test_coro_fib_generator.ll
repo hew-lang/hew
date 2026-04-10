@@ -57,7 +57,7 @@ cleanup:
   br label %suspend
 
 suspend:
-  call i1 @llvm.coro.end(ptr %hdl, i1 false, token none)
+  call void @llvm.coro.end(ptr %hdl, i1 false, token none)
   ret ptr %hdl
 }
 
@@ -97,7 +97,7 @@ declare i1 @llvm.coro.alloc(token)
 declare i64 @llvm.coro.size.i64()
 declare ptr @llvm.coro.begin(token, ptr writeonly)
 declare i8 @llvm.coro.suspend(token, i1)
-declare i1 @llvm.coro.end(ptr, i1, token)
+declare void @llvm.coro.end(ptr, i1, token)
 declare ptr @llvm.coro.free(token, ptr nocapture readonly)
 declare void @llvm.coro.resume(ptr)
 declare void @llvm.coro.destroy(ptr)

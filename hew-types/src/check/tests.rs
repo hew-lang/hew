@@ -9115,4 +9115,115 @@ mod warning_source_attribution {
             unused[0].source_module
         );
     }
+
+    // ── Wave 13 Ty::Error return-context seeding regressions ───────────────────
+    //
+    // When a function's return-type annotation cannot be resolved (e.g.
+    // `UnknownType`), `resolve_type_expr` produces `Ty::Error`.  Before this
+    // fix the error type was passed as the *expected* type into the body,
+    // causing `expect_type`'s guard (`expected_resolved != Ty::Error`) to
+    // silently swallow genuine body-level type errors.
+
+    fn has_mismatch(errors: &[crate::error::TypeError]) -> bool {
+        errors.iter().any(|e| {
+            matches!(e.kind, TypeErrorKind::Mismatch { .. })
+                || e.message.contains("mismatch")
+                || e.message.contains("TypeMismatch")
+        })
+    }
+
+    #[test]
+    fn error_return_type_does_not_suppress_trailing_expr_mismatch() {
+        // fn foo() -> UnknownType { let x: i32 = "bad"; x }
+        // The `let x: i32 = "bad"` is a type mismatch inside the body.
+        // When the fn return annotation is Ty::Error the body was previously
+        // checked with check_against(_, Ty::Error), masking the let-binding error.
+        // After the fix the body is synthesized (expected=None), so the let
+        // mismatch is still reported.
+        let source = r#"fn foo() -> UnknownType { let x: i32 = "bad"; x }"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_mismatch(&output.errors),
+            "trailing-expr body mismatch must be reported even when return type \
+             is Ty::Error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_does_not_suppress_explicit_return_mismatch() {
+        // fn foo() -> UnknownType { let x: i32 = "bad"; return x; }
+        // The let-binding mismatch must be reported.
+        let source = r#"fn foo() -> UnknownType { let x: i32 = "bad"; return x; }"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_mismatch(&output.errors),
+            "body mismatch inside explicit return must be reported even when \
+             return type is Ty::Error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_does_not_suppress_receive_fn_body_mismatch() {
+        // receive fn handler() -> UnknownType { let x: i32 = "bad"; x }
+        // inside an actor; body mismatch must be reported.
+        let source = r#"
+actor MyActor {
+    var value: i32 = 0;
+    receive fn handler() -> UnknownType { let x: i32 = "bad"; x }
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_mismatch(&output.errors),
+            "body mismatch in receive fn must be reported even when return type \
+             is Ty::Error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn error_return_type_does_not_suppress_lambda_annotated_return_mismatch() {
+        // Lambda with annotated (unresolvable) return type:
+        //   let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y };
+        // The let-binding mismatch inside the lambda body must still be reported.
+        let source =
+            r#"fn foo() { let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y }; }"#;
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_mismatch(&output.errors),
+            "body mismatch in lambda annotated return must be reported even when \
+             return type is Ty::Error; got errors: {:?}",
+            output.errors
+        );
+    }
 }

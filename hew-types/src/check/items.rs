@@ -89,12 +89,24 @@ impl Checker {
         // check_block handles error reporting for the trailing expression;
         // expect_type below handles the remaining mismatch for non-trailing paths
         // (e.g. a Stmt::Expression followed by no trailing expr).
-        let actual = self.check_block(&fd.body, Some(&expected_ret));
-        self.expect_type(
-            &expected_ret,
-            &actual,
-            &(fd.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
-        );
+        //
+        // Guard: do not pre-seed with Ty::Error (e.g. from an unknown return-type
+        // annotation). Doing so would suppress diagnostics from the body because
+        // expect_type short-circuits when either side is Ty::Error.
+        let resolved_expected_ret = self.subst.resolve(&expected_ret);
+        let block_expected = if matches!(resolved_expected_ret, Ty::Error) {
+            None
+        } else {
+            Some(&expected_ret)
+        };
+        let actual = self.check_block(&fd.body, block_expected);
+        if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
+            self.expect_type(
+                &expected_ret,
+                &actual,
+                &(fd.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
+            );
+        }
 
         // ── Rc<T> call-boundary safety: warn on returning a borrowed Rc param ──
         // Under borrow-on-call semantics the callee does not own function params.
@@ -418,13 +430,22 @@ impl Checker {
         let prev_in_generator = self.in_generator;
         self.in_generator = rf.is_generator;
 
-        // Same as check_fn_decl: pass expected_ret so trailing literals coerce correctly.
-        let actual = self.check_block(&rf.body, Some(&expected_ret));
-        self.expect_type(
-            &expected_ret,
-            &actual,
-            &(rf.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
-        );
+        // Same as check_fn_decl: pass expected_ret so trailing literals coerce
+        // correctly, but guard against Ty::Error to avoid suppressing diagnostics.
+        let resolved_expected_ret = self.subst.resolve(&expected_ret);
+        let block_expected = if matches!(resolved_expected_ret, Ty::Error) {
+            None
+        } else {
+            Some(&expected_ret)
+        };
+        let actual = self.check_block(&rf.body, block_expected);
+        if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
+            self.expect_type(
+                &expected_ret,
+                &actual,
+                &(rf.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
+            );
+        }
 
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;

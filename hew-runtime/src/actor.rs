@@ -2593,9 +2593,18 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         // from a legitimate null reply deposited by the handler.
         // SAFETY: ch is still live — we release it immediately below.
         let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
+        // Belt-and-suspenders: if `retire_reply_channel` fired but the
+        // `orphaned` flag was not observable (can happen when mailbox teardown
+        // and the reply-ready break race within a single cooperative tick),
+        // fall back to checking the actor's terminal state.  An actor in
+        // Stopped/Crashed whose reply value is null did not reply legitimately.
+        // SAFETY: actor is valid for the lifetime of this call (caller guarantee).
+        let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        let is_terminal = actor_state == HewActorState::Stopped as i32
+            || actor_state == HewActorState::Crashed as i32;
         // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        if is_orphaned {
+        if is_orphaned || is_terminal {
             return actor_ask_null(AskError::OrphanedAsk);
         }
         actor_ask_clear();

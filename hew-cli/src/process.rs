@@ -53,6 +53,139 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
     }
 }
 
+/// Child process wrapper that bundles platform-specific cleanup resources
+/// required for reliable timeout termination.
+///
+/// On Unix the cleanup mechanism is `killpg(SIGKILL)` on the process group
+/// created by `setpgid(0, 0)` in the child.  On Windows a Job Object is
+/// created and the child is assigned to it immediately after spawn, so that
+/// `TerminateJobObject` can kill every process in the tree even if the root
+/// exits before the timeout fires.
+struct BoundedChild {
+    child: Child,
+    /// Windows-only: Job Object that owns the child and all its descendants.
+    /// `None` if job creation or assignment failed at spawn time.
+    #[cfg(windows)]
+    job: Option<windows_job::WindowsJob>,
+}
+
+impl BoundedChild {
+    /// Spawn a process with the appropriate process-isolation setup for this
+    /// platform and return it together with any cleanup resources.
+    #[cfg(unix)]
+    fn spawn(command: &mut Command) -> Result<Self, String> {
+        use std::os::unix::process::CommandExt;
+
+        // SAFETY: `pre_exec` runs in the child process after `fork` and before
+        // `exec`. `setpgid(0, 0)` only mutates the child's own process-group
+        // membership so timed-out executions can be terminated as a group.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+
+        let child = command
+            .spawn()
+            .map_err(|e| format!("cannot spawn child process: {e}"))?;
+        Ok(Self { child })
+    }
+
+    /// Spawn the child and immediately assign it to a new Job Object.
+    ///
+    /// The Job Object tracks the child and every process it subsequently
+    /// spawns.  `TerminateJobObject` will kill the entire job tree reliably
+    /// even if the root has already exited on its own before the timeout fires.
+    ///
+    /// If job creation or assignment fails (e.g. on Windows 7 with a parent
+    /// job that disallows nesting), `job` is set to `None` and the timeout
+    /// path falls back to `taskkill /T /F`.
+    ///
+    /// Note: there is a narrow TOCTOU window between `spawn` and `assign`
+    /// during which the child could spawn a grandchild before being added to
+    /// the job.  In practice this window is measured in microseconds (before
+    /// the child's runtime has finished initializing) and is not a concern for
+    /// compiled Hew evaluation binaries.
+    #[cfg(windows)]
+    fn spawn(command: &mut Command) -> Result<Self, String> {
+        let child = command
+            .spawn()
+            .map_err(|e| format!("cannot spawn child process: {e}"))?;
+
+        let job = windows_job::WindowsJob::new()
+            .and_then(|j| j.assign(&child).map(|()| j))
+            .ok(); // Non-fatal; timeout falls back to taskkill if None.
+
+        Ok(Self { child, job })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn spawn(command: &mut Command) -> Result<Self, String> {
+        let child = command
+            .spawn()
+            .map_err(|e| format!("cannot spawn child process: {e}"))?;
+        Ok(Self { child })
+    }
+
+    /// Kill the entire process tree and reap the root child.
+    ///
+    /// Returns `true` iff every process that could hold a pipe write-end has
+    /// been provably terminated so that drain threads can be safely joined.
+    #[cfg(unix)]
+    fn terminate_process_group(&mut self) -> Result<bool, String> {
+        let tree_killed = kill_timed_out_child(&mut self.child, TimeoutKillTarget::ProcessGroup)?;
+        self.child
+            .wait()
+            .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+        Ok(tree_killed)
+    }
+
+    /// Kill via Job Object (primary) or `taskkill /T /F` (fallback).
+    ///
+    /// The Job Object path terminates the entire tree by ownership, not by
+    /// PID lookup, so it is race-free with respect to the root child exiting.
+    /// After `TerminateJobObject` returns the kernel has already closed the
+    /// process handle tables for every process in the job, guaranteeing that
+    /// all pipe write-end handles are released before we join drain threads.
+    #[cfg(windows)]
+    fn terminate_process_group(&mut self) -> Result<bool, String> {
+        match self.job.as_ref() {
+            Some(job) => {
+                job.terminate()?;
+                // Reap the root child. It may have already exited on its own
+                // (that is the scenario where the Job Object path is essential
+                // — the root is gone but descendants may still be alive).
+                self.child
+                    .wait()
+                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+                Ok(true)
+            }
+            None => {
+                // Job assignment failed at spawn time; fall back to taskkill.
+                // Only exit 0 counts as proof of tree termination.
+                let tree_killed = windows_kill_taskkill(&mut self.child)?;
+                self.child
+                    .wait()
+                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+                Ok(tree_killed)
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn terminate_process_group(&mut self) -> Result<bool, String> {
+        kill_child_only(&mut self.child)?;
+        self.child
+            .wait()
+            .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+        Ok(false)
+    }
+}
+
 /// Execute a native binary with bounded wall-clock time.
 ///
 /// Both stdout and stderr are drained concurrently in background threads to
@@ -65,12 +198,12 @@ pub(crate) fn run_binary_with_timeout(
     let mut command = Command::new(binary);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut child = spawn_bounded_child(&mut command)?;
-    let drain = ConcurrentChildOutput::spawn(&mut child)?;
+    let mut bounded = BoundedChild::spawn(&mut command)?;
+    let drain = ConcurrentChildOutput::spawn(&mut bounded.child)?;
     let start = Instant::now();
 
     loop {
-        match child.try_wait() {
+        match bounded.child.try_wait() {
             Ok(Some(status)) => {
                 let (stdout, stderr) = drain.finish()?;
                 if status.success() {
@@ -80,8 +213,7 @@ pub(crate) fn run_binary_with_timeout(
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    let tree_killed =
-                        terminate_timed_out_child(&mut child, TimeoutKillTarget::ProcessGroup)?;
+                    let tree_killed = bounded.terminate_process_group()?;
                     drain.abandon(tree_killed);
                     return Ok(BinaryRunOutcome::Timeout);
                 }
@@ -219,35 +351,6 @@ fn terminate_timed_out_child(
     Ok(tree_killed)
 }
 
-#[cfg(unix)]
-fn spawn_bounded_child(command: &mut Command) -> Result<Child, String> {
-    use std::os::unix::process::CommandExt;
-
-    // SAFETY: `pre_exec` runs in the child process after `fork` and before
-    // `exec`. `setpgid(0, 0)` only mutates the child's own process-group
-    // membership so timed-out executions can be terminated as a group.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
-    }
-
-    command
-        .spawn()
-        .map_err(|e| format!("cannot spawn child process: {e}"))
-}
-
-#[cfg(not(unix))]
-fn spawn_bounded_child(command: &mut Command) -> Result<Child, String> {
-    command
-        .spawn()
-        .map_err(|e| format!("cannot spawn child process: {e}"))
-}
-
 fn kill_child_only(child: &mut Child) -> Result<(), String> {
     match child.kill() {
         Ok(()) => Ok(()),
@@ -363,4 +466,137 @@ fn kill_timed_out_child(
 ) -> Result<bool, String> {
     kill_child_only(child)?;
     Ok(false)
+}
+
+/// Kill the process tree rooted at `child` on Windows using `taskkill /T /F`.
+///
+/// Used as a fallback when `BoundedChild` could not assign a Job Object at
+/// spawn time (e.g. Windows 7 nested-job limit).  Returns `true` only when
+/// `taskkill` exits 0 (positively identified and terminated every process in
+/// the tree).  All other outcomes return `false` so drain threads are detached
+/// rather than joined.
+///
+/// Note: exit 128 ("PID not found") means the root exited on its own before
+/// `taskkill` ran.  Descendants may still be alive so we return `false`.
+#[cfg(windows)]
+fn windows_kill_taskkill(child: &mut Child) -> Result<bool, String> {
+    let pid = child.id();
+    match Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .status()
+    {
+        Ok(s) if s.success() => Ok(true),
+        Ok(s) => {
+            kill_child_only(child).map_err(|kill_error| {
+                format!(
+                    "taskkill exited with {s}; \
+                     fallback child kill also failed: {kill_error}"
+                )
+            })?;
+            Ok(false)
+        }
+        Err(spawn_error) => {
+            kill_child_only(child).map_err(|kill_error| {
+                format!(
+                    "cannot spawn taskkill: {spawn_error}; \
+                     fallback child kill also failed: {kill_error}"
+                )
+            })?;
+            Ok(false)
+        }
+    }
+}
+
+/// Windows Job Object RAII wrapper.
+///
+/// Creates a Job Object at spawn time and assigns the child to it so that
+/// `TerminateJobObject` can kill the entire process tree — including
+/// descendants and even when the root has already exited — without any
+/// PID-lookup race.
+#[cfg(windows)]
+mod windows_job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+
+    type HANDLE = *mut core::ffi::c_void;
+    type BOOL = i32;
+    type DWORD = u32;
+
+    const FALSE: BOOL = 0;
+
+    extern "system" {
+        fn CreateJobObjectW(
+            lp_job_attributes: *mut core::ffi::c_void,
+            lp_name: *const u16,
+        ) -> HANDLE;
+        fn AssignProcessToJobObject(h_job: HANDLE, h_process: HANDLE) -> BOOL;
+        fn TerminateJobObject(h_job: HANDLE, u_exit_code: u32) -> BOOL;
+        fn CloseHandle(h_object: HANDLE) -> BOOL;
+        fn GetLastError() -> DWORD;
+    }
+
+    pub(super) struct WindowsJob(HANDLE);
+
+    // SAFETY: The HANDLE is valid until `CloseHandle` is called in `Drop`.
+    // We never share the HANDLE across threads without synchronisation.
+    unsafe impl Send for WindowsJob {}
+    unsafe impl Sync for WindowsJob {}
+
+    impl WindowsJob {
+        /// Create an anonymous Job Object.
+        pub(super) fn new() -> Result<Self, String> {
+            // SAFETY: null attributes and null name are documented valid args.
+            let handle = unsafe { CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
+            if handle.is_null() {
+                // SAFETY: GetLastError is always safe to call.
+                let code = unsafe { GetLastError() };
+                Err(format!("CreateJobObjectW failed: error {code}"))
+            } else {
+                Ok(Self(handle))
+            }
+        }
+
+        /// Assign the child process to this Job Object.
+        ///
+        /// Must be called immediately after spawn, before the child can itself
+        /// spawn grandchildren (which would otherwise not be in the job).
+        pub(super) fn assign(&self, child: &Child) -> Result<(), String> {
+            let process_handle = child.as_raw_handle() as HANDLE;
+            // SAFETY: both handles are valid at this point.
+            let ok = unsafe { AssignProcessToJobObject(self.0, process_handle) };
+            if ok == FALSE {
+                // SAFETY: always safe.
+                let code = unsafe { GetLastError() };
+                Err(format!("AssignProcessToJobObject failed: error {code}"))
+            } else {
+                Ok(())
+            }
+        }
+
+        /// Terminate every process currently assigned to this Job Object.
+        ///
+        /// This is race-free with respect to the root process exiting: the Job
+        /// Object owns the tree by handle, not by PID.  Any process that was in
+        /// the job when it exited is still counted; its descendants remain in the
+        /// job and will be terminated here.
+        pub(super) fn terminate(&self) -> Result<(), String> {
+            // SAFETY: the handle is valid until Drop.
+            let ok = unsafe { TerminateJobObject(self.0, 1) };
+            if ok == FALSE {
+                // SAFETY: always safe.
+                let code = unsafe { GetLastError() };
+                Err(format!("TerminateJobObject failed: error {code}"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Drop for WindowsJob {
+        fn drop(&mut self) {
+            // SAFETY: self.0 is a valid handle obtained from CreateJobObjectW,
+            // and Drop is called at most once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }

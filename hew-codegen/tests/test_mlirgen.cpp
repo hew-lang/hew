@@ -3234,6 +3234,37 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: resultful match arms thread direct constructor hints locally
+// ============================================================================
+static void test_match_arm_direct_none_uses_match_result_type_hint() {
+  TEST(match_arm_direct_none_uses_match_result_type_hint);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let input: Option<int> = None;
+    let output = match input {
+        Some(v) => Some(v),
+        None => None,
+    };
+    match output {
+        Some(v) => v,
+        None => 0,
+    }
+}
+  )");
+
+  if (!module) {
+    FAIL("expected resultful match arm None to use the match result type hint");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Discarded if-expressions zero-init user-drop struct branch temporaries
 // ============================================================================
 static void test_discarded_if_expr_user_drop_branch_temp_zero_init() {
@@ -8639,6 +8670,7 @@ int main() {
   test_direct_constructor_type_hints_lower_builtins();
   test_nested_none_does_not_inherit_outer_constructor_hints();
   test_none_without_type_context_fails_closed();
+  test_match_arm_direct_none_uses_match_result_type_hint();
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();

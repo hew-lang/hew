@@ -3596,7 +3596,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // MLIRGen-local tracked stream metadata when bytes-vs-string ABI selection
   // would otherwise depend on missing resolvedTypeOf entries.
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType)) {
-    auto streamInfo = resolveStreamHandleInfo(mc.receiver->value, &mc.receiver->span);
+    auto streamInfo = resolveStreamHandleInfo(mc.receiver->value);
     bool isStream = streamInfo && streamInfo->kind == "Stream";
     if (isStream) {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);

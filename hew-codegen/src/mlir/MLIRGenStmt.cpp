@@ -773,7 +773,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         rememberTrackedStreamHandleInfo(varName, *streamInfo);
     }
     if (stmt.value) {
-      if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value, &stmt.value->span))
+      if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value))
         rememberTrackedStreamHandleInfo(varName, *streamInfo);
     }
     // Track MPSC channel handle variables so the codegen uses ptr not struct.
@@ -900,7 +900,7 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
       rememberTrackedStreamHandleInfo(varNameStr, *streamInfo);
   }
   if (stmt.value) {
-    if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value, &stmt.value->span))
+    if (auto streamInfo = resolveStreamHandleInfo(stmt.value->value))
       rememberTrackedStreamHandleInfo(varNameStr, *streamInfo);
   }
 
@@ -922,7 +922,7 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
   {
     auto *streamInfo = lookupTrackedStreamHandleInfo(varName);
     if (!streamInfo && stmtValue && *stmtValue) {
-      if (auto inferredInfo = resolveStreamHandleInfo((*stmtValue)->value, &(*stmtValue)->span)) {
+      if (auto inferredInfo = resolveStreamHandleInfo((*stmtValue)->value)) {
         rememberTrackedStreamHandleInfo(varName, *inferredInfo);
         streamInfo = lookupTrackedStreamHandleInfo(varName);
       }
@@ -2127,7 +2127,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   // "bytes" → hew_stream_next_bytes / hew_vec_free
   // anything else (default) → hew_stream_next / hew_string_drop
   bool isBytesStream = false;
-  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value, &stmt.iterable.span))
+  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value))
     isBytesStream = streamInfo->isBytesStream();
 
   std::string nextFn = isBytesStream ? "hew_stream_next_bytes" : "hew_stream_next";
@@ -2542,7 +2542,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   // or known stream-producing/chaining expressions. Method calls only count
   // here when the receiver is already a stream; actor receive-gen methods
   // intentionally fall through to the mailbox path below.
-  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value, &stmt.iterable.span)) {
+  if (auto streamInfo = resolveStreamHandleInfo(stmt.iterable.value)) {
     if (streamInfo->kind == "Stream") {
       generateForStreamStmt(stmt);
       return;

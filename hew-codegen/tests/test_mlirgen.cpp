@@ -4710,8 +4710,84 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: direct TypeInfer in function signature fails closed at convertType
+// Test: bytes-stream ABI selected via explicit known-call name only (no expr_types)
+// Proves the fail-closed contract: after removing resolvedTypeOf from
+// resolveStreamHandleInfo, ABI selection relies solely on tracked bindings and
+// the known-call-name table — not on incidental type-map lookups.
+// Tests the direct iteration path (no intermediate method chain or alias).
 // ============================================================================
+static void test_for_await_bytes_stream_known_call_name_abi_no_expr_types() {
+  TEST(for_await_bytes_stream_known_call_name_abi_no_expr_types);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::stream;
+
+fn main() -> int {
+    let (sink, input) = stream.bytes_pipe(8);
+    for await item in input {
+        return item.len();
+    }
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load bytes-stream known-call-name test program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  auto *forStmt = fn ? findFirstForStmt(*fn) : nullptr;
+  if (!fn || !forStmt) {
+    FAIL("main or for-await statement missing in direct bytes-stream binding test");
+    return;
+  }
+
+  // Erase only the iterable's expr_types entry so that resolvedTypeOf cannot
+  // supply stream kind/element info for the for-await target. The bytes ABI
+  // must come exclusively from the tracked binding recorded when the
+  // bytes_pipe tuple was destructured — exercising the fail-closed path.
+  if (!eraseExprTypeEntryForSpan(program, forStmt->iterable.span)) {
+    FAIL("failed to remove expr_types entry for for-await iterable");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+  if (!module) {
+    FAIL("expected MLIR generation success with direct bytes-stream binding (no expr_types)");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found in known-call-name bytes ABI test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next_bytes") != 1) {
+    FAIL("expected hew_stream_next_bytes for direct bytes-stream binding iteration");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_next") != 0) {
+    FAIL("unexpected hew_stream_next (string ABI) for bytes-stream binding");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countDropOpsByDropFn(mainFn.getOperation(), "hew_vec_free", false) < 1) {
+    FAIL("expected hew_vec_free drop for bytes-stream iteration element");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
 static void test_function_signature_type_infer_fails_closed() {
   TEST(function_signature_type_infer_fails_closed);
 
@@ -8347,6 +8423,7 @@ int main() {
   test_for_await_bytes_stream_binding_fallback_uses_bytes_abi();
   test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type();
   test_for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi();
+  test_for_await_bytes_stream_known_call_name_abi_no_expr_types();
   test_function_signature_type_infer_fails_closed();
   test_return_stmt();
   test_logical_ops();

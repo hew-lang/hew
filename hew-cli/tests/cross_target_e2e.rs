@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use object::{Architecture, BinaryFormat, Object};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs as unix_fs;
+#[cfg(target_os = "macos")]
 use support::require_codegen;
 
 fn repo_root() -> &'static Path {

@@ -92,10 +92,12 @@ impl Drop for InboundAskGuard {
 // Ask-error discriminant
 // ---------------------------------------------------------------------------
 
-/// Typed failure reason for a remote ask.
+/// Typed failure reason for an ask (local or remote).
 ///
-/// Written to a thread-local slot whenever `hew_node_api_ask` returns `NULL`.
-/// Callers retrieve the discriminant via [`hew_node_ask_take_last_error`].
+/// Written to a thread-local slot whenever `hew_node_api_ask` or
+/// `hew_actor_ask` / `hew_actor_ask_timeout` returns `NULL`.
+/// Remote callers retrieve the discriminant via [`hew_node_ask_take_last_error`].
+/// Local callers retrieve it via `hew_actor_ask_take_last_error`.
 ///
 /// Values are stable across releases; do not reorder or reuse.
 #[repr(i32)]
@@ -123,6 +125,31 @@ pub enum AskError {
     /// brief back-off. This is distinct from [`ConnectionDropped`]: the
     /// connection is healthy, but the remote end shed load deliberately.
     WorkerAtCapacity = 8,
+    /// The target actor was stopped, or the mailbox rejected the send
+    /// (e.g. actor not found, mailbox closed, or `ErrClosed` in WASM).
+    ActorStopped = 9,
+    /// The target actor's mailbox was full and the message was dropped.
+    ///
+    /// Only raised when the mailbox overflow policy is `DropNew` or `Fail`.
+    MailboxFull = 10,
+    /// The ask was orphaned: the actor's mailbox was torn down before the
+    /// handler called `hew_reply`.
+    ///
+    /// This happens when an actor stops mid-dispatch without replying (e.g.
+    /// a crash or explicit stop inside the dispatch function).  The reply
+    /// channel's sender-side reference is retired by the mailbox teardown
+    /// path, which signals the waiter with an empty null payload.
+    ///
+    /// DROP-SAFETY: the orphaned flag is set on the reply channel before the
+    /// null sentinel is published, so the waiter always observes it correctly.
+    OrphanedAsk = 11,
+    /// WASM cooperative ask only: no runnable work remains in the scheduler,
+    /// so the ask loop cannot make further progress before returning control
+    /// to the host.
+    ///
+    /// This is distinct from [`Timeout`]: the deadline has not necessarily
+    /// expired, but the scheduler is idle and cannot advance the ask.
+    NoRunnableWork = 12,
 }
 
 thread_local! {
@@ -146,12 +173,12 @@ fn ask_null(err: AskError) -> *mut c_void {
 /// intervening failed ask return 0.
 ///
 /// This function is intended for use immediately after `hew_node_api_ask`
-/// returns `NULL` to distinguish the failure reason.
+/// returns `NULL` to distinguish the failure reason.  For direct local asks
+/// via `hew_actor_ask` / `hew_actor_ask_timeout`, use
+/// `hew_actor_ask_take_last_error` instead.
 ///
-/// # WASM-TODO
-/// WASM uses cooperative local ask/reply only — there is no network path, so
-/// WASM ask failures (actor stopped, mailbox full) are not reported through
-/// this slot.  A parallel mechanism for WASM ask-error reporting is deferred.
+/// When the local delegation path in `hew_node_api_ask` is taken, actor-level
+/// errors are bridged into this slot automatically.
 #[no_mangle]
 pub extern "C" fn hew_node_ask_take_last_error() -> i32 {
     LAST_ASK_ERROR.with(|cell| {
@@ -1824,7 +1851,15 @@ pub unsafe extern "C" fn hew_node_api_ask(
     // Local path: delegate to the by-ID ask (which packs a reply channel).
     if target_node_id == 0 || target_node_id == local_node_id {
         // SAFETY: data/size are caller-validated; local actor ask is safe here.
-        return unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        let result = unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        if result.is_null() {
+            // Bridge the actor-level error discriminant into the node error slot
+            // so callers of hew_node_api_ask see a consistent error regardless
+            // of whether the ask went local or remote.
+            let local_err = crate::actor::actor_ask_take_last_error_raw();
+            LAST_ASK_ERROR.with(|c| c.set(local_err));
+        }
+        return result;
     }
 
     // Remote path: send message over mesh with request_id, wait for reply.

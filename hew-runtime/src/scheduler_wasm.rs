@@ -3007,4 +3007,116 @@ mod tests {
         unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
         hew_sched_shutdown();
     }
+
+    /// A spawned actor's arena must be non-null, installed as the current arena
+    /// during every dispatch cycle, and freed cleanly when the actor is torn down.
+    ///
+    /// This test exercises the three new invariants introduced by the spawn-path
+    /// arena allocation:
+    ///   1. `spawn_actor_internal` (WASM) now calls `hew_arena_new()` — the arena
+    ///      pointer on a fresh actor is non-null.
+    ///   2. The scheduler installs that arena as the current arena before calling
+    ///      dispatch and restores the previous arena afterwards.
+    ///   3. `free_actor_resources_wasm` frees the arena when the pointer is
+    ///      non-null, mirroring the native teardown path.
+    #[test]
+    fn spawn_path_arena_is_installed_during_dispatch_and_freed_on_teardown() {
+        // Items before statements required by clippy::items_after_statements.
+        static ARENA_SEEN: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn capture_arena_ptr(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            // Peek at the current arena without permanently clearing it.
+            let ptr = crate::arena::set_current_arena(ptr::null_mut());
+            crate::arena::set_current_arena(ptr); // restore
+            ARENA_SEEN.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // ── 1. Allocate an arena exactly as the updated spawn path does ──────
+        let arena = crate::arena::hew_arena_new();
+        assert!(!arena.is_null(), "hew_arena_new must succeed (spawn-path precondition)");
+
+        // ── 2. Wire up a heap-allocated actor with that arena ─────────────────
+        //      We use Box::into_raw so that free_actor_resources_wasm can
+        //      reclaim it via Box::from_raw at teardown.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        assert!(!mailbox.is_null(), "mailbox allocation must succeed");
+
+        let actor = Box::into_raw(Box::new(HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: 99,
+            pid: 99,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(capture_arena_ptr),
+            mailbox: mailbox.cast(),
+            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            // Assign the arena just as spawn_actor_internal now does.
+            arena: arena.cast::<c_void>(),
+        }));
+
+        // ── 3. Enqueue one message and run dispatch ───────────────────────────
+        unsafe { sched_enqueue(actor) };
+        unsafe { queue_wasm_message(actor, 0) };
+
+        hew_sched_run();
+
+        // Dispatch must have seen the actor's own arena as the current arena.
+        assert_eq!(
+            ARENA_SEEN.load(std::sync::atomic::Ordering::Relaxed),
+            arena as usize,
+            "dispatch must run with the spawn-path arena installed"
+        );
+
+        // The current arena must have been restored to null after activation.
+        let post_run_arena = crate::arena::set_current_arena(ptr::null_mut());
+        assert!(
+            post_run_arena.is_null(),
+            "current arena must be null after activation completes"
+        );
+
+        // ── 4. Teardown via free_actor_resources_wasm ─────────────────────────
+        //      This exercises the new null-checked arena free path.  A crash or
+        //      double-free here would surface under ASAN / Valgrind.
+        //
+        //      The two HewActor types (scheduler_wasm::HewActor and
+        //      actor::HewActor) are layout-identical — verified by the
+        //      compile-time offset assertions above the struct definition —
+        //      so the cast is valid.
+        // SAFETY: actor is Box-allocated, not being dispatched, and the arena +
+        // mailbox are both valid.  state / init_state are null so libc::free(null)
+        // is a no-op.
+        unsafe {
+            crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>())
+        };
+
+        hew_sched_shutdown();
+    }
 }

@@ -110,17 +110,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       // Built-in None: construct Option { tag=0 }
       if (name == "None" && enumName == "__Option") {
         auto location = currentLoc;
-        mlir::Type optionType;
-        if (pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
-          optionType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
-                 llvm::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
-          optionType = currentFunction.getResultTypes()[0];
-        else if (auto *resolvedType = resolvedTypeOf(expr.span)) {
-          auto converted = convertType(*resolvedType);
-          if (converted && mlir::isa<hew::OptionEnumType>(converted))
-            optionType = converted;
-        }
+        mlir::Type optionType = resolveOptionConstructorType(typeHint, expr.span);
         if (!optionType) {
           ++errorCount_;
           emitError(location)
@@ -200,7 +190,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
   if (auto *un = std::get_if<ast::ExprUnary>(&expr.kind))
     return generateUnaryExpr(*un);
   if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
-    return generateCallExpr(*call, expr.span);
+    return generateCallExpr(*call, expr.span, typeHint);
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
@@ -1434,7 +1424,40 @@ mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
   return ifOp.getResult(0);
 }
 
-mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span &exprSpan) {
+mlir::Type MLIRGen::resolveOptionConstructorType(std::optional<mlir::Type> typeHint,
+                                                 const ast::Span &exprSpan) {
+  if (typeHint && *typeHint && mlir::isa<hew::OptionEnumType>(*typeHint))
+    return *typeHint;
+  if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+      mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0])) {
+    return currentFunction.getResultTypes()[0];
+  }
+  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    auto converted = convertType(*resolvedType);
+    if (converted && mlir::isa<hew::OptionEnumType>(converted))
+      return converted;
+  }
+  return {};
+}
+
+mlir::Type MLIRGen::resolveResultConstructorType(std::optional<mlir::Type> typeHint,
+                                                 const ast::Span &exprSpan) {
+  if (typeHint && *typeHint && mlir::isa<hew::ResultEnumType>(*typeHint))
+    return *typeHint;
+  if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
+      mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0])) {
+    return currentFunction.getResultTypes()[0];
+  }
+  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    auto converted = convertType(*resolvedType);
+    if (converted && mlir::isa<hew::ResultEnumType>(converted))
+      return converted;
+  }
+  return {};
+}
+
+mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span &exprSpan,
+                                      std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
   // Check if the callee is a simple identifier (direct call)
@@ -1853,11 +1876,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                    "Node::lookup",
                                                    "to_float"};
     if (builtinNames.contains(calleeName)) {
-      // Capture and clear before delegating so the hint cannot leak into
-      // sibling subexpressions evaluated inside generateBuiltinCall.
-      mlir::Type typeHint = pendingDeclaredType.value_or(mlir::Type{});
-      pendingDeclaredType.reset();
-      return generateBuiltinCall(calleeName, call.args, location, typeHint);
+      return generateBuiltinCall(calleeName, call.args, location, typeHint.value_or(mlir::Type{}));
     }
   }
 
@@ -1877,20 +1896,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
         if (!argVal)
           return nullptr;
-        mlir::Type optType;
-        if (pendingDeclaredType && mlir::isa<hew::OptionEnumType>(*pendingDeclaredType))
-          optType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
-                 mlir::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
-          optType = currentFunction.getResultTypes()[0];
-        // Fall back to checker-resolved expr type for statement-position composites.
-        if (!optType) {
-          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-            auto converted = convertType(*resolvedType);
-            if (converted && mlir::isa<hew::OptionEnumType>(converted))
-              optType = converted;
-          }
-        }
+        mlir::Type optType = resolveOptionConstructorType(typeHint, exprSpan);
         if (!optType)
           optType = hew::OptionEnumType::get(&context, argVal.getType());
         if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
@@ -1915,24 +1921,12 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
         if (!argVal)
           return nullptr;
-        mlir::Type resultType;
-        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
-          resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
-                 mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
-          resultType = currentFunction.getResultTypes()[0];
         // Fall back to the checker-resolved expr type (covers statement-position
         // composites like `Ok(Some(7))` where no declaration context is present).
         // This path is checked after context types because convertType of an
         // unqualified handle name (e.g. "Value" from a module scope) produces
         // the LLVM struct representation rather than the hew.handle form.
-        if (!resultType) {
-          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-            auto converted = convertType(*resolvedType);
-            if (converted && mlir::isa<hew::ResultEnumType>(converted))
-              resultType = converted;
-          }
-        }
+        mlir::Type resultType = resolveResultConstructorType(typeHint, exprSpan);
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
@@ -1958,19 +1952,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
         if (!argVal)
           return nullptr;
-        mlir::Type resultType;
-        if (pendingDeclaredType && mlir::isa<hew::ResultEnumType>(*pendingDeclaredType))
-          resultType = *pendingDeclaredType;
-        else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
-                 mlir::isa<hew::ResultEnumType>(currentFunction.getResultTypes()[0]))
-          resultType = currentFunction.getResultTypes()[0];
-        if (!resultType) {
-          if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-            auto converted = convertType(*resolvedType);
-            if (converted && mlir::isa<hew::ResultEnumType>(converted))
-              resultType = converted;
-          }
-        }
+        mlir::Type resultType = resolveResultConstructorType(typeHint, exprSpan);
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }
@@ -5011,7 +4993,6 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
     // Empty array literal: coerce to Vec<T> if type context expects it
     if (typeHint && mlir::isa<hew::VecType>(*typeHint)) {
       auto vecType = mlir::cast<hew::VecType>(*typeHint);
-      pendingDeclaredType.reset();
       return hew::VecNewOp::create(builder, location, vecType).getResult();
     }
     emitError(location) << "empty array literal without type context";
@@ -5025,7 +5006,6 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
   if (typeHint && mlir::isa<hew::VecType>(*typeHint)) {
     auto vecType = mlir::cast<hew::VecType>(*typeHint);
     auto targetElemType = vecType.getElementType();
-    pendingDeclaredType.reset();
     auto vec = hew::VecNewOp::create(builder, location, vecType).getResult();
     for (const auto &elem : arr.elements) {
       auto val = generateExpression(elem->value);
@@ -5095,7 +5075,6 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
   auto hashMapType = mlir::cast<hew::HashMapType>(hmType);
   auto keyType = hashMapType.getKeyType();
   auto valueType = hashMapType.getValueType();
-  pendingDeclaredType.reset();
 
   // Create empty HashMap
   auto mapValue = hew::HashMapNewOp::create(builder, location, hmType).getResult();

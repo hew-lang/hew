@@ -603,16 +603,18 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   // Err) can emit correctly typed results.
   // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is
   // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
-  if (stmt.ty)
-    pendingDeclaredType = convertType(stmt.ty->value);
-  std::optional<mlir::Type> typeHint = pendingDeclaredType;
+  std::optional<mlir::Type> typeHint;
+  if (stmt.ty) {
+    auto declaredTypeHint = convertType(stmt.ty->value);
+    if (declaredTypeHint)
+      typeHint = declaredTypeHint;
+  }
 
   mlir::Value value = nullptr;
   lastScopeLaunchResultType.reset();
   if (stmt.value) {
     value = generateExpression(stmt.value->value, typeHint);
   }
-  pendingDeclaredType.reset();
   if (!value)
     return;
 
@@ -850,9 +852,12 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   // Set the declared type so constructors can emit correctly typed results.
   // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is
   // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
-  if (stmt.ty)
-    pendingDeclaredType = convertType(stmt.ty->value);
-  std::optional<mlir::Type> typeHint = pendingDeclaredType;
+  std::optional<mlir::Type> typeHint;
+  if (stmt.ty) {
+    auto declaredTypeHint = convertType(stmt.ty->value);
+    if (declaredTypeHint)
+      typeHint = declaredTypeHint;
+  }
 
   // Determine the type
   mlir::Type varType;
@@ -860,12 +865,9 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.value) {
     initValue = generateExpression(stmt.value->value, typeHint);
-    pendingDeclaredType.reset();
     if (!initValue)
       return;
     varType = initValue.getType();
-  } else {
-    pendingDeclaredType.reset();
   }
 
   if (stmt.ty) {

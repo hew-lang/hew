@@ -2966,36 +2966,13 @@ fn main() -> int {
 }
   )");
 
-  if (!module) {
-    FAIL("MLIR generation failed");
-    return;
-  }
-
-  auto mainFn = lookupFuncBySuffix(module, "main");
-  if (!mainFn) {
-    FAIL("collection builtin hint leakage test function not found");
+  if (module) {
+    FAIL("expected non-direct Vec::new inside choose(...) to fail closed without leaking outer "
+         "hints");
     module.getOperation()->destroy();
     return;
   }
 
-  int vecNewCount = 0;
-  int arrayCreateCount = 0;
-  mainFn.walk([&](hew::VecNewOp) { vecNewCount++; });
-  mainFn.walk([&](hew::ArrayCreateOp) { arrayCreateCount++; });
-
-  if (vecNewCount != 1) {
-    FAIL("expected only Vec::new to lower as VecNewOp");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (arrayCreateCount != 1) {
-    FAIL("expected sibling array literal to lower as ArrayCreateOp");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  module.getOperation()->destroy();
   PASS();
 }
 
@@ -3082,6 +3059,173 @@ fn main() -> int {
 
   if (module) {
     FAIL("expected nested Vec::new without a local hint to fail closed");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: direct constructor hints lower builtin constructors without side-channel state
+// ============================================================================
+static void test_direct_constructor_type_hints_lower_builtins() {
+  TEST(direct_constructor_type_hints_lower_builtins);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let none_direct: Option<u32> = None;
+    let some_direct: Option<u32> = Some(1);
+    var ok_direct: Result<u32, int> = Ok(2);
+    var err_direct: Result<u32, int> = Err(3);
+    let vec: Vec<int> = Vec::new();
+    let map: HashMap<String, int> = HashMap::new();
+    let set: HashSet<String> = HashSet::new();
+    vec.len() + map.len() + set.len()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("direct constructor hint test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int vecNewCount = 0;
+  bool vecNewIsI64 = false;
+  int hashMapNewCount = 0;
+  bool hashMapIsStringToI64 = false;
+  int optionNoneU32Count = 0;
+  bool someTypeIsOptionU32 = false;
+  bool okTypeIsU32I64 = false;
+  bool errTypeIsU32I64 = false;
+
+  mainFn.walk([&](hew::VecNewOp op) {
+    vecNewCount++;
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(op.getType()))
+      vecNewIsI64 |= vecType.getElementType().isInteger(64);
+  });
+  mainFn.walk([&](hew::HashMapNewOp op) {
+    hashMapNewCount++;
+    if (auto mapType = mlir::dyn_cast<hew::HashMapType>(op.getType())) {
+      hashMapIsStringToI64 |= mlir::isa<hew::StringRefType>(mapType.getKeyType()) &&
+                              mapType.getValueType().isInteger(64);
+    }
+  });
+  mainFn.walk([&](hew::EnumConstructOp op) {
+    if (op.getEnumName() == "Option" && op.getVariantIndex() == 0) {
+      if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(op.getType()))
+        optionNoneU32Count += optionType.getInnerType().isInteger(32);
+      return;
+    }
+    if (op.getEnumName() == "Option" && op.getVariantIndex() == 1) {
+      if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(op.getType()))
+        someTypeIsOptionU32 |= optionType.getInnerType().isInteger(32);
+      return;
+    }
+    if (op.getEnumName() != "__Result")
+      return;
+    if (auto resultType = mlir::dyn_cast<hew::ResultEnumType>(op.getType())) {
+      bool isU32I64Pair =
+          resultType.getOkType().isInteger(32) && resultType.getErrType().isInteger(64);
+      if (op.getVariantIndex() == 0)
+        okTypeIsU32I64 |= isU32I64Pair;
+      else if (op.getVariantIndex() == 1)
+        errTypeIsU32I64 |= isU32I64Pair;
+    }
+  });
+
+  if (vecNewCount != 1 || !vecNewIsI64) {
+    FAIL("expected direct Vec::new hint to lower exactly one Vec<i64>");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (hashMapNewCount != 1 || !hashMapIsStringToI64) {
+    FAIL("expected direct HashMap::new hint to lower exactly one HashMap<String, i64>");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn, "hew_hashset_new") != 1) {
+    FAIL("expected direct HashSet::new hint to lower through hew_hashset_new exactly once");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (optionNoneU32Count != 1) {
+    FAIL("expected direct None hint to lower as Option<u32>");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!someTypeIsOptionU32) {
+    FAIL("expected direct Some hint to lower as Option<u32>");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!okTypeIsU32I64 || !errTypeIsU32I64) {
+    FAIL("expected direct Ok/Err hints to preserve Result<u32, i64> types");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: nested None does not inherit outer constructor hints
+// ============================================================================
+static void test_nested_none_does_not_inherit_outer_constructor_hints() {
+  TEST(nested_none_does_not_inherit_outer_constructor_hints);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let nested_option: Option<Option<int>> = Some(None);
+    var nested_ok: Result<Option<int>, Option<int>> = Ok(None);
+    var nested_err: Result<Option<int>, Option<int>> = Err(None);
+    0
+}
+  )");
+
+  if (module) {
+    FAIL("expected nested None constructors without a local hint to fail closed");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: None without a direct or resolved type hint fails closed
+// ============================================================================
+static void test_none_without_type_context_fails_closed() {
+  TEST(none_without_type_context_fails_closed);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    None;
+    0
+}
+  )");
+
+  if (module) {
+    FAIL("expected bare None without type context to fail closed");
     module.getOperation()->destroy();
     return;
   }
@@ -8492,6 +8636,9 @@ int main() {
   test_collection_builtin_hint_does_not_leak_to_sibling_literals();
   test_declared_collection_hints_lower_array_and_empty_hashmap_literals();
   test_nested_vec_new_does_not_capture_outer_array_hint();
+  test_direct_constructor_type_hints_lower_builtins();
+  test_nested_none_does_not_inherit_outer_constructor_hints();
+  test_none_without_type_context_fails_closed();
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
   test_arithmetic();
   test_comparisons();

@@ -47,7 +47,7 @@ using namespace mlir;
 // Expression generation
 // ============================================================================
 
-mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
+mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mlir::Type> typeHint) {
   currentLoc = loc(expr.span);
 
   // Return pre-computed value for hoisted loop-invariant sub-expressions.
@@ -204,12 +204,11 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
-    // Empty block {} coerces to HashMap when pendingDeclaredType expects it
-    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr && pendingDeclaredType &&
-        mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
-      auto hmType = *pendingDeclaredType;
-      pendingDeclaredType.reset();
-      return hew::HashMapNewOp::create(builder, currentLoc, hmType).getResult();
+    // Empty block {} coerces to HashMap when the surrounding expression carries
+    // an explicit collection hint.
+    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr && typeHint &&
+        mlir::isa<hew::HashMapType>(*typeHint)) {
+      return hew::HashMapNewOp::create(builder, currentLoc, *typeHint).getResult();
     }
     auto blockResult = generateBlockExpr(blockExpr->block);
     if (!blockResult)
@@ -258,9 +257,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *tup = std::get_if<ast::ExprTuple>(&expr.kind))
     return generateTupleExpr(*tup);
   if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind))
-    return generateArrayExpr(*arr);
+    return generateArrayExpr(*arr, typeHint);
   if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind))
-    return generateMapLiteralExpr(*mapLit, expr.span);
+    return generateMapLiteralExpr(*mapLit, expr.span, typeHint);
   if (auto *lam = std::get_if<ast::ExprLambda>(&expr.kind))
     return generateLambdaExpr(*lam);
   if (auto *interp = std::get_if<ast::ExprInterpolatedString>(&expr.kind))
@@ -4973,13 +4972,14 @@ mlir::Value MLIRGen::generateTupleExpr(const ast::ExprTuple &tup) {
 // Array expression
 // ============================================================================
 
-mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
+mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
+                                       std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
   if (arr.elements.empty()) {
     // Empty array literal: coerce to Vec<T> if type context expects it
-    if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
-      auto vecType = mlir::cast<hew::VecType>(*pendingDeclaredType);
+    if (typeHint && mlir::isa<hew::VecType>(*typeHint)) {
+      auto vecType = mlir::cast<hew::VecType>(*typeHint);
       pendingDeclaredType.reset();
       return hew::VecNewOp::create(builder, location, vecType).getResult();
     }
@@ -4991,10 +4991,10 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   // element to the Vec's element type.  This avoids creating an intermediate
   // [T; N] array whose element type is inferred from the first value — which
   // fails for enum variants that may have different MLIR representations.
-  if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
-    auto vecType = mlir::cast<hew::VecType>(*pendingDeclaredType);
-    pendingDeclaredType.reset();
+  if (typeHint && mlir::isa<hew::VecType>(*typeHint)) {
+    auto vecType = mlir::cast<hew::VecType>(*typeHint);
     auto targetElemType = vecType.getElementType();
+    pendingDeclaredType.reset();
     auto vec = hew::VecNewOp::create(builder, location, vecType).getResult();
     for (const auto &elem : arr.elements) {
       auto val = generateExpression(elem->value);
@@ -5038,15 +5038,15 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
 // ============================================================================
 
 mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
-                                            const ast::Span &exprSpan) {
+                                            const ast::Span &exprSpan,
+                                            std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
-  // Determine HashMap type: prefer pendingDeclaredType (from let/var annotation),
+  // Determine HashMap type: prefer the explicit surrounding type hint,
   // fall back to the type inferred by the type checker (from expression type map).
   mlir::Type hmType;
-  if (pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
-    hmType = *pendingDeclaredType;
-    pendingDeclaredType.reset();
+  if (typeHint && mlir::isa<hew::HashMapType>(*typeHint)) {
+    hmType = *typeHint;
   } else if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
     auto resolvedMlirType = convertType(*resolvedType);
     if (mlir::isa<hew::HashMapType>(resolvedMlirType)) {
@@ -5064,6 +5064,7 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
   auto hashMapType = mlir::cast<hew::HashMapType>(hmType);
   auto keyType = hashMapType.getKeyType();
   auto valueType = hashMapType.getValueType();
+  pendingDeclaredType.reset();
 
   // Create empty HashMap
   auto mapValue = hew::HashMapNewOp::create(builder, location, hmType).getResult();

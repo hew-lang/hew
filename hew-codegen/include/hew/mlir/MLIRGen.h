@@ -249,7 +249,8 @@ private:
   mlir::Value generateDiscardedExpr(const ast::Spanned<ast::Expr> &expr);
 
   // ── Expressions ──────────────────────────────────────────────────
-  mlir::Value generateExpression(const ast::Expr &expr);
+  mlir::Value generateExpression(const ast::Expr &expr,
+                                 std::optional<mlir::Type> typeHint = std::nullopt);
   mlir::Value generateLiteral(const ast::Literal &lit, const ast::Span &span);
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
@@ -274,8 +275,10 @@ private:
   mlir::Value generateLogCall(const ast::ExprMethodCall &mc);
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
   mlir::Value generateTupleExpr(const ast::ExprTuple &expr);
-  mlir::Value generateArrayExpr(const ast::ExprArray &expr);
-  mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan);
+  mlir::Value generateArrayExpr(const ast::ExprArray &expr,
+                                std::optional<mlir::Type> typeHint = std::nullopt);
+  mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan,
+                                     std::optional<mlir::Type> typeHint = std::nullopt);
   mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
   mlir::Value generateScopeExpr(const ast::ExprScope &expr, bool statementPosition = false);

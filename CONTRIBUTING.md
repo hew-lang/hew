@@ -27,7 +27,7 @@ Key boundary checks most contributors encounter:
 
 - **`serializer-fail-closed` (P0):** Any Rust-to-C++ or wire boundary must hard-error on unsupported shapes — never silently omit.
 - **`checker-output-boundary` (P0):** Reject unresolved `Ty::Var` and missing checker metadata at `check_program` output. Serialize/codegen should consume checker-authoritative types instead of reconstructing them from AST fallbacks.
-- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs both a native and a WASM implementation, or an explicit `// WASM-TODO:` comment plus a PR note.
+- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs both a native and a WASM implementation, or an explicit `// WASM-TODO:` comment plus a PR note.  See [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the authoritative Tier 1 / Tier 2 feature table and disposition of each unsupported feature.
 - **`test-runner-trust` (P1):** Changes to discovery, reporting, or timeout in `hew test` must keep the runner fail-closed on parse errors and preserve stable ordering.
 
 ## What to Work On
@@ -114,6 +114,7 @@ New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execu
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.
 - Register new E2E tests in `CMakeLists.txt` with both `add_e2e_test` and `add_wasm_file_test` where applicable.
+- Consult [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the canonical Tier 1 / Tier 2 split and the current disposition (pass / warn / reject) for each feature.  The checker enforces these dispositions automatically when `--target=wasm32-wasi` is used.
 
 ## License
 

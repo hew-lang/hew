@@ -9227,3 +9227,257 @@ actor MyActor {
         );
     }
 }
+
+// ── WASM compile-time reject tests ──────────────────────────────────────────
+//
+// These tests verify that `Channels`, `Timers`, and `Streams` features are
+// rejected as compile-time errors (not warnings) when the WASM target is
+// enabled.  The reject path is exercised by setting `checker.enable_wasm_target()`
+// before calling `check_program`.
+//
+// Coverage:
+//  - channel.new → Channels error
+//  - Sender<T>::send → Channels error
+//  - Receiver<T>::recv → Channels error
+//  - sleep_ms → Timers error
+//  - sleep → Timers error
+//  - Stream<T>::next → Streams error
+//  - stream.* module constructor call → Streams error
+//  - Non-wasm target: none of the above fire
+mod wasm_rejects {
+    use super::*;
+
+    /// Parse `source`, enable the WASM target, run the type checker, and
+    /// return the resulting output.
+    fn check_wasm(source: &str) -> TypeCheckOutput {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors in wasm_rejects test: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker.check_program(&result.program)
+    }
+
+    /// Parse `source` without the WASM target and return the output.
+    fn check_native(source: &str) -> TypeCheckOutput {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors in wasm_rejects test (native): {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&result.program)
+    }
+
+    fn has_platform_limitation_error(output: &TypeCheckOutput) -> bool {
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::PlatformLimitation)
+    }
+
+    fn platform_error_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(fragment))
+    }
+
+    // ── sleep_ms ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn wasm_rejects_sleep_ms() {
+        let output = check_wasm("fn main() { sleep_ms(100); }");
+        assert!(
+            has_platform_limitation_error(&output),
+            "sleep_ms should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Timer"),
+            "error message should mention Timer feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_sleep() {
+        let output = check_wasm("fn main() { sleep(1); }");
+        assert!(
+            has_platform_limitation_error(&output),
+            "sleep should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_sleep_ms_no_platform_error() {
+        let output = check_native("fn main() { sleep_ms(100); }");
+        assert!(
+            !has_platform_limitation_error(&output),
+            "sleep_ms should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── channel.new ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn wasm_rejects_channel_new() {
+        // `channel.new` is a module-qualified call; the checker resolves it
+        // when the `channel` module is imported and registered in fn_sigs.
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let pair = channel.new(0);\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_platform_limitation_error(&output),
+            "channel.new should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Channel"),
+            "error message should mention Channel feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_channel_new_no_platform_error() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let pair = channel.new(0);\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "channel.new should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Stream<T> methods ────────────────────────────────────────────────────
+
+    #[test]
+    fn wasm_rejects_stream_method() {
+        // Use a function that accepts a Stream<String> and calls .next().
+        // The stream module must be imported to register Stream types.
+        let source = concat!(
+            "import std::stream;\n",
+            "fn consume(s: stream.Stream<string>) -> string {\n",
+            "    s.next()\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_platform_limitation_error(&output),
+            "Stream<T>::next should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Stream"),
+            "error message should mention Stream feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_stream_method_no_platform_error() {
+        let source = concat!(
+            "import std::stream;\n",
+            "fn consume(s: stream.Stream<string>) -> string {\n",
+            "    s.next()\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "Stream<T>::next should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Deduplication: same call site emits only one error ─────────────────
+
+    #[test]
+    fn wasm_reject_deduplicates_same_span() {
+        // Two consecutive calls at different call sites should produce two
+        // errors, not one (each span is unique).
+        let output = check_wasm("fn main() { sleep_ms(100); sleep_ms(200); }");
+        let count = output
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::PlatformLimitation && e.message.contains("Timer"))
+            .count();
+        assert_eq!(
+            count, 2,
+            "two distinct sleep_ms call sites should produce two errors; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Existing warning-level features still warn (not error) on WASM ──────
+
+    #[test]
+    fn wasm_supervisor_is_warning_not_error() {
+        // supervisor_child / supervisor_stop are warning-level (diagnostic
+        // path), not error-level.  Verify they remain warnings.
+        let output = check_wasm("fn main() { supervisor_child(); }");
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::PlatformLimitation),
+            "supervisor_child should be a WASM warning; got warnings: {:?}, errors: {:?}",
+            output.warnings,
+            output.errors
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
+            "supervisor_child should NOT be a WASM error; got errors: {:?}",
+            output.errors
+        );
+    }
+}

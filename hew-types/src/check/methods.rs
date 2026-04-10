@@ -1695,13 +1695,11 @@ impl Checker {
                             // Replace `Self` references with the type parameter type.
                             let self_ty = resolved.clone();
                             for param_ty in &mut trait_sig.params {
-                                *param_ty = self.substitute_named_param(param_ty, "Self", &self_ty);
+                                *param_ty = param_ty.substitute_named_param("Self", &self_ty);
                             }
-                            trait_sig.return_type = self.substitute_named_param(
-                                &trait_sig.return_type,
-                                "Self",
-                                &self_ty,
-                            );
+                            trait_sig.return_type = trait_sig
+                                .return_type
+                                .substitute_named_param("Self", &self_ty);
 
                             self.check_arity(
                                 args,
@@ -1770,18 +1768,13 @@ impl Checker {
                                 {
                                     // Substitute in parameter types
                                     for param_ty in &mut sig.params {
-                                        *param_ty = self.substitute_named_param(
-                                            param_ty,
-                                            param_name,
-                                            replacement,
-                                        );
+                                        *param_ty = param_ty
+                                            .substitute_named_param(param_name, replacement);
                                     }
                                     // Substitute in return type
-                                    sig.return_type = self.substitute_named_param(
-                                        &sig.return_type,
-                                        param_name,
-                                        replacement,
-                                    );
+                                    sig.return_type = sig
+                                        .return_type
+                                        .substitute_named_param(param_name, replacement);
                                 }
                             }
                         }

@@ -1236,7 +1236,7 @@ impl Checker {
                                 let mut field_expected = declared_ty.clone();
                                 for (tp, concrete) in &type_arg_map {
                                     field_expected =
-                                        self.substitute_named_param(&field_expected, tp, concrete);
+                                        field_expected.substitute_named_param(tp, concrete);
                                 }
                                 let actual = self.check_against(fexpr, fs, &field_expected);
 
@@ -2165,7 +2165,7 @@ impl Checker {
                         // Substitute generic type params with concrete args
                         let mut result_ty = field_ty.clone();
                         for (param, arg) in td.type_params.iter().zip(args.iter()) {
-                            result_ty = self.substitute_named_param(&result_ty, param, arg);
+                            result_ty = result_ty.substitute_named_param(param, arg);
                         }
                         result_ty
                     } else if let Some((ref mn, ref src_state, ref evt_name)) =
@@ -2476,7 +2476,7 @@ impl Checker {
                     // Substitute already-inferred type params into the expected type
                     let mut expected = declared_ty.clone();
                     for (tp, concrete) in &type_arg_map {
-                        expected = self.substitute_named_param(&expected, tp, concrete);
+                        expected = expected.substitute_named_param(tp, concrete);
                     }
 
                     // If the expected type is still an unbound type parameter,

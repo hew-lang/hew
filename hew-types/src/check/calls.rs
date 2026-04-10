@@ -59,10 +59,7 @@ impl Checker {
 
     pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
         let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
-        if concrete
-            .iter()
-            .all(|ty| !ty_has_unresolved_inference_var(ty))
-        {
+        if concrete.iter().all(|ty| !ty.has_inference_var()) {
             self.call_type_args.insert(SpanKey::from(span), concrete);
         }
     }
@@ -111,7 +108,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     let mut expected_ty = param_ty.clone();
                     for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                        expected_ty = self.substitute_named_param(&expected_ty, param, replacement);
+                        expected_ty = expected_ty.substitute_named_param(param, replacement);
                     }
                     self.check_against(expr, arg_span, &expected_ty);
                 }
@@ -304,8 +301,7 @@ impl Checker {
                     let mut expected_ty = param_ty.clone();
                     if !type_params.is_empty() {
                         for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                            expected_ty =
-                                self.substitute_named_param(&expected_ty, param, replacement);
+                            expected_ty = expected_ty.substitute_named_param(param, replacement);
                         }
                     }
                     self.check_against(expr, span, &expected_ty);
@@ -718,7 +714,7 @@ impl Checker {
     /// `for await`.
     pub(super) fn check_receiver_element_type_for_await(&mut self, inner: &Ty, span: &Span) {
         let resolved = self.subst.resolve(inner);
-        if ty_has_unresolved_inference_var(&resolved) {
+        if resolved.has_inference_var() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

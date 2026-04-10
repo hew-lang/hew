@@ -448,6 +448,33 @@ impl Ty {
         matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
     }
 
+    #[must_use]
+    pub fn has_inference_var(&self) -> bool {
+        match self {
+            Ty::Var(_) => true,
+            Ty::Tuple(elems) => elems.iter().any(Ty::has_inference_var),
+            Ty::Array(elem, _) | Ty::Slice(elem) => elem.has_inference_var(),
+            Ty::Named { args, .. } => args.iter().any(Ty::has_inference_var),
+            Ty::Function { params, ret } => {
+                params.iter().any(Ty::has_inference_var) || ret.has_inference_var()
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params.iter().any(Ty::has_inference_var)
+                    || ret.has_inference_var()
+                    || captures.iter().any(Ty::has_inference_var)
+            }
+            Ty::Pointer { pointee, .. } => pointee.has_inference_var(),
+            Ty::TraitObject { traits } => traits
+                .iter()
+                .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
+            _ => false,
+        }
+    }
+
     // -- Constructor helpers: all produce Ty::Named --
 
     /// Construct `Option<inner>`.
@@ -823,6 +850,80 @@ impl Ty {
             _ => false,
         }
     }
+
+    /// Substitute a named type parameter (e.g. `T`) with a concrete type in a type expression.
+    /// Used to resolve generic fields/methods on instantiated types.
+    #[must_use]
+    pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
+        match self {
+            Ty::Named { name, args } if args.is_empty() && name == param_name => {
+                replacement.clone()
+            }
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| a.substitute_named_param(param_name, replacement))
+                    .collect(),
+            },
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| e.substitute_named_param(param_name, replacement))
+                    .collect(),
+            ),
+            Ty::Array(inner, n) => Ty::Array(
+                Box::new(inner.substitute_named_param(param_name, replacement)),
+                *n,
+            ),
+            Ty::Slice(inner) => Ty::Slice(Box::new(
+                inner.substitute_named_param(param_name, replacement),
+            )),
+            Ty::Function { params, ret } => Ty::Function {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_param(param_name, replacement))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
+            },
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => Ty::Closure {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_param(param_name, replacement))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
+                captures: captures
+                    .iter()
+                    .map(|c| c.substitute_named_param(param_name, replacement))
+                    .collect(),
+            },
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| arg.substitute_named_param(param_name, replacement))
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            _ => self.clone(),
+        }
+    }
 }
 
 /// User-facing type wrapper that preserves Hew numeric spellings.
@@ -889,6 +990,47 @@ mod tests {
         let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
         let result = ty.substitute(v, &Ty::Bool);
         assert_eq!(result, Ty::Tuple(vec![Ty::Bool, Ty::I32]));
+    }
+
+    #[test]
+    fn test_substitute_named_param() {
+        let ty = Ty::Function {
+            params: vec![Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            }],
+            ret: Box::new(Ty::Tuple(vec![
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+                Ty::I32,
+            ])),
+        };
+
+        let substituted = ty.substitute_named_param("T", &Ty::String);
+
+        assert_eq!(
+            substituted,
+            Ty::Function {
+                params: vec![Ty::String],
+                ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
+            }
+        );
+    }
+
+    #[test]
+    fn test_has_inference_var() {
+        TypeVar::reset();
+        let inferred = Ty::Var(TypeVar::fresh());
+        let ty = Ty::Function {
+            params: vec![Ty::I32],
+            ret: Box::new(Ty::Tuple(vec![Ty::String, inferred.clone()])),
+        };
+
+        assert!(ty.has_inference_var());
+        assert!(!Ty::result(Ty::I32, Ty::String).has_inference_var());
+        assert!(inferred.has_inference_var());
     }
 
     #[test]

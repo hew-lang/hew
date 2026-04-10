@@ -4,33 +4,6 @@
 )]
 use super::*;
 
-pub(super) fn ty_has_unresolved_inference_var(ty: &Ty) -> bool {
-    match ty {
-        Ty::Var(_) => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_has_unresolved_inference_var),
-        Ty::Array(elem, _) | Ty::Slice(elem) => ty_has_unresolved_inference_var(elem),
-        Ty::Named { args, .. } => args.iter().any(ty_has_unresolved_inference_var),
-        Ty::Function { params, ret } => {
-            params.iter().any(ty_has_unresolved_inference_var)
-                || ty_has_unresolved_inference_var(ret)
-        }
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => {
-            params.iter().any(ty_has_unresolved_inference_var)
-                || ty_has_unresolved_inference_var(ret)
-                || captures.iter().any(ty_has_unresolved_inference_var)
-        }
-        Ty::Pointer { pointee, .. } => ty_has_unresolved_inference_var(pointee),
-        Ty::TraitObject { traits } => traits
-            .iter()
-            .any(|bound| bound.args.iter().any(ty_has_unresolved_inference_var)),
-        _ => false,
-    }
-}
-
 pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<TypeVar>) {
     match ty {
         Ty::Var(var) => {

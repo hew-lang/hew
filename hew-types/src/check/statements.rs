@@ -588,7 +588,7 @@ impl Checker {
                             {
                                 if self.receive_generator_methods.contains(&method_name) {
                                     let resolved_inner = self.subst.resolve(&inner);
-                                    if ty_has_unresolved_inference_var(&resolved_inner) {
+                                    if resolved_inner.has_inference_var() {
                                         self.report_error(
                                             TypeErrorKind::InvalidOperation,
                                             &iterable.1,

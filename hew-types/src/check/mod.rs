@@ -38,8 +38,8 @@ pub use self::types::{
 };
 use self::types::{
     ConstValue, DeferredCastCheck, DeferredInferenceHole, DeferredMonomorphicSite, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IntegerTypeInfo, TraitAssociatedTypeInfo, TraitInfo,
-    WasmUnsupportedFeature,
+    ImplAliasScope, ImportKey, IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo,
+    TraitInfo, WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -47,6 +47,7 @@ use self::util::{
     integer_fits_type, integer_type_info, integer_type_range, is_float_literal, is_integer_literal,
     lookup_scoped_item, scoped_module_item_name, ty_has_unresolved_inference_var,
 };
+use crate::lowering_facts::{LoweringFact, LoweringFactError};
 
 fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {
     let ok_unresolved = ty_has_unresolved_inference_var(&ok_ty);
@@ -246,6 +247,7 @@ impl Checker {
             &mut resolved_fn_sigs,
             &mut resolved_call_type_args,
         );
+        let resolved_lowering_facts = self.finalize_lowering_facts();
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
@@ -253,6 +255,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
+            lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),

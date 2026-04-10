@@ -129,6 +129,46 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
 }
 
 #[test]
+fn free_call_len_on_hashset_records_lowering_fact() {
+    let parsed = hew_parser::parse(
+        r"
+        fn main() -> int {
+            let s: HashSet<int> = HashSet::new();
+            len(s)
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let call_span = match &parsed.program.items[0].0 {
+        Item::Function(function) => function
+            .body
+            .trailing_expr
+            .as_ref()
+            .map(|expr| expr.1.clone())
+            .expect("expected trailing len(s) call"),
+        other => panic!("expected function item, got: {other:?}"),
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+
+    let fact = output
+        .lowering_facts
+        .get(&SpanKey::from(&call_span))
+        .expect("expected len(s) to record a lowering fact");
+    assert_eq!(fact.kind, crate::LoweringKind::HashSet);
+    assert_eq!(fact.element_type, crate::HashSetElementType::I64);
+    assert_eq!(fact.abi_variant, crate::HashSetAbi::Int64);
+    assert_eq!(fact.drop_kind, crate::DropKind::HashSetFree);
+}
+
+#[test]
 fn concrete_vec_validation_reaches_function_wrapped_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Function {

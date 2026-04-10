@@ -14,6 +14,7 @@ use hew_types::check::{
     AssignTargetKind as CheckedAssignTargetKind,
     MethodCallReceiverKind as CheckedMethodCallReceiverKind, SpanKey, TypeCheckOutput,
 };
+use hew_types::LoweringFact as CheckedLoweringFact;
 use serde::{Deserialize, Serialize};
 
 /// Schema version for the msgpack AST boundary.
@@ -22,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -88,6 +89,15 @@ pub struct AssignTargetShapeEntry {
     pub is_unsigned: bool,
 }
 
+/// A checker-owned lowering fact keyed by the lowering site's source span.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoweringFactEntry {
+    pub start: usize,
+    pub end: usize,
+    #[serde(flatten)]
+    pub fact: CheckedLoweringFact,
+}
+
 /// Top-level serialization wrapper: the program AST plus type-checker and
 /// source metadata used by C++ codegen.
 ///
@@ -99,6 +109,7 @@ pub struct AssignTargetShapeEntry {
 /// - `"method_call_receiver_kinds"`
 /// - `"assign_target_kinds"`
 /// - `"assign_target_shapes"`
+/// - `"lowering_facts"`
 /// - `"handle_types"`
 /// - `"handle_type_repr"`
 /// - `"drop_funcs"`
@@ -122,6 +133,8 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Checker-resolved assignment target type-shape metadata (keyed by target span).
     /// Consumed by MLIR lowering fail-closed to determine compound-assignment signedness.
     assign_target_shapes: &'a [AssignTargetShapeEntry],
+    /// Checker-resolved lowering metadata for erased runtime types.
+    lowering_facts: &'a [LoweringFactEntry],
     /// Names of all known handle types (e.g., `"http.Server"`, `"json.Value"`).
     /// Flows type metadata to C++ codegen so it doesn't need hardcoded type lists.
     handle_types: Vec<String>,
@@ -160,6 +173,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
         assign_target_kinds: &'a [AssignTargetKindEntry],
         assign_target_shapes: &'a [AssignTargetShapeEntry],
+        lowering_facts: &'a [LoweringFactEntry],
         handle_types: Vec<String>,
         handle_type_repr: HashMap<String, String>,
         drop_funcs: Vec<(String, String)>,
@@ -175,6 +189,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             method_call_receiver_kinds,
             assign_target_kinds,
             assign_target_shapes,
+            lowering_facts,
             handle_types,
             handle_type_repr,
             drop_funcs,
@@ -207,6 +222,7 @@ pub fn serialize_to_msgpack(
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
+    lowering_facts: Vec<LoweringFactEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -219,6 +235,7 @@ pub fn serialize_to_msgpack(
         &method_call_receiver_kinds,
         &assign_target_kinds,
         &assign_target_shapes,
+        &lowering_facts,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -261,6 +278,7 @@ pub fn serialize_to_json(
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
+    lowering_facts: Vec<LoweringFactEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
@@ -278,6 +296,7 @@ pub fn serialize_to_json(
         &method_call_receiver_kinds,
         &assign_target_kinds,
         &assign_target_shapes,
+        &lowering_facts,
         handle_types,
         handle_type_repr,
         drop_funcs,
@@ -334,6 +353,15 @@ trait SideTableVisitor {
         tco: &TypeCheckOutput,
         out: &mut Vec<Self::Entry>,
     );
+
+    /// Called before recursing into an `Expr::Call`.
+    fn on_call_expr(
+        &self,
+        _expr: &Spanned<Expr>,
+        _tco: &TypeCheckOutput,
+        _out: &mut Vec<Self::Entry>,
+    ) {
+    }
 
     fn if_stmt_order(&self) -> IfStmtOrder;
     fn module_graph_mode(&self) -> ModuleGraphMode;
@@ -561,6 +589,7 @@ fn walk_program<V: SideTableVisitor>(
                 }
             }
             Expr::Call { function, args, .. } => {
+                visitor.on_call_expr(expr, tco, out);
                 collect_expr(function, tco, visitor, out);
                 collect_call_args(args, tco, visitor, out);
             }
@@ -815,6 +844,65 @@ pub fn build_assign_target_shape_entries(
     walk_program(program, tco, &Visitor)
 }
 
+/// Walk `program` and collect a [`LoweringFactEntry`] for every method-call span
+/// with checker-owned lowering metadata.
+#[must_use]
+pub fn build_lowering_fact_entries(
+    program: &hew_parser::ast::Program,
+    tco: &TypeCheckOutput,
+) -> Vec<LoweringFactEntry> {
+    struct Visitor;
+    impl SideTableVisitor for Visitor {
+        type Entry = LoweringFactEntry;
+        fn on_assign_stmt(
+            &self,
+            _target: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
+        }
+        fn on_method_call_expr(
+            &self,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&expr.1);
+            let Some(fact) = tco.lowering_facts.get(&key) else {
+                return;
+            };
+            out.push(LoweringFactEntry {
+                start: key.start,
+                end: key.end,
+                fact: *fact,
+            });
+        }
+        fn on_call_expr(
+            &self,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&expr.1);
+            let Some(fact) = tco.lowering_facts.get(&key) else {
+                return;
+            };
+            out.push(LoweringFactEntry {
+                start: key.start,
+                end: key.end,
+                fact: *fact,
+            });
+        }
+        fn if_stmt_order(&self) -> IfStmtOrder {
+            IfStmtOrder::ElseBeforeThen
+        }
+        fn module_graph_mode(&self) -> ModuleGraphMode {
+            ModuleGraphMode::ModulesOrProgramItems
+        }
+    }
+    walk_program(program, tco, &Visitor)
+}
+
 /// Deserialize a [`Program`](hew_parser::ast::Program) from `MessagePack` bytes.
 ///
 /// # Errors
@@ -933,6 +1021,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1002,6 +1091,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1024,6 +1114,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1103,6 +1194,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1121,6 +1213,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1161,6 +1254,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1186,6 +1280,67 @@ mod tests {
     }
 
     #[test]
+    fn lowering_facts_serialize_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![LoweringFactEntry {
+                start: 10,
+                end: 20,
+                fact: CheckedLoweringFact {
+                    kind: hew_types::LoweringKind::HashSet,
+                    element_type: hew_types::HashSetElementType::Str,
+                    abi_variant: hew_types::HashSetAbi::String,
+                    drop_kind: hew_types::DropKind::HashSetFree,
+                },
+            }],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let facts = value
+            .get("lowering_facts")
+            .and_then(serde_json::Value::as_array)
+            .expect("lowering_facts should be present on the wire");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].get("kind").and_then(serde_json::Value::as_str),
+            Some("hash_set")
+        );
+        assert_eq!(
+            facts[0]
+                .get("element_type")
+                .and_then(serde_json::Value::as_str),
+            Some("str")
+        );
+        assert_eq!(
+            facts[0]
+                .get("abi_variant")
+                .and_then(serde_json::Value::as_str),
+            Some("string")
+        );
+        assert_eq!(
+            facts[0]
+                .get("drop_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("hash_set_free")
+        );
+    }
+
+    #[test]
     fn assign_target_kinds_serialize_to_wire_field() {
         let program = Program {
             items: vec![],
@@ -1202,6 +1357,7 @@ mod tests {
                 end: 20,
                 kind: AssignTargetKindData::LocalVar,
             }],
+            vec![],
             vec![],
             vec![],
             HashMap::new(),
@@ -1290,6 +1446,7 @@ mod tests {
                     },
                 ),
             ]),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1363,6 +1520,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(
                 SpanKey {
@@ -1386,6 +1544,84 @@ mod tests {
         assert_eq!(entries[0].start, assign_target_span.start);
         assert_eq!(entries[0].end, assign_target_span.end);
         assert_eq!(entries[0].kind, AssignTargetKindData::LocalVar);
+    }
+
+    #[test]
+    fn build_lowering_fact_entries_emits_free_call_len_entries() {
+        let call_span = 10usize..16usize;
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "len_of_set".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Call {
+                                function: Box::new((Expr::Identifier("len".into()), 10..13)),
+                                type_args: None,
+                                args: vec![CallArg::Positional((
+                                    Expr::Identifier("set".into()),
+                                    14..16,
+                                ))],
+                                is_tail_call: false,
+                            },
+                            call_span.clone(),
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let key = SpanKey {
+            start: call_span.start,
+            end: call_span.end,
+        };
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::from([(
+                key,
+                CheckedLoweringFact {
+                    kind: hew_types::LoweringKind::HashSet,
+                    element_type: hew_types::HashSetElementType::I64,
+                    abi_variant: hew_types::HashSetAbi::Int64,
+                    drop_kind: hew_types::DropKind::HashSetFree,
+                },
+            )]),
+            method_call_rewrites: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_lowering_fact_entries(&program, &tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start, call_span.start);
+        assert_eq!(entries[0].end, call_span.end);
+        assert_eq!(
+            entries[0].fact.element_type,
+            hew_types::HashSetElementType::I64
+        );
     }
 
     #[test]
@@ -1462,6 +1698,7 @@ mod tests {
                     type_name: "json.Value".to_string(),
                 },
             )]),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1499,6 +1736,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1584,6 +1822,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
@@ -1660,6 +1899,7 @@ mod tests {
         let tco = TypeCheckOutput {
             expr_types: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::from([(key.clone(), AssignTargetKind::LocalVar)]),
             assign_target_shapes: HashMap::from([(
@@ -1709,6 +1949,7 @@ mod tests {
             vec![],
             vec![],
             shapes.clone(),
+            vec![],
             vec![],
             HashMap::new(),
             vec![],

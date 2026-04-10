@@ -149,7 +149,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 5;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 6;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1762,6 +1762,51 @@ static ast::AssignTargetShapeEntry parseAssignTargetShapeEntry(const msgpack::ob
   return entry;
 }
 
+static ast::LoweringKind parseLoweringKind(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "hash_set")
+    return ast::LoweringKind::HashSet;
+  fail("unknown lowering kind '" + kind + "'");
+}
+
+static ast::HashSetElementType parseHashSetElementType(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "i64")
+    return ast::HashSetElementType::I64;
+  if (kind == "u64")
+    return ast::HashSetElementType::U64;
+  if (kind == "str")
+    return ast::HashSetElementType::Str;
+  fail("unknown HashSet element type '" + kind + "'");
+}
+
+static ast::HashSetAbi parseHashSetAbi(const msgpack::object &obj) {
+  auto abi = getString(obj);
+  if (abi == "int64")
+    return ast::HashSetAbi::Int64;
+  if (abi == "string")
+    return ast::HashSetAbi::String;
+  fail("unknown HashSet ABI '" + abi + "'");
+}
+
+static ast::DropKind parseDropKind(const msgpack::object &obj) {
+  auto drop = getString(obj);
+  if (drop == "hash_set_free")
+    return ast::DropKind::HashSetFree;
+  fail("unknown drop kind '" + drop + "'");
+}
+
+static ast::LoweringFactEntry parseLoweringFactEntry(const msgpack::object &obj) {
+  ast::LoweringFactEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.kind = parseLoweringKind(mapReq(obj, "kind"));
+  entry.element_type = parseHashSetElementType(mapReq(obj, "element_type"));
+  entry.abi_variant = parseHashSetAbi(mapReq(obj, "abi_variant"));
+  entry.drop_kind = parseDropKind(mapReq(obj, "drop_kind"));
+  return entry;
+}
+
 static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   ast::ExprTypeEntry entry;
   entry.start = getUint(mapReq(obj, "start"));
@@ -1817,6 +1862,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(
       mapReq(obj, "assign_target_shapes"), parseAssignTargetShapeEntry);
+  prog.lowering_facts =
+      parseVec<ast::LoweringFactEntry>(mapReq(obj, "lowering_facts"), parseLoweringFactEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =

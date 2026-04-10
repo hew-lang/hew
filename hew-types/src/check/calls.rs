@@ -538,6 +538,20 @@ impl Checker {
                 }
             }
 
+            if resolved_fn_name == "len" {
+                if let Some(Ty::Named { name, args }) =
+                    freshened_params.first().map(|ty| self.subst.resolve(ty))
+                {
+                    if Ty::names_match_qualified(&name, "HashSet") {
+                        let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                        if !self.validate_hashset_element_type(&elem_ty, span) {
+                            return Ty::Error;
+                        }
+                        self.record_hashset_lowering_fact(span, &elem_ty);
+                    }
+                }
+            }
+
             return freshened_ret;
         }
 

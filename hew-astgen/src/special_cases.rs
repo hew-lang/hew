@@ -118,6 +118,54 @@ pub fn assign_target_shape_entry_parser() -> &'static str {
 }"#
 }
 
+/// Hard-coded parser for `LoweringFactEntry` and its enum tags (C++-only types from serialization layer).
+pub fn lowering_fact_entry_parser() -> &'static str {
+    r#"static ast::LoweringKind parseLoweringKind(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "hash_set")
+    return ast::LoweringKind::HashSet;
+  fail("unknown lowering kind '" + kind + "'");
+}
+
+static ast::HashSetElementType parseHashSetElementType(const msgpack::object &obj) {
+  auto kind = getString(obj);
+  if (kind == "i64")
+    return ast::HashSetElementType::I64;
+  if (kind == "u64")
+    return ast::HashSetElementType::U64;
+  if (kind == "str")
+    return ast::HashSetElementType::Str;
+  fail("unknown HashSet element type '" + kind + "'");
+}
+
+static ast::HashSetAbi parseHashSetAbi(const msgpack::object &obj) {
+  auto abi = getString(obj);
+  if (abi == "int64")
+    return ast::HashSetAbi::Int64;
+  if (abi == "string")
+    return ast::HashSetAbi::String;
+  fail("unknown HashSet ABI '" + abi + "'");
+}
+
+static ast::DropKind parseDropKind(const msgpack::object &obj) {
+  auto drop = getString(obj);
+  if (drop == "hash_set_free")
+    return ast::DropKind::HashSetFree;
+  fail("unknown drop kind '" + drop + "'");
+}
+
+static ast::LoweringFactEntry parseLoweringFactEntry(const msgpack::object &obj) {
+  ast::LoweringFactEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  entry.kind = parseLoweringKind(mapReq(obj, "kind"));
+  entry.element_type = parseHashSetElementType(mapReq(obj, "element_type"));
+  entry.abi_variant = parseHashSetAbi(mapReq(obj, "abi_variant"));
+  entry.drop_kind = parseDropKind(mapReq(obj, "drop_kind"));
+  return entry;
+}"#
+}
+
 /// Hard-coded parser for `MethodCallReceiverKindEntry` (C++-only type from serialization layer).
 pub fn method_call_receiver_kind_entry_parser() -> &'static str {
     r#"static ast::MethodCallReceiverKindEntry
@@ -277,6 +325,8 @@ pub fn program_parser() -> &'static str {
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(
       mapReq(obj, "assign_target_shapes"), parseAssignTargetShapeEntry);
+  prog.lowering_facts =
+      parseVec<ast::LoweringFactEntry>(mapReq(obj, "lowering_facts"), parseLoweringFactEntry);
 
   // Handle type metadata: list of known handle type names
   prog.handle_types =
@@ -1340,6 +1390,26 @@ mod tests {
     }
 
     #[test]
+    fn lowering_fact_entry_parser_reads_all_fields() {
+        let src = lowering_fact_entry_parser();
+        assert!(src.contains("parseLoweringKind("));
+        assert!(src.contains("hash_set"));
+        assert!(src.contains("parseHashSetElementType("));
+        assert!(src.contains("i64"));
+        assert!(src.contains("u64"));
+        assert!(src.contains("str"));
+        assert!(src.contains("parseHashSetAbi("));
+        assert!(src.contains("int64"));
+        assert!(src.contains("string"));
+        assert!(src.contains("parseDropKind("));
+        assert!(src.contains("hash_set_free"));
+        assert!(src.contains("parseLoweringFactEntry("));
+        assert!(src.contains("entry.element_type"));
+        assert!(src.contains("entry.abi_variant"));
+        assert!(src.contains("entry.drop_kind"));
+    }
+
+    #[test]
     fn module_graph_parser_iterates_modules_map() {
         let src = module_graph_parser();
         assert!(src.contains("parseModuleGraph("));
@@ -1373,8 +1443,10 @@ mod tests {
         assert!(src.contains("mapReq(obj, \"expr_types\")"));
         assert!(src.contains("mapReq(obj, \"method_call_receiver_kinds\")"));
         assert!(src.contains("mapReq(obj, \"assign_target_kinds\")"));
+        assert!(src.contains("mapReq(obj, \"lowering_facts\")"));
         assert!(src.contains("mapReq(obj, \"handle_types\")"));
         assert!(src.contains("mapReq(obj, \"handle_type_repr\")"));
+        assert!(src.contains("prog.lowering_facts"));
         // Optional fields checked with mapGet
         assert!(src.contains("mapGet(obj, \"module_doc\")"));
         assert!(src.contains("mapGet(obj, \"module_graph\")"));

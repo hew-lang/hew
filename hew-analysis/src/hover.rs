@@ -219,6 +219,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         }
     }
@@ -390,6 +391,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
@@ -425,6 +427,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
@@ -458,6 +461,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         };
 

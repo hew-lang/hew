@@ -199,18 +199,27 @@ impl Checker {
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
-                    match value {
-                        Some((val, vs)) => {
-                            self.check_against(val, vs, &expected);
+                    // Guard: do not check against Ty::Error — it would silently
+                    // suppress mismatch diagnostics in the returned expression.
+                    // Synthesize the value instead so its own errors are still caught.
+                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                        if let Some((val, vs)) = value {
+                            self.synthesize(val, vs);
                         }
-                        None if expected != Ty::Unit => {
-                            self.errors.push(TypeError::return_type_mismatch(
-                                span.clone(),
-                                &expected,
-                                &Ty::Unit,
-                            ));
+                    } else {
+                        match value {
+                            Some((val, vs)) => {
+                                self.check_against(val, vs, &expected);
+                            }
+                            None if expected != Ty::Unit => {
+                                self.errors.push(TypeError::return_type_mismatch(
+                                    span.clone(),
+                                    &expected,
+                                    &Ty::Unit,
+                                ));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
                 Ty::Never
@@ -510,18 +519,26 @@ impl Checker {
             }
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
-                    match value {
-                        Some((val, vs)) => {
-                            self.check_against(val, vs, &expected);
+                    // Guard: do not check against Ty::Error — same as in
+                    // check_stmt_as_expr; synthesize instead to preserve body errors.
+                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                        if let Some((val, vs)) = value {
+                            self.synthesize(val, vs);
                         }
-                        None if expected != Ty::Unit => {
-                            self.errors.push(TypeError::return_type_mismatch(
-                                span.clone(),
-                                &expected,
-                                &Ty::Unit,
-                            ));
+                    } else {
+                        match value {
+                            Some((val, vs)) => {
+                                self.check_against(val, vs, &expected);
+                            }
+                            None if expected != Ty::Unit => {
+                                self.errors.push(TypeError::return_type_mismatch(
+                                    span.clone(),
+                                    &expected,
+                                    &Ty::Unit,
+                                ));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }

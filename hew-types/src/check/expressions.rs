@@ -2410,7 +2410,14 @@ impl Checker {
                 self.record_deferred_inference_holes(annotation, "lambda return type", hole_vars);
             }
             self.current_return_type = Some(expected_ret.clone());
-            self.check_against(&body.0, &body.1, &expected_ret);
+            // Guard: do not pre-seed body with Ty::Error (unresolvable annotation).
+            // Synthesize instead so internal body errors are still reported.
+            let resolved_ret = self.subst.resolve(&expected_ret);
+            if matches!(resolved_ret, Ty::Error) {
+                self.synthesize(&body.0, &body.1);
+            } else {
+                self.check_against(&body.0, &body.1, &expected_ret);
+            }
             self.subst.resolve(&expected_ret)
         } else if let Some((_, expected_ret)) = expected {
             self.current_return_type = Some(expected_ret.clone());

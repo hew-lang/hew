@@ -9,6 +9,16 @@ pub(crate) enum WasiRunOutcome {
     Timeout,
 }
 
+/// Result of a captured WASI module execution (stdout/stderr collected).
+pub(crate) enum WasiCapturedOutcome {
+    /// Process exited successfully; captured stdout.
+    Success { stdout: String },
+    /// Process exited unsuccessfully; captured stderr for diagnosis.
+    Failed { stderr: String },
+    /// Process exceeded the timeout and was terminated.
+    Timeout,
+}
+
 pub(crate) fn run_module(
     module_path: &Path,
     program_args: &[String],
@@ -45,6 +55,34 @@ pub(crate) fn run_module(
     match outcome {
         crate::process::ChildWaitOutcome::Exited(status) => Ok(WasiRunOutcome::Exited(status)),
         crate::process::ChildWaitOutcome::Timeout => Ok(WasiRunOutcome::Timeout),
+    }
+}
+
+/// Run a WASM module under wasmtime with captured stdout/stderr.
+///
+/// Unlike [`run_module`], this variant pipes both output streams so that the
+/// caller (e.g. `hew eval --target wasm32-wasi`) can capture the output
+/// instead of forwarding it to the terminal.
+pub(crate) fn run_module_captured(
+    module_path: &Path,
+    timeout: Duration,
+) -> Result<WasiCapturedOutcome, String> {
+    let wasmtime = find_wasmtime().ok_or_else(|| {
+        "cannot find wasmtime. Install wasmtime or add it to PATH to use `--target wasm32-wasi`"
+            .to_string()
+    })?;
+
+    let mut command = Command::new(wasmtime);
+    command.arg("run").arg(module_path);
+
+    match crate::process::run_command_captured(&mut command, timeout)? {
+        crate::process::BinaryRunOutcome::Success { stdout } => Ok(WasiCapturedOutcome::Success {
+            stdout: stdout.replace("\r\n", "\n"),
+        }),
+        crate::process::BinaryRunOutcome::Failed { stderr, .. } => {
+            Ok(WasiCapturedOutcome::Failed { stderr })
+        }
+        crate::process::BinaryRunOutcome::Timeout => Ok(WasiCapturedOutcome::Timeout),
     }
 }
 

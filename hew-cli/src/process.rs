@@ -261,9 +261,21 @@ pub(crate) fn run_binary_with_timeout(
     timeout: Duration,
 ) -> Result<BinaryRunOutcome, String> {
     let mut command = Command::new(binary);
+    run_command_captured(&mut command, timeout)
+}
+
+/// Execute an arbitrary command with bounded wall-clock time, capturing output.
+///
+/// Identical to [`run_binary_with_timeout`] but accepts a pre-configured
+/// `Command` so callers such as `wasi_runner` can add extra arguments (e.g.
+/// `wasmtime run <module>`) without duplicating the bounded-child logic.
+pub(crate) fn run_command_captured(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<BinaryRunOutcome, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut bounded = BoundedChild::spawn(&mut command)?;
+    let mut bounded = BoundedChild::spawn(command)?;
     let drain = ConcurrentChildOutput::spawn(&mut bounded.child)?;
     let start = Instant::now();
 

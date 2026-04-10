@@ -863,3 +863,164 @@ fn eval_file_type_errors_render_cli_diagnostics() {
     assert!(stderr.contains("|     ^^^^^^"), "stderr: {stderr}");
     assert!(!stderr.contains("Error:"), "stderr: {stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// WASM target tests
+// ---------------------------------------------------------------------------
+
+/// `hew eval --target wasm32-wasi <expr>` compiles and runs a simple inline
+/// expression through wasmtime, capturing stdout.
+#[test]
+fn eval_wasm_inline_expression_succeeds() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+}
+
+/// `hew eval --target wasm32-wasi -f <file>` evaluates a .hew file via WASM.
+#[test]
+fn eval_wasm_file_succeeds() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wasm_eval_file.hew");
+    std::fs::write(&path, "fn double(x: i64) -> i64 { x * 2 }\ndouble(21)\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+/// A WASM eval that runs longer than the timeout exits with a timeout error.
+#[test]
+fn eval_wasm_timeout_is_reported() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wasm_eval_timeout.hew");
+    // A function that loops forever — compiles fine under WASM32 (no
+    // structured-concurrency APIs), but wasmtime will spin until the timeout.
+    std::fs::write(
+        &path,
+        "fn spin_forever() {\n    var i: i64 = 0;\n    loop { i = i + 1; }\n}\nspin_forever()\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "--timeout", "1", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("timed out after 1s"),
+        "expected timeout message, stderr: {stderr}"
+    );
+}
+
+/// Source that uses a feature unsupported on WASM32 (structured-concurrency
+/// `scope`) should surface the expected unsupported diagnostic and fail.
+#[test]
+fn eval_wasm_unsupported_feature_reports_diagnostic() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wasm_eval_unsupported.hew");
+    // `scope { }` uses OS-thread-backed structured concurrency — not available
+    // on WASM32.  The compiler should emit an "not supported on WASM32"
+    // diagnostic and exit non-zero before wasmtime is ever invoked.
+    std::fs::write(&path, "scope {\n    println(\"hello\");\n}\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure for unsupported WASM feature"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not supported on WASM32") || stderr.contains("WASM32"),
+        "expected unsupported WASM diagnostic, stderr: {stderr}"
+    );
+}
+
+/// `hew eval --target wasm32-wasi` without an expression starts the interactive
+/// REPL with WASM mode. Sending EOF immediately should exit cleanly (exit 0).
+#[test]
+fn eval_wasm_interactive_mode_exits_on_eof() {
+    // No codegen needed — we just send EOF immediately.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi"])
+        .current_dir(repo_root())
+        // Provide EOF on stdin so the REPL exits after printing the banner.
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected REPL to exit 0 on EOF with --target, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Hew REPL"),
+        "expected REPL banner, stdout: {stdout}"
+    );
+}
+
+/// `hew eval --target wasm32-wasi "scope { }"` — `scope` is not supported on
+/// WASM32. The fast typecheck pass (before codegen) should surface this
+/// diagnostic, so the process fails quickly without invoking the compiler.
+#[test]
+fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
+    // No codegen required: the fast typecheck should catch this.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "scope { }"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure for scope {{ }} on WASM target"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("WASM32") || stderr.contains("not supported"),
+        "expected WASM diagnostic from fast typecheck, stderr: {stderr}"
+    );
+}

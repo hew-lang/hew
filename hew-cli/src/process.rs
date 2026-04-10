@@ -57,10 +57,9 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
 /// required for reliable timeout termination.
 ///
 /// On Unix the cleanup mechanism is `killpg(SIGKILL)` on the process group
-/// created by `setpgid(0, 0)` in the child.  On Windows a Job Object is
-/// created and the child is assigned to it immediately after spawn, so that
-/// `TerminateJobObject` can kill every process in the tree even if the root
-/// exits before the timeout fires.
+/// created by `setpgid(0, 0)` in the child.  On Windows the child is spawned
+/// suspended, assigned to a Job Object before any user code runs, then
+/// resumed; `TerminateJobObject` therefore covers the entire process tree.
 struct BoundedChild {
     child: Child,
     /// Windows-only: Job Object that owns the child and all its descendants.
@@ -95,32 +94,58 @@ impl BoundedChild {
         Ok(Self { child })
     }
 
-    /// Spawn the child and immediately assign it to a new Job Object.
+    /// Spawn the child suspended, assign it to a Job Object, then resume it.
     ///
-    /// The Job Object tracks the child and every process it subsequently
-    /// spawns.  `TerminateJobObject` will kill the entire job tree reliably
-    /// even if the root has already exited on its own before the timeout fires.
+    /// The child is created with `CREATE_SUSPENDED` so no user code runs — and
+    /// therefore no grandchildren can be spawned — before `AssignProcessToJobObject`
+    /// completes.  Once the child is in the job every process it subsequently
+    /// creates is auto-enrolled, guaranteeing `TerminateJobObject` covers the
+    /// whole tree even if the root exits before the timeout fires.
     ///
-    /// If job creation or assignment fails (e.g. on Windows 7 with a parent
-    /// job that disallows nesting), `job` is set to `None` and the timeout
-    /// path falls back to `taskkill /T /F`.
-    ///
-    /// Note: there is a narrow TOCTOU window between `spawn` and `assign`
-    /// during which the child could spawn a grandchild before being added to
-    /// the job.  In practice this window is measured in microseconds (before
-    /// the child's runtime has finished initializing) and is not a concern for
-    /// compiled Hew evaluation binaries.
+    /// Failure modes and fallbacks:
+    /// - Job creation fails → spawn normally (no suspend), `job = None`,
+    ///   timeout falls back to `taskkill /T /F`.
+    /// - Spawn suspended fails → propagate error.
+    /// - Assignment fails → resume (mandatory), `job = None`, taskkill fallback.
+    /// - Resume fails → kill the orphaned suspended process, propagate error.
     #[cfg(windows)]
     fn spawn(command: &mut Command) -> Result<Self, String> {
-        let child = command
-            .spawn()
-            .map_err(|e| format!("cannot spawn child process: {e}"))?;
+        use std::os::windows::process::CommandExt;
 
-        let job = windows_job::WindowsJob::new()
-            .and_then(|j| j.assign(&child).map(|()| j))
-            .ok(); // Non-fatal; timeout falls back to taskkill if None.
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
-        Ok(Self { child, job })
+        match windows_job::WindowsJob::new() {
+            Err(_) => {
+                // Job creation failed: spawn normally and rely on taskkill fallback.
+                let child = command
+                    .spawn()
+                    .map_err(|e| format!("cannot spawn child process: {e}"))?;
+                return Ok(Self { child, job: None });
+            }
+            Ok(job) => {
+                // Spawn suspended: the child holds no locks and has spawned no
+                // descendants, so the assignment window is truly race-free.
+                let mut child = command
+                    .creation_flags(CREATE_SUSPENDED)
+                    .spawn()
+                    .map_err(|e| format!("cannot spawn child process: {e}"))?;
+
+                // Assign while suspended — this is the race-free moment.
+                let job = match job.assign(&child) {
+                    Ok(()) => Some(job),
+                    Err(_) => None, // assignment failed; taskkill fallback
+                };
+
+                // Resume. If this fails the process is permanently stuck.
+                if let Err(e) = windows_job::resume_child_process(&child) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("cannot resume suspended child process: {e}"));
+                }
+
+                Ok(Self { child, job })
+            }
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -533,6 +558,37 @@ mod windows_job {
         fn TerminateJobObject(h_job: HANDLE, u_exit_code: u32) -> BOOL;
         fn CloseHandle(h_object: HANDLE) -> BOOL;
         fn GetLastError() -> DWORD;
+    }
+
+    // NtResumeProcess is not in the Win32 SDK headers but is a stable
+    // ntdll.dll export present on all Windows versions since NT 4.0.
+    // It resumes all threads in a process atomically, which is exactly
+    // what we need after a CREATE_SUSPENDED spawn.  We use it instead of
+    // ResumeThread because std::process::Child does not expose the primary-
+    // thread handle that CreateProcess returns.
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtResumeProcess(process_handle: HANDLE) -> i32; // NTSTATUS
+    }
+
+    /// Resume all threads in a child process that was created suspended.
+    ///
+    /// Calls `NtResumeProcess`, which decrements the suspend count on every
+    /// thread.  For a freshly `CREATE_SUSPENDED` process this unblocks the
+    /// primary thread and lets the process start executing.
+    pub(super) fn resume_child_process(child: &Child) -> Result<(), String> {
+        let handle = child.as_raw_handle() as HANDLE;
+        // SAFETY: handle is valid for the lifetime of child.
+        // NTSTATUS: values < 0 are errors; >= 0 are success codes.
+        let status = unsafe { NtResumeProcess(handle) };
+        if status < 0 {
+            let code = unsafe { GetLastError() };
+            Err(format!(
+                "NtResumeProcess failed: NTSTATUS {status:#010x} (last error {code})"
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) struct WindowsJob(HANDLE);

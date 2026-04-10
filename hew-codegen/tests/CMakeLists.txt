@@ -1295,3 +1295,10 @@ add_wasm_file_test(actor_closure_struct_message  e2e_actors wasm_actor_closure_s
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "is not supported on WASM")
 add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "is not supported on WASM")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "is not supported on WASM")
+# Multi-arm timed select is still rejected on WASM: asks are enqueued before
+# hew.select.first and a real timeout cannot be implemented without WASI clock.
+add_wasm_reject_test(select_timed  e2e_actors wasm_reject_select_timed "WASM-TODO")
+
+# Select is now supported on WASM via the cooperative scheduler.
+# Register the parity proof test: infinite-wait select, first arm wins deterministically.
+add_wasm_file_test(select_basic   e2e_actors wasm_select_basic)

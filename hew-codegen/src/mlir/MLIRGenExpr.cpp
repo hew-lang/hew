@@ -6515,6 +6515,23 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     return ifOp.getResult(0);
   }
 
+  // For WASM: reject timed multi-arm select before emitting any asks.
+  // The single-arm timed path above is already handled.  For multi-arm
+  // timed selects the asks are enqueued before hew.select.first runs; if
+  // we admitted a timeout here the timeout arm could fire while those asks
+  // are still live in actor mailboxes.  Cancelling reply channels drops
+  // replies but does not retract already-enqueued mailbox work.
+  // WASM-TODO: multi-arm timed select requires WASI clock_time_get support
+  // and a pre-select retraction mechanism.
+  if (isWasm32_ && hasTimeoutBody) {
+    emitError(location)
+        << "timed select (select { ... after <duration> => ... }) with multiple arms "
+           "is not supported on WASM32 — WASM-TODO: requires WASI clock_time_get support\n"
+        << "  help: Use a no-timeout select { ... } or restructure with a single-arm "
+           "timed await";
+    return nullptr;
+  }
+
   llvm::SmallVector<mlir::Value, 4> channels;
   llvm::SmallVector<mlir::Type, 4> resultTypes;
 
@@ -6592,7 +6609,11 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     mlir::LLVM::StoreOp::create(builder, location, channels[i], gep);
   }
 
-  int64_t timeoutMs = 2147483647;
+  // Default to -1 (infinite wait) for no-timeout select.
+  // The WASM early-return above ensures hasTimeoutBody is false when we reach
+  // here on WASM, so this path is only taken for no-timeout selects or native
+  // timed selects.  Native finite-timeout selects override below.
+  int64_t timeoutMs = -1;
   if (sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->duration) {
     auto timeoutVal = generateExpression((*sel.timeout)->duration->value);
     if (timeoutVal) {

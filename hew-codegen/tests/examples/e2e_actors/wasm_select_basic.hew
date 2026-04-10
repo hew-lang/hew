@@ -1,0 +1,25 @@
+// WASM select parity proof: cooperative select without sleep_ms.
+//
+// On WASM the cooperative scheduler processes messages in FIFO order:
+// first.get() is enqueued before second.get(), so it is dispatched first
+// and wins the select.  The loser channel is cancelled and cleaned up
+// when second is drained at scheduler shutdown (no crash = correct cleanup).
+
+actor Responder {
+    let value: int;
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let first  = spawn Responder(value: 1);
+    let second = spawn Responder(value: 2);
+
+    // first.get() wins because its ask is enqueued first; result must be 1.
+    let result = select {
+        x from first.get()  => x,
+        y from second.get() => y,
+    };
+    println(result);
+}

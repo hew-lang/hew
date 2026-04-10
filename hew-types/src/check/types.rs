@@ -190,7 +190,7 @@ impl WasmUnsupportedFeature {
             }
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
-            Self::Select => "they wait on multiple mailboxes using OS thread blocking",
+            Self::Select => "timed multi-arm selects require WASI clock_time_get (WASM-TODO); use a no-timeout select or single-arm timed ask",
         }
     }
 }

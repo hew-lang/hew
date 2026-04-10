@@ -135,7 +135,8 @@ mlir::Value MLIRGen::emitTagEqualCondition(mlir::Value scrutinee, int64_t varian
 // ============================================================================
 
 /// Look up the indirect enum info for a given pointer-typed scrutinee.
-/// Uses only the type checker's expression type metadata.
+/// Uses only the type checker's expression type metadata; never reconstructs
+/// from lowered values or arm patterns.
 const MLIRGen::EnumTypeInfo *
 MLIRGen::findIndirectEnumForScrutinee(mlir::Value scrutinee, const ast::Span &span,
                                       const std::vector<ast::MatchArm> * /*arms*/) const {
@@ -161,10 +162,10 @@ mlir::Value MLIRGen::derefIndirectEnumScrutinee(mlir::Value scrutinee, const ast
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(scrutinee.getType()))
     return scrutinee;
 
-  if (!resolvedTypeOf(span)) {
-    requireResolvedTypeOf(span, "indirect enum scrutinee", location);
+  // Fail closed: pointer-typed scrutinees require checker-owned type metadata.
+  // Codegen must not reconstruct enum identity from lowered values or arm patterns.
+  if (!requireResolvedTypeOf(span, "indirect enum scrutinee", location))
     return nullptr;
-  }
 
   auto *info = findIndirectEnumForScrutinee(scrutinee, span, arms);
   if (!info)

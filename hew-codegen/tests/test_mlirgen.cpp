@@ -3525,6 +3525,80 @@ fn head_or_zero(list: List) -> int {
   PASS();
 }
 
+// Test: Indirect enum scrutinee metadata is required for match expressions (ExprMatch path)
+// Covers the generateMatchExpr -> derefIndirectEnumScrutinee boundary for return-match syntax.
+static void test_indirect_enum_match_expr_missing_scrutinee_expr_type_fails_closed() {
+  TEST(indirect_enum_match_expr_missing_scrutinee_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+indirect enum List {
+    Nil;
+    Cons(int, List);
+}
+
+fn head_or_zero(list: List) -> int {
+    return match list {
+        Nil => 0,
+        Cons(head, _) => head,
+    };
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "head_or_zero");
+  if (!fn) {
+    FAIL("head_or_zero function not found");
+    return;
+  }
+
+  auto *matchExprSpanned = findReturnedMatchExpr(*fn);
+  if (!matchExprSpanned) {
+    FAIL("expected returned indirect enum match expression");
+    return;
+  }
+
+  auto *exprMatch = std::get_if<hew::ast::ExprMatch>(&matchExprSpanned->value.kind);
+  if (!exprMatch || !exprMatch->scrutinee) {
+    FAIL("expected ExprMatch with scrutinee");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, exprMatch->scrutinee->span)) {
+    FAIL("failed to remove expr_types entry for indirect enum match expr scrutinee");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when indirect enum match expr scrutinee metadata is "
+         "missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasMissingIndirectEnumScrutineeDiag(stderrText)) {
+    FAIL("expected indirect enum match expr fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for indirect enum match expr metadata");
+    return;
+  }
+
+  PASS();
+}
+
 static void test_indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed() {
   TEST(indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed);
 
@@ -8258,6 +8332,7 @@ int main() {
   test_direct_unsigned_range_missing_upper_expr_type_fails_closed();
   test_materialized_unsigned_range_missing_expr_type_fails_closed();
   test_indirect_enum_match_missing_scrutinee_expr_type_fails_closed();
+  test_indirect_enum_match_expr_missing_scrutinee_expr_type_fails_closed();
   test_indirect_enum_iflet_stmt_missing_scrutinee_expr_type_fails_closed();
   test_indirect_enum_iflet_expr_missing_scrutinee_expr_type_fails_closed();
   test_indirect_enum_whilelet_missing_scrutinee_expr_type_fails_closed();

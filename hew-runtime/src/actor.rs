@@ -503,7 +503,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     drop(unsafe { Box::from_raw(actor) });
 }
 
-/// Free an actor's resources (WASM version — no arena cleanup).
+/// Free an actor's resources (WASM version — delegates to `free_actor_resources_wasm`).
 ///
 /// # Safety
 ///

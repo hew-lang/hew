@@ -618,9 +618,10 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // actor's arena for the next dispatch cycle.  Mirroring the native
     // scheduler: install prev_arena (stored in PREV_ARENA) back as current,
     // then reset the actor's bump allocator so the next activation starts
-    // with a clean cursor.  The null-arena fast-path is intentional: today
-    // all WASM actors carry a null arena and both calls are lightweight
-    // no-ops in that case.
+    // with a clean cursor.  WASM actors now carry a real arena allocated at
+    // spawn time, so arena_install and arena_reset perform live work here.
+    // Both functions handle a null pointer safely for the (test-only) case
+    // of a manually constructed actor without an arena.
     // SAFETY: arena_install and arena_reset are safe with null pointers.
     // PREV_ARENA was set at activation entry; actor_arena was captured above.
     unsafe {

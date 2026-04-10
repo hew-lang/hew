@@ -157,8 +157,6 @@ fn cmd_run(a: &args::RunArgs) {
 
     let tmp_bin = tmp_path.display().to_string();
 
-    // Run the compiled binary, holding a Child handle so signals sent directly
-    // to `hew run` also terminate the compiled program instead of orphaning it.
     let mut cmd = std::process::Command::new(&tmp_bin);
     cmd.args(&a.program_args);
 
@@ -180,30 +178,51 @@ fn cmd_run(a: &args::RunArgs) {
         }
     }
 
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: cannot run compiled binary: {e}");
-            drop(tmp_path);
-            std::process::exit(1);
+    // Two execution paths depending on whether a timeout was requested:
+    //
+    // • No timeout  — bare spawn preserves interactive behavior (inherits the
+    //   parent's process group so terminal job control and signal forwarding
+    //   work as users expect).  Signal forwarding is still set up so that
+    //   SIGTERM/SIGINT sent to `hew run` also reaches the compiled program.
+    //
+    // • With timeout — spawn inside a new process group via `BoundedChild` so
+    //   that the entire child process tree (grandchildren included) is killed
+    //   when the deadline is reached.  Without process-group isolation, only
+    //   the direct child would be killed and grandchildren would leak.
+    let status: Result<crate::process::ChildWaitOutcome, String> = match timeout {
+        None => {
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: cannot run compiled binary: {e}");
+                    drop(tmp_path);
+                    std::process::exit(1);
+                }
+            };
+            // Forward SIGTERM/SIGINT to the child so that signals sent directly
+            // to the wrapper also terminate the compiled program.
+            #[cfg(unix)]
+            signal::forward_signals_to_child(child.id());
+            child
+                .wait()
+                .map(crate::process::ChildWaitOutcome::Exited)
+                .map_err(|e| format!("cannot wait for child process: {e}"))
         }
-    };
-
-    // Forward SIGTERM/SIGINT to the child so that signals sent directly to the
-    // wrapper also terminate the compiled program instead of orphaning it.
-    #[cfg(unix)]
-    signal::forward_signals_to_child(child.id());
-
-    let status = match timeout {
-        Some(timeout) => crate::process::wait_for_child_with_timeout(
-            &mut child,
-            timeout,
-            crate::process::TimeoutKillTarget::Child,
-        ),
-        None => child
-            .wait()
-            .map(crate::process::ChildWaitOutcome::Exited)
-            .map_err(|e| format!("cannot wait for child process: {e}")),
+        Some(t) => {
+            let mut bounded = match crate::process::BoundedChild::spawn(&mut cmd) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error: cannot run compiled binary: {e}");
+                    drop(tmp_path);
+                    std::process::exit(1);
+                }
+            };
+            // Forward signals to the child PID; the process-group kill on
+            // timeout handles the broader tree teardown.
+            #[cfg(unix)]
+            signal::forward_signals_to_child(bounded.id());
+            bounded.wait_with_timeout(t)
+        }
     };
 
     // Drop TempPath to clean up before exit (std::process::exit skips destructors)

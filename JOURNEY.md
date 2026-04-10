@@ -107,6 +107,12 @@ expression-type map lookups happen here."
 The `mergeInfo` lambda was deleted; it existed solely to blend `resolvedInfo`
 into the explicit results, and blending is no longer needed.
 
+## 2026-04-10 — fix/module-qualified-stdlib-rewrite-metadata
+
+- Moved module-qualified stdlib C-symbol rewrite authority into `hew-types`: `check_method_call` now records direct-call rewrite metadata for imported registry-backed stdlib calls instead of leaving `hew-serialize` to re-resolve them from `ModuleRegistry`.
+- Kept the new rewrite metadata distinct from receiver-injecting method rewrites so `hew-serialize::enrich_method_call` can rewrite `json.parse`, `os.pid`, and `fs.read_file` straight to `Expr::Call` without prepending the module identifier as an argument.
+- Left the serializer's registry lookup in place only as a backwards-compat fallback, and added focused checker + serializer regressions so the boundary stays checker-authoritative.
+
 ## 2026-04-10 — refactor/mlir-typehint-array-hashmap
 
 - Goal: replace the array-literal and empty-`HashMap` MLIR lowering dependence on `pendingDeclaredType` with local explicit type hints. Fit: this stays inside the existing `MLIRGen` expression-lowering flow by threading optional MLIR type hints from let/var initializers into collection literal lowering instead of adding another side channel. Invariants preserved: typed `Vec` literals must still lower directly to `hew.vec`, empty typed `{}` must still lower to `hew.hashmap`, unresolved collection types must still fail closed, and unrelated sibling expressions must not inherit collection hints.

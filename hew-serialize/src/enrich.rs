@@ -5,11 +5,9 @@
 //! explicit annotations. The result is a fully-typed AST that the C++ backend
 //! can consume without its own type inference.
 
-#[cfg(test)]
-use hew_parser::ast::CallArg;
 use hew_parser::ast::{
-    ActorDecl, Block, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span, Spanned,
-    Stmt, TraitBound, TypeExpr,
+    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
+    Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::builtin_names::{
     QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
@@ -285,6 +283,19 @@ fn refine_channel_runtime_rewrite(
         "hew_channel_recv" => Some("hew_channel_recv_int"),
         "hew_channel_try_recv" => Some("hew_channel_try_recv_int"),
         _ => None,
+    }
+}
+
+fn make_direct_call_expr(
+    function_span: Span,
+    function_name: impl Into<String>,
+    args: Vec<CallArg>,
+) -> Expr {
+    Expr::Call {
+        function: Box::new((Expr::Identifier(function_name.into()), function_span)),
+        type_args: None,
+        args,
+        is_tail_call: false,
     }
 }
 
@@ -1601,7 +1612,8 @@ fn enrich_stmt_with_diagnostics(
 /// Rewrite `MethodCall` nodes to the forms the C++ codegen expects.
 ///
 /// Handles three categories of method call rewriting:
-/// 1. Module-qualified stdlib calls (e.g. `os.pid()` → `hew_os_pid()`)
+/// 1. Checker-authored or fallback module-qualified stdlib calls
+///    (e.g. `os.pid()` → `hew_os_pid()`)
 /// 2. User module calls (e.g. `utils.helper(x)` → `helper(x)`)
 /// 3. Handle/stream/channel method calls (receiver prepended as first argument)
 ///
@@ -1629,8 +1641,17 @@ fn enrich_method_call(
         return;
     };
 
+    let method_call_key = SpanKey::from(&expr.1);
+
     // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
     if let Expr::Identifier(module_name) = &receiver.0 {
+        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) =
+            tco.method_call_rewrites.get(&method_call_key)
+        {
+            let old_args = std::mem::take(args);
+            expr.0 = make_direct_call_expr(receiver.1.clone(), c_symbol.clone(), old_args);
+            return;
+        }
         if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
             // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
             // non-trivial Hew wrappers that must be compiled as module graph
@@ -1638,12 +1659,7 @@ fn enrich_method_call(
             // MethodCall lets the C++ codegen dispatch them correctly.
             if c_symbol != *method {
                 let old_args = std::mem::take(args);
-                expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_symbol), receiver.1.clone())),
-                    type_args: None,
-                    args: old_args,
-                    is_tail_call: false,
-                };
+                expr.0 = make_direct_call_expr(receiver.1.clone(), c_symbol, old_args);
                 return;
             }
         }
@@ -1651,12 +1667,7 @@ fn enrich_method_call(
         // User module functions compile under their own name, not a C symbol.
         if tco.user_modules.contains(module_name) {
             let old_args = std::mem::take(args);
-            expr.0 = Expr::Call {
-                function: Box::new((Expr::Identifier(method.clone()), receiver.1.clone())),
-                type_args: None,
-                args: old_args,
-                is_tail_call: false,
-            };
+            expr.0 = make_direct_call_expr(receiver.1.clone(), method.clone(), old_args);
             return;
         }
     }
@@ -1666,7 +1677,6 @@ fn enrich_method_call(
         end: receiver.1.end,
     };
     let receiver_ty = tco.expr_types.get(&key);
-    let method_call_key = SpanKey::from(&expr.1);
     if let Some(rewrite) = tco.method_call_rewrites.get(&method_call_key) {
         match rewrite {
             MethodCallRewrite::RewriteToFunction { c_symbol } => {
@@ -1693,6 +1703,10 @@ fn enrich_method_call(
                     args: all_args,
                     is_tail_call: false,
                 };
+            }
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol } => {
+                let old_args = std::mem::take(args);
+                expr.0 = make_direct_call_expr(receiver.1.clone(), c_symbol.clone(), old_args);
             }
             MethodCallRewrite::DeferToLowering => {}
         }
@@ -3720,12 +3734,16 @@ mod tests {
     fn test_enrich_stdlib_module_uses_c_symbol() {
         // A stdlib module call should use the C symbol, not bare name
         let tco = make_tco_with_user_modules(vec![]); // no user modules
+        let registry = test_registry_with(&["std::fs"]);
+        let expected = registry
+            .resolve_module_call("fs", "read")
+            .expect("fs.read should resolve in the test registry");
 
-        // Build: fs.read_file("test.txt") — "fs" is a stdlib module
+        // Build: fs.read("test.txt") — "fs" is a stdlib module
         let mut expr: Spanned<Expr> = (
             Expr::MethodCall {
                 receiver: Box::new((Expr::Identifier("fs".to_string()), 0..2)),
-                method: "read_file".to_string(),
+                method: "read".to_string(),
                 args: vec![hew_parser::ast::CallArg::Positional((
                     Expr::Literal(hew_parser::ast::Literal::String("\"test.txt\"".to_string())),
                     3..13,
@@ -3734,23 +3752,23 @@ mod tests {
             0..14,
         );
 
-        enrich_expr(&mut expr, &tco).unwrap();
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
 
-        // Should be rewritten to C symbol (hew_fs_read_file) not bare "read_file"
+        assert!(
+            diagnostics.is_empty(),
+            "stdlib module fallback rewrite should not emit diagnostics: {diagnostics:?}"
+        );
         match &expr.0 {
             Expr::Call { function, .. } => match &function.0 {
                 Expr::Identifier(name) => {
-                    assert!(
-                        name.starts_with("hew_fs_"),
-                        "stdlib call should use C symbol, got '{name}'"
+                    assert_eq!(
+                        name, &expected,
+                        "stdlib call should use the loaded C symbol"
                     );
                 }
                 other => panic!("expected Identifier, got {other:?}"),
             },
-            // If not rewritten (stdlib not loaded in test), it stays as MethodCall — that's OK
-            Expr::MethodCall { .. } => {
-                // stdlib may not be loaded in this test context, so this is acceptable
-            }
             other => panic!("unexpected expr: {other:?}"),
         }
     }
@@ -4393,6 +4411,26 @@ mod tests {
         record_runtime_method_call_rewrite_for_span(tco, 0..20, c_symbol);
     }
 
+    fn record_module_qualified_method_call_rewrite_for_span(
+        tco: &mut TypeCheckOutput,
+        span: std::ops::Range<usize>,
+        c_symbol: &str,
+    ) {
+        tco.method_call_rewrites.insert(
+            hew_types::check::SpanKey {
+                start: span.start,
+                end: span.end,
+            },
+            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                c_symbol: c_symbol.to_string(),
+            },
+        );
+    }
+
+    fn record_module_qualified_method_call_rewrite(tco: &mut TypeCheckOutput, c_symbol: &str) {
+        record_module_qualified_method_call_rewrite_for_span(tco, 0..20, c_symbol);
+    }
+
     fn record_deferred_method_call_rewrite_for_span(
         tco: &mut TypeCheckOutput,
         span: std::ops::Range<usize>,
@@ -4408,6 +4446,47 @@ mod tests {
 
     fn record_deferred_method_call_rewrite(tco: &mut TypeCheckOutput) {
         record_deferred_method_call_rewrite_for_span(tco, 0..20);
+    }
+
+    #[test]
+    fn test_enrich_method_call_module_qualified_metadata_avoids_registry_lookup() {
+        let mut tco = empty_tco();
+        record_module_qualified_method_call_rewrite(&mut tco, "hew_file_read");
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("fs".to_string()), 0..2)),
+                method: "read".to_string(),
+                args: vec![CallArg::Positional((
+                    Expr::Literal(hew_parser::ast::Literal::String("\"test.txt\"".to_string())),
+                    3..13,
+                ))],
+            },
+            0..20,
+        );
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+
+        assert!(
+            diagnostics.is_empty(),
+            "metadata-backed module rewrite should not emit diagnostics: {diagnostics:?}"
+        );
+        match &expr.0 {
+            Expr::Call { function, args, .. } => {
+                assert_eq!(
+                    args.len(),
+                    1,
+                    "module-qualified rewrite must not inject the receiver"
+                );
+                match &function.0 {
+                    Expr::Identifier(name) => {
+                        assert_eq!(name, "hew_file_read");
+                    }
+                    other => panic!("expected Identifier, got {other:?}"),
+                }
+            }
+            other => panic!("expected Call expr, got {other:?}"),
+        }
     }
 
     #[test]

@@ -28,6 +28,19 @@ impl Checker {
         );
     }
 
+    fn record_module_qualified_method_call_rewrite(
+        &mut self,
+        span: &Span,
+        c_symbol: impl Into<String>,
+    ) {
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                c_symbol: c_symbol.into(),
+            },
+        );
+    }
+
     fn record_deferred_method_call_rewrite(&mut self, span: &Span) {
         self.record_method_call_rewrite(span, MethodCallRewrite::DeferToLowering);
     }
@@ -43,6 +56,25 @@ impl Checker {
         };
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
             self.record_runtime_method_call_rewrite(span, c_symbol);
+        }
+    }
+
+    fn record_module_qualified_stdlib_call_rewrite_if_any(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if self.user_modules.contains(module_name) {
+            return;
+        }
+        if let Some(c_symbol) = self
+            .module_registry
+            .resolve_module_call(module_name, method)
+        {
+            if c_symbol != method {
+                self.record_module_qualified_method_call_rewrite(span, c_symbol);
+            }
         }
     }
 
@@ -837,6 +869,7 @@ impl Checker {
                     }
                     let (freshened_params, freshened_ret, resolved_type_args) =
                         self.instantiate_fn_sig_for_call(&sig, None, span);
+                    self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
                     // Separate positional and named args
                     let positional_count = args.iter().take_while(|a| a.name().is_none()).count();
                     let positional_args = &args[..positional_count];

@@ -1160,7 +1160,9 @@ fn eval(e: Expr) -> Int {
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
 - Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
-- `Rc<T>` cannot be used as a collection key type: `HashMap<Rc<T>, V>`, `HashMap<K, Rc<T>>`, and `HashSet<Rc<T>>` are rejected at the annotation level by the type checker; `Vec<Rc<T>>` is rejected at method-call sites (push, pop, get, remove, set, append, extend, map, filter, fold) rather than at the annotation level
+- For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named struct/enum/actor members, including module-qualified and non-root private definitions seen during checking
+- `ActorRef<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `ActorRef<A>` is also non-RcFree for collection checks
+- `HashMap` and `HashSet` reject non-RcFree key/value/element types during type checking; `Vec` rejects non-RcFree elements at collection method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 
 ```hew
 let data: Rc<String> = Rc::new(expensive_computation());
@@ -1886,7 +1888,7 @@ impl<T> Vec<T> {
 
 **Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
 
-- `Rc<T>` elements: `Vec<Rc<T>>` is not supported (the runtime does not track Rc ownership for collection elements); rejection is enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
+- Non-RcFree elements: `Vec<T>` operations reject element types that fail the internal RcFree boundary (for example direct `Rc<U>`, named wrappers/structs/enums that contain `Rc`, and `ActorRef<A>` when actor `A` stores `Rc` state); this remains enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 - Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
@@ -1900,8 +1902,9 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 the shipped runtime/codegen ABI currently supports only `HashMap<String, V>`
 where `V` is `String`, `bool`, `char`, any integer type, any float type, or
 `duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
-Additionally, `Rc<T>` in either the key or value position is rejected regardless
-of the ABI key/value check.
+Additionally, non-RcFree types in either the key or value position are rejected
+regardless of the ABI key/value check; this is structural, not just a direct
+`Rc<T>` ban.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
@@ -1989,8 +1992,9 @@ Important current details:
   `HashSet<int>` and `HashSet<String>` through type-specific runtime entry
   points; unsupported `HashSet<T>` usages are rejected fail-closed during
   type checking, including nested annotations, function signatures, and
-  `wire enum` payloads; `HashSet<Rc<T>>` is additionally rejected because
-  `Rc<T>` elements in collections are not supported
+  `wire enum` payloads; collection element admissibility also requires the
+  internal RcFree boundary, so `HashSet<Rc<T>>`, named wrappers that contain
+  `Rc`, and `ActorRef<A>` handles to actors with `Rc` state are rejected
 - `std::iter` is presently specialised to `Vec<int>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,

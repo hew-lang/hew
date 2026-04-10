@@ -1467,7 +1467,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     methodCall.receiver = std::make_unique<ast::Spanned<ast::Expr>>(ast::Spanned<ast::Expr>{
         ast::Expr{ast::ExprIdentifier{"__len_receiver"}, receiverArg.span}, receiverArg.span});
     methodCall.method = "len";
-    if (auto result = generateBuiltinMethodCall(methodCall, receiver, location))
+    if (auto result = generateBuiltinMethodCall(methodCall, receiver, location, exprSpan))
       return *result;
     ++errorCount_;
     emitError(location) << "len(...) is only supported for builtin collection and string types";
@@ -3025,7 +3025,8 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
 
 std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMethodCall &mc,
                                                               mlir::Value receiver,
-                                                              mlir::Location location) {
+                                                              mlir::Location location,
+                                                              const ast::Span &exprSpan) {
   if (!mc.receiver)
     return std::nullopt;
   auto receiverType = receiver.getType();
@@ -3559,12 +3560,45 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // HashSet<T> methods (HandleType with name "HashSet")
   if (auto handleType = mlir::dyn_cast<hew::HandleType>(receiverType)) {
     if (handleType.getHandleKind() == "HashSet") {
-      // Determine element type from method arguments at the call site.
-      // The i64 default below is a LOW-RISK fallback — it is only used when
-      // the method takes no arguments (e.g., len(), clear()), where element
-      // type doesn't affect the runtime call. Methods that process elements
-      // (insert, contains, remove) always override from the actual argument type.
-      mlir::Type elemType = i64Type;
+      const auto *fact = requireLoweringFactOf(exprSpan, "HashSet::" + method, location);
+      if (!fact)
+        return mlir::Value{};
+      if (fact->kind != ast::LoweringKind::HashSet) {
+        ++errorCount_;
+        emitError(location) << "unexpected lowering fact kind for HashSet::" << method;
+        return mlir::Value{};
+      }
+      if (fact->drop_kind != ast::DropKind::HashSetFree) {
+        ++errorCount_;
+        emitError(location) << "unexpected drop kind for HashSet::" << method;
+        return mlir::Value{};
+      }
+
+      mlir::Type elemType;
+      switch (fact->element_type) {
+      case ast::HashSetElementType::I64:
+      case ast::HashSetElementType::U64:
+        elemType = i64Type;
+        break;
+      case ast::HashSetElementType::Str:
+        elemType = hew::StringRefType::get(&context);
+        break;
+      default:
+        ++errorCount_;
+        emitError(location) << "unexpected HashSet element type for HashSet::" << method;
+        return mlir::Value{};
+      }
+
+      const bool expectsStringAbi = fact->abi_variant == ast::HashSetAbi::String;
+      const bool expectsIntAbi = fact->abi_variant == ast::HashSetAbi::Int64;
+      const bool elemIsString = mlir::isa<hew::StringRefType>(elemType);
+      const bool elemIsInt64 = elemType.isInteger(64);
+      if ((elemIsString && !expectsStringAbi) || (elemIsInt64 && !expectsIntAbi)) {
+        ++errorCount_;
+        emitError(location) << "inconsistent HashSet lowering fact for method '" << method << "'";
+        return mlir::Value{};
+      }
+
       mlir::Value argValue;
       const bool methodRequiresArg =
           method == "insert" || method == "contains" || method == "remove";
@@ -3577,9 +3611,6 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         argValue = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!argValue)
           return mlir::Value{};
-        if (argValue.getType()) {
-          elemType = argValue.getType();
-        }
       }
 
       mlir::Value setResult;
@@ -4909,7 +4940,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   }
 
   // Builtin methods on scalars
-  if (auto result = generateBuiltinMethodCall(mc, receiver, location))
+  if (auto result = generateBuiltinMethodCall(mc, receiver, location, exprSpan))
     return *result;
 
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);

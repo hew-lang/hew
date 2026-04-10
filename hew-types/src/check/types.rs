@@ -1,5 +1,6 @@
 use crate::env::TypeEnv;
 use crate::error::TypeError;
+use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
@@ -37,6 +38,12 @@ use std::path::PathBuf;
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    /// Checker-owned lowering metadata keyed by the lowering site's source span.
+    ///
+    /// Populated for erased runtime types whose lowering must not guess from
+    /// MLIR argument types. Missing entry means the checker could not produce a
+    /// concrete lowering fact and downstream codegen must fail closed.
+    pub lowering_facts: HashMap<SpanKey, LoweringFact>,
     /// Checker-owned method-call lowering decisions keyed by the method call span.
     ///
     /// Populated during type checking for both receiver-based runtime rewrites
@@ -136,6 +143,21 @@ pub enum MethodCallRewrite {
         c_symbol: String,
     },
     DeferToLowering,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingLoweringFact {
+    pub(super) hashset_element_ty: Ty,
+    pub(super) source_module: Option<String>,
+}
+
+impl PendingLoweringFact {
+    pub(super) fn hashset(hashset_element_ty: Ty, source_module: Option<String>) -> Self {
+        Self {
+            hashset_element_ty,
+            source_module,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -302,6 +324,7 @@ pub struct Checker {
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
@@ -452,6 +475,7 @@ impl Checker {
             expr_types: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            pending_lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),

@@ -1049,6 +1049,34 @@ struct AssignTargetShapeEntry {
   bool is_unsigned = false;
 };
 
+enum class LoweringKind {
+  HashSet,
+};
+
+enum class HashSetElementType {
+  I64,
+  U64,
+  Str,
+};
+
+enum class HashSetAbi {
+  Int64,
+  String,
+};
+
+enum class DropKind {
+  HashSetFree,
+};
+
+struct LoweringFactEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  LoweringKind kind = LoweringKind::HashSet;
+  HashSetElementType element_type = HashSetElementType::I64;
+  HashSetAbi abi_variant = HashSetAbi::Int64;
+  DropKind drop_kind = DropKind::HashSetFree;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1066,6 +1094,8 @@ struct Program {
   /// Checker-resolved assignment target type-shape metadata (keyed by target span).
   /// Consumed fail-closed by MLIR lowering to determine compound-assignment signedness.
   std::vector<AssignTargetShapeEntry> assign_target_shapes;
+  /// Checker-owned lowering metadata for erased runtime types.
+  std::vector<LoweringFactEntry> lowering_facts;
   /// Known handle type names (e.g., "http.Server", "json.Value").
   /// Populated from the Rust type checker's handle type registry.
   std::vector<std::string> handle_types;

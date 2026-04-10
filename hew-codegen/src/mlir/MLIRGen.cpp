@@ -792,6 +792,19 @@ MLIRGen::requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef conte
   return nullptr;
 }
 
+const ast::LoweringFactEntry *
+MLIRGen::requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
+                               std::optional<mlir::Location> errorLoc) {
+  if (const auto *fact = loweringFactOf(span))
+    return fact;
+
+  ++errorCount_;
+  emitError(errorLoc.value_or(currentLoc)) << "missing lowering_facts entry for " << context
+                                           << " at span [" << span.start << ", " << span.end
+                                           << ")";
+  return nullptr;
+}
+
 std::optional<MLIRGen::StreamHandleInfo>
 MLIRGen::streamHandleInfoFromTypeExpr(const ast::TypeExpr &typeExpr) const {
   auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
@@ -2646,6 +2659,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   }
   for (const auto &entry : program.assign_target_shapes) {
     assignTargetShapeMap[{entry.start, entry.end}] = &entry;
+  }
+  for (const auto &entry : program.lowering_facts) {
+    loweringFactMap[{entry.start, entry.end}] = &entry;
   }
 
   // Populate handle type metadata from the Rust type checker.

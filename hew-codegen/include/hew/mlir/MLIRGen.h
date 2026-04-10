@@ -271,7 +271,8 @@ private:
                                                      mlir::Value receiver, mlir::Location location);
   std::optional<mlir::Value> generateBuiltinMethodCall(const ast::ExprMethodCall &expr,
                                                        mlir::Value receiver,
-                                                       mlir::Location location);
+                                                       mlir::Location location,
+                                                       const ast::Span &exprSpan);
   mlir::Value generateLogCall(const ast::ExprMethodCall &mc);
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
   mlir::Value generateTupleExpr(const ast::ExprTuple &expr);
@@ -593,6 +594,9 @@ private:
   /// lowering to determine signedness without re-deriving from the AST.
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::AssignTargetShapeEntry *, SpanHash>
       assignTargetShapeMap;
+  /// Lookup map from lowering site span → checker-owned lowering facts.
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::LoweringFactEntry *, SpanHash>
+      loweringFactMap;
 
   /// Look up the resolved type for an expression by its source span.
   const ast::TypeExpr *resolvedTypeOf(const ast::Span &span) const {
@@ -619,6 +623,12 @@ private:
       return it->second;
     return nullptr;
   }
+  const ast::LoweringFactEntry *loweringFactOf(const ast::Span &span) const {
+    auto it = loweringFactMap.find({span.start, span.end});
+    if (it != loweringFactMap.end())
+      return it->second;
+    return nullptr;
+  }
   /// Like resolvedTypeOf(), but emits a fail-closed diagnostic when the
   /// type-checker metadata entry is missing.
   const ast::TypeExpr *requireResolvedTypeOf(const ast::Span &span, llvm::StringRef context,
@@ -634,6 +644,9 @@ private:
   const ast::AssignTargetShapeEntry *
   requireAssignTargetShapeOf(const ast::Span &span, llvm::StringRef context,
                              std::optional<mlir::Location> errorLoc = std::nullopt);
+  const ast::LoweringFactEntry *requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
+                                                      std::optional<mlir::Location> errorLoc =
+                                                          std::nullopt);
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can

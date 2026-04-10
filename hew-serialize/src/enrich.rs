@@ -3612,6 +3612,7 @@ mod tests {
     fn empty_tco() -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            lowering_facts: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],

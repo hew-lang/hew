@@ -9,6 +9,7 @@ pub mod check;
 pub mod cycle;
 pub mod env;
 pub mod error;
+pub mod lowering_facts;
 pub mod method_resolution;
 pub mod module_registry;
 pub mod stdlib;
@@ -19,4 +20,7 @@ pub mod unify;
 
 pub use check::{Checker, MethodCallReceiverKind, MethodCallRewrite, TypeCheckOutput, VariantDef};
 pub use error::TypeError;
+pub use lowering_facts::{
+    DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
+};
 pub use ty::{TraitObjectBound, Ty};

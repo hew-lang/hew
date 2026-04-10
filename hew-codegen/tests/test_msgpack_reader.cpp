@@ -134,7 +134,7 @@ static void test_single_byte_garbage_rejects() {
 // Error handling: structurally valid msgpack, semantically wrong AST
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Helper: pack a map with schema_version = 5 and the given extra fields
+// Helper: pack a map with schema_version = 6 and the given extra fields
 static std::vector<uint8_t>
 packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFields,
                int extraCount) {
@@ -142,10 +142,10 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   // Required top-level fields: schema_version, items, expr_types,
   // method_call_receiver_kinds, assign_target_kinds, assign_target_shapes,
-  // handle_types, handle_type_repr
-  pk.pack_map(8 + extraCount);
+  // lowering_facts, handle_types, handle_type_repr
+  pk.pack_map(9 + extraCount);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack_array(0); // empty array
   pk.pack(std::string("expr_types"));
@@ -155,6 +155,8 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -193,7 +195,7 @@ static void test_items_wrong_type_rejects() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(2);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(4));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack(42); // should be array
   EXPECT_REJECTS(hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
@@ -205,8 +207,8 @@ static void test_minimal_valid_program_parses() {
   auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.schema_version != 5) {
-      FAIL("schema_version should be 5");
+    if (prog.schema_version != 6) {
+      FAIL("schema_version should be 6");
       return;
     }
     if (!prog.items.empty()) {
@@ -228,9 +230,9 @@ static void test_drop_funcs_roundtrip() {
   // Build a minimal program payload that includes a drop_funcs array.
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(9); // 8 required + drop_funcs
+  pk.pack_map(10); // 9 required + drop_funcs
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -240,6 +242,8 @@ static void test_drop_funcs_roundtrip() {
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -317,9 +321,9 @@ static void test_method_call_receiver_kinds_roundtrip() {
   TEST(method_call_receiver_kinds_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(8);
+  pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -350,6 +354,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -384,16 +390,91 @@ static void test_method_call_receiver_kinds_roundtrip() {
   PASS();
 }
 
+static void test_lowering_facts_roundtrip() {
+  TEST(lowering_facts_roundtrip);
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(9);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(1);
+  pk.pack_map(6);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(20));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("hash_set"));
+  pk.pack(std::string("element_type"));
+  pk.pack(std::string("str"));
+  pk.pack(std::string("abi_variant"));
+  pk.pack(std::string("string"));
+  pk.pack(std::string("drop_kind"));
+  pk.pack(std::string("hash_set_free"));
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.lowering_facts.size() != 1) {
+      FAIL("expected one lowering_facts entry");
+      return;
+    }
+    const auto &fact = prog.lowering_facts[0];
+    if (fact.start != 10 || fact.end != 20) {
+      FAIL("lowering fact span wrong");
+      return;
+    }
+    if (fact.kind != hew::ast::LoweringKind::HashSet) {
+      FAIL("lowering fact kind wrong");
+      return;
+    }
+    if (fact.element_type != hew::ast::HashSetElementType::Str) {
+      FAIL("lowering fact element type wrong");
+      return;
+    }
+    if (fact.abi_variant != hew::ast::HashSetAbi::String) {
+      FAIL("lowering fact ABI wrong");
+      return;
+    }
+    if (fact.drop_kind != hew::ast::DropKind::HashSetFree) {
+      FAIL("lowering fact drop kind wrong");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
 // ─── assign_target_shapes parsing ───────────────────────────────────────────
 
 static void test_assign_target_shapes_roundtrip() {
   TEST(assign_target_shapes_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  // 8 required fields + assign_target_shapes has 2 entries (overrides the empty one)
-  pk.pack_map(8);
+  // 9 required fields; assign_target_shapes carries the populated entries.
+  pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -425,6 +506,8 @@ static void test_assign_target_shapes_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("handle_type_repr"));
   pk.pack_map(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
 
   auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
                                    reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
@@ -471,9 +554,9 @@ static void test_type_infer_in_wire_rejects() {
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
 
-  pk.pack_map(8);
+  pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(5));
+  pk.pack(static_cast<uint64_t>(6));
   pk.pack(std::string("items"));
   pk.pack_array(0);
 
@@ -503,6 +586,8 @@ static void test_type_infer_in_wire_rejects() {
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
   pk.pack_array(0);
   pk.pack(std::string("handle_types"));
   pk.pack_array(0);
@@ -537,6 +622,7 @@ int main() {
 
   // drop_funcs field
   test_method_call_receiver_kinds_roundtrip();
+  test_lowering_facts_roundtrip();
   test_drop_funcs_roundtrip();
   test_drop_funcs_absent_gives_empty_map();
   test_drop_funcs_wrong_type_rejects();

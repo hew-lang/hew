@@ -9,6 +9,65 @@ use crate::method_resolution::{
 };
 
 impl Checker {
+    pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
+        self.pending_lowering_facts.insert(
+            SpanKey::from(span),
+            PendingLoweringFact::hashset(elem_ty.clone(), self.current_module.clone()),
+        );
+    }
+
+    /// Drain `pending_lowering_facts`, resolve element types through the
+    /// substitution, and materialize concrete [`LoweringFact`] entries.
+    ///
+    /// Any fact whose element type is still unresolved after inference emits a
+    /// checker error and is **not** inserted into the returned map.  Downstream
+    /// codegen (`requireLoweringFactOf`) will detect the missing entry and fail
+    /// closed rather than guessing.
+    pub(super) fn finalize_lowering_facts(&mut self) -> HashMap<SpanKey, LoweringFact> {
+        let pending = std::mem::take(&mut self.pending_lowering_facts);
+        let mut result = HashMap::with_capacity(pending.len());
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        for (span_key, pending_fact) in pending {
+            let resolved_ty = self
+                .subst
+                .resolve(&pending_fact.hashset_element_ty)
+                .materialize_literal_defaults();
+            match LoweringFact::from_hashset_element_type(&resolved_ty) {
+                Ok(fact) => {
+                    result.insert(span_key, fact);
+                }
+                Err(LoweringFactError::UnresolvedHashSetElementType) => {
+                    // Inference did not resolve the element type by the checker
+                    // boundary.  Emit a clear diagnostic and prune the fact so
+                    // downstream codegen fails closed via requireLoweringFactOf.
+                    let span = span_key.start..span_key.end;
+                    let mut err = crate::error::TypeError::new(
+                        TypeErrorKind::InferenceFailed,
+                        span,
+                        "cannot lower HashSet: element type is unresolved at the checker \
+                         boundary — add an explicit type annotation, e.g. \
+                         `HashSet<i64>` or `HashSet<String>`"
+                            .to_string(),
+                    );
+                    if let Some(module) = &pending_fact.source_module {
+                        err = err.with_source_module(module.clone());
+                    }
+                    new_errors.push(err);
+                    // Fact NOT inserted — downstream will fail closed.
+                }
+                Err(LoweringFactError::UnsupportedHashSetElementType { .. }) => {
+                    // The checker already rejected unsupported element types via
+                    // validate_hashset_element_type / validate_hashset_owned_element_type.
+                    // Skip silently to avoid a duplicate diagnostic.
+                }
+            }
+        }
+
+        self.errors.extend(new_errors);
+        result
+    }
+
     fn record_method_call_receiver_kind(&mut self, span: &Span, kind: MethodCallReceiverKind) {
         self.method_call_receiver_kinds
             .insert(SpanKey::from(span), kind);
@@ -550,6 +609,7 @@ impl Checker {
                 if !self.validate_hashset_owned_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Bool
             }
             "contains" | "remove" => {
@@ -562,6 +622,7 @@ impl Checker {
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Bool
             }
             "clone" => {
@@ -569,6 +630,7 @@ impl Checker {
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Named {
                     name: "HashSet".to_string(),
                     args: vec![elem_ty.clone()],
@@ -578,18 +640,21 @@ impl Checker {
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::I64
             }
             "is_empty" => {
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Bool
             }
             "clear" => {
                 if !self.validate_hashset_element_type(&elem_ty, span) {
                     return Ty::Error;
                 }
+                self.record_hashset_lowering_fact(span, &elem_ty);
                 Ty::Unit
             }
             _ => {

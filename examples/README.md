@@ -84,7 +84,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 - **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing
 - **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities
-- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make playground-manifest` (or `python3 scripts/gen-playground-manifest.py`), use `make playground-manifest-check` for the cheap freshness check, and use `make playground-check` for the repo-local preflight that also builds `hew-wasm`:
+- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make playground-manifest` (or `python3 scripts/gen-playground-manifest.py`), use `make playground-manifest-check` for the cheap freshness check, and use `make playground-check` for the repo-local preflight that validates the curated entries through `hew-wasm`'s analysis-only `analyze()` surface before building `hew-wasm`:
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
   - `types/` -- Collections, pattern matching, wire types

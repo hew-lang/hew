@@ -66,14 +66,25 @@ pub(crate) fn actor_ask_take_last_error_raw() -> i32 {
 }
 
 /// Map a send-side [`HewError`] code to its [`AskError`] discriminant.
+///
+/// Only `ErrMailboxFull` has a dedicated ask-error discriminant.  All other
+/// failure codes mean the actor is unreachable and map to `ActorStopped`.
+/// The WASM ask path normalises `ErrClosed` → `ErrActorStopped` before
+/// calling this function, so `ErrClosed` never reaches the `_` arm in
+/// practice.
 #[inline]
 fn send_err_to_ask_err(code: i32) -> AskError {
-    if code == HewError::ErrMailboxFull as i32 {
-        AskError::MailboxFull
-    } else {
-        // ErrActorStopped, ErrClosed, actor-not-found, or any unknown error
-        // all map to ActorStopped from the caller's perspective.
-        AskError::ActorStopped
+    const FULL: i32 = HewError::ErrMailboxFull as i32;
+    match code {
+        FULL => AskError::MailboxFull,
+        // JUSTIFIED: `ErrActorStopped` (-2) is the normal "unreachable" code.
+        // `ErrOom` (-5) has no dedicated ask-error discriminant — OOM is a
+        // fatal system condition and callers cannot usefully retry.  `ErrClosed`
+        // (-4) is normalised to `ErrActorStopped` by the WASM ask path before
+        // reaching here, but would also be correctly subsumed.  Any future
+        // unknown code is similarly "actor unreachable" — the only actionable
+        // send-side distinction for callers is `MailboxFull` vs `ActorStopped`.
+        _ => AskError::ActorStopped,
     }
 }
 
@@ -89,8 +100,9 @@ fn send_err_to_ask_err(code: i32) -> AskError {
 /// - `0` (`None`): the ask succeeded (non-null reply) or returned a
 ///   legitimate null reply; no error.
 /// - `5` (`Timeout`): deadline elapsed before the handler replied.
-/// - `9` (`ActorStopped`): the target actor was stopped or the mailbox
-///   rejected the send (actor not found, closed, etc.).
+/// - `9` (`ActorStopped`): the target actor was stopped, the mailbox was
+///   closed (actor not found), or message-node allocation failed (OOM) —
+///   all cases where the send could not be delivered and retry is not useful.
 /// - `10` (`MailboxFull`): bounded mailbox was at capacity.
 /// - `11` (`OrphanedAsk`): send succeeded but the actor's mailbox was torn
 ///   down before the handler called `hew_reply`.

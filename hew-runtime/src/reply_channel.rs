@@ -29,6 +29,10 @@ pub struct HewReplyChannel {
     ready: AtomicBool,
     /// Set to `true` if the waiter has cancelled.
     pub(crate) cancelled: AtomicBool,
+    /// Set to `true` by [`hew_reply_channel_retire_orphaned_ask_sender_ref`]
+    /// so the waiter can distinguish a mailbox-teardown null from a
+    /// legitimate null reply deposited by the handler.
+    pub(crate) orphaned: AtomicBool,
     /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).
     value: *mut c_void,
     /// Size of `value` in bytes.
@@ -70,6 +74,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         refs: AtomicUsize::new(1),
         ready: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
+        orphaned: AtomicBool::new(false),
         value: ptr::null_mut(),
         value_size: 0,
         lock: Mutex::new(()),
@@ -151,6 +156,11 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut H
             (*ch).value.is_null() && (*ch).value_size == 0,
             "orphaned ask teardown must not overwrite an existing reply"
         );
+        // Mark the channel as orphaned before publishing the null sentinel so
+        // the waiter can distinguish mailbox teardown from a legitimate null reply.
+        // DROP-SAFETY: this flag is set before the condvar signal that wakes the
+        // waiter, ensuring the waiter sees orphaned=true on the first Acquire load.
+        (*ch).orphaned.store(true, Ordering::Release);
         publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
     }
 }
@@ -374,6 +384,23 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
 }
 
 // ── Select ─────────────────────────────────────────────────────────────
+
+/// Return `true` if a reply has been deposited on `ch`.
+///
+/// Used by ask callers to distinguish a timed-out wait (channel not yet
+/// ready) from a legitimate null reply (channel ready, value is null).
+/// The caller must still hold a reference to `ch` when calling this.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+pub(crate) unsafe fn hew_reply_channel_is_ready(ch: *mut HewReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: caller holds a reference that keeps `ch` alive.
+    unsafe { (*ch).ready.load(Ordering::Acquire) }
+}
 
 /// Poll multiple reply channels, returning the index of the first one
 /// that becomes ready.  Returns -1 on timeout.

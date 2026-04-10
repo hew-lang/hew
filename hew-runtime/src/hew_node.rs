@@ -92,38 +92,11 @@ impl Drop for InboundAskGuard {
 // Ask-error discriminant
 // ---------------------------------------------------------------------------
 
-/// Typed failure reason for a remote ask.
-///
-/// Written to a thread-local slot whenever `hew_node_api_ask` returns `NULL`.
-/// Callers retrieve the discriminant via [`hew_node_ask_take_last_error`].
-///
-/// Values are stable across releases; do not reorder or reuse.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AskError {
-    /// No failure — used to reset the slot after a successful ask.
-    None = 0,
-    /// No active node is installed in this process.
-    NodeNotRunning = 1,
-    /// The target PID could not be mapped to a connection.
-    RoutingFailed = 2,
-    /// Wire-encoding the request envelope failed.
-    EncodeFailed = 3,
-    /// Sending the encoded envelope over the connection failed.
-    SendFailed = 4,
-    /// The reply did not arrive before the deadline elapsed.
-    Timeout = 5,
-    /// The underlying connection was dropped before the reply arrived.
-    ConnectionDropped = 6,
-    /// The reply payload size did not match the expected reply type size.
-    PayloadSizeMismatch = 7,
-    /// The remote node's inbound ask worker pool is at capacity.
-    ///
-    /// The actor was never dispatched. The ask may be retried after a
-    /// brief back-off. This is distinct from [`ConnectionDropped`]: the
-    /// connection is healthy, but the remote end shed load deliberately.
-    WorkerAtCapacity = 8,
-}
+/// Re-exported from [`crate::internal::types`] so callers that already import
+/// from this module keep working. The canonical definition lives in
+/// `internal::types` so that WASM targets, which cannot import `hew_node`,
+/// can also use the type.
+pub use crate::internal::types::AskError;
 
 thread_local! {
     static LAST_ASK_ERROR: Cell<i32> = const { Cell::new(AskError::None as i32) };
@@ -146,12 +119,12 @@ fn ask_null(err: AskError) -> *mut c_void {
 /// intervening failed ask return 0.
 ///
 /// This function is intended for use immediately after `hew_node_api_ask`
-/// returns `NULL` to distinguish the failure reason.
+/// returns `NULL` to distinguish the failure reason.  For direct local asks
+/// via `hew_actor_ask` / `hew_actor_ask_timeout`, use
+/// `hew_actor_ask_take_last_error` instead.
 ///
-/// # WASM-TODO
-/// WASM uses cooperative local ask/reply only — there is no network path, so
-/// WASM ask failures (actor stopped, mailbox full) are not reported through
-/// this slot.  A parallel mechanism for WASM ask-error reporting is deferred.
+/// When the local delegation path in `hew_node_api_ask` is taken, actor-level
+/// errors are bridged into this slot automatically.
 #[no_mangle]
 pub extern "C" fn hew_node_ask_take_last_error() -> i32 {
     LAST_ASK_ERROR.with(|cell| {
@@ -1824,7 +1797,15 @@ pub unsafe extern "C" fn hew_node_api_ask(
     // Local path: delegate to the by-ID ask (which packs a reply channel).
     if target_node_id == 0 || target_node_id == local_node_id {
         // SAFETY: data/size are caller-validated; local actor ask is safe here.
-        return unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        let result = unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        if result.is_null() {
+            // Bridge the actor-level error discriminant into the node error slot
+            // so callers of hew_node_api_ask see a consistent error regardless
+            // of whether the ask went local or remote.
+            let local_err = crate::actor::actor_ask_take_last_error_raw();
+            LAST_ASK_ERROR.with(|c| c.set(local_err));
+        }
+        return result;
     }
 
     // Remote path: send message over mesh with request_id, wait for reply.

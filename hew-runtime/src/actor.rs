@@ -5,7 +5,6 @@
 //! will be implemented in a future iteration.
 
 use crate::util::MutexExt;
-#[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
@@ -13,7 +12,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::internal::types::{HewActorState, HewError, HewOverflowPolicy};
+use crate::internal::types::{AskError, HewActorState, HewError, HewOverflowPolicy};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,6 +26,79 @@ use crate::scheduler;
 thread_local! {
     /// The actor currently being dispatched on this worker thread.
     static CURRENT_ACTOR: Cell<*mut HewActor> = const { Cell::new(ptr::null_mut()) };
+}
+
+// ── Thread-local local ask error ────────────────────────────────────────
+
+thread_local! {
+    /// Error discriminant for the most recent `hew_actor_ask` /
+    /// `hew_actor_ask_timeout` / `hew_actor_ask_by_id` call on this thread.
+    ///
+    /// Set to an [`AskError`] value on every NULL return; reset to
+    /// `AskError::None` on every non-NULL return and after being read via
+    /// `hew_actor_ask_take_last_error`.
+    static LAST_ACTOR_ASK_ERROR: Cell<i32> = const { Cell::new(AskError::None as i32) };
+}
+
+/// Write `err` to the local-ask error slot and return `null`.
+#[inline]
+fn actor_ask_null(err: AskError) -> *mut c_void {
+    LAST_ACTOR_ASK_ERROR.with(|c| c.set(err as i32));
+    ptr::null_mut()
+}
+
+/// Clear the local-ask error slot (called on successful ask return).
+#[inline]
+fn actor_ask_clear() {
+    LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+}
+
+/// Read and clear the last local ask error for the current thread.
+///
+/// Intended to be called by `hew_node.rs` when bridging a local delegation
+/// error into the node error slot, without exposing the slot directly.
+pub(crate) fn actor_ask_take_last_error_raw() -> i32 {
+    LAST_ACTOR_ASK_ERROR.with(|c| {
+        let v = c.get();
+        c.set(AskError::None as i32);
+        v
+    })
+}
+
+/// Map a send-side [`HewError`] code to its [`AskError`] discriminant.
+#[inline]
+fn send_err_to_ask_err(code: i32) -> AskError {
+    if code == HewError::ErrMailboxFull as i32 {
+        AskError::MailboxFull
+    } else {
+        // ErrActorStopped, ErrClosed, actor-not-found, or any unknown error
+        // all map to ActorStopped from the caller's perspective.
+        AskError::ActorStopped
+    }
+}
+
+/// Read and clear the last local ask error discriminant for the current thread.
+///
+/// Returns one of the [`AskError`] values as an `i32`.  The slot is reset to
+/// `AskError::None` (0) after each call, so repeated calls without an
+/// intervening failed ask return 0.
+///
+/// Call this immediately after `hew_actor_ask` or `hew_actor_ask_timeout`
+/// returns `NULL` to distinguish the failure reason:
+///
+/// - `0` (`None`): the ask succeeded (non-null reply) or returned a
+///   legitimate null reply; no error.
+/// - `5` (`Timeout`): deadline elapsed before the handler replied.
+/// - `9` (`ActorStopped`): the target actor was stopped or the mailbox
+///   rejected the send (actor not found, closed, etc.).
+/// - `10` (`MailboxFull`): bounded mailbox was at capacity.
+/// - `11` (`OrphanedAsk`): send succeeded but the actor's mailbox was torn
+///   down before the handler called `hew_reply`.
+/// - `12` (`NoRunnableWork`): WASM cooperative path only — no runnable work
+///   remains, so the ask loop cannot make further progress.
+#[no_mangle]
+pub extern "C" fn hew_actor_ask_take_last_error() -> i32 {
+    actor_ask_take_last_error_raw()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1665,14 +1737,29 @@ pub unsafe extern "C" fn hew_actor_ask(
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return std::ptr::null_mut();
+        return actor_ask_null(send_err_to_ask_err(send_result));
     }
 
     // SAFETY: ch is valid, single-reader.
     let result = unsafe { reply_channel::hew_reply_wait(ch) };
 
-    // SAFETY: ch was created by hew_reply_channel_new.
-    unsafe { reply_channel::hew_reply_channel_free(ch) };
+    if result.is_null() {
+        // Distinguish an orphaned ask (mailbox teardown before reply) from a
+        // legitimate null reply deposited by the handler.
+        // SAFETY: ch is still live — we hold the caller-side reference.
+        let is_orphaned = unsafe { (*ch).orphaned.load(Ordering::Acquire) };
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        if is_orphaned {
+            return actor_ask_null(AskError::OrphanedAsk);
+        }
+        // Legitimate null reply — clear any stale error.
+        actor_ask_clear();
+    } else {
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        actor_ask_clear();
+    }
 
     result
 }
@@ -1709,23 +1796,39 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return std::ptr::null_mut();
+        return actor_ask_null(send_err_to_ask_err(send_result));
     }
 
     // SAFETY: ch is valid, single-reader.
     let result = unsafe { reply_channel::hew_reply_wait_timeout(ch, timeout_ms) };
 
     if result.is_null() {
-        // Timeout: mark the channel as cancelled so the late replier
-        // handles cleanup via its retained sender-side reference.
-        // SAFETY: ch is still live while the caller-side reference is released.
-        unsafe { reply_channel::hew_reply_channel_cancel(ch) };
-        // SAFETY: release the caller-side reference after recording cancellation.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-    } else {
-        // Got a reply — release the caller-side reference.
+        // Distinguish timeout (channel not ready) from legitimate null reply or orphan.
+        // SAFETY: ch is still live — we hold the caller-side reference.
+        let is_ready = unsafe { reply_channel::hew_reply_channel_is_ready(ch) };
+        if !is_ready {
+            // Deadline elapsed before any reply arrived.
+            // Mark the channel as cancelled so the late replier handles cleanup.
+            // SAFETY: ch is still live while the caller-side reference is released.
+            unsafe { reply_channel::hew_reply_channel_cancel(ch) };
+            // SAFETY: release the caller-side reference after recording cancellation.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+            return actor_ask_null(AskError::Timeout);
+        }
+        // Channel is ready but value is null — could be orphaned or legitimate.
+        // SAFETY: ch is still live — we hold the caller-side reference.
+        let is_orphaned = unsafe { (*ch).orphaned.load(Ordering::Acquire) };
         // SAFETY: ch was created by hew_reply_channel_new.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
+        if is_orphaned {
+            return actor_ask_null(AskError::OrphanedAsk);
+        }
+        actor_ask_clear();
+    } else {
+        // Got a non-null reply — release the caller-side reference.
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        actor_ask_clear();
     }
 
     result
@@ -1820,32 +1923,32 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
 
     // Look up actor and send with reply channel in the msg node field.
-    let sent = {
+    // Capture the send error code (not just bool) for accurate error discrimination.
+    let send_result_code: Option<i32> = {
         let guard = LIVE_ACTORS.lock_or_recover();
-        guard.as_ref().is_some_and(|map| {
-            if let Some(entry) = map.get(&actor_id) {
-                let actor = entry.0;
-                if actor.is_null() {
-                    return false;
-                }
-                // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
-                let rc = unsafe {
-                    actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-                };
-                rc == HewError::Ok as i32
-            } else {
-                false
+        guard.as_ref().and_then(|map| {
+            let entry = map.get(&actor_id)?;
+            let actor = entry.0;
+            if actor.is_null() {
+                return None; // actor registered but pointer is null
             }
+            // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
+            let rc =
+                unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
+            Some(rc)
         })
     };
 
-    if !sent {
+    let send_ok = send_result_code.is_some_and(|rc| rc == HewError::Ok as i32);
+
+    if !send_ok {
         // Release both references (sender + ours).
         // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
-        return std::ptr::null_mut();
+        let ask_err = send_result_code.map_or(AskError::ActorStopped, send_err_to_ask_err); // None → actor not found
+        return actor_ask_null(ask_err);
     }
 
     let mut reply_size: usize = 0;
@@ -1855,8 +1958,20 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     // Store the reply size in a thread-local so the caller can retrieve it.
     LAST_REPLY_SIZE.set(reply_size);
 
-    // SAFETY: ch was created by hew_reply_channel_new.
-    unsafe { reply_channel::hew_reply_channel_free(ch) };
+    if result.is_null() {
+        // SAFETY: ch is still live — we hold the caller-side reference.
+        let is_orphaned = unsafe { (*ch).orphaned.load(Ordering::Acquire) };
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        if is_orphaned {
+            return actor_ask_null(AskError::OrphanedAsk);
+        }
+        actor_ask_clear();
+    } else {
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        actor_ask_clear();
+    }
 
     result
 }
@@ -2407,7 +2522,7 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         // SAFETY: ch was created by hew_reply_channel_new and the failed send
         // already released the queued sender-side retain.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        return ptr::null_mut();
+        return actor_ask_null(send_err_to_ask_err(send_result));
     }
 
     let deadline = timeout_ms.map(|ms| {
@@ -2428,7 +2543,7 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
             unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference after recording cancellation.
             unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-            return ptr::null_mut();
+            return actor_ask_null(AskError::Timeout);
         }
 
         // SAFETY: scheduler must be initialized by the runtime/host.
@@ -2442,7 +2557,7 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
             unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference after recording cancellation.
             unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-            return ptr::null_mut();
+            return actor_ask_null(AskError::Timeout);
         }
 
         // SAFETY: ch stays live until we release the caller-side reference below.
@@ -2451,23 +2566,50 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         }
 
         if remaining == 0 {
-            // No runnable work remains, so the cooperative caller cannot make
-            // further progress before returning control to the host. Cancel
-            // the channel for both bounded and unbounded asks so any later
-            // replier or queued-message cleanup skips allocating reply data.
+            // No runnable work remains. Cancel the channel for both bounded and
+            // unbounded asks so any later replier skips allocating reply data.
             // SAFETY: ch remains live until the caller-side reference is released below.
             unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference before returning without a reply.
             unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-            return ptr::null_mut();
+            // Distinguish between a stopped actor (orphaned ask) and genuinely
+            // no runnable work (the actor is alive but idle with nothing to run).
+            // SAFETY: actor is valid for the duration of this call (caller guarantee).
+            let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+            if actor_state == HewActorState::Stopped as i32
+                || actor_state == HewActorState::Crashed as i32
+            {
+                return actor_ask_null(AskError::OrphanedAsk);
+            }
+            return actor_ask_null(AskError::NoRunnableWork);
         }
     }
 
     // SAFETY: ch is a valid reply channel pointer created above.
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
-    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
-    unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
 
+    if reply.is_null() {
+        // Distinguish an orphaned ask (mailbox teardown retired the channel via
+        // `retire_reply_channel`) from a legitimate null reply deposited by the
+        // handler.  `retire_reply_channel` sets `orphaned = true` before calling
+        // `hew_reply`; a handler that explicitly replies null does NOT set it.
+        // This is the sole discriminant — actor terminal state is intentionally
+        // NOT used here because a handler can legitimately call
+        //   hew_reply(ch, NULL, 0); hew_actor_self_stop();
+        // in the same dispatch, producing a null reply with a terminal actor.
+        // SAFETY: ch is still live — we release it immediately below.
+        let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        if is_orphaned {
+            return actor_ask_null(AskError::OrphanedAsk);
+        }
+        actor_ask_clear();
+    } else {
+        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        actor_ask_clear();
+    }
     reply
 }
 
@@ -3201,6 +3343,204 @@ mod tests {
         assert_eq!(reply_channel::active_channel_count(), 0);
     }
 
+    // ── ask error discrimination tests ───────────────────────────────────
+
+    /// `hew_actor_ask` on a stopped actor sets `ActorStopped` in the error slot.
+    #[test]
+    fn native_ask_stopped_actor_sets_actor_stopped_error() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid.
+        unsafe { hew_actor_stop(actor) };
+
+        // Reset error slot, then attempt ask.
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        // SAFETY: actor is stopped but pointer remains valid.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(reply.is_null(), "ask on stopped actor must return null");
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::ActorStopped as i32,
+            "stopped actor must report ActorStopped error"
+        );
+
+        // SAFETY: actor is stopped and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
+    /// `hew_actor_ask_timeout` on a stopped actor sets `ActorStopped`.
+    #[test]
+    fn native_ask_timeout_stopped_actor_sets_actor_stopped_error() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is live and single-owner; stopping it to force send failure.
+        unsafe { hew_actor_stop(actor) };
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        // SAFETY: actor is stopped.
+        let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 50) };
+        assert!(reply.is_null());
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::ActorStopped as i32,
+            "send failure on stopped actor must report ActorStopped"
+        );
+        // SAFETY: actor was stopped above; no asks are pending.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
+    /// `hew_actor_ask_timeout` fires `Timeout` when the handler does not reply in time.
+    #[test]
+    fn native_ask_timeout_sets_timeout_error() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        // SAFETY: null state + valid dispatch.
+        let actor =
+            unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(native_late_reply_dispatch)) };
+        assert!(!actor.is_null());
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        // SAFETY: actor is valid; 1 ms deadline is too short for the 20 ms handler.
+        let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 1) };
+        assert!(reply.is_null(), "ask must time out");
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::Timeout as i32,
+            "timed-out ask must report Timeout"
+        );
+
+        // Let the late-reply dispatch finish and free the actor cleanly.
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "late-reply channel must be released after cancellation",
+        );
+        // SAFETY: actor was spawned above and all channels are drained.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        drop(runtime);
+    }
+
+    /// `hew_actor_ask` when the actor self-stops without replying sets `OrphanedAsk`.
+    #[test]
+    fn native_ask_orphaned_sets_orphaned_ask_error() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
+        // SAFETY: null state + valid dispatch.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::null_mut(),
+                0,
+                Some(native_self_stop_without_reply_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+
+        let actor_addr = actor as usize;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let actor = actor_addr as *mut HewActor;
+            // SAFETY: actor was spawned above and remains live until the thread joins.
+            let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+            let is_null = reply.is_null();
+            if !reply.is_null() {
+                // SAFETY: reply was allocated by the runtime and ownership transfers to caller.
+                unsafe { libc::free(reply) };
+            }
+            let err = hew_actor_ask_take_last_error();
+            tx.send((is_null, err)).expect("sender should be live");
+        });
+
+        let (is_null, err) = if let Ok(v) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            v
+        } else {
+            // Fallback: manually unblock a stalled ask (test environment artefact).
+            let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
+            if !ch.is_null() {
+                // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
+                unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+            }
+            rx.recv_timeout(std::time::Duration::from_secs(1))
+                .expect("fallback reply should unblock ask")
+        };
+        handle.join().expect("ask thread must not panic");
+
+        assert!(is_null, "orphaned ask must return null");
+        assert_eq!(
+            err,
+            AskError::OrphanedAsk as i32,
+            "orphaned ask must report OrphanedAsk"
+        );
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "orphaned ask must release its reply channel"
+        );
+        // SAFETY: actor has self-stopped; all channels are released.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        drop(runtime);
+    }
+
+    /// Successful ask clears the error slot.
+    #[test]
+    fn native_ask_success_clears_error_slot() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        // SAFETY: null state + valid dispatch.
+        let actor =
+            unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(native_reply_once_dispatch)) };
+        assert!(!actor.is_null());
+
+        // Poison slot, then succeed.
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+        // SAFETY: actor is valid.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(!reply.is_null(), "ask must succeed");
+        // SAFETY: non-null reply is malloc-allocated.
+        unsafe { libc::free(reply) };
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::None as i32,
+            "successful ask must clear the error slot"
+        );
+
+        // SAFETY: actor is live; ask has returned and no pending channels remain.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        drop(runtime);
+    }
+
+    /// `hew_actor_ask_take_last_error` resets the slot to None after reading.
+    #[test]
+    fn actor_ask_take_last_error_resets_slot() {
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+        let first = hew_actor_ask_take_last_error();
+        let second = hew_actor_ask_take_last_error();
+        assert_eq!(
+            first,
+            AskError::Timeout as i32,
+            "first take must return Timeout"
+        );
+        assert_eq!(
+            second,
+            AskError::None as i32,
+            "second take must return None"
+        );
+    }
+
     #[test]
     fn stop_idle_actor_is_idempotent_and_queues_no_shutdown_sys_messages() {
         let _guard = crate::runtime_test_guard();
@@ -3687,6 +4027,27 @@ mod wasm_tests {
         }
     }
 
+    /// Dispatch that replies with a null payload and then self-stops in the
+    /// same activation.  Used to verify that null-reply + self-stop is NOT
+    /// misclassified as an orphaned ask.
+    unsafe extern "C" fn null_reply_then_self_stop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        let ch = crate::scheduler_wasm::hew_get_reply_channel();
+        if !ch.is_null() {
+            // SAFETY: ch is the scheduler-installed reply channel; depositing
+            // a null payload is a legitimate zero-size reply.
+            unsafe {
+                crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
+            }
+        }
+        // Self-stop AFTER the explicit null reply — must NOT set orphaned.
+        hew_actor_self_stop();
+    }
+
     #[test]
     fn ask_self_stop_without_reply_returns_null_and_releases_channel() {
         let _guard = crate::runtime_test_guard();
@@ -3762,10 +4123,16 @@ mod wasm_tests {
             let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(late_reply_dispatch));
             assert!(!actor.is_null());
 
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
             let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, Some(1));
             assert!(
                 reply.is_null(),
                 "timed WASM asks should reject replies that only arrive after the timeout"
+            );
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::Timeout as i32,
+                "timed-out WASM ask must report Timeout"
             );
             assert_eq!(
                 crate::reply_channel_wasm::active_channel_count(),
@@ -3778,6 +4145,133 @@ mod wasm_tests {
             crate::scheduler_wasm::hew_runtime_cleanup();
 
             assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    // ── WASM ask error discrimination tests ─────────────────────────────
+
+    /// WASM ask on a stopped actor (send failure) sets `ActorStopped`.
+    #[test]
+    fn wasm_ask_stopped_actor_sets_actor_stopped_error() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+
+            // Dispatch function is irrelevant — the actor will be stopped before
+            // the ask is submitted, so dispatch is never invoked.
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(self_stop_without_reply_dispatch));
+            assert!(!actor.is_null());
+            hew_actor_stop(actor);
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(reply.is_null(), "ask on stopped actor must return null");
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::ActorStopped as i32,
+                "stopped actor send failure must report ActorStopped"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+        }
+    }
+
+    /// WASM unbounded ask when actor stops without replying sets `OrphanedAsk`.
+    #[test]
+    fn wasm_ask_self_stop_sets_orphaned_ask_error() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(self_stop_without_reply_dispatch));
+            assert!(!actor.is_null());
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(reply.is_null(), "orphaned WASM ask must return null");
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::OrphanedAsk as i32,
+                "WASM ask orphaned by actor self-stop must report OrphanedAsk"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+        }
+    }
+
+    /// WASM ask success clears the error slot.
+    #[test]
+    fn wasm_ask_success_clears_error_slot() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(reply_once_dispatch));
+            assert!(!actor.is_null());
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(!reply.is_null(), "WASM ask must succeed");
+            // SAFETY: reply was allocated by the runtime; caller takes ownership.
+            unsafe { libc::free(reply) };
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::None as i32,
+                "successful WASM ask must clear error slot"
+            );
+
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+        }
+    }
+
+    /// Regression: `hew_reply(ch, NULL, 0); hew_actor_self_stop()` in the same
+    /// dispatch must be treated as a legitimate null reply, NOT as OrphanedAsk.
+    ///
+    /// The `orphaned` flag is only set by `retire_reply_channel` (called when
+    /// the mailbox is torn down WITHOUT a handler reply).  When the handler
+    /// explicitly replies — even with null — `orphaned` stays false.
+    #[test]
+    fn wasm_ask_null_reply_then_self_stop_is_not_orphaned() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+
+            // SAFETY: null state + valid dispatch.
+            let actor =
+                hew_actor_spawn(ptr::null_mut(), 0, Some(null_reply_then_self_stop_dispatch));
+            assert!(!actor.is_null());
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(
+                reply.is_null(),
+                "explicit null reply must still be returned as null"
+            );
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::None as i32,
+                "null reply + self-stop must NOT be classified as OrphanedAsk"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "null reply + self-stop must not leak reply channels"
+            );
+
+            // SAFETY: actor stopped itself; pointer is still allocated.
+            assert_eq!(hew_actor_free(actor), 0);
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
         }
     }
 }

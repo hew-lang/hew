@@ -60,7 +60,12 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
 /// created by `setpgid(0, 0)` in the child.  On Windows the child is spawned
 /// suspended, assigned to a Job Object before any user code runs, then
 /// resumed; `TerminateJobObject` therefore covers the entire process tree.
-struct BoundedChild {
+///
+/// Use [`BoundedChild::spawn`] to create, then either:
+/// - [`BoundedChild::wait_with_timeout`] for interactive runs (stdout/stderr
+///   flow to the terminal; no pipe draining needed), or
+/// - the [`run_binary_with_timeout`] helper for captured output.
+pub(crate) struct BoundedChild {
     child: Child,
     /// Windows-only: Job Object that owns the child and all its descendants.
     /// `None` if job creation or assignment failed at spawn time.
@@ -72,7 +77,7 @@ impl BoundedChild {
     /// Spawn a process with the appropriate process-isolation setup for this
     /// platform and return it together with any cleanup resources.
     #[cfg(unix)]
-    fn spawn(command: &mut Command) -> Result<Self, String> {
+    pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
         use std::os::unix::process::CommandExt;
 
         // SAFETY: `pre_exec` runs in the child process after `fork` and before
@@ -109,7 +114,7 @@ impl BoundedChild {
     /// - Assignment fails → resume (mandatory), `job = None`, taskkill fallback.
     /// - Resume fails → kill the orphaned suspended process, propagate error.
     #[cfg(windows)]
-    fn spawn(command: &mut Command) -> Result<Self, String> {
+    pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
         use std::os::windows::process::CommandExt;
 
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
@@ -149,7 +154,7 @@ impl BoundedChild {
     }
 
     #[cfg(not(any(unix, windows)))]
-    fn spawn(command: &mut Command) -> Result<Self, String> {
+    pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
         let child = command
             .spawn()
             .map_err(|e| format!("cannot spawn child process: {e}"))?;
@@ -208,6 +213,41 @@ impl BoundedChild {
             .wait()
             .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
         Ok(false)
+    }
+
+    /// Wait up to `timeout` for the child to exit, terminating the process
+    /// group if the deadline is reached.
+    ///
+    /// Unlike [`run_binary_with_timeout`], this method does not capture
+    /// stdout/stderr — they flow to the terminal as-is.  Use this for
+    /// interactive `hew run --timeout` where the user sees output directly.
+    ///
+    /// Returns [`ChildWaitOutcome::Exited`] if the child exits before the
+    /// deadline, or [`ChildWaitOutcome::Timeout`] after killing the process
+    /// group.
+    pub(crate) fn wait_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<ChildWaitOutcome, String> {
+        let start = Instant::now();
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return Ok(ChildWaitOutcome::Exited(status)),
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        self.terminate_process_group()?;
+                        return Ok(ChildWaitOutcome::Timeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(format!("cannot poll child process: {e}")),
+            }
+        }
+    }
+
+    /// Return the child's process ID.
+    pub(crate) fn id(&self) -> u32 {
+        self.child.id()
     }
 }
 
@@ -654,5 +694,74 @@ mod windows_job {
             // and Drop is called at most once.
             unsafe { CloseHandle(self.0) };
         }
+    }
+}
+
+/// Tests for [`BoundedChild`] process-group lifecycle.
+///
+/// These are unit tests (no Hew compilation required) that directly exercise
+/// the spawn + timeout + kill path to prove grandchildren are reaped.
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Verify that [`BoundedChild::wait_with_timeout`] kills the full process
+    /// GROUP on timeout, not just the direct child process.
+    ///
+    /// The shell script spawns a grandchild `sleep 999`, writes its PID to a
+    /// temp file, then spins forever.  After the timeout fires, both the shell
+    /// script (direct child) and the grandchild sleep must be dead — proving
+    /// that `killpg` is used rather than `kill(child_pid)`.
+    #[test]
+    fn bounded_child_timeout_kills_grandchild_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let pid_file_str = pid_file.to_str().unwrap();
+
+        // Shell script: start a grandchild sleep, record its PID, then spin.
+        let script = dir.path().join("tree_spinner.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwhile true; do :; done\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cmd = Command::new(&script);
+        let mut bounded = BoundedChild::spawn(&mut cmd).expect("failed to spawn tree_spinner.sh");
+
+        // Give the grandchild a moment to start and write its PID.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let outcome = bounded
+            .wait_with_timeout(Duration::from_secs(1))
+            .expect("wait_with_timeout failed");
+        assert!(
+            matches!(outcome, ChildWaitOutcome::Timeout),
+            "expected Timeout outcome, got: {outcome:?}"
+        );
+
+        // Allow the OS to finish reaping.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let pid_str = std::fs::read_to_string(&pid_file)
+            .expect("grandchild should have written its PID before the timeout fired");
+        let grandchild_pid: u32 = pid_str
+            .trim()
+            .parse()
+            .expect("grandchild PID file should contain a numeric PID");
+
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "PIDs fit in i32 on all supported Unix platforms"
+        )]
+        // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
+        let alive = unsafe { libc::kill(grandchild_pid as libc::pid_t, 0) } == 0;
+        assert!(
+            !alive,
+            "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout"
+        );
     }
 }

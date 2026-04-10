@@ -244,7 +244,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut WasmReplyChannel) -> *mut c_voi
 /// `timeout_ms == -1` means "wait indefinitely" (until a winner replies or
 /// the run queue is empty).
 ///
-/// # WASM-TODO: non-zero timeout requires WASI clock_time_get support.
+/// # WASM-TODO: non-zero timeout requires WASI `clock_time_get` support.
 /// Until a monotonic clock is available in the WASM sandbox, passing
 /// `timeout_ms >= 0` returns -1 immediately without driving the scheduler.
 /// Programs that need timed-select on WASM must restructure to use the
@@ -479,9 +479,16 @@ mod tests {
         let mut ch_arr = [ch];
         // Even though the channel is ready, a finite timeout returns -1
         // (we refuse to guess at elapsed time without WASI clock support).
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test array length fits in i32"
+        )]
+        #[expect(clippy::cast_possible_wrap, reason = "test array length fits in i32")]
+        // SAFETY: ch_arr contains a live reply channel owned by this test.
         let result = unsafe { hew_select_first(ch_arr.as_mut_ptr(), ch_arr.len() as i32, 10) };
         assert_eq!(result, -1, "finite timeout must fail-closed on WASM");
         // Clean up the value that was deposited on the channel.
+        // SAFETY: ch is still live; reply_take + free are balanced.
         unsafe {
             let _ = reply_take(ch);
             hew_reply_channel_free(ch);
@@ -503,9 +510,11 @@ mod tests {
             );
         }
         let mut ch_arr = [ch];
+        // SAFETY: ch_arr contains a live reply channel; count=1 fits in i32.
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 1, -1) };
         assert_eq!(winner, 0);
         // Clean up value + channel.
+        // SAFETY: ch is still live; reply_take + free are balanced.
         unsafe {
             let _ = reply_take(ch);
             hew_reply_channel_free(ch);
@@ -538,9 +547,11 @@ mod tests {
         }
         let mut ch_arr = [ch0, ch1, ch2];
         // Should return 0 (first ready channel).
+        // SAFETY: ch_arr contains live reply channels; count=3 fits in i32.
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 3, -1) };
         assert_eq!(winner, 0, "should pick lowest-index ready channel");
         // Clean up.
+        // SAFETY: channels are live; cancel + free are balanced.
         unsafe {
             let _ = reply_take(ch0);
             hew_reply_channel_free(ch0);
@@ -562,6 +573,7 @@ mod tests {
         let result = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 2, -1) };
         assert_eq!(result, -1, "no reply and no scheduler work must return -1");
         // Clean up.
+        // SAFETY: channels are live; cancel + free are balanced.
         unsafe {
             hew_reply_channel_cancel(ch0);
             hew_reply_channel_free(ch0);

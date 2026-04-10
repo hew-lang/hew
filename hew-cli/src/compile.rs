@@ -106,6 +106,9 @@ pub struct CompileOptions {
     pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
     pub pkg_path: Option<PathBuf>,
+    /// Anchor an in-memory compile to a specific project directory so that
+    /// manifest-aware import resolution matches `compile_file` behaviour.
+    pub project_dir: Option<PathBuf>,
 }
 
 fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
@@ -113,6 +116,7 @@ fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOp
         no_typecheck: options.no_typecheck,
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
+        project_dir: options.project_dir.clone(),
     }
 }
 

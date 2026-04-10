@@ -118,40 +118,34 @@ fn find_all_references_raw(
     }
 
     // For local variables/parameters, restrict to the enclosing function/handler scope.
-    if let Some(scope) = find_defining_scope(parse_result, offset) {
+    let scope_opt = find_defining_scope(parse_result, offset);
+    if let Some(scope) = &scope_opt {
         spans.retain(|s| s.start >= scope.start && s.end <= scope.end);
     }
 
     // Further refine: if the name is shadowed within the scope (e.g., a for-loop
     // re-declares `x`), only keep references that share the same binding.
-    // Strategy: find all binding (declaration) spans for `name` within the scope,
-    // then determine which binding the cursor belongs to and keep only its references.
-    if spans.len() > 1 {
-        let binding_spans: Vec<&Span> = spans
-            .iter()
-            .filter(|s| is_binding_span(source, s, &name))
-            .collect();
+    // Use AST-derived binding sites rather than source-text prefix heuristics.
+    let mut binding_starts = collect_binding_starts_in_parse_result(parse_result, &name);
+    // Restrict binding starts to the current scope.
+    if let Some(scope) = &scope_opt {
+        binding_starts.retain(|&s| s >= scope.start && s < scope.end);
+    }
+    binding_starts.sort_unstable();
+    binding_starts.dedup();
 
-        // If there are multiple bindings of the same name (shadowing), disambiguate.
-        if binding_spans.len() > 1 {
-            // Find which binding region the cursor falls in.
-            // Each binding "owns" references from its declaration to the next binding
-            // (or end of scope).
-            let mut sorted_bindings: Vec<usize> = binding_spans.iter().map(|s| s.start).collect();
-            sorted_bindings.sort_unstable();
-
-            // Find the binding region containing the cursor offset.
-            let mut region_start = 0;
-            let mut region_end = usize::MAX;
-            for (i, &bstart) in sorted_bindings.iter().enumerate() {
-                if bstart <= offset {
-                    region_start = bstart;
-                    region_end = sorted_bindings.get(i + 1).copied().unwrap_or(usize::MAX);
-                }
+    if binding_starts.len() > 1 {
+        // Each binding "owns" references from its declaration to the next binding
+        // (or end of scope).
+        let mut region_start = 0;
+        let mut region_end = usize::MAX;
+        for (i, &bstart) in binding_starts.iter().enumerate() {
+            if bstart <= offset {
+                region_start = bstart;
+                region_end = binding_starts.get(i + 1).copied().unwrap_or(usize::MAX);
             }
-
-            spans.retain(|s| s.start >= region_start && s.start < region_end);
         }
+        spans.retain(|s| s.start >= region_start && s.start < region_end);
     }
 
     if spans.is_empty() {
@@ -181,16 +175,148 @@ fn find_defining_scope(parse_result: &ParseResult, offset: usize) -> Option<Span
     None
 }
 
-/// Heuristic: check if a span is a binding (declaration) site for a variable name.
-/// Looks at the source text preceding the identifier to detect let/var/for keywords.
-fn is_binding_span(source: &str, span: &Span, _name: &str) -> bool {
-    if span.start < 2 || span.start > source.len() {
-        return false;
+/// Collect the start offsets of all binding (declaration) sites for `name`
+/// across all items in the parse result.
+///
+/// Walks `Stmt::Let { pattern }`, `Stmt::Var { name }`, and `Stmt::For { pattern }`
+/// in the AST rather than using source-text prefix heuristics.
+fn collect_binding_starts_in_parse_result(parse_result: &ParseResult, name: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (item, _) in &parse_result.program.items {
+        collect_binding_starts_in_item(item, name, &mut out);
     }
-    let prefix_start = span.start.saturating_sub(20);
-    let prefix = source.get(prefix_start..span.start).unwrap_or("");
-    let trimmed = prefix.trim_end();
-    trimmed.ends_with("let") || trimmed.ends_with("var") || trimmed.ends_with("for")
+    out
+}
+
+fn collect_binding_starts_in_item(item: &Item, name: &str, out: &mut Vec<usize>) {
+    match item {
+        Item::Function(f) => {
+            collect_binding_starts_in_block(&f.body, name, out);
+        }
+        Item::Actor(a) => {
+            if let Some(init) = &a.init {
+                collect_binding_starts_in_block(&init.body, name, out);
+            }
+            if let Some(term) = &a.terminate {
+                collect_binding_starts_in_block(&term.body, name, out);
+            }
+            for recv in &a.receive_fns {
+                collect_binding_starts_in_block(&recv.body, name, out);
+            }
+            for method in &a.methods {
+                collect_binding_starts_in_block(&method.body, name, out);
+            }
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &td.body {
+                if let TypeBodyItem::Method(m) = body_item {
+                    collect_binding_starts_in_block(&m.body, name, out);
+                }
+            }
+        }
+        Item::Impl(i) => {
+            for method in &i.methods {
+                collect_binding_starts_in_block(&method.body, name, out);
+            }
+        }
+        Item::Trait(t) => {
+            for trait_item in &t.items {
+                if let TraitItem::Method(m) = trait_item {
+                    if let Some(body) = &m.body {
+                        collect_binding_starts_in_block(body, name, out);
+                    }
+                }
+            }
+        }
+        Item::Const(_)
+        | Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_)
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {}
+    }
+}
+
+fn collect_binding_starts_in_block(block: &Block, name: &str, out: &mut Vec<usize>) {
+    for (stmt, stmt_span) in &block.stmts {
+        collect_binding_starts_in_stmt(stmt, stmt_span, name, out);
+    }
+}
+
+fn collect_binding_starts_in_stmt(stmt: &Stmt, stmt_span: &Span, name: &str, out: &mut Vec<usize>) {
+    match stmt {
+        Stmt::Let { pattern, .. } => {
+            if pattern_binds_name(&pattern.0, name) {
+                out.push(pattern.1.start);
+            }
+        }
+        Stmt::Var {
+            name: binding_name, ..
+        } => {
+            if binding_name == name {
+                // Stmt::Var carries no dedicated name-span; use the statement span.
+                out.push(stmt_span.start);
+            }
+        }
+        Stmt::For { pattern, body, .. } => {
+            if pattern_binds_name(&pattern.0, name) {
+                out.push(pattern.1.start);
+            }
+            collect_binding_starts_in_block(body, name, out);
+        }
+        Stmt::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            collect_binding_starts_in_block(then_block, name, out);
+            if let Some(eb) = else_block {
+                if let Some(if_stmt) = &eb.if_stmt {
+                    collect_binding_starts_in_stmt(&if_stmt.0, &if_stmt.1, name, out);
+                }
+                if let Some(block) = &eb.block {
+                    collect_binding_starts_in_block(block, name, out);
+                }
+            }
+        }
+        Stmt::IfLet {
+            pattern,
+            body,
+            else_body,
+            ..
+        } => {
+            if pattern_binds_name(&pattern.0, name) {
+                out.push(pattern.1.start);
+            }
+            collect_binding_starts_in_block(body, name, out);
+            if let Some(block) = else_body {
+                collect_binding_starts_in_block(block, name, out);
+            }
+        }
+        Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+            collect_binding_starts_in_block(body, name, out);
+        }
+        Stmt::WhileLet { pattern, body, .. } => {
+            if pattern_binds_name(&pattern.0, name) {
+                out.push(pattern.1.start);
+            }
+            collect_binding_starts_in_block(body, name, out);
+        }
+        Stmt::Match { arms, .. } => {
+            for arm in arms {
+                if pattern_binds_name(&arm.pattern.0, name) {
+                    out.push(arm.pattern.1.start);
+                }
+            }
+        }
+        Stmt::Assign { .. }
+        | Stmt::Return(_)
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. }
+        | Stmt::Expression(_)
+        | Stmt::Defer(_) => {}
+    }
 }
 
 fn collect_import_binding_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
@@ -1083,5 +1209,61 @@ mod tests {
         let source = "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
         let pr = parse(source);
         assert!(is_top_level_name(&pr, "Counter"));
+    }
+
+    #[test]
+    fn var_binding_detected_by_ast_not_text() {
+        // `var x` binding — previously is_binding_span missed this because
+        // collect_refs_in_stmt for Var never pushed the name span into spans.
+        let source = "fn f() {\n    var x = 1;\n    x = 2;\n    let y = x;\n}";
+        let pr = parse(source);
+        let var_offset = source.find("var x").unwrap() + 4; // cursor on `x` in `var x`
+        let result = find_all_references(source, &pr, var_offset);
+        assert!(result.is_some(), "var binding should be found");
+        let (name, spans) = result.unwrap();
+        assert_eq!(name, "x");
+        // Must include the usage spans (x = 2 and y = x)
+        assert!(
+            !spans.is_empty(),
+            "should include at least the reference spans"
+        );
+    }
+
+    #[test]
+    fn for_loop_binding_scoped_separately_from_outer_let() {
+        // `let x` in outer scope, `for x in` inside loop — cursor on the `for x`
+        // should NOT include the outer `let x` declaration.
+        let source = "fn f() {\n    let x = 0;\n    for x in 0..3 {\n        let _y = x;\n    }\n}";
+        let pr = parse(source);
+        let for_x_offset = source.find("for x").unwrap() + 4; // cursor on `x` in `for x`
+        let result = find_all_references(source, &pr, for_x_offset);
+        assert!(result.is_some());
+        let (_name, spans) = result.unwrap();
+        let outer_let_offset = source.find("let x").unwrap();
+        for span in &spans {
+            assert!(
+                span.start > outer_let_offset + 5,
+                "for-loop `x` refs should not include the outer let x at {outer_let_offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn shadowed_let_disambiguated_by_ast() {
+        // Two `let x` declarations in the same function — cursor on the first one
+        // should not return references after the second declaration.
+        let source = "fn f() {\n    let x = 1;\n    let a = x;\n    let x = 2;\n    let b = x;\n}";
+        let pr = parse(source);
+        let first_x_offset = source.find("let x").unwrap() + 4; // cursor on first `x`
+        let result = find_all_references(source, &pr, first_x_offset);
+        assert!(result.is_some());
+        let (_name, spans) = result.unwrap();
+        let second_let_x_offset = source.rfind("let x").unwrap();
+        for span in &spans {
+            assert!(
+                span.start < second_let_x_offset,
+                "first `x` refs should not include spans after the second `let x` at {second_let_x_offset}"
+            );
+        }
     }
 }

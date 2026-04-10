@@ -171,7 +171,7 @@ source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
 - **adze-cli/** — Package manager (`adze` binary) — init, install, publish, search
 - **hew-lsp/** — Language server (tower-lsp)
 - **hew-observe/** — Runtime observability TUI (`hew-observe`)
-- **hew-wasm/** — Frontend compiled to WASM for in-browser analysis and diagnostics (not full Hew execution)
+- **hew-wasm/** — Analysis-only frontend compiled to WASM for in-browser diagnostics and editor tooling (not browser runtime/codegen/execution)
 
 ### Standard Library & Build Support
 
@@ -252,18 +252,18 @@ preflight commands.
 ### Browser / Playground Validation
 
 This repo does not build the downstream browser app or a full in-browser Hew
-runtime. The repo-local browser/playground slice here is analysis tooling
-inputs: `hew-wasm` plus the curated
+runtime. The repo-local browser/playground slice here is analysis-only tooling:
+`hew-wasm` plus the curated
 [`examples/playground/manifest.json`](examples/playground/manifest.json)
 consumed by downstream browser tooling.
 
 ```bash
 make playground-manifest        # regenerate examples/playground/manifest.json
 make playground-manifest-check  # cheap freshness check for manifest.json only
-make playground-check           # repo-local preflight: manifest check + build hew-wasm
+make playground-check           # repo-local preflight: manifest freshness + curated analyze smoke + build hew-wasm
 ```
 
-Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling.
+Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling. This lane does not imply browser/runtime/codegen execution coverage.
 
 ### Optional Dependencies
 

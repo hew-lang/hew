@@ -147,7 +147,7 @@ stdlib:
 wasm-runtime:
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
-# Build hew-wasm browser module (requires: cargo install wasm-pack)
+# Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm:
 	wasm-pack build hew-wasm --target web --release
 
@@ -159,8 +159,10 @@ playground-manifest:
 playground-manifest-check:
 	python3 scripts/gen-playground-manifest.py --check
 
-# Repo-local browser/tooling smoke path (manifest drift + hew-wasm build only).
+# Repo-local browser/tooling truth-alignment smoke:
+# manifest freshness + curated hew-wasm analysis smoke + analysis-only WASM build.
 playground-check: playground-manifest-check
+	cargo test -p hew-wasm --lib curated_playground_manifest_smoke -- --exact
 	$(MAKE) wasm
 
 # Conservative diff-based local preflight dispatcher.

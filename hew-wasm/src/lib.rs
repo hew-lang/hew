@@ -1,6 +1,10 @@
-//! WASM bindings for Hew language diagnostics and analysis.
+//! WASM bindings for Hew analysis-only diagnostics and editor tooling.
 //!
-//! This crate provides source-code analysis capabilities:
+//! This crate exposes the frontend analysis surfaces used by browser/editor
+//! integrations. It intentionally does not provide native codegen, linking,
+//! runtime execution, or a full in-browser Hew VM.
+//!
+//! Available source-code analysis capabilities:
 //!
 //! - **Diagnostics** — parse, type-check, and analyze Hew source code
 //!   (`analyze`, `hover`, `get_keywords`).
@@ -14,6 +18,8 @@ use wasm_bindgen::prelude::*;
 // ── Diagnostics API ──────────────────────────────────────────────────────
 
 /// Analyze Hew source code and return diagnostics, tokens, and symbols as JSON.
+///
+/// This is analysis-only and does not execute the program.
 #[must_use]
 #[wasm_bindgen]
 pub fn analyze(source: &str) -> String {
@@ -268,6 +274,74 @@ fn run_analysis(source: &str) -> AnalysisResult {
         diagnostics,
         tokens,
         symbols,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn curated_playground_manifest_smoke() {
+    use std::path::Path;
+
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let playground_dir = crate_dir.join("../examples/playground");
+    let manifest_path = playground_dir.join("manifest.json");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read curated playground manifest {}: {err}",
+            manifest_path.display()
+        )
+    });
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap_or_else(|err| {
+        panic!(
+            "failed to parse curated playground manifest {}: {err}",
+            manifest_path.display()
+        )
+    });
+
+    assert!(
+        !entries.is_empty(),
+        "curated playground manifest should contain at least one example"
+    );
+
+    for entry in entries {
+        let id = entry
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!("curated playground manifest entry missing string id: {entry}")
+            });
+        let source_path_rel = entry
+            .get("source_path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!("curated playground manifest entry missing string source_path: {entry}")
+            });
+        let source_path = playground_dir.join(source_path_rel);
+        let source = std::fs::read_to_string(&source_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read curated playground source {} for {}: {err}",
+                source_path.display(),
+                id
+            )
+        });
+        let analysis_json = analyze(&source);
+        let analysis: serde_json::Value =
+            serde_json::from_str(&analysis_json).unwrap_or_else(|err| {
+                panic!(
+                    "expected valid analyze() JSON for {id} ({source_path_rel}): {err}\n{analysis_json}"
+                )
+            });
+        let diagnostics = analysis
+            .get("diagnostics")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| {
+                panic!("expected diagnostics array for {id} ({source_path_rel}): {analysis_json}")
+            });
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected zero diagnostics for {id} ({source_path_rel}), got {analysis_json}"
+        );
     }
 }
 

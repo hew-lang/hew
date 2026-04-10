@@ -504,10 +504,12 @@ jobs:
       - name: Install LLVM/MLIR
         if: env.RUN_CODE_PATH == 'true'
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          brew install llvm@${{ env.LLVM_VERSION }} lld ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          LLD_PREFIX="$(brew --prefix lld)"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"

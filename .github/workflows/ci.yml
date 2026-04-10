@@ -261,6 +261,7 @@ jobs:
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
       - name: Run WASM runtime actual-target libtests
+        if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib

@@ -369,7 +369,14 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     // production builds and in non-WASM test builds that exercise this module.
     // SAFETY: `reply_channel` is a live WASM reply channel owned by the mailbox
     // and we are retiring it with an empty reply.
+    //
+    // Mark the channel as orphaned BEFORE depositing the null sentinel so the
+    // ask waiter can distinguish mailbox-teardown null from a legitimate null
+    // reply deposited by the handler.  The flag is read after `reply_ready`
+    // becomes true, so the ordering is: set orphaned → call hew_reply (sets
+    // replied=true) → waiter sees replied=true → waiter reads orphaned=true.
     unsafe {
+        (*reply_channel.cast::<crate::reply_channel_wasm::WasmReplyChannel>()).orphaned = true;
         crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
     }
 }

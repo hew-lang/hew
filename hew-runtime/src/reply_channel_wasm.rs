@@ -43,6 +43,9 @@ pub struct WasmReplyChannel {
     replied: bool,
     /// Whether the waiter abandoned the channel.
     cancelled: bool,
+    /// Set by [`retire_reply_channel`] (in `mailbox_wasm`) so the ask caller
+    /// can distinguish mailbox-teardown null from a legitimate null reply.
+    pub(crate) orphaned: bool,
 }
 
 /// Create a new WASM reply channel.
@@ -61,6 +64,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
         value_size: 0,
         replied: false,
         cancelled: false,
+        orphaned: false,
     }))
 }
 
@@ -148,6 +152,24 @@ pub(crate) unsafe fn reply_take(ch: *mut WasmReplyChannel) -> *mut c_void {
         (*ch).value = ptr::null_mut();
         result
     }
+}
+
+/// Return `true` if the channel was retired by mailbox teardown rather than
+/// by the handler explicitly calling [`hew_reply`].
+///
+/// Used by the WASM ask loop to distinguish a null reply deposited by
+/// `retire_reply_channel` (mailbox teardown) from a legitimate null reply
+/// deposited by the handler itself.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+pub(crate) unsafe fn reply_is_orphaned(ch: *mut WasmReplyChannel) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees `ch` is valid.
+    unsafe { (*ch).orphaned }
 }
 
 /// Release a WASM reply channel reference and free it when the count reaches zero.

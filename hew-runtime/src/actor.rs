@@ -2587,9 +2587,23 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
 
     // SAFETY: ch is a valid reply channel pointer created above.
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
-    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
-    unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-    actor_ask_clear();
+
+    if reply.is_null() {
+        // Distinguish an orphaned ask (mailbox teardown retired the channel)
+        // from a legitimate null reply deposited by the handler.
+        // SAFETY: ch is still live — we release it immediately below.
+        let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        if is_orphaned {
+            return actor_ask_null(AskError::OrphanedAsk);
+        }
+        actor_ask_clear();
+    } else {
+        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        actor_ask_clear();
+    }
     reply
 }
 

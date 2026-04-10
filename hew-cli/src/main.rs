@@ -33,6 +33,7 @@ mod signal;
 mod target;
 mod test_runner;
 mod util;
+mod wasi_runner;
 mod watch;
 mod wire;
 
@@ -138,33 +139,23 @@ fn cmd_run(a: &args::RunArgs) {
             std::process::exit(1);
         });
 
-    if !target_spec.can_run_on_host() {
+    if target_spec.is_wasm() && a.profile {
+        eprintln!("Error: `hew run --profile` is not supported for wasm32-wasi targets yet");
+        std::process::exit(1);
+    }
+
+    if !target_spec.is_wasm() && !target_spec.can_run_on_host() {
         eprintln!("{}", target_spec.cross_target_run_error("run"));
         std::process::exit(1);
     }
 
-    // Compile to a temporary binary
-    let tmp_path = tempfile::Builder::new()
-        .prefix("hew_run_")
-        .suffix(target_spec.executable_suffix())
-        .tempfile()
-        .unwrap_or_else(|e| {
-            eprintln!("Error: cannot create temp file: {e}");
-            std::process::exit(1);
-        })
-        .into_temp_path();
-    let tmp_bin = tmp_path.display().to_string();
+    let tmp_path = compile_temp_run_artifact(&input, &options, &target_spec);
 
-    match compile::compile(&input, Some(&tmp_bin), false, &options) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{e}");
-            drop(tmp_path);
-            // Exit 125 = compile failure (sentinel used by the playground to
-            // distinguish compile errors from program exit codes).
-            std::process::exit(125);
-        }
+    if target_spec.is_wasm() {
+        exit_after_wasi_run(tmp_path, &a.program_args, timeout);
     }
+
+    let tmp_bin = tmp_path.display().to_string();
 
     // Run the compiled binary, holding a Child handle so signals sent directly
     // to `hew run` also terminate the compiled program instead of orphaning it.
@@ -234,6 +225,63 @@ fn cmd_run(a: &args::RunArgs) {
         }
         (_, Err(e)) => {
             eprintln!("Error: cannot run compiled binary: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn compile_temp_run_artifact(
+    input: &str,
+    options: &compile::CompileOptions,
+    target_spec: &target::TargetSpec,
+) -> tempfile::TempPath {
+    let tmp_path = tempfile::Builder::new()
+        .prefix("hew_run_")
+        .suffix(target_spec.executable_suffix())
+        .tempfile()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: cannot create temp file: {e}");
+            std::process::exit(1);
+        })
+        .into_temp_path();
+    let tmp_bin = tmp_path.display().to_string();
+
+    match compile::compile(input, Some(&tmp_bin), false, options) {
+        Ok(_) => tmp_path,
+        Err(e) => {
+            eprintln!("{e}");
+            drop(tmp_path);
+            // Exit 125 = compile failure (sentinel used by the playground to
+            // distinguish compile errors from program exit codes).
+            std::process::exit(125);
+        }
+    }
+}
+
+fn exit_after_wasi_run(
+    tmp_path: tempfile::TempPath,
+    program_args: &[String],
+    timeout: Option<std::time::Duration>,
+) -> ! {
+    let status = wasi_runner::run_module(tmp_path.as_ref(), program_args, timeout);
+    drop(tmp_path);
+
+    match (timeout, status) {
+        (_, Ok(wasi_runner::WasiRunOutcome::Exited(status))) => {
+            std::process::exit(status.code().unwrap_or(1))
+        }
+        (Some(timeout), Ok(wasi_runner::WasiRunOutcome::Timeout)) => {
+            eprintln!(
+                "Error: program timed out after {}",
+                crate::process::format_timeout(timeout)
+            );
+            std::process::exit(1);
+        }
+        (None, Ok(wasi_runner::WasiRunOutcome::Timeout)) => {
+            unreachable!("timeout outcome requires an explicit timeout")
+        }
+        (_, Err(e)) => {
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }

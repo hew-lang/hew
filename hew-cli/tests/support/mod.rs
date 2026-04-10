@@ -10,6 +10,7 @@ use std::process::{Command, Output};
 use std::sync::OnceLock;
 
 static CODEGEN_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
+static WASI_RUNNER_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
 pub fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,6 +24,12 @@ pub fn hew_binary() -> PathBuf {
 
 pub fn require_codegen() {
     if let Err(error) = CODEGEN_STATUS.get_or_init(bootstrap_codegen) {
+        panic!("{error}");
+    }
+}
+
+pub fn require_wasi_runner() {
+    if let Err(error) = WASI_RUNNER_STATUS.get_or_init(bootstrap_wasi_runner) {
         panic!("{error}");
     }
 }
@@ -99,6 +106,81 @@ fn bootstrap_codegen() -> Result<(), String> {
     Ok(())
 }
 
+fn bootstrap_wasi_runner() -> Result<(), String> {
+    if !tool_available("wasmtime") {
+        return Err(
+            "failed to bootstrap WASI runner prerequisites: `wasmtime` not found in PATH"
+                .to_string(),
+        );
+    }
+
+    let target_dir = target_dir()?;
+    fs::create_dir_all(&target_dir).map_err(|error| {
+        format!(
+            "failed to create target dir {}: {error}",
+            target_dir.display()
+        )
+    })?;
+
+    let build_profile = build_profile();
+    let runtime_path = target_dir
+        .join("wasm32-wasip1")
+        .join(build_profile)
+        .join("libhew_runtime.a");
+    if runtime_path.is_file() {
+        return Ok(());
+    }
+
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "build",
+            "-q",
+            "-p",
+            "hew-runtime",
+            "--target",
+            "wasm32-wasip1",
+            "--no-default-features",
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .current_dir(repo_root());
+    if build_profile == "release" {
+        command.arg("--release");
+    }
+
+    let output = command.output().map_err(|error| {
+        format!(
+            "failed to invoke `cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features{}`: {error}",
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            }
+        )
+    })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "failed to bootstrap WASI runner runtime with `cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features{}`\n{}",
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            },
+            describe_output(&output)
+        ));
+    }
+
+    if !runtime_path.is_file() {
+        return Err(format!(
+            "WASI runner bootstrap succeeded but {} was not created",
+            runtime_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
 fn build_codegen_artifacts(target_dir: &Path, build_profile: &str) -> Result<Output, String> {
     let mut command = Command::new("cargo");
     command
@@ -166,6 +248,13 @@ fn describe_output(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     )
+}
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn strip_ansi(input: &str) -> String {

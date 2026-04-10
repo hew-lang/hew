@@ -344,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn arc_cross_thread() {
         use std::sync::atomic::AtomicI32;
         static DROP_COUNT: AtomicI32 = AtomicI32::new(0);

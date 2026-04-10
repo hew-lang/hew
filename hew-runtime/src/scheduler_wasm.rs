@@ -261,6 +261,44 @@ static mut PREV_ARENA: *mut c_void = std::ptr::null_mut();
 /// Reply channel for the message currently being dispatched (WASM
 /// equivalent of the native thread-local `CURRENT_REPLY_CHANNEL`).
 static mut CURRENT_REPLY_CHANNEL: *mut c_void = std::ptr::null_mut();
+/// Whether the current dispatch consumed the reply channel's sender-side
+/// reference by calling `hew_reply`.
+static mut CURRENT_REPLY_CHANNEL_CONSUMED: bool = false;
+
+fn set_current_reply_channel(ch: *mut c_void) {
+    // SAFETY: Single-threaded on WASM; no concurrent access.
+    unsafe {
+        CURRENT_REPLY_CHANNEL = ch;
+        CURRENT_REPLY_CHANNEL_CONSUMED = false;
+    }
+}
+
+fn clear_current_reply_channel() -> *mut c_void {
+    // SAFETY: Single-threaded on WASM; no concurrent access.
+    unsafe {
+        let ch = CURRENT_REPLY_CHANNEL;
+        CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
+        CURRENT_REPLY_CHANNEL_CONSUMED = false;
+        ch
+    }
+}
+
+pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: Single-threaded on WASM; no concurrent access.
+    unsafe {
+        if CURRENT_REPLY_CHANNEL == ch {
+            CURRENT_REPLY_CHANNEL_CONSUMED = true;
+        }
+    }
+}
+
+fn current_reply_channel_consumed() -> bool {
+    // SAFETY: Single-threaded on WASM; no concurrent access.
+    unsafe { CURRENT_REPLY_CHANNEL_CONSUMED }
+}
 
 // ── Metrics counters (plain u64, no atomics needed) ─────────────────────
 
@@ -369,7 +407,7 @@ pub unsafe fn sched_enqueue(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor`.
-#[cfg_attr(not(test), no_mangle)]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
     // SAFETY: Caller guarantees actor is a valid HewActor pointer.
     unsafe { sched_enqueue(actor.cast::<HewActor>()) };
@@ -487,6 +525,8 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     let saved_prev_arena: *mut c_void = unsafe { PREV_ARENA };
     // SAFETY: Single-threaded; no data races possible.
     let saved_reply_channel: *mut c_void = unsafe { CURRENT_REPLY_CHANNEL };
+    // SAFETY: Single-threaded; no data races possible.
+    let saved_reply_channel_consumed: bool = unsafe { CURRENT_REPLY_CHANNEL_CONSUMED };
 
     // Register this actor in the canonical current-actor slot that actor.rs
     // self APIs (hew_actor_self, hew_actor_self_pid, hew_actor_self_stop) read.
@@ -535,16 +575,20 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // come from a well-formed `HewMsgNode`.
                 unsafe {
                     let msg_ref = &*msg;
-                    CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
+                    set_current_reply_channel(msg_ref.reply_channel);
                     dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
-                    CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
                 }
 
-                // The dispatch function handled the reply channel (if any).
-                // Clear it from the message node so msg_node_free doesn't
-                // send a duplicate reply.
-                // SAFETY: msg is exclusively owned by this scheduler tick.
-                unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                let reply_consumed = current_reply_channel_consumed();
+                let actor_state = a.actor_state.load(Ordering::Acquire);
+                let _ = clear_current_reply_channel();
+                if reply_consumed
+                    || (actor_state != HewActorState::Stopping as i32
+                        && actor_state != HewActorState::Stopped as i32)
+                {
+                    // SAFETY: msg is exclusively owned by this scheduler tick.
+                    unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                }
 
                 msgs_processed += 1;
                 a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);
@@ -596,6 +640,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     unsafe {
         PREV_ARENA = saved_prev_arena;
         CURRENT_REPLY_CHANNEL = saved_reply_channel;
+        CURRENT_REPLY_CHANNEL_CONSUMED = saved_reply_channel_consumed;
         ACTIVATING = saved_activating;
         TASKS_COMPLETED += 1;
     }
@@ -790,6 +835,7 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 mod tests {
     use super::*;
     use std::ptr;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::Arc;
 
     use crate::internal::types::HewError;
@@ -982,6 +1028,7 @@ mod tests {
             crate::actor::set_current_actor(ptr::null_mut());
             ptr::addr_of_mut!(PREV_ARENA).write(ptr::null_mut());
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(ptr::null_mut());
+            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(false);
             ptr::addr_of_mut!(TASKS_SPAWNED).write(0);
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
@@ -1790,14 +1837,14 @@ mod tests {
         unsafe {
             let dispatch = actor.dispatch.expect("test actor must have a dispatch");
             let msg_ref = &*msg;
-            CURRENT_REPLY_CHANNEL = msg_ref.reply_channel;
+            set_current_reply_channel(msg_ref.reply_channel);
             dispatch(
                 actor.state,
                 msg_ref.msg_type,
                 msg_ref.data,
                 msg_ref.data_size,
             );
-            CURRENT_REPLY_CHANNEL = ptr::null_mut();
+            let _ = clear_current_reply_channel();
             (*msg).reply_channel = ptr::null_mut();
             crate::mailbox_wasm::hew_msg_node_free(msg);
         }
@@ -1919,6 +1966,7 @@ mod tests {
         unsafe { crate::actor::actor_self_stop_wasm_impl(state.cast::<crate::actor::HewActor>()) };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_actor_group_waiter(
         group: *mut crate::actor_group::HewActorGroup,
         timeout_ms: i32,
@@ -1941,9 +1989,11 @@ mod tests {
     // missed condvar wake still gets another state re-check before the test
     // deadline. This narrows Darwin arm64 timing sensitivity without hiding
     // real regressions in the self-stop / closed-mailbox wake paths.
+    #[cfg(not(target_arch = "wasm32"))]
     const ACTOR_GROUP_WAITER_TEST_TIMEOUT_MS: i32 = 25;
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn self_stop_closes_mailbox_and_wakes_actor_group_waiters() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
@@ -2174,6 +2224,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn actor_group_wait_timeout_wakes_on_closed_mailbox_idle_to_stopped() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
@@ -2568,12 +2619,8 @@ mod tests {
     /// `actor_ask_wasm_impl` on the success path (deadline does not expire
     /// before the reply arrives).  The complementary failure branch
     /// (`bounded_wasm_ask_timeout_cancels_before_target_activation`) covers
-    /// `Some(0)`.  Direct WASM target execution is not available in the
-    /// current CI harness; this test runs the WASM cooperative path on the
-    /// native target using the `cfg(any(target_arch = "wasm32", test))`
-    /// availability of `actor_ask_wasm_impl`.
-    // WASM-TODO: run this test against an actual wasm32 target once the CI
-    // harness gains wasm32 test execution support.
+    /// `Some(0)`. The actual-target wasm32-wasip1 libtest lane now exercises
+    /// both branches directly.
     #[test]
     fn wasm_ask_with_generous_timeout_returns_reply_when_actor_is_fast() {
         let _guard = crate::runtime_test_guard();
@@ -2918,9 +2965,8 @@ mod tests {
     /// before every dispatch call, regardless of how many messages the actor
     /// has already processed in the current activation.
     ///
-    /// Coverage note: runs on the native target via the cooperative WASM path.
-    // WASM-TODO: run against an actual wasm32 target once CI gains wasm32 test
-    // execution support (same limitation as `wasm_ask_with_generous_timeout_…`).
+    /// Coverage note: the actual-target wasm32-wasip1 libtest lane now covers
+    /// this reduction-reset invariant directly.
     #[test]
     fn reductions_reset_to_default_per_dispatch() {
         let _guard = crate::runtime_test_guard();

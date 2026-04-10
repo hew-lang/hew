@@ -628,6 +628,7 @@ mod tests {
     // -- unwrap abort behaviour --
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn unwrap_i32_aborts_on_err() {
         // Catches: unwrap returning garbage instead of aborting on Err
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -646,6 +647,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     #[ignore = "subprocess helper for unwrap_i32_aborts_on_err death test"]
     fn _helper_unwrap_i32_err() {
         let res = hew_result_err_code(1);

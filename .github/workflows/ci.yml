@@ -260,6 +260,11 @@ jobs:
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
+      - name: Run WASM runtime actual-target libtests
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
+        run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
+
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
         # Build both release and debug so workspace tests that run the debug

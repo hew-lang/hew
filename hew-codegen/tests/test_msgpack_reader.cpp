@@ -541,6 +541,209 @@ static void test_assign_target_shapes_roundtrip() {
   PASS();
 }
 
+// ─── assign_target_kinds parsing ────────────────────────────────────────────
+
+static void test_assign_target_kinds_roundtrip() {
+  TEST(assign_target_kinds_roundtrip);
+  // Certify that all four AssignTargetKindData variants are parsed correctly
+  // by the C++ reader: local_var, actor_field, field_access, index.
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(9);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  // Four assign_target_kinds entries — one per variant.
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(4);
+
+  // Entry 0: local_var [10..16]
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(16));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("local_var"));
+
+  // Entry 1: actor_field [20..28]
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(20));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(28));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("actor_field"));
+
+  // Entry 2: field_access [30..42]
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(30));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(42));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("field_access"));
+
+  // Entry 3: index [50..58]
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(50));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(58));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("index"));
+
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.assign_target_kinds.size() != 4) {
+      FAIL("expected 4 assign_target_kinds entries");
+      return;
+    }
+    if (!std::get_if<hew::ast::AssignTargetKindLocalVar>(&prog.assign_target_kinds[0].kind)) {
+      FAIL("entry 0 should be LocalVar");
+      return;
+    }
+    if (prog.assign_target_kinds[0].start != 10 || prog.assign_target_kinds[0].end != 16) {
+      FAIL("entry 0 span wrong");
+      return;
+    }
+    if (!std::get_if<hew::ast::AssignTargetKindActorField>(&prog.assign_target_kinds[1].kind)) {
+      FAIL("entry 1 should be ActorField");
+      return;
+    }
+    if (prog.assign_target_kinds[1].start != 20 || prog.assign_target_kinds[1].end != 28) {
+      FAIL("entry 1 span wrong");
+      return;
+    }
+    if (!std::get_if<hew::ast::AssignTargetKindFieldAccess>(&prog.assign_target_kinds[2].kind)) {
+      FAIL("entry 2 should be FieldAccess");
+      return;
+    }
+    if (prog.assign_target_kinds[2].start != 30 || prog.assign_target_kinds[2].end != 42) {
+      FAIL("entry 2 span wrong");
+      return;
+    }
+    if (!std::get_if<hew::ast::AssignTargetKindIndex>(&prog.assign_target_kinds[3].kind)) {
+      FAIL("entry 3 should be Index");
+      return;
+    }
+    if (prog.assign_target_kinds[3].start != 50 || prog.assign_target_kinds[3].end != 58) {
+      FAIL("entry 3 span wrong");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
+// ─── expr_types positive parsing ────────────────────────────────────────────
+
+static void test_expr_types_named_roundtrip() {
+  TEST(expr_types_named_roundtrip);
+  // Certify that a populated expr_types entry carrying a concrete TypeNamed
+  // (non-Infer) TypeExpr is parsed correctly by the C++ reader.
+  //
+  // Wire shape for Spanned<TypeExpr>:
+  //   [TypeExpr_enum_value, {"start": N, "end": N}]
+  // Wire shape for TypeExpr::Named (externally tagged by serde):
+  //   {"Named": {"name": "Int", "type_args": nil}}
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(9);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+
+  // expr_types: one entry with a TypeNamed("Int") type
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(1);
+  // ExprTypeEntry map: {start, end, ty}
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(3));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(12));
+  pk.pack(std::string("ty"));
+  // Spanned<TypeExpr> = [TypeExpr_value, span_map]
+  pk.pack_array(2);
+  // TypeExpr::Named externally tagged: {"Named": {"name": "Int", "type_args": nil}}
+  pk.pack_map(1);
+  pk.pack(std::string("Named"));
+  pk.pack_map(2);
+  pk.pack(std::string("name"));
+  pk.pack(std::string("Int"));
+  pk.pack(std::string("type_args"));
+  pk.pack_nil();
+  // span for the ty field
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(3));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(12));
+
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.expr_types.size() != 1) {
+      FAIL("expected 1 expr_types entry");
+      return;
+    }
+    const auto &entry = prog.expr_types[0];
+    if (entry.start != 3 || entry.end != 12) {
+      FAIL("expr_types entry span wrong");
+      return;
+    }
+    auto *named = std::get_if<hew::ast::TypeNamed>(&entry.ty.value.kind);
+    if (!named) {
+      FAIL("expr_types TypeExpr should be TypeNamed");
+      return;
+    }
+    if (named->name != "Int") {
+      FAIL("TypeNamed.name should be 'Int'");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TypeInfer in wire: must be rejected
 // ═══════════════════════════════════════════════════════════════════════════
@@ -696,6 +899,12 @@ int main() {
 
   // assign_target_shapes field
   test_assign_target_shapes_roundtrip();
+
+  // assign_target_kinds: all four variants
+  test_assign_target_kinds_roundtrip();
+
+  // expr_types: populated Named entry round-trip
+  test_expr_types_named_roundtrip();
 
   // TypeInfer must not survive in the wire
   test_type_infer_in_wire_rejects();

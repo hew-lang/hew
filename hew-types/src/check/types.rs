@@ -39,9 +39,10 @@ pub struct TypeCheckOutput {
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Checker-owned method-call lowering decisions keyed by the method call span.
     ///
-    /// Populated during type checking for receiver-based runtime rewrites so
-    /// serialization can consume a single authoritative contract instead of
-    /// re-resolving C symbols from receiver types.
+    /// Populated during type checking for both receiver-based runtime rewrites
+    /// and module-qualified stdlib direct-call rewrites so serialization can
+    /// consume a single authoritative contract instead of re-resolving C
+    /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
@@ -124,7 +125,16 @@ pub enum MethodCallReceiverKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallRewrite {
-    RewriteToFunction { c_symbol: String },
+    /// Rewrite a receiver-based method call to a runtime function and inject
+    /// the receiver as the first argument.
+    RewriteToFunction {
+        c_symbol: String,
+    },
+    /// Rewrite a module-qualified stdlib call directly to a runtime function
+    /// without injecting the receiver/module identifier as an argument.
+    RewriteModuleQualifiedToFunction {
+        c_symbol: String,
+    },
     DeferToLowering,
 }
 

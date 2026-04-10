@@ -296,6 +296,33 @@ fn respond(req: http.Request) -> int {
 }
 
 #[test]
+fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
+    let output = typecheck_inline(
+        r#"
+import std::fs;
+
+fn main() {
+    let _ = fs.read("test.txt");
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+                if c_symbol == "hew_file_read"
+        )),
+        "expected checker-owned module-qualified rewrite metadata, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
 fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"

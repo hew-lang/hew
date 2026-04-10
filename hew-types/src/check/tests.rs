@@ -298,6 +298,40 @@ fn checker_output_contract_intersects_assignment_target_side_tables() {
     );
 }
 
+#[test]
+fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
+    let parsed = hew_parser::parse(
+        r#"
+import std::fs;
+
+fn main() {
+    let _ = fs.read("test.txt");
+}
+"#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "expected clean parse, got: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+                if c_symbol == "hew_file_read"
+        )),
+        "expected checker-owned module-qualified rewrite metadata, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
 // Helper functions for testing AST construction
 fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
     (

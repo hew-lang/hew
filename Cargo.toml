@@ -45,6 +45,7 @@ members = [
   "hew-wasm",
   "hew-analysis",
   "hew-astgen",
+  "hew-compile",
 ]
 exclude = ["hew-parser/fuzz"]
 resolver = "2"

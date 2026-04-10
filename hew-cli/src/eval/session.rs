@@ -68,7 +68,13 @@ impl Session {
     }
 
     /// Record a successfully-evaluated binding (let/var).
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "alternate REPL session paths exercise this in tests"
+        )
+    )]
     pub fn add_binding(&mut self, source: &str) {
         let bindings = persistent_bindings(source);
         if bindings.is_empty() {
@@ -139,7 +145,10 @@ impl Session {
     /// - Bindings go inside `main()` before the new input.
     /// - Expressions are wrapped in `println()` for auto-printing.
     #[must_use]
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "unit tests cover the convenience builder path")
+    )]
     pub fn build_program(&self, input: &str) -> SyntheticProgram {
         let kind = classify::classify(input);
         self.build_program_with_kind(input, kind)
@@ -256,7 +265,13 @@ impl SessionItem {
 }
 
 impl SessionBinding {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "fallback only applies when parsing cannot classify bindings"
+        )
+    )]
     fn fallback(source: &str) -> Self {
         Self {
             source: ensure_trailing_semicolon(source),
@@ -484,7 +499,13 @@ fn ensure_trailing_semicolon(source: &str) -> String {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "fallback summaries are only consumed in test-only paths"
+    )
+)]
 fn fallback_binding_summary(source: &str) -> String {
     let trimmed = source.trim();
     if trimmed.starts_with("let ") {
@@ -539,7 +560,13 @@ pub struct SyntheticProgram {
     /// The full Hew source code.
     pub source: String,
     /// What kind of input produced this program.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "kind is inspected by tests and debug-only REPL flows"
+        )
+    )]
     pub kind: InputKind,
     /// Optional user-facing view for remapping diagnostics away from wrappers.
     pub diagnostic_view: Option<SyntheticDiagnosticView>,

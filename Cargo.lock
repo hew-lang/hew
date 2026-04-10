@@ -1468,6 +1468,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "fd-lock",
+ "hew-compile",
  "hew-lexer",
  "hew-parser",
  "hew-serialize",
@@ -1479,6 +1480,19 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "hew-compile"
+version = "0.3.0"
+dependencies = [
+ "hew-lexer",
+ "hew-parser",
+ "hew-serialize",
+ "hew-types",
+ "serde",
  "tempfile",
  "toml",
 ]

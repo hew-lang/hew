@@ -26,7 +26,6 @@ mod doc;
 mod eval;
 mod link;
 mod machine;
-mod manifest;
 mod platform;
 mod process;
 #[cfg(unix)]

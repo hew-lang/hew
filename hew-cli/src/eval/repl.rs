@@ -28,6 +28,9 @@ pub struct ReplSession {
     /// Project directory used to resolve manifest deps and local imports for
     /// in-memory compile, matching the behaviour of `compile_file`.
     project_dir: Option<PathBuf>,
+    /// Target triple for compilation (e.g. `wasm32-wasi`). When `None` the
+    /// host native target is used. Non-interactive paths only.
+    eval_target: Option<String>,
 }
 
 #[derive(Debug)]
@@ -286,6 +289,7 @@ impl ReplSession {
             session: Session::new(),
             execution_timeout,
             project_dir: None,
+            eval_target: None,
         }
     }
 
@@ -303,7 +307,29 @@ impl ReplSession {
             session: Session::new(),
             execution_timeout,
             project_dir,
+            eval_target: None,
         }
+    }
+
+    /// Create a REPL session anchored to the project containing `file_path`
+    /// and configured for the given compilation target.
+    #[must_use]
+    pub fn for_path_with_target(
+        file_path: &str,
+        execution_timeout: Duration,
+        target: Option<&str>,
+    ) -> Self {
+        let mut session = Self::for_path(file_path, execution_timeout);
+        session.eval_target = target.map(str::to_owned);
+        session
+    }
+
+    /// Create a REPL session with a custom execution timeout and target.
+    #[must_use]
+    pub fn with_timeout_and_target(execution_timeout: Duration, target: Option<&str>) -> Self {
+        let mut session = Self::with_timeout(execution_timeout);
+        session.eval_target = target.map(str::to_owned);
+        session
     }
 
     /// Evaluate a line of input and return the result.
@@ -354,12 +380,13 @@ impl ReplSession {
         // re-run inside compile_from_source_checked with correct stage ordering
         // (resolve imports BEFORE typecheck) so that stdlib type metadata is
         // available to the enrichment and codegen passes.
-        match run_inprocess_compiled(
+        match run_eval_compiled(
             checked_program.program,
             &checked_program.source,
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -428,12 +455,13 @@ impl ReplSession {
             }
         };
 
-        match run_inprocess_compiled(
+        match run_eval_compiled(
             checked_program.program,
             &checked_program.source,
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -491,12 +519,13 @@ impl ReplSession {
             }
         }
 
-        match run_inprocess_compiled(
+        match run_eval_compiled(
             parse_result.program,
             &synthetic_program.source,
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -901,6 +930,7 @@ fn run_inprocess_compiled(
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -918,6 +948,7 @@ fn run_inprocess_compiled(
         bin_path_str,
         &crate::compile::CompileOptions {
             project_dir,
+            target: target.map(str::to_owned),
             ..crate::compile::CompileOptions::default()
         },
     )
@@ -952,6 +983,84 @@ fn normalize_compiled_eval_error(error: &str) -> CompiledEvalError {
             CompiledEvalError::DiagnosticsRendered
         }
         _ => CompiledEvalError::Message(error.strip_prefix("Error: ").unwrap_or(error).to_string()),
+    }
+}
+
+/// Dispatch to native or WASM execution depending on the requested target.
+///
+/// When `target` is `None` (or a non-WASM triple), falls through to the
+/// existing native `run_inprocess_compiled` path.  When `target` resolves to a
+/// WASM target, the program is compiled to a `.wasm` module and executed via
+/// `wasmtime` with captured output.
+fn run_eval_compiled(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    timeout: Duration,
+    project_dir: Option<PathBuf>,
+    target: Option<&str>,
+) -> Result<String, CompiledEvalError> {
+    let is_wasm = target.is_some_and(|t| {
+        crate::target::TargetSpec::from_requested(Some(t))
+            .map(|spec| spec.is_wasm())
+            .unwrap_or(false)
+    });
+
+    if is_wasm {
+        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, target)
+    } else {
+        run_inprocess_compiled(program, source, source_label, timeout, project_dir, target)
+    }
+}
+
+/// Compile to a WASM module and execute it via wasmtime, capturing stdout.
+fn run_wasm_eval_compiled(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    timeout: Duration,
+    project_dir: Option<PathBuf>,
+    target: Option<&str>,
+) -> Result<String, CompiledEvalError> {
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
+
+    let module_path = tmp_dir.path().join("eval_module.wasm");
+    let module_path_str = module_path
+        .to_str()
+        .ok_or_else(|| CompiledEvalError::Message("temp module path is not valid UTF-8".into()))?;
+
+    crate::compile::compile_from_source_checked(
+        program,
+        source,
+        source_label,
+        module_path_str,
+        &crate::compile::CompileOptions {
+            project_dir,
+            target: target.map(str::to_owned),
+            ..crate::compile::CompileOptions::default()
+        },
+    )
+    .map_err(|error| normalize_compiled_eval_error(&error))?;
+
+    match crate::wasi_runner::run_module_captured(&module_path, timeout) {
+        Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),
+        Ok(crate::wasi_runner::WasiCapturedOutcome::Failed { stderr }) => {
+            Err(CompiledEvalError::Message(if stderr.is_empty() {
+                "WASM program exited with non-zero status".to_string()
+            } else {
+                stderr
+            }))
+        }
+        Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
+            Err(CompiledEvalError::Message(format!(
+                "evaluation timed out after {}",
+                crate::process::format_timeout(timeout)
+            )))
+        }
+        Err(e) => Err(CompiledEvalError::Message(format!(
+            "cannot execute WASM module: {e}"
+        ))),
     }
 }
 
@@ -1019,8 +1128,12 @@ pub fn run_interactive(timeout: Duration) -> Result<(), Box<dyn std::error::Erro
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, CliEvalError> {
-    let mut session = ReplSession::with_timeout(timeout);
+pub fn eval_one(
+    expr: &str,
+    timeout: Duration,
+    target: Option<&str>,
+) -> Result<String, CliEvalError> {
+    let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1029,7 +1142,7 @@ pub fn eval_one(expr: &str, timeout: Duration) -> Result<String, CliEvalError> {
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
+pub fn eval_file(path: &str, timeout: Duration, target: Option<&str>) -> Result<(), CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
         std::io::stdin()
@@ -1043,9 +1156,9 @@ pub fn eval_file(path: &str, timeout: Duration) -> Result<(), CliEvalError> {
     };
 
     let mut session = if path == "-" {
-        ReplSession::with_timeout(timeout)
+        ReplSession::with_timeout_and_target(timeout, target)
     } else {
-        ReplSession::for_path(path, timeout)
+        ReplSession::for_path_with_target(path, timeout, target)
     };
     session.eval_source_file_cli(&source, &input_name, &input_name)?;
 
@@ -1268,7 +1381,7 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT);
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None);
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -1383,7 +1496,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -1396,7 +1509,7 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -1495,6 +1608,7 @@ mod tests {
         let result = eval_file(
             main_path.to_str().expect("main path is valid UTF-8"),
             DEFAULT_EVAL_TIMEOUT,
+            None,
         );
         assert!(
             result.is_ok(),

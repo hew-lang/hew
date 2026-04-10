@@ -25,10 +25,12 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         std::process::exit(1);
     });
 
+    let target = args.target.clone();
+
     // Check for `-f <file>` flag first.
     if let Some(ref file) = args.file {
         let path = file.display().to_string();
-        if let Err(e) = repl::eval_file(&path, timeout) {
+        if let Err(e) = repl::eval_file(&path, timeout, target.as_deref()) {
             exit_eval_error(e);
         }
         return;
@@ -36,6 +38,13 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     if args.expr.is_empty() {
         // Interactive REPL.
+        if target.is_some() {
+            eprintln!(
+                "Error: --target is not yet supported in interactive REPL mode. \
+                Use `hew eval --target <TRIPLE> <expr>` or `hew eval --target <TRIPLE> -f <file>` instead."
+            );
+            std::process::exit(1);
+        }
         if let Err(e) = repl::run_interactive(timeout) {
             eprintln!("Error: {e}");
             std::process::exit(1);
@@ -45,7 +54,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     // Evaluate inline expression.
     let expr = args.expr.join(" ");
-    match repl::eval_one(&expr, timeout) {
+    match repl::eval_one(&expr, timeout, target.as_deref()) {
         Ok(output) => {
             if !output.is_empty() {
                 print!("{output}");

@@ -564,8 +564,8 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: |
           rustup target add wasm32-wasip1
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          brew install wasmtime
+          wasmtime --version
 
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'

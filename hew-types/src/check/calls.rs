@@ -642,6 +642,13 @@ impl Checker {
                 Ty::Unit
             }
             _ => {
+                // Synthesize args even when the callee type is already an error/var so that
+                // independent argument diagnostics are not cascade-suppressed.  This mirrors
+                // what check_method_call's (Ty::Error, _) arm does.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 // Don't cascade errors from already-failed expressions.
                 if !matches!(resolved, Ty::Error | Ty::Var(_)) {
                     self.report_error(

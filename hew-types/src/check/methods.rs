@@ -233,6 +233,11 @@ impl Checker {
             return ty;
         }
 
+        // Synthesize args for error recovery so independent arg diagnostics are not suppressed.
+        for arg in args {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
         self.report_error(
             TypeErrorKind::UndefinedMethod,
             span,
@@ -270,6 +275,10 @@ impl Checker {
         }
         let receiver_ty = Ty::stream(inner.clone());
         let Some(sig) = lookup_builtin_method_sig(&receiver_ty, method) else {
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                self.synthesize(expr, sp);
+            }
             self.report_error(
                 TypeErrorKind::UndefinedMethod,
                 span,
@@ -358,6 +367,10 @@ impl Checker {
                 sig.return_type
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -449,6 +462,10 @@ impl Checker {
                 self.make_vec_type(Ty::Char, span)
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -577,6 +594,10 @@ impl Checker {
                 Ty::Bool
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -658,6 +679,10 @@ impl Checker {
                 Ty::Unit
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -714,6 +739,10 @@ impl Checker {
                 Ty::I64
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -870,6 +899,10 @@ impl Checker {
                 self.subst.resolve(&acc_ty)
             }
             _ => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
                     span,
@@ -917,6 +950,10 @@ impl Checker {
                         .insert(ImportKey::new(self.current_module.clone(), name.clone()));
                 }
                 if !self.module_fn_exports.contains(&key) {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
@@ -1014,6 +1051,10 @@ impl Checker {
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
                     return freshened_ret;
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
                 }
                 self.report_error(
                     TypeErrorKind::UndefinedMethod,
@@ -1131,6 +1172,10 @@ impl Checker {
                     Ty::Unit
                 }
                 _ => {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
@@ -1154,6 +1199,10 @@ impl Checker {
                     Ty::Bool
                 }
                 _ => {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
@@ -1180,6 +1229,10 @@ impl Checker {
                     "to_f32" => Ty::F32,
                     "to_f64" => Ty::F64,
                     _ => {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
                             span,
@@ -1220,6 +1273,10 @@ impl Checker {
                             }
                             return sig.return_type;
                         }
+                    }
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
@@ -1514,6 +1571,10 @@ impl Checker {
                             .return_type
                     }
                     _ => {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
                             span,

@@ -9629,4 +9629,117 @@ mod wasm_rejects {
             output.errors
         );
     }
+
+    // ── Wave 14: Ty::Error cascade-suppression fixes ─────────────────────────
+    //
+    // These tests verify that independent arg diagnostics are NOT suppressed
+    // when the receiver/callee already has type Ty::Error.  Prior to the fix,
+    // "bad arg" errors were silently dropped at every unknown-method `_` arm
+    // and at `check_call_with_type` when called with a Ty::Error callee type.
+
+    fn check_wave14(source: &str) -> Vec<TypeErrorKind> {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        output.errors.into_iter().map(|e| e.kind).collect()
+    }
+
+    #[test]
+    fn wave14_bad_string_method_with_bad_arg_both_reported() {
+        // `s.nonexistent_method(undefined_arg)` must report BOTH:
+        //   - "no method `nonexistent_method` on string"
+        //   - "undefined variable `undefined_arg`"
+        // Before the fix, only the first error was reported.
+        let kinds = check_wave14(r"fn foo(s: String) { s.nonexistent_method(undefined_arg) }");
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedMethod),
+            "expected UndefinedMethod; got: {kinds:?}",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedVariable),
+            "expected UndefinedVariable (must not be cascade-suppressed); got: {kinds:?}",
+        );
+    }
+
+    #[test]
+    fn wave14_bad_vec_method_with_bad_arg_both_reported() {
+        // `v.nonexistent_method(undefined_arg)` on a Vec must report both errors.
+        let kinds = check_wave14(r"fn foo(v: Vec<i64>) { v.nonexistent_method(undefined_arg) }");
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedMethod),
+            "expected UndefinedMethod; got: {kinds:?}",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedVariable),
+            "expected UndefinedVariable (must not be cascade-suppressed); got: {kinds:?}",
+        );
+    }
+
+    #[test]
+    fn wave14_bad_hashmap_method_with_bad_arg_both_reported() {
+        // `m.nonexistent_method(undefined_arg)` on a HashMap must report both errors.
+        let kinds = check_wave14(
+            r"fn foo(m: HashMap<String, i64>) { m.nonexistent_method(undefined_arg) }",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedMethod),
+            "expected UndefinedMethod; got: {kinds:?}",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedVariable),
+            "expected UndefinedVariable (must not be cascade-suppressed); got: {kinds:?}",
+        );
+    }
+
+    #[test]
+    fn wave14_call_error_typed_var_arg_errors_reported() {
+        // `let f = undefined_fn(); f(undefined_arg)` — when `f` has type Ty::Error
+        // (because `undefined_fn` is unknown), the args to `f(...)` must still be
+        // synthesized so `undefined_arg` errors are surfaced.
+        let kinds = check_wave14(r"fn foo() { let f = undefined_fn(); let _ = f(undefined_arg); }");
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedFunction),
+            "expected UndefinedFunction for `undefined_fn`; got: {kinds:?}",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedVariable),
+            "expected UndefinedVariable (must not be cascade-suppressed); got: {kinds:?}",
+        );
+    }
+
+    #[test]
+    fn wave14_chained_bad_method_with_bad_arg_in_chain() {
+        // `s.bad_method().another_method(undefined_arg)` — the (Ty::Error, _) arm
+        // already synthesizes args for chained calls, so `undefined_arg` SHOULD be
+        // reported.  This test guards that the chained-call path is not regressed.
+        let kinds = check_wave14(
+            r"fn foo(s: String) { let _ = s.bad_method().another_method(undefined_arg); }",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedMethod),
+            "expected UndefinedMethod for `bad_method`; got: {kinds:?}",
+        );
+        assert!(
+            kinds.contains(&TypeErrorKind::UndefinedVariable),
+            "expected UndefinedVariable in chained call; got: {kinds:?}",
+        );
+    }
+
+    #[test]
+    fn wave14_simple_chain_still_suppressed_correctly() {
+        // `s.bad_method().to_string()` — the `.to_string()` on the Ty::Error result
+        // is correctly suppressed (not a new error). The (Ty::Error, _) arm must
+        // NOT emit a duplicate diagnostic for the chained method.
+        let kinds = check_wave14(r"fn foo(s: String) { let _ = s.bad_method().to_string(); }");
+        assert_eq!(
+            kinds,
+            vec![TypeErrorKind::UndefinedMethod],
+            "expected exactly [UndefinedMethod] — chain must stay suppressed; got: {kinds:?}",
+        );
+    }
 }

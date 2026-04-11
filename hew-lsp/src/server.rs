@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
-use hew_analysis::calls::{collect_calls_in_block, collect_calls_in_item};
+use hew_analysis::calls::{
+    collect_calls_in_block, collect_calls_in_item, collect_calls_in_named_body,
+};
 use hew_analysis::references::count_all_references;
 use hew_analysis::util::{compute_line_offsets, non_empty, offset_to_line_col, word_at_offset};
 use hew_parser::ast::{Attribute, ImportDecl, ImportSpec, Item, Span, TypeDeclKind};
@@ -2901,36 +2903,12 @@ fn find_outgoing_calls(
 ) -> Vec<CallHierarchyOutgoingCall> {
     let mut call_sites = Vec::new();
 
-    // Collect calls only from the item whose name matches the caller.
+    // Collect calls only from the specific body that matches caller_name.
+    // For multi-body items (Actor, Impl, TypeDecl, Trait) this walks only the
+    // matching sub-body, preventing sibling methods from bleeding into the
+    // outgoing call set.
     for (item, _) in &parse_result.program.items {
-        let is_caller = match item {
-            Item::Function(f) => f.name == caller_name,
-            Item::Actor(a) => {
-                a.receive_fns.iter().any(|r| r.name == caller_name)
-                    || a.methods.iter().any(|m| m.name == caller_name)
-            }
-            Item::Impl(i) => i.methods.iter().any(|m| m.name == caller_name),
-            Item::TypeDecl(td) => td.body.iter().any(|b| {
-                if let hew_parser::ast::TypeBodyItem::Method(m) = b {
-                    m.name == caller_name
-                } else {
-                    false
-                }
-            }),
-            Item::Trait(t) => t.items.iter().any(|ti| {
-                if let hew_parser::ast::TraitItem::Method(m) = ti {
-                    m.name == caller_name
-                } else {
-                    false
-                }
-            }),
-            Item::Supervisor(s) => s.name == caller_name,
-            Item::Machine(m) => m.name == caller_name,
-            _ => false,
-        };
-        if is_caller {
-            collect_calls_in_item(item, &mut call_sites);
-        }
+        collect_calls_in_named_body(item, caller_name, &mut call_sites);
     }
 
     // Group call sites by callee name
@@ -4158,6 +4136,62 @@ impl Worker {
         assert!(
             calls.is_empty(),
             "leaf function should have no outgoing calls"
+        );
+    }
+
+    /// Regression: sibling `receive_fns` in an actor must not bleed into each
+    /// other's outgoing call sets.  Before the fix, querying `on_msg` would
+    /// walk *all* actor bodies and surface `target_b` (from `on_other`) as an
+    /// outgoing call.
+    #[test]
+    fn outgoing_calls_actor_receive_fn_no_sibling_bleed() {
+        let source = concat!(
+            "fn target_a() {}\n",
+            "fn target_b() {}\n",
+            "actor A {\n",
+            "    receive fn on_msg() { target_a(); }\n",
+            "    receive fn on_other() { target_b(); }\n",
+            "}",
+        );
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg");
+        let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
+        assert!(
+            callee_names.contains(&"target_a"),
+            "on_msg should have target_a as outgoing call"
+        );
+        assert!(
+            !callee_names.contains(&"target_b"),
+            "sibling on_other's target_b must NOT appear in on_msg outgoing calls (regression)"
+        );
+    }
+
+    /// Regression: sibling methods in an impl must not bleed into each other's
+    /// outgoing call sets.
+    #[test]
+    fn outgoing_calls_impl_method_no_sibling_bleed() {
+        let source = concat!(
+            "fn alpha_target() {}\n",
+            "fn beta_target() {}\n",
+            "impl Foo {\n",
+            "    fn alpha() { alpha_target(); }\n",
+            "    fn beta() { beta_target(); }\n",
+            "}",
+        );
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha");
+        let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
+        assert!(
+            callee_names.contains(&"alpha_target"),
+            "alpha should have alpha_target as outgoing call"
+        );
+        assert!(
+            !callee_names.contains(&"beta_target"),
+            "sibling beta's beta_target must NOT appear in alpha outgoing calls (regression)"
         );
     }
 

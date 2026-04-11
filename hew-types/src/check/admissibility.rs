@@ -171,6 +171,7 @@ impl Checker {
         });
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
         self.validate_assign_target_output_contract();
+        self.validate_method_call_output_contract(expr_types);
     }
 
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
@@ -251,6 +252,22 @@ impl Checker {
         for span in leaked_expr_type_spans {
             expr_types.remove(&span);
         }
+    }
+
+    /// Prune `method_call_receiver_kinds` and `method_call_rewrites` entries
+    /// whose `SpanKey` is absent from the validated `expr_types` map.
+    ///
+    /// `expr_types` here is the post-validation map produced by
+    /// `validate_expr_output_contract` — any span that was pruned there (due
+    /// to leaked inference vars, cascading errors, etc.) is authoritative
+    /// evidence that the corresponding method-call side-table entry is orphaned
+    /// and must not leak to the output.  This mirrors the fail-closed contract
+    /// already applied to `assign_target_kinds` / `assign_target_shapes`.
+    fn validate_method_call_output_contract(&mut self, expr_types: &HashMap<SpanKey, Ty>) {
+        self.method_call_receiver_kinds
+            .retain(|key, _| expr_types.contains_key(key));
+        self.method_call_rewrites
+            .retain(|key, _| expr_types.contains_key(key));
     }
 
     fn validate_assign_target_output_contract(&mut self) {

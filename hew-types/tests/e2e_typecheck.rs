@@ -3552,7 +3552,9 @@ fn hashset_valid_i64_element_not_rejected() {
 #[test]
 fn hashset_annotation_with_infer_hole_fails_closed() {
     // A HashSet annotation with an explicit inference hole (`_`) for the element
-    // that is never constrained must fail closed.
+    // that is never constrained must fail closed with exactly one error.
+    // The inference-holes path is the sole authority; finalize_hashset_admission
+    // must not add a duplicate.
     let output = typecheck_inline(
         r"
         fn main() {
@@ -3563,14 +3565,28 @@ fn hashset_annotation_with_infer_hole_fails_closed() {
         !output.errors.is_empty(),
         "expected error for HashSet<_> with unresolved element type, got no errors"
     );
+    // No two InferenceFailed errors at the same span.
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashSet<_> annotation: {:#?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
 fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
-    // Multiple method calls on an unresolved HashSet should produce exactly
-    // one InferenceFailed, not one per call site.  This is the duplicate-
-    // diagnostic regression test: the lowering-fact path is the sole authority
-    // for method-call spans; finalize_hashset_admission must not fire again.
+    // Multiple method calls on an unresolved HashSet should produce no duplicate
+    // InferenceFailed at the same span.  The lowering-fact path is the sole
+    // authority for method-call spans; finalize_hashset_admission must not fire
+    // again for the same span.
     let output = typecheck_inline(
         r"
         fn main() {
@@ -3603,22 +3619,95 @@ fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
 #[test]
 fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
     // A HashSet annotation with no method calls means no lowering fact is
-    // recorded.  finalize_hashset_admission must still catch this and emit
-    // exactly one InferenceFailed.
+    // recorded.  The inference-holes path catches the unresolved `_` and emits
+    // exactly one InferenceFailed; finalize_hashset_admission must not add a
+    // duplicate.
     let output = typecheck_inline(
         r"
         fn main() {
             var s: HashSet<_> = HashSet::new();
         }",
     );
-    let inference_failed_count = output
+    let inference_failed: Vec<_> = output
         .errors
         .iter()
         .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-        .count();
+        .collect();
     assert!(
-        inference_failed_count >= 1,
+        !inference_failed.is_empty(),
         "expected InferenceFailed for annotation-only unresolved HashSet, got: {:#?}",
         output.errors
     );
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &inference_failed {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for annotation-only HashSet<_>: {inference_failed:#?}",
+        );
+    }
+}
+
+// ── HashMap annotation-hole duplicate-diagnostic regressions ─────────────────
+//
+// PR #957 introduced HashMap deferred admission; the same annotation-hole
+// duplicate path applies there.  These tests pin that it is also fixed.
+
+#[test]
+fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
+    // HashMap<_, String> with an unresolved key hole must produce at most one
+    // InferenceFailed per span.  finalize_hashmap_admission must not add a
+    // second error on top of the inference-holes diagnostic.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<_, String> = HashMap::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashMap<_, String> with unresolved key, got no errors"
+    );
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashMap<_, String>: {errors:#?}",
+            errors = output.errors
+        );
+    }
+}
+
+#[test]
+fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
+    // HashMap<String, _> with an unresolved value hole must produce at most one
+    // InferenceFailed per span.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<String, _> = HashMap::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashMap<String, _> with unresolved value, got no errors"
+    );
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashMap<String, _>: {errors:#?}",
+            errors = output.errors
+        );
+    }
 }

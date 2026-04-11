@@ -144,13 +144,32 @@ impl Checker {
         context: impl Into<String>,
     ) -> Ty {
         let (ty, hole_vars) = self.resolve_annotation_holes(annotation);
+        // Capture the fresh hole vars before moving them into the deferred list.
+        // We use this set to suppress redundant collection-admission deferral
+        // below: if a collection type arg IS a fresh inference hole, the
+        // deferred_inference_holes path is already the sole authority for any
+        // InferenceFailed diagnostic at this annotation site.  Deferring
+        // admission on top would produce a duplicate error at the same root cause.
+        let hole_var_set: std::collections::HashSet<TypeVar> = hole_vars.iter().copied().collect();
         self.record_deferred_inference_holes(annotation, context, hole_vars);
         match &ty {
             Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => {
-                self.validate_hashset_element_type(&args[0], &annotation.1);
+                // Skip if element is a fresh inference hole — inference-holes
+                // path is the authority; admission runs at method-call sites.
+                let elem = self.subst.resolve(&args[0]);
+                if !matches!(&elem, Ty::Var(v) if hole_var_set.contains(v)) {
+                    self.validate_hashset_element_type(&args[0], &annotation.1);
+                }
             }
             Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => {
-                self.validate_hashmap_key_value_types(&args[0], &args[1], &annotation.1);
+                // Skip if either key or value is a fresh inference hole.
+                let key = self.subst.resolve(&args[0]);
+                let val = self.subst.resolve(&args[1]);
+                let key_is_hole = matches!(&key, Ty::Var(v) if hole_var_set.contains(v));
+                let val_is_hole = matches!(&val, Ty::Var(v) if hole_var_set.contains(v));
+                if !key_is_hole && !val_is_hole {
+                    self.validate_hashmap_key_value_types(&args[0], &args[1], &annotation.1);
+                }
             }
             _ => {}
         }

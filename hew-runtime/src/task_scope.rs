@@ -67,6 +67,9 @@ pub struct HewTask {
     pub done_signal: Option<Arc<TaskDoneSignal>>,
     /// Thread join handle for the spawned worker thread.
     pub thread_handle: Option<std::thread::JoinHandle<()>>,
+    /// Set when a cancelled running task had to be detached to keep scope
+    /// teardown bounded. Such tasks keep their scope/task allocation alive.
+    detached_on_cancel: bool,
     /// Captured environment pointer (Rc-allocated) for scope tasks.
     pub env_ptr: *mut c_void,
 }
@@ -137,6 +140,18 @@ impl HewTask {
     fn store_state(&self, new_state: HewTaskState, ordering: Ordering) {
         self.state.store(new_state as i32, ordering);
     }
+
+    fn notify_done_signal(&self) {
+        if let Some(ref signal) = self.done_signal {
+            signal.notify_done();
+        }
+    }
+
+    fn mark_done(&mut self, error: HewTaskError) {
+        self.error = error;
+        self.store_state(HewTaskState::Done, Ordering::Release);
+        self.notify_done_signal();
+    }
 }
 
 // ── Task lifecycle ─────────────────────────────────────────────────────
@@ -157,6 +172,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
         next: ptr::null_mut(),
         done_signal: None,
         thread_handle: None,
+        detached_on_cancel: false,
         env_ptr: ptr::null_mut(),
     });
     Box::into_raw(task)
@@ -382,6 +398,7 @@ pub unsafe extern "C" fn hew_task_complete_threaded(task: *mut HewTask) {
     // Release store: ensures all preceding writes (result data, result_size)
     // are visible to any thread that subsequently Acquire-loads `Done`.
     t.store_state(HewTaskState::Done, Ordering::Release);
+    t.notify_done_signal();
 }
 
 /// Wait for all tasks in a scope to complete (join all threads).
@@ -402,14 +419,28 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         // SAFETY: All task pointers in the list are valid.
         let t = unsafe { &mut *cur };
 
+        let detach_cancelled_running = s.cancelled.load(Ordering::Acquire)
+            && t.load_state() == HewTaskState::Running
+            && t.thread_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished());
+
         // Join the thread if it was spawned.
         if let Some(handle) = t.thread_handle.take() {
-            let _ = handle.join();
+            if detach_cancelled_running {
+                t.detached_on_cancel = true;
+                drop(handle);
+            } else {
+                let _ = handle.join();
+            }
         }
 
-        // Wait on done signal if present.
-        if let Some(ref signal) = t.done_signal {
-            signal.wait_until_done();
+        // Wait on done signal only for terminal tasks. Cancelled running tasks
+        // keep their signal unset so join_all can remain bounded.
+        if !t.detached_on_cancel && t.load_state() == HewTaskState::Done {
+            if let Some(ref signal) = t.done_signal {
+                signal.wait_until_done();
+            }
         }
 
         // Update scope count.
@@ -559,8 +590,7 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
         let t = unsafe { &mut *cur };
         let cur_state = t.load_state();
         if cur_state == HewTaskState::Ready || cur_state == HewTaskState::Suspended {
-            t.store_state(HewTaskState::Done, Ordering::Release);
-            t.error = HewTaskError::Cancelled;
+            t.mark_done(HewTaskError::Cancelled);
             s.completed_count += 1;
         }
         cur = t.next;
@@ -588,7 +618,7 @@ pub unsafe extern "C" fn hew_task_scope_complete_task(
         return; // Already terminal.
     }
 
-    t.store_state(HewTaskState::Done, Ordering::Release);
+    t.mark_done(HewTaskError::None);
     s.completed_count += 1;
 }
 
@@ -692,6 +722,28 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
     // Join all worker threads before freeing tasks to avoid UAF.
     // SAFETY: Caller guarantees `scope` is valid.
     unsafe { hew_task_scope_join_all(scope) };
+    let leaked_live_task = {
+        // SAFETY: Caller guarantees `scope` is valid and we have not freed it.
+        let s = unsafe { &*scope };
+        let mut cur = s.tasks;
+        let mut leaked = false;
+        while !cur.is_null() {
+            // SAFETY: All task pointers in the list are valid.
+            if unsafe { (*cur).detached_on_cancel } {
+                leaked = true;
+                break;
+            }
+            // SAFETY: cur is valid.
+            cur = unsafe { (*cur).next };
+        }
+        leaked
+    };
+    if leaked_live_task {
+        // DROP-TODO: cancelled running threads cannot be force-stopped safely.
+        // Keep the scope/task allocations alive instead of blocking forever or
+        // freeing memory out from under a detached worker.
+        return;
+    }
     // SAFETY: Caller guarantees `scope` was Box-allocated.
     let s = unsafe { Box::from_raw(scope) };
 
@@ -769,6 +821,87 @@ mod tests {
 
             hew_task_scope_destroy(scope);
         }
+    }
+
+    #[test]
+    fn scope_cancel_notifies_done_signal_for_non_running_tasks() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            let signal = Arc::new(TaskDoneSignal::new());
+            (*task).done_signal = Some(Arc::clone(&signal));
+            hew_task_scope_spawn(scope, task);
+
+            hew_task_scope_cancel(scope);
+
+            signal.wait_until_done();
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_destroy_after_cancel_stays_bounded_with_live_running_task() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        static EXITED: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn blocking_task(task: *mut HewTask) {
+            STARTED.store(true, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            EXITED.store(true, Ordering::SeqCst);
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        STARTED.store(false, Ordering::SeqCst);
+        RELEASE.store(false, Ordering::SeqCst);
+        EXITED.store(false, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, blocking_task);
+
+            let started_deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < started_deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                STARTED.load(Ordering::SeqCst),
+                "worker thread never started"
+            );
+
+            hew_task_scope_cancel(scope);
+            assert_eq!((*task).load_state(), HewTaskState::Running);
+            assert_eq!(hew_task_scope_has_active_tasks(scope), 1);
+
+            let destroy_started = Instant::now();
+            hew_task_scope_destroy(scope);
+            assert!(
+                destroy_started.elapsed() < Duration::from_millis(250),
+                "destroy blocked on a cancelled running task"
+            );
+        }
+
+        RELEASE.store(true, Ordering::SeqCst);
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !EXITED.load(Ordering::SeqCst) && Instant::now() < exit_deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            EXITED.load(Ordering::SeqCst),
+            "detached worker never exited"
+        );
     }
 
     #[test]

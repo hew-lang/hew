@@ -247,7 +247,11 @@ impl Checker {
             &mut resolved_fn_sigs,
             &mut resolved_call_type_args,
         );
-        let resolved_lowering_facts = self.finalize_lowering_facts();
+        let mut resolved_lowering_facts = self.finalize_lowering_facts();
+        admissibility::validate_lowering_facts_output_contract(
+            &mut resolved_lowering_facts,
+            &resolved_expr_types,
+        );
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();

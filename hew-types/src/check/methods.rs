@@ -33,6 +33,15 @@ impl Checker {
                 .subst
                 .resolve(&pending_fact.hashset_element_ty)
                 .materialize_literal_defaults();
+            // Guard 1: element type is already erroneous — a prior diagnostic was
+            // reported on the upstream expression.  Drop the pending fact silently;
+            // downstream codegen fails closed via the absent lowering-fact entry.
+            // Emitting a new diagnostic here would produce a spurious secondary
+            // "element type is unresolved" error even though inference completed
+            // correctly — it just completed to Ty::Error.
+            if resolved_ty.contains_error() {
+                continue;
+            }
             match LoweringFact::from_hashset_element_type(&resolved_ty) {
                 Ok(fact) => {
                     result.insert(span_key, fact);
@@ -1901,5 +1910,67 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::module_registry::ModuleRegistry;
+
+    /// A pending lowering fact whose element type resolves to `Ty::Error` must be
+    /// dropped silently by `finalize_lowering_facts` without emitting a new error.
+    ///
+    /// Background: `validate_hashset_element_type` allows `Ty::Error` through
+    /// (correct — avoids cascading diagnostics), which means
+    /// `record_hashset_lowering_fact` can be called with `Ty::Error` as the
+    /// element type.  Before this fix, `from_hashset_element_type(Ty::Error)`
+    /// returned `Err(UnresolvedHashSetElementType)` and the handler emitted a
+    /// spurious "element type is unresolved" diagnostic even though the real error
+    /// had already been reported upstream.
+    #[test]
+    fn finalize_lowering_facts_silently_drops_error_element_type() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 10..20;
+        checker.record_hashset_lowering_fact(&span, &Ty::Error);
+
+        let facts = checker.finalize_lowering_facts();
+
+        assert!(
+            facts.is_empty(),
+            "a pending fact with Ty::Error element must not appear in the finalized output"
+        );
+        assert!(
+            checker.errors.is_empty(),
+            "finalize_lowering_facts must not emit a spurious error for Ty::Error elements; \
+             the real error was reported upstream"
+        );
+    }
+
+    /// A pending lowering fact whose element type is genuinely unresolved
+    /// (`Ty::Var`) after inference must be pruned AND must emit an
+    /// `InferenceFailed` diagnostic pointing at the lowering site.
+    #[test]
+    fn finalize_lowering_facts_emits_error_for_unresolved_inference_var() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 30..40;
+        let unresolved_var = Ty::Var(crate::ty::TypeVar::fresh());
+        checker.record_hashset_lowering_fact(&span, &unresolved_var);
+
+        let facts = checker.finalize_lowering_facts();
+
+        assert!(
+            facts.is_empty(),
+            "a pending fact with an unresolved Ty::Var element must not appear in the output"
+        );
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+            "finalize_lowering_facts must emit InferenceFailed for a genuinely unresolved \
+             element type; got: {:?}",
+            checker.errors
+        );
     }
 }

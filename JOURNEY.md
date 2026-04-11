@@ -1,5 +1,12 @@
 # Journey
 
+## 2026-04-11 — fix/task-scope-cancelled-worker-reclamation
+
+- Symptom: `hew_task_scope_destroy()` stayed bounded after cancelling a live running task, but `hew_task_scope_join_all()` marked that task `detached_on_cancel` and dropped its join handle, so destroy returned early forever and leaked the entire `HewTaskScope` task list.
+- Root cause: bounded cancellation had no ownership handoff. Once the running cancelled task was detached there was no remaining thread responsible for eventually joining the worker and reclaiming the scope, so every task-local allocation stayed live until process exit.
+- Decision: keep `hew_task_scope_join_all()` bounded by leaving cancelled-running worker handles attached to their tasks, then have `hew_task_scope_destroy()` move any remaining detached handles plus the boxed scope into a background reaper thread that joins those workers before calling the normal task/scope free path.
+- Follow-up after local review: when a cancelled worker races from `Running` to `Done` inside `join_all()`, the runtime must still take/drop its join handle immediately so the existing done-signal wait remains the synchronization barrier; otherwise destroy can free the scope before the worker finishes reading `done_signal`.
+
 ## 2026-04-11 — fix/astgen-u32-overflow-guards
 
 - Symptom: `make astgen` regenerated `hew-codegen/src/msgpack_reader.cpp` without the exact `uint32_t` overflow guard, which made `test_schema_version_u32_overflow_rejects` fail even though the generated-reader freshness gate passed.

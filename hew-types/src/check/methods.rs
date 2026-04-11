@@ -10,8 +10,14 @@ use crate::method_resolution::{
 
 impl Checker {
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
+        let key = SpanKey::from(span);
+        // If deferred admission was already recorded for this span, the
+        // lowering-fact finalizer becomes the sole authority for any
+        // InferenceFailed diagnostic at this site.  Remove the deferred entry
+        // to prevent a duplicate error from finalize_hashset_admission.
+        self.deferred_hashset_admission.remove(&key);
         self.pending_lowering_facts.insert(
-            SpanKey::from(span),
+            key,
             PendingLoweringFact::hashset(elem_ty.clone(), self.current_module.clone()),
         );
     }
@@ -27,6 +33,12 @@ impl Checker {
         let pending = std::mem::take(&mut self.pending_lowering_facts);
         let mut result = HashMap::with_capacity(pending.len());
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        // Track which unresolved TypeVars have already produced a diagnostic so
+        // that repeated method calls on the same unresolved HashSet (e.g.
+        // `s.len(); s.is_empty()`) emit exactly one InferenceFailed rather than
+        // one per call site.  Each unique unresolved root var gets one error.
+        let mut reported_unresolved_vars: std::collections::HashSet<TypeVar> =
+            std::collections::HashSet::new();
 
         for (span_key, pending_fact) in pending {
             let resolved_ty = self
@@ -48,8 +60,17 @@ impl Checker {
                 }
                 Err(LoweringFactError::UnresolvedHashSetElementType) => {
                     // Inference did not resolve the element type by the checker
-                    // boundary.  Emit a clear diagnostic and prune the fact so
+                    // boundary.  Emit a clear diagnostic (at most once per
+                    // unique unresolved TypeVar) and prune the fact so
                     // downstream codegen fails closed via requireLoweringFactOf.
+                    if let Ty::Var(var) = resolved_ty {
+                        if !reported_unresolved_vars.insert(var) {
+                            // Already emitted for this root var (another call
+                            // site on the same unresolved set).  Skip to avoid
+                            // spraying one error per method-call site.
+                            continue;
+                        }
+                    }
                     let span = span_key.start..span_key.end;
                     let mut err = crate::error::TypeError::new(
                         TypeErrorKind::InferenceFailed,
@@ -88,6 +109,12 @@ impl Checker {
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        // Track which (key_var, val_var) pairs have already produced a
+        // diagnostic so that repeated method calls on the same unresolved
+        // HashMap (e.g. `m.len(); m.is_empty()`) emit exactly one
+        // InferenceFailed rather than one per call site.
+        let mut reported_var_pairs: std::collections::HashSet<(Option<TypeVar>, Option<TypeVar>)> =
+            std::collections::HashSet::new();
 
         for (_span_key, check) in checks {
             let resolved_key = self
@@ -104,17 +131,41 @@ impl Checker {
                 continue;
             }
 
-            // Still unresolved at the checker boundary → fail closed.
+            // Still unresolved at the checker boundary → fail closed, but
+            // deduplicate across multiple call sites that share the same
+            // unresolved root vars.
             if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
+                let key_var = if let Ty::Var(v) = resolved_key {
+                    Some(v)
+                } else {
+                    None
+                };
+                let val_var = if let Ty::Var(v) = resolved_val {
+                    Some(v)
+                } else {
+                    None
+                };
+                if !reported_var_pairs.insert((key_var, val_var)) {
+                    // Already emitted for this root (key_var, val_var) pair.
+                    continue;
+                }
+                let key_resolved_display = self
+                    .subst
+                    .resolve(&check.key_ty)
+                    .materialize_literal_defaults();
+                let val_resolved_display = self
+                    .subst
+                    .resolve(&check.val_ty)
+                    .materialize_literal_defaults();
+                let key_display = key_resolved_display.user_facing();
+                let val_display = val_resolved_display.user_facing();
                 let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InferenceFailed,
                     check.span.clone(),
                     format!(
                         "cannot infer HashMap key or value type at the checker boundary \
-                         (HashMap<{}, {}>); add an explicit type annotation, \
-                         e.g. `HashMap<String, i64>`",
-                        resolved_key.user_facing(),
-                        resolved_val.user_facing(),
+                         (HashMap<{key_display}, {val_display}>); add an explicit type \
+                         annotation, e.g. `HashMap<String, i64>`",
                     ),
                 );
                 if let Some(module) = check.source_module {
@@ -125,6 +176,54 @@ impl Checker {
 
             // Fully resolved but unsupported pair: the inline check should have
             // already emitted a diagnostic. Skip to avoid duplicates.
+        }
+
+        self.errors.extend(new_errors);
+    }
+
+    /// Drain `deferred_hashset_admission`, resolve element types through the
+    /// current substitution, and fail closed on any that are still unresolved
+    /// or error-typed at the checker boundary.
+    ///
+    /// * `Ty::Var` → `InferenceFailed`: inference did not resolve the element type.
+    /// * `Ty::Error` → silent drop: upstream already emitted a diagnostic.
+    /// * Fully-resolved unsupported elements → already caught inline; silently
+    ///   skipped here to avoid duplicate diagnostics.
+    pub(super) fn finalize_hashset_admission(&mut self) {
+        let checks = std::mem::take(&mut self.deferred_hashset_admission);
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        for (_span_key, check) in checks {
+            let resolved = self
+                .subst
+                .resolve(&check.elem_ty)
+                .materialize_literal_defaults();
+
+            // Already-errored type: fail closed without cascading.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+
+            // Still unresolved at the checker boundary → fail closed.
+            if matches!(resolved, Ty::Var(_)) {
+                let mut err = crate::error::TypeError::new(
+                    TypeErrorKind::InferenceFailed,
+                    check.span.clone(),
+                    format!(
+                        "cannot infer HashSet element type at the checker boundary \
+                         (HashSet<{}>); add an explicit type annotation, \
+                         e.g. `HashSet<String>` or `HashSet<i64>`",
+                        resolved.user_facing(),
+                    ),
+                );
+                if let Some(module) = check.source_module {
+                    err = err.with_source_module(module);
+                }
+                new_errors.push(err);
+            }
+
+            // Fully resolved but unsupported element: the inline check should
+            // have already emitted a diagnostic. Skip to avoid duplicates.
         }
 
         self.errors.extend(new_errors);

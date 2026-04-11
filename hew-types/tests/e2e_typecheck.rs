@@ -3437,3 +3437,406 @@ fn hashmap_annotation_with_infer_hole_key_fails_closed() {
         "expected error for HashMap<_, String> with unresolved key, got no errors"
     );
 }
+
+// ── HashSet admission fail-closed ────────────────────────────────────────────
+//
+// Regression tests for the fix that ensures Ty::Var and Ty::Error in HashSet
+// element positions fail closed at the checker boundary rather than leaking
+// into codegen.
+
+#[test]
+fn hashset_unresolved_element_type_fails_closed_at_boundary() {
+    // `s.len()` is called before anything constrains the element type.
+    // finalize_lowering_facts must emit exactly one InferenceFailed about
+    // the HashSet element type; finalize_hashset_admission must be silent
+    // (deferred entry was evicted by record_hashset_lowering_fact).
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let _ = s.len();
+        }",
+    );
+    // At least one InferenceFailed must exist (fail-closed).
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for unresolved HashSet element type, got: {:#?}",
+        output.errors
+    );
+    // No two InferenceFailed at the same span — finalize_hashset_admission
+    // must not fire alongside the lowering-fact finalizer.
+    let mut span_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        *span_counts.entry(format!("{:?}", e.span)).or_insert(0) += 1;
+    }
+    for (span, count) in &span_counts {
+        assert_eq!(
+            *count, 1,
+            "duplicate InferenceFailed ({count}) at span {span}: {:#?}",
+            output.errors
+        );
+    }
+    // Exactly one InferenceFailed whose message is about the HashSet element
+    // type (the lowering-fact boundary error).
+    let lowering_fact_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashSet"))
+        .collect();
+    assert_eq!(
+        lowering_fact_errors.len(),
+        1,
+        "expected exactly one HashSet InferenceFailed, got: {lowering_fact_errors:#?}"
+    );
+}
+
+#[test]
+fn hashset_error_element_type_fails_closed_silently() {
+    // An already-errored element type (from an undefined name) should not
+    // produce a *second* diagnostic about HashSet admission — only one error.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let e = undefined_fn();
+            var s = HashSet::new();
+            s.insert(e);
+        }",
+    );
+    // There must be at least one error (the undefined_fn reference).
+    assert!(
+        !output.errors.is_empty(),
+        "expected at least one error for undefined function"
+    );
+    // But there must be NO InvalidOperation about HashSet admission cascaded
+    // on top of the existing error.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("HashSet")),
+        "unexpected cascading HashSet admission error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_valid_string_element_not_rejected() {
+    // Ensure the deferred path does not incorrectly reject well-typed HashSets.
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var s = HashSet::new();
+            s.insert("hello");
+            let _ = s.len();
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for HashSet<String>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_valid_i64_element_not_rejected() {
+    // Ensure that HashSet<i64> (the other supported element type) passes cleanly.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            s.insert(42);
+            let _ = s.contains(42);
+        }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for HashSet<i64>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_annotation_with_infer_hole_fails_closed() {
+    // A HashSet annotation with an explicit inference hole (`_`) for the element
+    // that is never constrained must fail closed with exactly one error.
+    // The inference-holes path is the sole authority; finalize_hashset_admission
+    // must not add a duplicate.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let s: HashSet<_> = HashSet::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashSet<_> with unresolved element type, got no errors"
+    );
+    // No two InferenceFailed errors at the same span.
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashSet<_> annotation: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
+    // Multiple method calls on the same unresolved HashSet must not spray one
+    // InferenceFailed per call site.  finalize_lowering_facts deduplicates by
+    // TypeVar identity, so exactly one lowering-fact InferenceFailed should
+    // appear (for the shared unresolved root var).  The binding-level
+    // InferenceFailed from report_unresolved_inference_holes is distinct and
+    // legitimate, but still only one.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let _ = s.len();
+            let _ = s.is_empty();
+        }",
+    );
+    // Exactly one InferenceFailed whose message mentions the HashSet
+    // lowering boundary (not the binding-level error).
+    let hashset_lowering_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashSet"))
+        .collect();
+    assert_eq!(
+        hashset_lowering_errors.len(),
+        1,
+        "expected exactly one HashSet lowering InferenceFailed (TypeVar dedup), \
+         got {}: {:#?}",
+        hashset_lowering_errors.len(),
+        output.errors
+    );
+    // No span should appear twice in the full InferenceFailed set.
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key}: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
+    // A HashSet annotation with no method calls means no lowering fact is
+    // recorded.  The inference-holes path catches the unresolved `_` and emits
+    // exactly one InferenceFailed; finalize_hashset_admission must remain
+    // silent because validate_named_collection now returns Some(true) for
+    // Ty::Var args — it does not queue a deferred entry.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s: HashSet<_> = HashSet::new();
+        }",
+    );
+    // Exactly one InferenceFailed total (the binding-level hole).
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly 1 InferenceFailed for annotation-only unresolved HashSet, \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+    // That one error must be the binding-level hole, not a HashSet-specific one.
+    assert!(
+        !inference_failed[0].message.contains("HashSet"),
+        "expected binding-level InferenceFailed, not a HashSet message: {}",
+        inference_failed[0].message
+    );
+}
+
+// ── HashMap annotation-hole duplicate-diagnostic regressions ─────────────────
+//
+// PR #957 introduced HashMap deferred admission; the same annotation-hole
+// duplicate path applies there.  These tests pin that it is also fixed.
+
+#[test]
+fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
+    // HashMap<_, String> with an unresolved key hole must produce at most one
+    // InferenceFailed per span.  finalize_hashmap_admission must not add a
+    // second error on top of the inference-holes diagnostic.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<_, String> = HashMap::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashMap<_, String> with unresolved key, got no errors"
+    );
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashMap<_, String>: {errors:#?}",
+            errors = output.errors
+        );
+    }
+}
+
+#[test]
+fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
+    // HashMap<String, _> with an unresolved value hole must produce at most one
+    // InferenceFailed per span.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<String, _> = HashMap::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashMap<String, _> with unresolved value, got no errors"
+    );
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key} for HashMap<String, _>: {errors:#?}",
+            errors = output.errors
+        );
+    }
+}
+
+// ── Registration-time annotation-hole duplicate-diagnostic regressions ───────
+//
+// Functions/methods/type-fields with `_` holes in HashSet/HashMap annotations
+// go through resolve_registered_annotation_ty → validate_concrete_collection_types
+// → validate_named_collection.  validate_named_collection now returns Some(true)
+// for Ty::Var/Ty::Error args, preventing deferred admission entries from being
+// created.  Only report_unresolved_inference_in_items fires, producing exactly
+// one InferenceFailed per unresolved signature hole.
+
+#[test]
+fn registration_fn_param_hashset_hole_single_error() {
+    // `fn f(x: HashSet<_>) {}` must produce exactly one InferenceFailed.
+    // Before the fix, validate_named_collection deferred the Ty::Var element
+    // into deferred_hashset_admission; finalize_hashset_admission then fired
+    // alongside report_unresolved_inference_in_items → duplicate.
+    let output = typecheck_inline("fn f(x: HashSet<_>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashSet<_>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}
+
+#[test]
+fn registration_fn_param_hashmap_key_hole_single_error() {
+    // `fn f(x: HashMap<_, String>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<_, String>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashMap<_, String>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}
+
+#[test]
+fn registration_fn_param_hashmap_val_hole_single_error() {
+    // `fn f(x: HashMap<String, _>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<String, _>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashMap<String, _>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}
+
+// ── HashMap repeated-method-call spray regression ────────────────────────────
+
+#[test]
+fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
+    // Multiple method calls on the same unresolved HashMap must not spray one
+    // InferenceFailed per call site.  finalize_hashmap_admission deduplicates
+    // by (key_TypeVar, val_TypeVar) pair, so exactly one admission
+    // InferenceFailed appears regardless of how many methods are called.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var m = HashMap::new();
+            let _ = m.len();
+            let _ = m.is_empty();
+        }",
+    );
+    let hashmap_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashMap"))
+        .collect();
+    assert_eq!(
+        hashmap_errors.len(),
+        1,
+        "expected exactly one HashMap InferenceFailed (var-pair dedup), \
+         got {}: {:#?}",
+        hashmap_errors.len(),
+        output.errors
+    );
+}

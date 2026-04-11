@@ -183,9 +183,28 @@ impl ConcreteCollectionKind {
                 Some(checker.validate_vec_element_type(&args[0], span))
             }
             Self::HashSet if name == "HashSet" && args.len() == 1 => {
+                // Skip admission when the element type is still unresolved or
+                // erroneous: Ty::Var is not yet decidable (inference may
+                // resolve it), and Ty::Error already has an upstream
+                // diagnostic.  The dedicated deferred-admission paths
+                // (validate_hashset_element_type from method-call sites) and
+                // the inference-holes path handle those cases with proper
+                // authority and without duplication.
+                let resolved = checker.subst.resolve(&args[0]);
+                if matches!(resolved, Ty::Var(_) | Ty::Error) {
+                    return Some(true);
+                }
                 Some(checker.validate_hashset_element_type(&args[0], span))
             }
             Self::HashMap if name == "HashMap" && args.len() == 2 => {
+                // Same: skip admission for undecidable/erroneous args.
+                let resolved_key = checker.subst.resolve(&args[0]);
+                let resolved_val = checker.subst.resolve(&args[1]);
+                if matches!(resolved_key, Ty::Var(_) | Ty::Error)
+                    || matches!(resolved_val, Ty::Var(_) | Ty::Error)
+                {
+                    return Some(true);
+                }
                 Some(checker.validate_hashmap_key_value_types(&args[0], &args[1], span))
             }
             _ => None,
@@ -567,10 +586,28 @@ impl Checker {
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
-        if matches!(
-            resolved,
-            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral
-        ) {
+
+        // Ty::Error: upstream already emitted a diagnostic; fail closed silently
+        // to prevent cascading errors from admission logic.
+        if matches!(resolved, Ty::Error) {
+            return false;
+        }
+
+        // Ty::Var: inference is still in-flight at this call site.  Defer the
+        // admission check until finalize_hashset_admission() runs after all
+        // inference has settled, mirroring the HashMap deferred-admission pattern.
+        if matches!(resolved, Ty::Var(_)) {
+            self.deferred_hashset_admission
+                .entry(SpanKey::from(span))
+                .or_insert_with(|| DeferredHashSetAdmission {
+                    span: span.clone(),
+                    elem_ty: elem_ty.clone(),
+                    source_module: self.current_module.clone(),
+                });
+            return true; // optimistically admit; finalization will fail closed
+        }
+
+        if matches!(resolved, Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral) {
             return true;
         }
 

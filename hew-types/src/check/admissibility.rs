@@ -172,7 +172,7 @@ impl Checker {
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
         self.validate_assign_target_output_contract();
         self.validate_method_call_output_contract(expr_types);
-        self.validate_method_call_receiver_kinds_output_contract(type_defs);
+        self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
     }
 
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
@@ -290,16 +290,18 @@ impl Checker {
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
         &mut self,
         type_defs: &HashMap<String, TypeDef>,
+        fn_sigs: &HashMap<String, FnSig>,
     ) {
         // Collect known trait names before the mutable borrow on
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
         let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
 
-        // Collect all type parameter names from function signatures so we can
-        // retain `NamedTypeInstance` entries produced by trait-bounded
+        // Collect all type parameter names from the resolved function signatures
+        // so we can retain `NamedTypeInstance` entries produced by trait-bounded
         // type-parameter method dispatch (e.g. `T` in `fn f<T: Show>(t: T)`).
-        let known_type_params: HashSet<&str> = self
-            .fn_sigs
+        // NOTE: we receive `fn_sigs` as a parameter because the production path
+        // drains `self.fn_sigs` via `std::mem::take` before this validator runs.
+        let known_type_params: HashSet<&str> = fn_sigs
             .values()
             .flat_map(|sig| sig.type_params.iter().map(String::as_str))
             .collect();
@@ -841,7 +843,10 @@ mod tests {
             },
         )]);
 
-        let mut expr_types = HashMap::new();
+        // Populate expr_types for both spans so that validate_method_call_output_contract
+        // (span-based pruner) does not wipe entries before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types =
+            HashMap::from([(known_key.clone(), Ty::I64), (unknown_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
         checker.validate_checker_output_contract(
@@ -878,7 +883,9 @@ mod tests {
         );
 
         let mut type_defs = HashMap::new(); // empty — json.Value is not a user type
-        let mut expr_types = HashMap::new();
+                                            // Populate expr_types for the span so that validate_method_call_output_contract
+                                            // (span-based pruner) does not wipe the entry before the name-based validator runs.
+        let mut expr_types = HashMap::from([(handle_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
         checker.validate_checker_output_contract(
@@ -930,7 +937,12 @@ mod tests {
         );
 
         let mut type_defs = HashMap::new();
-        let mut expr_types = HashMap::new();
+        // Populate expr_types for both trait spans so the span-based pruner does not
+        // wipe entries before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types = HashMap::from([
+            (known_trait_key.clone(), Ty::I64),
+            (unknown_trait_key.clone(), Ty::I64),
+        ]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
         checker.validate_checker_output_contract(
@@ -972,8 +984,10 @@ mod tests {
             },
         );
 
-        // Register a function signature whose type_params includes "T".
-        checker.fn_sigs.insert(
+        // Populate the resolved fn_sigs map (mimicking the production path where
+        // mod.rs drains self.fn_sigs via std::mem::take into resolved_fn_sigs before
+        // calling validate_checker_output_contract).
+        let mut fn_sigs = HashMap::from([(
             "display".to_string(),
             FnSig {
                 type_params: vec!["T".to_string()],
@@ -989,11 +1003,11 @@ mod tests {
                 accepts_kwargs: false,
                 doc_comment: None,
             },
-        );
-
+        )]);
         let mut type_defs = HashMap::new(); // "T" is not a user-defined type
-        let mut expr_types = HashMap::new();
-        let mut fn_sigs = HashMap::new();
+                                            // Populate expr_types for the span so the span-based pruner does not wipe
+                                            // the entry before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types = HashMap::from([(param_key.clone(), Ty::I64)]);
         let mut call_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,

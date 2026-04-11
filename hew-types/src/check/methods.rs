@@ -1469,6 +1469,13 @@ impl Checker {
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     Ty::Unit
                 }
+                "clone" => {
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    Ty::Named {
+                        name: "regex.Pattern".into(),
+                        args: vec![],
+                    }
+                }
                 _ => {
                     self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }

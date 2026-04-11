@@ -2074,6 +2074,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   mlir::FunctionType calleeFuncType = callee ? callee.getFunctionType() : nullptr;
 
   llvm::SmallVector<mlir::Value, 4> args;
+  // Per-argument alloca from materializeTemporary (null if not materialized).
+  // Used below to null out consumed temporaries after a consuming call.
+  llvm::SmallVector<mlir::Value, 4> materializedArgAllocas;
   for (size_t i = 0; i < call.args.size(); ++i) {
     const auto &arg = call.args[i];
     const auto &argSpanned = ast::callArgExpr(arg);
@@ -2124,7 +2127,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     // Materialize heap-allocated temporaries as implicit let-bindings so they
     // enter the normal scope-exit drop system.  This prevents leaks from
     // expressions like foo(Vec::new()), println(f"count: {n}"), etc.
-    materializeTemporary(val, argSpanned.value);
+    mlir::Value argAlloca;
+    materializeTemporary(val, argSpanned.value, &argAlloca);
+    materializedArgAllocas.push_back(argAlloca);
 
     args.push_back(val);
   }
@@ -2155,6 +2160,23 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
     if (call.is_tail_call)
       callOp->setAttr("hew.tail_call", builder.getUnitAttr());
+
+    // When a consuming C function (like hew_regex_free) takes ownership of
+    // its argument, null out the drop alloca to prevent a scope-exit
+    // double-free.  The enricher rewrites:
+    //   re.free()        → hew_regex_free(re)           [identifier arg]
+    //   re.clone().free()→ hew_regex_free(hew_regex_clone(re))  [temp arg]
+    // • Materialized temporary (e.g. clone result): null via its alloca.
+    // • Named identifier: null via the named drop slot.
+    if (calleeName == "hew_regex_free" && !materializedArgAllocas.empty()) {
+      if (materializedArgAllocas[0]) {
+        nullOutDropSlotByAlloca(materializedArgAllocas[0], location);
+      } else if (!call.args.empty()) {
+        const auto &arg0Expr = ast::callArgExpr(call.args[0]).value;
+        if (auto *ident = std::get_if<ast::ExprIdentifier>(&arg0Expr.kind))
+          nullOutDropSlot(ident->name, args[0], location);
+      }
+    }
 
     // After a call that takes ownership of stream/sink arguments, null out
     // the corresponding RAII allocas so scope-exit auto-close is a no-op.
@@ -4702,9 +4724,19 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   // Chained clone() receivers produce owned temporaries (e.g. v.clone().len()).
   // Materialize only this narrow shape so the temporary gets a scope-exit drop
   // without widening into receiver paths that are explicitly callee-consuming.
+  // Capture the backing alloca so that a subsequent .free() call can null it
+  // out (preventing the scope-exit impl Drop from double-freeing the clone).
+  mlir::Value tempAlloca;
   if (auto *recvMethod = std::get_if<ast::ExprMethodCall>(&mc.receiver->value.kind))
     if (recvMethod->method == "clone")
-      materializeTemporary(receiver, mc.receiver->value);
+      materializeTemporary(receiver, mc.receiver->value, &tempAlloca);
+
+  // Helper: if this method call consumed a clone temporary via .free(), zero
+  // its alloca so the scope-exit drop is skipped.
+  auto consumeCloneTemp = [&]() {
+    if (tempAlloca && mc.method == "free")
+      nullOutDropSlotByAlloca(tempAlloca, location);
+  };
 
   auto receiverType = receiver.getType();
   auto generateTraitObjectDispatch = [&](llvm::StringRef traitName) -> mlir::Value {
@@ -4879,8 +4911,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   };
 
   // Handle type dispatch (http.Server, net.Connection, etc.)
-  if (auto result = generateHandleMethodCall(mc, receiver, location))
+  if (auto result = generateHandleMethodCall(mc, receiver, location)) {
+    consumeCloneTemp();
     return *result;
+  }
 
   auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
     return method == "accept" || method == "close" || method == "read" || method == "read_string" ||
@@ -4905,8 +4939,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
 
   if (auto *receiverKind = methodCallReceiverKindOf(exprSpan)) {
     if (auto *named =
-            std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind))
-      return generateNamedTypeDispatch(named->type_name);
+            std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind)) {
+      auto r = generateNamedTypeDispatch(named->type_name);
+      consumeCloneTemp();
+      return r;
+    }
     if (auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
       return generateTraitObjectDispatch(trait->trait_name);
     ++errorCount_;
@@ -4969,7 +5006,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     emitError(location) << "unexpected method_call_receiver_kinds kind for named-type method call";
     return nullptr;
   }
-  return generateNamedTypeDispatch(named->type_name);
+  auto r = generateNamedTypeDispatch(named->type_name);
+  consumeCloneTemp();
+  return r;
 }
 
 // ============================================================================

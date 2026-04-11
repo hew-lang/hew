@@ -51,6 +51,11 @@ trait PatternMethods {
     /// ```
     fn replace(pat: Pattern, input: String, replacement: String) -> String;
 
+    /// Clone the compiled pattern, producing an independent copy.
+    ///
+    /// Each clone must be dropped or freed independently.
+    fn clone(pat: Pattern) -> Pattern;
+
     /// Release the compiled pattern resources.
     fn free(pat: Pattern);
 }
@@ -64,6 +69,8 @@ impl PatternMethods for Pattern {
     fn replace(pat: Pattern, input: String, replacement: String) -> String {
         unsafe { hew_regex_replace(pat, input, replacement) }
     }
+    /// Clone the compiled pattern, producing an independent copy.
+    fn clone(pat: Pattern) -> Pattern { unsafe { hew_regex_clone(pat) } }
     /// Release the compiled pattern resources.
     fn free(pat: Pattern) { unsafe { hew_regex_free(pat) }; }
 }
@@ -97,5 +104,6 @@ extern "C" {
     fn hew_regex_is_match(re: Pattern, input: String) -> bool;
     fn hew_regex_find(re: Pattern, input: String) -> String;
     fn hew_regex_replace(re: Pattern, input: String, replacement: String) -> String;
+    fn hew_regex_clone(re: Pattern) -> Pattern;
     fn hew_regex_free(re: Pattern);
 }

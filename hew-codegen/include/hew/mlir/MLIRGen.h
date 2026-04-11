@@ -986,6 +986,11 @@ private:
   /// the live handle value right after its defining op so the drop correctly
   /// fires when .free() was NOT called.  At the .free() site, nulls the slot.
   void nullOutDropSlot(const std::string &varName, mlir::Value receiverVal, mlir::Location loc);
+  /// Zero the alloca backing a materialized-temporary drop entry so the
+  /// scope-exit drop is skipped after an explicit .free().  Used for
+  /// clone-receiver patterns (e.g. re.clone().free()) where nullOutDropSlot
+  /// cannot match by varName because the receiver is not a bare identifier.
+  void nullOutDropSlotByAlloca(mlir::Value alloca, mlir::Location loc);
   /// Emit a drop for a single variable if it has a registered drop function.
   void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);
@@ -1015,7 +1020,8 @@ private:
   /// If `val` is a heap-allocated temporary (not already bound to a variable),
   /// create an implicit `__tmp_N` let-binding and register it for scope-exit
   /// drop.  Returns true if a binding was created.
-  bool materializeTemporary(mlir::Value val, const ast::Expr &astExpr);
+  bool materializeTemporary(mlir::Value val, const ast::Expr &astExpr,
+                            mlir::Value *outAlloca = nullptr);
 
   // ── Error tracking ────────────────────────────────────────────────
   unsigned errorCount_ = 0;

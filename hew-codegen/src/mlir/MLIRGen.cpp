@@ -6751,6 +6751,19 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
   }
 }
 
+void MLIRGen::nullOutDropSlotByAlloca(mlir::Value alloca, mlir::Location loc) {
+  // Zero the alloca so every DropEntry that shares this promotedSlot (both
+  // the inner-scope entry and the safety-net function-level duplicate) will
+  // load null at scope exit and skip the drop.  The slot type is always
+  // LLVMPointerType for HandleType temporaries, so createDefaultValue
+  // produces a LLVM null pointer.
+  auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(alloca.getType());
+  if (!memrefTy)
+    return;
+  auto zero = createDefaultValue(builder, loc, memrefTy.getElementType());
+  mlir::memref::StoreOp::create(builder, loc, zero, alloca);
+}
+
 void MLIRGen::emitDropForVariable(const std::string &varName) {
   for (auto &scope : dropScopes) {
     for (auto &entry : scope) {
@@ -6929,7 +6942,8 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   return {};
 }
 
-bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
+bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr,
+                                   mlir::Value *outAlloca) {
   auto info = inferDropFuncForTemporary(val, astExpr);
   if (info.dropFunc.empty())
     return false;
@@ -7037,6 +7051,8 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
     dropScopes[funcLevelDropScopeBase].push_back(std::move(funcEntry));
   }
 
+  if (outAlloca)
+    *outAlloca = alloca;
   return true;
 }
 

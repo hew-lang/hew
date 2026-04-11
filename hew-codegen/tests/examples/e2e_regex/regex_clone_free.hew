@@ -1,0 +1,28 @@
+// Regression test: calling .free() on a clone() temporary must not
+// double-free at scope exit.
+//
+// Before the fix, `materializeTemporary` registered a DropEntry (promotedSlot
+// = alloca) for the clone result.  `nullOutDropSlot` returned early because
+// the receiver was not a bare identifier (varName empty).  The scope-exit
+// `impl Drop` then loaded the non-null handle from the alloca and freed the
+// already-freed handle — triggering a macOS malloc abort (non-zero exit).
+//
+// After the fix, `consumeCloneTemp()` zeroes the alloca via
+// `nullOutDropSlotByAlloca` right after .free() completes, so the
+// scope-exit drop loads null and skips.
+
+import std::text::regex;
+
+fn run_once() {
+    let re: regex.Pattern = regex.new("[0-9]+");
+    // Clone the pattern, immediately free the clone.  Without the fix each
+    // call here causes a double-free abort.
+    re.clone().free();
+}
+
+fn main() {
+    run_once();
+    run_once();
+    run_once();
+    println("ok");
+}

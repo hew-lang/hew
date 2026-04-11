@@ -120,6 +120,26 @@ pub unsafe extern "C" fn hew_regex_replace(
     str_to_malloc(&regex.inner.replace_all(text_str, repl_str))
 }
 
+/// Clone a compiled [`HewRegex`].
+///
+/// Returns a heap-allocated copy that is independent of the original.
+/// Both handles must be freed with [`hew_regex_free`].
+///
+/// # Safety
+///
+/// `re` must be a valid pointer returned by [`hew_regex_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_clone(re: *const HewRegex) -> *mut HewRegex {
+    if re.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: re is a valid HewRegex pointer per caller contract.
+    let src = unsafe { &*re };
+    Box::into_raw(Box::new(HewRegex {
+        inner: src.inner.clone(),
+    }))
+}
+
 /// Free a compiled [`HewRegex`] previously returned by [`hew_regex_new`].
 ///
 /// # Safety

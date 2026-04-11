@@ -508,4 +508,37 @@ impl Checker {
         }
         missing
     }
+
+    /// Reject pattern kinds that have no codegen support at the top level of
+    /// `if let` / `while let`.
+    ///
+    /// `Constructor`, `Wildcard`, and `Identifier` are supported.
+    /// `Struct`, `Tuple`, `Or`, and `Literal` patterns require emit-side work
+    /// that does not yet exist; reject them here so the compiler fails closed
+    /// with a clear diagnostic rather than silently producing broken IR.
+    ///
+    /// Returns `true` if the pattern was rejected (an error was emitted).
+    pub(super) fn reject_unsupported_iflet_pattern(
+        &mut self,
+        pattern: &Pattern,
+        span: &Span,
+    ) -> bool {
+        let kind_name = match pattern {
+            Pattern::Struct { .. } => "struct",
+            Pattern::Tuple(_) => "tuple",
+            Pattern::Or(..) => "or",
+            Pattern::Literal(_) => "literal",
+            Pattern::Wildcard | Pattern::Identifier(_) | Pattern::Constructor { .. } => {
+                return false;
+            }
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "{kind_name} patterns are not yet supported at the top level of `if let` / `while let`; use a `match` expression instead"
+            ),
+        );
+        true
+    }
 }

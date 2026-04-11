@@ -135,3 +135,13 @@ into the explicit results, and blending is no longer needed.
 - Verified the checker-owned and method-resolution `substitute_named_param` walkers matched in variant coverage and replacement guards before deduplicating them.
 - Moved named-parameter substitution and inference-variable detection onto `hew-types/src/ty.rs` so all structurally identical `Ty` recursion now has one owner in the type model.
 - Kept the lane behaviour-preserving and `hew-types`-local: call sites now dispatch through `Ty` methods, but the recursive walk itself is unchanged.
+
+## 2026-04-10 — fix/iflet-whilelet-pattern-contract
+
+- Discovered that the checker accepted all pattern kinds (Struct, Tuple, Or, Literal) at the top level of `if let` / `while let`, but codegen only handled `PatConstructor`. The mismatch meant unsupported patterns silently fell through to the `else` branch, producing no output and no error.
+- Added `reject_unsupported_iflet_pattern` to `hew-types/src/check/diagnostics.rs`: emits an `InvalidOperation` diagnostic for Struct, Tuple, Or, and Literal patterns; returns false (allowed) for Wildcard, Identifier, and Constructor.
+- Called the guard at four call sites: `synthesize_iflet` in expressions.rs, and three `check_stmt`/`check_stmt_as_expr` sites in statements.rs for IfLet and WhileLet.
+- Restructured `MLIRGenIfLet.cpp` and `MLIRGenWhileLet.cpp`: PatWildcard generates an unconditional scf.if/loop body; PatIdentifier generates the same plus binds the scrutinee via `declareVariable`; PatConstructor keeps the existing deref + tag-test logic (deref moved inside this branch only); the else arm now increments `errorCount_` and emits an explicit error instead of silently returning.
+- Key insight: `derefIndirectEnumScrutinee` is only semantically required for the constructor tag-test path. Wildcard and identifier need the raw value, not the dereffed payload. Moving deref inside the constructor branch prevented a double-deref regression.
+- Checker tests (9 cases) verify that Literal/Tuple/Or patterns are rejected and Wildcard/Identifier patterns produce no `InvalidOperation` error for both `if let` and `while let`.
+- Codegen tests (7 cases) verify that Wildcard and Identifier patterns lower correctly for stmt, expr, and while-let stmt forms; two fail-closed tests inject a `PatTuple` into a type-checked AST to confirm that `module == nullptr` and `errorCount_ > 0` after generation.

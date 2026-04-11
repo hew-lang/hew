@@ -523,6 +523,9 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let scr_ty = self.synthesize(&expr.0, &expr.1);
+        if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
+            return Ty::Error;
+        }
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
         let then_ty = self.check_block(body, None);

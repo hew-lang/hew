@@ -7767,6 +7767,156 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: local void actor asks consult hew_actor_ask_take_last_error and panic
+//       on failure (fail-closed parity with the non-void path).
+// hew_actor_ask returns null for BOTH void success and ask failure.  The
+// codegen must call hew_actor_ask_take_last_error to distinguish the two and
+// branch to hew_panic when the error slot is non-zero.
+// ============================================================================
+
+static void test_local_actor_void_ask_panics_on_failed_ask() {
+  TEST(local_actor_void_ask_panics_on_failed_ask);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Sink {
+    receive fn flush() {
+    }
+}
+
+fn main() {
+    let s = spawn Sink();
+    await s.flush()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for local void actor ask");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for local void actor ask");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  // Find the hew_actor_ask call.
+  llvm::CallBase *askCall = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (callee && callee->getName() == "hew_actor_ask") {
+        askCall = call;
+        break;
+      }
+    }
+    if (askCall)
+      break;
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered local void ask to call hew_actor_ask");
+    return;
+  }
+
+  // Find hew_actor_ask_take_last_error called after the ask.
+  llvm::CallBase *takeErrCall = nullptr;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (callee && callee->getName() == "hew_actor_ask_take_last_error") {
+        takeErrCall = call;
+        break;
+      }
+    }
+    if (takeErrCall)
+      break;
+  }
+
+  if (!takeErrCall) {
+    FAIL("local void ask must call hew_actor_ask_take_last_error to detect failure");
+    return;
+  }
+
+  // The error value must be compared against zero (ne) to detect failure.
+  llvm::ICmpInst *errCheck = nullptr;
+  for (llvm::User *user : takeErrCall->users()) {
+    auto *icmp = llvm::dyn_cast<llvm::ICmpInst>(user);
+    if (!icmp)
+      continue;
+    if (icmp->getPredicate() != llvm::CmpInst::ICMP_NE &&
+        icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
+      continue;
+    bool comparesErrToZero = false;
+    for (unsigned i = 0; i < 2; ++i) {
+      if (icmp->getOperand(i) == takeErrCall) {
+        auto *other = icmp->getOperand(1 - i);
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(other))
+          if (ci->isZero())
+            comparesErrToZero = true;
+      }
+    }
+    if (comparesErrToZero) {
+      errCheck = icmp;
+      break;
+    }
+  }
+
+  if (!errCheck) {
+    FAIL("local void ask must compare hew_actor_ask_take_last_error result against zero");
+    return;
+  }
+
+  // The branch on that comparison must lead to hew_panic.
+  llvm::BranchInst *errBranch =
+      llvm::dyn_cast<llvm::BranchInst>(errCheck->getParent()->getTerminator());
+  if (!errBranch || !errBranch->isConditional() || errBranch->getCondition() != errCheck) {
+    FAIL("error check must be the condition of a conditional branch");
+    return;
+  }
+
+  bool branchesToPanic = false;
+  for (unsigned i = 0; i < errBranch->getNumSuccessors(); ++i) {
+    for (auto &inst : *errBranch->getSuccessor(i)) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_panic") {
+        branchesToPanic = true;
+        break;
+      }
+    }
+  }
+
+  if (!branchesToPanic) {
+    FAIL("local void ask must branch to hew_panic when error slot is non-zero");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: aliased i32-handle call receivers lower through handle dispatch
 // ============================================================================
 
@@ -8684,6 +8834,180 @@ fn main() {
 }
 
 // ============================================================================
+// Test: remote void actor asks consult hew_node_ask_take_last_error and panic
+//       on failure — covering both the true-remote and local-delegation paths.
+//
+// hew_node_api_ask returns a non-null sentinel for true-remote void success
+// but returns null for local-delegation void success (the PIDs of locally
+// registered actors route through hew_actor_ask_by_id which returns null for
+// void replies).  A raw null check is therefore not a reliable discriminant.
+//
+// hew_node_ask_take_last_error() bridges both paths: it is 0 on success
+// (both remote sentinel and local void-null) and non-zero on any failure.
+// Codegen must consult that slot immediately after the ask call.
+// ============================================================================
+
+static void test_remote_actor_void_ask_panics_on_failed_ask() {
+  TEST(remote_actor_void_ask_panics_on_failed_ask);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+actor Stats {
+    receive fn refresh() {
+    }
+}
+
+fn main() {
+    let remote: Stats = Node::lookup("stats");
+    await remote.refresh();
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for remote void actor ask error-slot test");
+    return;
+  }
+
+  hew::Codegen codegen(ctx);
+  hew::CodegenOptions opts;
+  opts.debug_info = true;
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = codegen.buildLLVMModule(module, opts, llvmContext);
+  module.getOperation()->destroy();
+
+  if (!llvmModule) {
+    FAIL("LLVM lowering failed for remote void actor ask error-slot test");
+    return;
+  }
+
+  auto *mainFn = llvmModule->getFunction("main");
+  if (!mainFn) {
+    FAIL("main function not found in lowered LLVM module");
+    return;
+  }
+
+  // Find hew_node_api_ask and hew_panic; verify no free on the reply pointer.
+  llvm::CallBase *askCall = nullptr;
+  llvm::CallBase *panicCall = nullptr;
+  llvm::CallBase *takeErrCall = nullptr;
+  bool freesAskReply = false;
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee)
+        continue;
+      if (callee->getName() == "hew_node_api_ask")
+        askCall = call;
+      if (callee->getName() == "hew_node_ask_take_last_error")
+        takeErrCall = call;
+      if (callee->getName() == "hew_panic")
+        panicCall = call;
+      if (callee->getName() == "free" && call->arg_size() == 1 && askCall &&
+          call->getArgOperand(0) == askCall)
+        freesAskReply = true;
+    }
+  }
+
+  if (!askCall) {
+    FAIL("expected lowered remote void ask to call hew_node_api_ask");
+    return;
+  }
+  if (!takeErrCall) {
+    FAIL("remote void ask must call hew_node_ask_take_last_error (raw null check is wrong "
+         "for local-delegation void success)");
+    return;
+  }
+  if (!panicCall) {
+    FAIL("remote void ask must call hew_panic on failure (fail-closed)");
+    return;
+  }
+  if (freesAskReply) {
+    FAIL("remote void ask must not free the reply pointer (non-owning sentinel for true-remote, "
+         "null for local-delegation)");
+    return;
+  }
+
+  // The error value must be compared against zero (ne) to detect failure.
+  llvm::ICmpInst *errCheck = nullptr;
+  for (llvm::User *user : takeErrCall->users()) {
+    auto *icmp = llvm::dyn_cast<llvm::ICmpInst>(user);
+    if (!icmp)
+      continue;
+    if (icmp->getPredicate() != llvm::CmpInst::ICMP_NE &&
+        icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
+      continue;
+    bool comparesErrToZero = false;
+    for (unsigned i = 0; i < 2; ++i) {
+      if (icmp->getOperand(i) == takeErrCall) {
+        auto *other = icmp->getOperand(1 - i);
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(other))
+          if (ci->isZero())
+            comparesErrToZero = true;
+      }
+    }
+    if (comparesErrToZero) {
+      errCheck = icmp;
+      break;
+    }
+  }
+
+  if (!errCheck) {
+    FAIL("remote void ask must compare hew_node_ask_take_last_error result against zero");
+    return;
+  }
+
+  // That comparison must drive a conditional branch that leads to hew_panic.
+  llvm::BranchInst *errBranch =
+      llvm::dyn_cast<llvm::BranchInst>(errCheck->getParent()->getTerminator());
+  if (!errBranch || !errBranch->isConditional() || errBranch->getCondition() != errCheck) {
+    FAIL("error check must be the condition of a conditional branch");
+    return;
+  }
+
+  bool branchesToPanic = false;
+  for (unsigned i = 0; i < errBranch->getNumSuccessors(); ++i) {
+    for (auto &inst : *errBranch->getSuccessor(i)) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (callee && callee->getName() == "hew_panic") {
+        branchesToPanic = true;
+        break;
+      }
+    }
+  }
+
+  if (!branchesToPanic) {
+    FAIL("remote void ask must branch to hew_panic when error slot is non-zero");
+    return;
+  }
+
+  // Confirm no raw null-check against the ask return value is used as the
+  // failure discriminant (that path is incorrect for local-delegation).
+  for (auto &block : *mainFn) {
+    for (auto &inst : block) {
+      auto *icmp = llvm::dyn_cast<llvm::ICmpInst>(&inst);
+      if (!icmp || icmp->getPredicate() != llvm::CmpInst::ICMP_EQ)
+        continue;
+      auto *lhs = icmp->getOperand(0);
+      auto *rhs = icmp->getOperand(1);
+      if ((lhs == askCall && llvm::isa<llvm::ConstantPointerNull>(rhs)) ||
+          (rhs == askCall && llvm::isa<llvm::ConstantPointerNull>(lhs))) {
+        FAIL("remote void ask must not use a raw null-check on the reply pointer as the "
+             "failure discriminant (incorrect for local-delegation void success)");
+        return;
+      }
+    }
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: remote actor asks pass an explicit reply size to hew_node_api_ask
 // ============================================================================
 
@@ -8989,6 +9313,7 @@ int main() {
   test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers();
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
+  test_local_actor_void_ask_panics_on_failed_ask();
   test_handle_alias_call_receiver_is_recognized();
   test_handle_dispatch_requires_resolved_type();
   test_actor_dispatch_requires_resolved_type();
@@ -9000,6 +9325,7 @@ int main() {
   test_for_await_receiver_alias_inferred_binding_uses_resolved_type();
   test_for_await_receiver_int_alias_uses_canonical_primitive_classification();
   test_remote_actor_void_ask_does_not_free_reply();
+  test_remote_actor_void_ask_panics_on_failed_ask();
   test_remote_actor_ask_passes_reply_size();
   test_remote_actor_ask_panics_on_null_reply();
   test_generic_struct_constructor_in_nongeneric_context();

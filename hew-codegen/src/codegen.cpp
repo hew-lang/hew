@@ -1191,9 +1191,30 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
           mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize, replySize});
       auto replyPtr = call.getResult(0);
 
-      // Void-return handler: erase the op. Remote void success returns a
-      // non-owning sentinel pointer, so there is no buffer to free here.
+      // Void-return handler: hew_node_api_ask returns a non-null sentinel for
+      // true-remote void success, but the local-delegation path returns null
+      // for void success too (hew_actor_ask_by_id void reply).  A raw null
+      // check is therefore not a reliable failure discriminant.
+      // hew_node_ask_take_last_error() bridges both paths into one node-level
+      // error slot (0 = success, non-zero = failure); consult it immediately
+      // after the call before any subsequent operation can overwrite the slot.
       if (llvm::isa<mlir::NoneType>(resultType)) {
+        auto takeFuncType = rewriter.getFunctionType({}, {i32Type});
+        getOrInsertFuncDecl(module, rewriter, "hew_node_ask_take_last_error", takeFuncType);
+        auto errCall = mlir::func::CallOp::create(rewriter, loc, "hew_node_ask_take_last_error",
+                                                  mlir::TypeRange{i32Type}, mlir::ValueRange{});
+        auto zeroErr = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
+        auto askFailed =
+            mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
+                                       errCall.getResult(0), zeroErr);
+        auto failIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
+        auto panicFuncType = rewriter.getFunctionType({}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                   mlir::ValueRange{});
+        rewriter.setInsertionPointAfter(failIfOp);
         rewriter.eraseOp(op);
         return mlir::success();
       }
@@ -1332,9 +1353,30 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     // (e.g., !hew.result, !hew.option) to LLVM before loading.
     auto resultType = op.getResult().getType();
 
-    // Void-return handler: hew_actor_ask returns null (hew_reply was called with null/0).
-    // free(null) is a safe no-op. Erase the op — no result value to produce.
+    // Void-return handler: hew_actor_ask returns null for BOTH a legitimate
+    // void reply and a submission failure, so a null return alone cannot
+    // distinguish success from failure.  Call hew_actor_ask_take_last_error
+    // to read (and clear) the thread-local error slot; a non-zero value means
+    // the ask was rejected and we must panic fail-closed.
     if (llvm::isa<mlir::NoneType>(resultType)) {
+      auto takeFuncType = rewriter.getFunctionType({}, {i32Type});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_ask_take_last_error", takeFuncType);
+      auto errCall =
+          mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask_take_last_error",
+                                     mlir::TypeRange{i32Type}, mlir::ValueRange{});
+      auto zeroErr = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
+      auto askFailed =
+          mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
+                                     errCall.getResult(0), zeroErr);
+      auto failIfOp =
+          mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
+      rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
+      auto panicFuncType = rewriter.getFunctionType({}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                 mlir::ValueRange{});
+      rewriter.setInsertionPointAfter(failIfOp);
+      // free(null) is a safe no-op; void asks always return a null reply buffer.
       auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
       getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
       mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},

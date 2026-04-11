@@ -101,6 +101,7 @@ DARWIN_NATIVE_LIB_TRIPLES := aarch64-apple-darwin x86_64-apple-darwin
 else
 DARWIN_NATIVE_LIB_TRIPLES :=
 endif
+NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 
 # Sanitizer targets mirror .github/workflows/nightly-sanitizers.yml as closely
 # as possible while remaining usable as local entrypoints.
@@ -308,9 +309,10 @@ assemble: | hew adze runtime stdlib
 		ln -sfn ../../../$(WASM_DEBUG_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern and
-	@# lets Darwin same-OS cross-arch linking pick up prebuilt libhew.a slices.
-	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern,
+	@# keeps the host lib under lib/<triple>/ on Linux and Darwin, and lets
+	@# Darwin same-OS cross-arch linking pick up prebuilt libhew.a slices.
+	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
 		if [ -f target/$$triple/debug/libhew.a ]; then \
@@ -371,7 +373,7 @@ assemble-release:
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
 	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern.
-	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
 		if [ -f target/$$triple/release/libhew.a ]; then \
@@ -655,7 +657,7 @@ install: install-check
 	fi
 	@# Native per-triple lib subtree — mirrors assemble-release and gives
 	@# find_hew_lib() its preferred lib/<triple>/libhew.a probe path.
-	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
 		if [ -f target/$$triple/release/libhew.a ]; then \

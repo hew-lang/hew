@@ -277,11 +277,9 @@ jobs:
           cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
 
           # Target-specific lib subtree so find_hew_lib() prefers lib/<triple>/
-          # over the flat fallback on Darwin installs.
-          if [[ "${{ matrix.target }}" == darwin-* ]]; then
-            mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
-            cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
-          fi
+          # on installed native targets before falling back to the flat path.
+          mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
+          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"

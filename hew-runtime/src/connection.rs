@@ -163,6 +163,14 @@ struct ConnectionActor {
     reader_stop: Arc<AtomicI32>,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
+    /// Transport pointer for defense-in-depth close in `Drop`.
+    ///
+    /// Null for test-only actors created without a manager; [`close_transport_conn`]
+    /// is null-safe so drop is unconditionally safe.
+    transport: *mut HewTransport,
+    /// Guards against double-close when callers close the transport explicitly
+    /// before the actor is dropped.
+    transport_closed: AtomicBool,
 }
 
 // ── Connection manager ─────────────────────────────────────────────────
@@ -274,15 +282,41 @@ impl ConnectionActor {
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
             reconnect: None,
+            transport: std::ptr::null_mut(),
+            transport_closed: AtomicBool::new(false),
+        }
+    }
+
+    /// Close this actor's transport connection, guarding against double-close.
+    ///
+    /// Sets `transport_closed` so subsequent calls (including from `Drop`) are
+    /// no-ops. Safe to call when `self.transport` is null (test-only actors).
+    ///
+    /// # Safety
+    ///
+    /// `self.transport` must be valid (or null).
+    unsafe fn close_transport(&self) {
+        if !self.transport_closed.swap(true, Ordering::AcqRel) {
+            // SAFETY: caller guarantees transport pointer is valid or null.
+            unsafe { close_transport_conn(self.transport, self.conn_id) };
         }
     }
 }
 
 impl Drop for ConnectionActor {
     fn drop(&mut self) {
-        // Signal reader thread to stop.
+        // Signal the reader to stop first so that when the transport close
+        // unblocks a blocked recv(), the reader exits via the expected-stop
+        // path rather than the unexpected-drop / reconnect path.
         self.reader_stop.store(1, Ordering::Release);
-        // Wait for it (best-effort).
+        // Defense-in-depth: close the transport before joining so a reader
+        // blocked inside recv() unblocks rather than hanging indefinitely.
+        // Guards against double-close via transport_closed; null-safe.
+        //
+        // SAFETY: self.transport is valid for the connection lifetime (set in
+        // hew_connmgr_add) or null for test-only actors created without a manager.
+        unsafe { self.close_transport() };
+        // Wait for reader thread (best-effort).
         if let Some(handle) = self.reader_handle.take() {
             if handle.thread().id() != thread::current().id() {
                 let _ = handle.join();
@@ -804,7 +838,12 @@ fn install_connection_actor(
         Err(_) => Err(ConnectionInstallError::MutexPoisoned),
     };
     if install.is_err() {
-        // SAFETY: the transport handle belongs to this uninstalled actor.
+        // Mark the actor's transport as closed so Drop does not double-close
+        // after the explicit close_transport_conn below.
+        if let Some(ref a) = actor {
+            a.transport_closed.store(true, Ordering::Release);
+        }
+        // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
         unsafe { close_transport_conn(mgr.transport, conn_id) };
     }
     install
@@ -1173,6 +1212,10 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         };
 
         for conn in drained {
+            // Mark closed before the explicit close so Drop does not
+            // double-close when the actor is subsequently dropped.
+            conn.transport_closed.store(true, Ordering::Release);
+            // Close transport so a reader blocked in recv() unblocks.
             // SAFETY: transport is valid per manager contract.
             unsafe {
                 let t = &*transport;
@@ -1182,7 +1225,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                     }
                 }
             }
-            // ConnectionActor::drop signals reader thread to stop.
+            // ConnectionActor::drop signals reader thread to stop and joins.
         }
         let workers = {
             let Ok(mut guard) = mgr.reconnect_workers.lock() else {
@@ -1461,6 +1504,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     let mut actor = ConnectionActor::new(conn_id);
+    actor.transport = mgr.transport;
     actor.publication_token = next_publication_token(mgr);
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
@@ -1509,8 +1553,8 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     if let Ok(h) = handle {
         actor.reader_handle = Some(h);
     } else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: actor.transport is valid per caller contract of hew_connmgr_add.
+        unsafe { actor.close_transport() };
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
         ));
@@ -1612,8 +1656,10 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // Mark the reader as explicitly stopped before closing the transport so an
     // awakened reader does not treat this teardown as an unexpected drop.
     conn.reader_stop.store(1, Ordering::Release);
+    // Mark closed before the explicit close so Drop does not double-close.
+    conn.transport_closed.store(true, Ordering::Release);
     //
-    // Close the transport connection first so a blocking recv unblocks.
+    // Close the transport connection so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
     // Now drop/join the reader thread after transport close.
@@ -2106,6 +2152,82 @@ mod tests {
         assert_eq!(actor.reader_stop.load(Ordering::Relaxed), 1);
     }
 
+    /// Defense-in-depth: `ConnectionActor::drop` must close the transport
+    /// before joining the reader thread so a reader blocked in `recv()` cannot
+    /// hang the drop.
+    #[test]
+    fn conn_actor_drop_closes_transport_before_join() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            let _ = tx.send(conn_id);
+        }
+
+        // close_tx/close_rx simulates the transport's recv becoming unblocked
+        // when close_conn fires.  The reader thread blocks on close_rx.recv()
+        // (standing in for a blocking transport recv).
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let (reader_saw_close_tx, reader_saw_close_rx) = std::sync::mpsc::channel::<c_int>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        let mut actor = ConnectionActor::new(99);
+        actor.transport = transport_ptr;
+        // Spawn a synthetic reader that blocks on close_rx, simulating a
+        // reader thread blocked inside transport recv().  When close_conn(99)
+        // fires it sends to close_tx, unblocking this recv().
+        actor.reader_handle = Some(std::thread::spawn(move || {
+            ready_tx.send(()).expect("ready signal");
+            // Block here until transport is closed (mirrors a blocking recv).
+            let conn_id = close_rx.recv().unwrap_or(-1);
+            reader_saw_close_tx.send(conn_id).ok();
+        }));
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reader should signal ready");
+
+        // Drop the actor.  Defense-in-depth must:
+        //  1. Set reader_stop = 1 (expected-stop path)
+        //  2. Call close_transport() → signal_close_conn(99) fires → unblocks reader
+        //  3. Join reader thread (reader exits because its recv unblocked)
+        // The drop must not hang.
+        drop(actor);
+
+        // The reader received conn_id=99 from close_conn, proving close happened
+        // before (or during) the join.
+        assert_eq!(
+            reader_saw_close_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("reader must exit after transport close"),
+            99,
+            "drop must close transport connection 99 to unblock the reader"
+        );
+
+        // SAFETY: test-owned raw pointers outlive the actor.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
+        }
+        drop(ops);
+    }
+
     #[test]
     fn connmgr_remove_releases_connections_lock_before_reader_wake() {
         unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
@@ -2261,6 +2383,95 @@ mod tests {
         // SAFETY: test-owned pointers remain valid until this cleanup completes.
         unsafe {
             hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    /// Regression test: `hew_connmgr_add` called after `hew_connmgr_free` sets the
+    /// teardown flag must be rejected and its transport connection closed, so
+    /// `hew_connmgr_free` completes without hanging.
+    ///
+    /// This reproduces the `reconnect_worker_loop` race where the worker passes all
+    /// shutdown checks, connects a new transport, then calls `hew_connmgr_add`
+    /// after teardown's drain has already completed.
+    #[test]
+    fn connmgr_free_rejects_concurrent_add_and_closes_transport() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            let _ = tx.send(conn_id);
+        }
+
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager in this test.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        // Simulate the race: a reconnect worker observes shutdown=false, finishes
+        // connecting (conn_id=77), then races hew_connmgr_add against free.
+        //
+        // We orchestrate the race by: setting reconnect_shutdown explicitly (as
+        // free does), then calling hew_connmgr_add from this thread.  The early
+        // shutdown guard in hew_connmgr_add must catch it, close conn 77, and
+        // return -1 before free is even entered.  If free has already drained
+        // (or is draining), install_connection_actor catches it under the lock.
+        //
+        // Phase 1: set shutdown flag (mirrors free's first action).
+        // SAFETY: mgr is valid, reconnect_shutdown is AtomicBool.
+        unsafe {
+            (&*mgr).reconnect_shutdown.store(true, Ordering::Release);
+        }
+
+        // Phase 2: concurrent add with shutdown already set must be rejected and
+        // must close the transport connection so no reader hangs.
+        // SAFETY: mgr is valid; conn_id 77 is unused.
+        let add_rc = unsafe { hew_connmgr_add(mgr, 77) };
+        assert_eq!(
+            add_rc, -1,
+            "hew_connmgr_add must return -1 when manager is shutting down"
+        );
+        assert_eq!(
+            close_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .expect("hew_connmgr_add must close the transport when rejecting during teardown"),
+            77,
+            "close_conn must be called for conn 77 on rejected add"
+        );
+
+        // Phase 3: free must complete without hanging even after the late-add attempt.
+        // SAFETY: mgr was allocated by hew_connmgr_new and is not used after this.
+        unsafe { hew_connmgr_free(mgr) };
+
+        // SAFETY: test-owned pointers remain valid until this cleanup completes.
+        unsafe {
             drop(Box::from_raw(transport_ptr));
             drop(Box::from_raw(
                 close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),

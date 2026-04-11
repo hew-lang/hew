@@ -9490,6 +9490,53 @@ static void test_match_arm_unknown_constructor_fails_closed() {
   PASS();
 }
 
+// ============================================================================
+// Test: `let _ = expr` wildcard let materializes droppable temporaries
+// (regression for the drop-leak fix: PatWildcard in generateLetStmt must call
+// materializeTemporary so heap-allocated returns are freed at scope exit)
+// ============================================================================
+static void test_wildcard_let_droppable_temporary_is_materialized() {
+  TEST(wildcard_let_droppable_temporary_is_materialized);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // int_to_string returns an owned String (hew_string_drop).
+  // Before the fix, `let _ = int_to_string(n)` leaked the string because the
+  // PatWildcard branch in generateLetStmt did not call materializeTemporary.
+  auto module = generateMLIR(ctx, R"(
+fn wildcard_let_string(n: int) -> int {
+    let _ = int_to_string(n);
+    0
+}
+
+fn main() -> int {
+    wildcard_let_string(42)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for wildcard let droppable temporary");
+    return;
+  }
+
+  auto fn = lookupFuncBySuffix(module, "wildcard_let_string");
+  if (!fn) {
+    FAIL("wildcard_let_string function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(fn, "hew_string_drop", false) < 1) {
+    FAIL("wildcard let of String temporary should emit a hew_string_drop via materializeTemporary");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -9618,6 +9665,7 @@ int main() {
   test_prim_struct_static_serial_call_emits_demanded_wrapper();
   test_break_outside_loop_stmt_fails_closed();
   test_match_arm_unknown_constructor_fails_closed();
+  test_wildcard_let_droppable_temporary_is_materialized();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

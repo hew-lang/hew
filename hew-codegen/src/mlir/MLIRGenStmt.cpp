@@ -845,7 +845,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
     bindLetSubPattern(pattern, value, location);
   } else if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
-    // Wildcard let: `let _ = expr` — discard the value.
+    // Wildcard let: `let _ = expr` — discard the value but route droppable
+    // heap temporaries through materializeTemporary so they are freed at scope
+    // exit.  Mirrors the expression-statement discard path in generateExprStmt.
+    // stmt.value is guaranteed non-null here (we returned early above if !value).
+    materializeTemporary(value, stmt.value->value);
   } else {
     ++errorCount_;
     emitError(location) << "only simple identifier patterns supported for let";

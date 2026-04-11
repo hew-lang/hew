@@ -42,7 +42,9 @@ void initMLIRContext(mlir::MLIRContext &context) {
   context.loadDialect<mlir::math::MathDialect>();
 }
 
-void setLastError(std::string message) { lastError = std::move(message); }
+void setLastError(std::string message) {
+  lastError = std::move(message);
+}
 
 int copyTextToBuffer(const std::string &text, HewCodegenBuffer *buffer) {
   if (!buffer) {
@@ -63,7 +65,9 @@ int copyTextToBuffer(const std::string &text, HewCodegenBuffer *buffer) {
   return 0;
 }
 
-std::string asString(const char *value) { return value ? value : ""; }
+std::string asString(const char *value) {
+  return value ? value : "";
+}
 
 } // namespace
 
@@ -100,8 +104,7 @@ std::string formatEmitMlirVerificationFailure(mlir::ModuleOp module) {
 
 extern "C" {
 
-int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
-                                const HewCodegenOptions *options,
+int hew_codegen_compile_msgpack(const uint8_t *data, size_t size, const HewCodegenOptions *options,
                                 HewCodegenBuffer *text_output) {
   lastError.clear();
 
@@ -167,7 +170,13 @@ int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
 
       codegenOptions.emit_object = true;
       codegenOptions.output_path = options->output_path;
-      const int result = codegen.compile(module, codegenOptions);
+      int result;
+      try {
+        result = codegen.compile(module, codegenOptions);
+      } catch (...) {
+        module->destroy();
+        throw;
+      }
       module->destroy();
       if (result != 0)
         setLastError("object emission failed");
@@ -175,7 +184,13 @@ int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
     }
 
     llvm::LLVMContext llvmContext;
-    auto llvmModule = codegen.buildLLVMModule(module, codegenOptions, llvmContext);
+    std::unique_ptr<llvm::Module> llvmModule;
+    try {
+      llvmModule = codegen.buildLLVMModule(module, codegenOptions, llvmContext);
+    } catch (...) {
+      module->destroy();
+      throw;
+    }
     module->destroy();
     if (!llvmModule) {
       setLastError("LLVM lowering failed");
@@ -193,8 +208,12 @@ int hew_codegen_compile_msgpack(const uint8_t *data, size_t size,
   }
 }
 
-void hew_codegen_buffer_free(HewCodegenBuffer buffer) { std::free(buffer.data); }
+void hew_codegen_buffer_free(HewCodegenBuffer buffer) {
+  std::free(buffer.data);
+}
 
-const char *hew_codegen_last_error(void) { return lastError.c_str(); }
+const char *hew_codegen_last_error(void) {
+  return lastError.c_str();
+}
 
 } // extern "C"

@@ -137,6 +137,14 @@ jobs:
 
       - uses: taiki-e/install-action@wasm-pack
 
+      - name: Install WASI target
+        run: rustup target add wasm32-wasip1
+
+      - name: Install wasmtime
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
       - name: Run hew-wasm library smoke tests
         run: cargo test -p hew-wasm --lib
 

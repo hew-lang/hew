@@ -58,8 +58,21 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 }
 
 fn exit_eval_error(error: repl::CliEvalError) -> ! {
-    if let repl::CliEvalError::Message(message) = error {
-        eprintln!("Error: {message}");
+    match error {
+        repl::CliEvalError::Message(message) => {
+            eprintln!("Error: {message}");
+            std::process::exit(1);
+        }
+        repl::CliEvalError::RuntimeFailure { stdout, exit_code } => {
+            // Surface any output the program produced before it failed, then
+            // exit with the child's own exit code so callers can observe it.
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
+            std::process::exit(exit_code);
+        }
+        repl::CliEvalError::DiagnosticsRendered => {
+            std::process::exit(1);
+        }
     }
-    std::process::exit(1);
 }

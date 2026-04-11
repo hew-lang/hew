@@ -242,7 +242,7 @@ fn run_single_test(
                 }
             }
         }
-        Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr }) => {
+        Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr, .. }) => {
             if test.should_panic {
                 TestResult {
                     test: test.clone(),

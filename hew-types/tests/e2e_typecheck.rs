@@ -3740,3 +3740,72 @@ fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
         );
     }
 }
+
+// ── Registration-time annotation-hole duplicate-diagnostic regressions ───────
+//
+// Functions/methods/type-fields with `_` holes in HashSet/HashMap annotations
+// go through resolve_registered_annotation_ty → validate_concrete_collection_types
+// → validate_named_collection.  validate_named_collection now returns Some(true)
+// for Ty::Var/Ty::Error args, preventing deferred admission entries from being
+// created.  Only report_unresolved_inference_in_items fires, producing exactly
+// one InferenceFailed per unresolved signature hole.
+
+#[test]
+fn registration_fn_param_hashset_hole_single_error() {
+    // `fn f(x: HashSet<_>) {}` must produce exactly one InferenceFailed.
+    // Before the fix, validate_named_collection deferred the Ty::Var element
+    // into deferred_hashset_admission; finalize_hashset_admission then fired
+    // alongside report_unresolved_inference_in_items → duplicate.
+    let output = typecheck_inline("fn f(x: HashSet<_>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashSet<_>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}
+
+#[test]
+fn registration_fn_param_hashmap_key_hole_single_error() {
+    // `fn f(x: HashMap<_, String>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<_, String>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashMap<_, String>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}
+
+#[test]
+fn registration_fn_param_hashmap_val_hole_single_error() {
+    // `fn f(x: HashMap<String, _>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<String, _>) {}");
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_failed.len(),
+        1,
+        "expected exactly one InferenceFailed for fn f(x: HashMap<String, _>), \
+         got {}: {:#?}",
+        inference_failed.len(),
+        output.errors
+    );
+}

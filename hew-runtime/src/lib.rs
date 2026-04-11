@@ -268,9 +268,9 @@ pub mod wasm_stubs {
 
     /// WASM shim: monotonic clock in milliseconds.
     ///
-    /// Matches the native `io_time::hew_now_ms` behaviour: simulated time wins
-    /// when enabled, otherwise the function returns monotonic milliseconds since
-    /// process start.
+    /// Returns monotonic milliseconds since the first call. The `deterministic`
+    /// simulation-time module is unavailable on `wasm32`; simulated time is not
+    /// supported in the WASM cooperative scheduler.
     ///
     /// # Safety
     ///
@@ -279,10 +279,6 @@ pub mod wasm_stubs {
     pub unsafe extern "C" fn hew_now_ms() -> u64 {
         use std::sync::OnceLock;
         use std::time::Instant;
-
-        if let Some(ms) = crate::deterministic::simtime_now() {
-            return ms;
-        }
 
         static EPOCH: OnceLock<Instant> = OnceLock::new();
         let epoch = EPOCH.get_or_init(Instant::now);

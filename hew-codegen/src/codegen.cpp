@@ -1204,11 +1204,9 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
         auto errCall = mlir::func::CallOp::create(rewriter, loc, "hew_node_ask_take_last_error",
                                                   mlir::TypeRange{i32Type}, mlir::ValueRange{});
         auto zeroErr = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
-        auto askFailed =
-            mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
-                                       errCall.getResult(0), zeroErr);
-        auto failIfOp =
-            mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
+        auto askFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
+                                                    errCall.getResult(0), zeroErr);
+        auto failIfOp = mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
         auto panicFuncType = rewriter.getFunctionType({}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
@@ -1361,20 +1359,16 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     if (llvm::isa<mlir::NoneType>(resultType)) {
       auto takeFuncType = rewriter.getFunctionType({}, {i32Type});
       getOrInsertFuncDecl(module, rewriter, "hew_actor_ask_take_last_error", takeFuncType);
-      auto errCall =
-          mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask_take_last_error",
-                                     mlir::TypeRange{i32Type}, mlir::ValueRange{});
+      auto errCall = mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask_take_last_error",
+                                                mlir::TypeRange{i32Type}, mlir::ValueRange{});
       auto zeroErr = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
-      auto askFailed =
-          mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
-                                     errCall.getResult(0), zeroErr);
-      auto failIfOp =
-          mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
+      auto askFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::ne,
+                                                  errCall.getResult(0), zeroErr);
+      auto failIfOp = mlir::scf::IfOp::create(rewriter, loc, askFailed, /*withElseRegion=*/false);
       rewriter.setInsertionPointToStart(&failIfOp.getThenRegion().front());
       auto panicFuncType = rewriter.getFunctionType({}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
-      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
-                                 mlir::ValueRange{});
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
       rewriter.setInsertionPointAfter(failIfOp);
       // free(null) is a safe no-op; void asks always return a null reply buffer.
       auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
@@ -5477,8 +5471,12 @@ int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
   llvm::TargetOptions opt;
   opt.FunctionSections = true;
   opt.DataSections = true;
-  auto targetMachine =
-      target->createTargetMachine(targetTriple, "generic", "", opt, llvm::Reloc::PIC_);
+  std::unique_ptr<llvm::TargetMachine> targetMachine(
+      target->createTargetMachine(targetTriple, "generic", "", opt, llvm::Reloc::PIC_));
+  if (!targetMachine) {
+    llvm::errs() << "Error: could not create target machine\n";
+    return 1;
+  }
   module.setDataLayout(targetMachine->createDataLayout());
 
   std::error_code ec;

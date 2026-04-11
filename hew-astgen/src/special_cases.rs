@@ -305,7 +305,7 @@ pub fn program_parser() -> &'static str {
   // The embedded msgpack boundary is internal to the current `hew` binary, so
   // require an explicit, exact schema version instead of carrying fallback
   // decoding for older payloads.
-  prog.schema_version = static_cast<uint32_t>(getUint(mapReq(obj, "schema_version")));
+  prog.schema_version = getUint32(mapReq(obj, "schema_version"), "schema_version");
   if (prog.schema_version != CURRENT_SCHEMA_VERSION) {
     fail("unsupported schema version " + std::to_string(prog.schema_version) +
          " (expected: " + std::to_string(CURRENT_SCHEMA_VERSION) + ")");
@@ -1116,6 +1116,10 @@ namespace hew {"#
 }
 
 /// Helper functions preamble (shared utilities used by all parsers).
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared generated C++ helper preamble keeps fail-closed wire helpers together"
+)]
 pub fn helpers_preamble() -> String {
     let mut out = String::from(
         r#"// ── Error helper ────────────────────────────────────────────────────────────
@@ -1152,6 +1156,14 @@ static uint64_t getUint(const msgpack::object &obj) {
   if (obj.type == msgpack::type::NEGATIVE_INTEGER)
     fail("negative value " + std::to_string(obj.via.i64) + " cannot be converted to uint64_t");
   fail("expected unsigned integer, got type " + std::to_string(obj.type));
+}
+
+/// Get an exact uint32_t from msgpack object.
+static uint32_t getUint32(const msgpack::object &obj, std::string_view context) {
+  const auto value = getUint(obj);
+  if (value > static_cast<uint64_t>(UINT32_MAX))
+    fail(std::string(context) + " value " + std::to_string(value) + " overflows uint32_t");
+  return static_cast<uint32_t>(value);
 }
 
 /// Get float from msgpack object.
@@ -1497,6 +1509,19 @@ mod tests {
         assert!(src.contains(&format!(
             "constexpr uint32_t CURRENT_SCHEMA_VERSION = {CURRENT_SCHEMA_VERSION};"
         )));
+    }
+
+    #[test]
+    fn helpers_preamble_emits_u32_overflow_guard() {
+        let src = helpers_preamble();
+        assert!(src.contains("static uint32_t getUint32"));
+        assert!(src.contains("overflows uint32_t"));
+    }
+
+    #[test]
+    fn program_parser_uses_checked_schema_version_parse() {
+        let src = program_parser();
+        assert!(src.contains("getUint32(mapReq(obj, \"schema_version\"), \"schema_version\")"));
     }
 
     #[test]

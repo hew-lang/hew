@@ -583,7 +583,7 @@ fn gen_parse_expr(
         RustType::Bool => format!("getBool({obj})"),
         RustType::I64 => format!("getInt({obj})"),
         RustType::U64 | RustType::Usize => format!("getUint({obj})"),
-        RustType::U32 => format!("static_cast<uint32_t>(getUint({obj}))"),
+        RustType::U32 => format!("getUint32({obj}, \"field value\")"),
         RustType::F64 => format!("getFloat({obj})"),
         RustType::Char => format!("({obj}).type == msgpack::type::STR ? (getString({obj}).empty() ? '\\0' : getString({obj})[0]) : '\\0'"),
         RustType::String | RustType::PathBuf => format!("getString({obj})"),
@@ -668,7 +668,7 @@ fn gen_parse_fn_ref(ty: &RustType) -> String {
             "[](const msgpack::object &o) { return getUint(o); }".to_string()
         }
         RustType::U32 => {
-            "[](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); }".to_string()
+            "[](const msgpack::object &o) { return getUint32(o, \"array entry\"); }".to_string()
         }
         RustType::Named(name) => TypeMap::parse_fn_name(name),
         RustType::Spanned(inner) => {
@@ -1330,6 +1330,13 @@ mod tests {
                     serde_rename: None,
                 },
                 FieldDef {
+                    name: "version".to_string(),
+                    ty: RustType::U32,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
                     name: "ratio".to_string(),
                     ty: RustType::F64,
                     serde_skip: false,
@@ -1358,6 +1365,7 @@ mod tests {
         assert!(output.contains("result.flag = getBool("));
         assert!(output.contains("result.count = getInt("));
         assert!(output.contains("result.size = getUint("));
+        assert!(output.contains("result.version = getUint32("));
         assert!(output.contains("result.ratio = getFloat("));
         assert!(output.contains("result.label = getString("));
         assert!(output.contains("result.span = parseSpan("));

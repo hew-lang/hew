@@ -170,7 +170,13 @@ int hew_codegen_compile_msgpack(const uint8_t *data, size_t size, const HewCodeg
 
       codegenOptions.emit_object = true;
       codegenOptions.output_path = options->output_path;
-      const int result = codegen.compile(module, codegenOptions);
+      int result;
+      try {
+        result = codegen.compile(module, codegenOptions);
+      } catch (...) {
+        module->destroy();
+        throw;
+      }
       module->destroy();
       if (result != 0)
         setLastError("object emission failed");

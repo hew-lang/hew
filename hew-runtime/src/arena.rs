@@ -326,6 +326,13 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
     }
 }
 
+/// Number of `hew_arena_free_all` calls that executed the non-null free branch.
+///
+/// Incremented only in test builds so that tests can assert the teardown path
+/// actually ran without relying on memory-error detectors.
+#[cfg(test)]
+pub static ARENAS_FREED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Free all memory and destroy the arena.
 ///
 /// # Safety
@@ -335,6 +342,8 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     if !arena.is_null() {
+        #[cfg(test)]
+        ARENAS_FREED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: caller guarantees arena is valid
         let arena = unsafe { Box::from_raw(arena) };
         arena.free_all();

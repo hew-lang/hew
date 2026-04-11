@@ -4119,6 +4119,81 @@ mod tests {
         unsafe { drop(Box::from_raw(actor)) };
     }
 
+    /// `actor_free_wasm_impl` must free the actor's arena when it is non-null.
+    ///
+    /// The existing WASM free tests use actors with `arena: ptr::null_mut()` and
+    /// therefore never enter the `if !a.arena.is_null()` branch in
+    /// `free_actor_resources_wasm`.  This test constructs an actor with a live
+    /// arena (mirroring what `spawn_actor_internal` on WASM does) and verifies:
+    ///
+    /// 1. `hew_arena_free_all` was called exactly once (via `crate::arena::ARENAS_FREED`
+    ///    counter) — the test fails if that branch is accidentally removed.
+    /// 2. `actor_free_wasm_impl` returns 0 (success).
+    /// 3. The actor is removed from the live-actor set.
+    #[test]
+    fn wasm_free_with_arena_releases_arena_on_teardown() {
+        let _guard = crate::runtime_test_guard();
+
+        // Snapshot the counter before the free so the assertion is robust against
+        // other tests that may have already called hew_arena_free_all.
+        let freed_before = crate::arena::ARENAS_FREED.load(std::sync::atomic::Ordering::Relaxed);
+
+        // Allocate a real arena exactly as spawn_actor_internal (WASM) does.
+        let arena = crate::arena::hew_arena_new();
+        assert!(!arena.is_null(), "arena allocation must succeed");
+
+        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
+        let actor = Box::into_raw(Box::new(HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: actor_id,
+            pid: actor_id,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox: ptr::null_mut(),
+            actor_state: AtomicI32::new(HewActorState::Stopped as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            // Wire up the real arena — same assignment as spawn_actor_internal (WASM).
+            arena,
+        }));
+        track_actor(actor);
+
+        // SAFETY: actor is Box-allocated, tracked, in Stopped state, not dispatching.
+        // state / init_state are null (libc::free(null) is a no-op), mailbox is null.
+        let rc = unsafe { actor_free_wasm_impl(actor) };
+
+        // Primary assertion: hew_arena_free_all must have been called once for this
+        // actor's arena.  This fails if the non-null arena branch is removed.
+        let freed_after = crate::arena::ARENAS_FREED.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            freed_after - freed_before,
+            1,
+            "free_actor_resources_wasm must call hew_arena_free_all exactly once for the actor's arena"
+        );
+
+        assert_eq!(rc, 0, "WASM free with non-null arena must succeed");
+        assert!(
+            !is_actor_live(actor),
+            "freed actor must be removed from the live-actor set"
+        );
+    }
+
     #[test]
     fn spawn_with_restart_state_alloc_failure_returns_null_and_sets_error() {
         let _guard = crate::runtime_test_guard();

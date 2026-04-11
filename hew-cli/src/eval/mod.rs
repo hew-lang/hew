@@ -26,9 +26,7 @@ mod type_tests;
 /// Returns `Err(message)` for non-WASM explicit targets **and** wasi-shaped
 /// triples that do not normalize to `wasm32-wasip1` (e.g.
 /// `wasm32-unknown-unknown-wasi`).
-fn resolve_eval_target(
-    triple: Option<&str>,
-) -> Result<Option<crate::target::TargetSpec>, String> {
+fn resolve_eval_target(triple: Option<&str>) -> Result<Option<crate::target::TargetSpec>, String> {
     let spec = match triple {
         None => return Ok(None),
         Some(t) => crate::target::TargetSpec::from_requested(Some(t))?,
@@ -62,7 +60,9 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
-    let target = target_spec.as_ref().map(|_| args.target.as_deref().unwrap_or("wasm32-wasi"));
+    let target = target_spec
+        .as_ref()
+        .map(|_| args.target.as_deref().unwrap_or("wasm32-wasi"));
 
     // Interactive REPL with a WASI target is deliberately out of scope for
     // this bounded lane: each WASI execution is compile-per-input but session

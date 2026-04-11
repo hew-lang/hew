@@ -1851,7 +1851,8 @@ mod tests {
 
     #[test]
     fn wasi_eval_parse_error_surfaces() {
-        let mut session = ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let mut session =
+            ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
         let result = session.eval_cli("fn {", "<eval>");
         assert!(
             matches!(result, Err(CliEvalError::DiagnosticsRendered)),
@@ -1861,7 +1862,8 @@ mod tests {
 
     #[test]
     fn wasi_eval_type_error_surfaces() {
-        let mut session = ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let mut session =
+            ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
         let result = session.eval_cli("let x: i64 = \"oops\";", "<eval>");
         assert!(
             matches!(result, Err(CliEvalError::DiagnosticsRendered)),
@@ -1883,7 +1885,11 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(10, 32)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let result = eval_file(
+            path.to_str().unwrap(),
+            DEFAULT_EVAL_TIMEOUT,
+            Some("wasm32-wasi"),
+        );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
 }

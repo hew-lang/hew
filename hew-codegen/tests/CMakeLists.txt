@@ -444,6 +444,8 @@ add_e2e_reject_test(undefined_var        e2e_negative undefined_var        "unde
 add_e2e_reject_test(type_mismatch_fn_arg e2e_negative type_mismatch_fn_arg "type mismatch")
 add_e2e_reject_test(bool_to_i32_implicit_reject e2e_negative bool_to_i32_implicit_reject "type mismatch")
 add_e2e_reject_test(mutability_assign_let e2e_negative mutability_assign_let "cannot assign to immutable")
+add_e2e_reject_test(field_assign_immutable_root e2e_negative field_assign_immutable_root "cannot assign to immutable")
+add_e2e_reject_test(field_compound_assign_immutable_root e2e_negative field_compound_assign_immutable_root "cannot assign to immutable")
 add_e2e_reject_test(return_type_wrong    e2e_negative return_type_wrong    "type mismatch")
 add_e2e_reject_test(return_fn_ref_reject e2e_negative return_fn_ref_reject "coerceType: no known conversion")
 add_e2e_reject_test(actor_return_fn_ref_reject e2e_negative actor_return_fn_ref_reject "coerceType: no known conversion")
@@ -958,6 +960,7 @@ add_wasm_file_test(move_closure         e2e_closures move_closure)
 
 # Struct/tuple features
 add_wasm_file_test(struct_assign        e2e_structs struct_assign)
+add_wasm_file_test(field_assign_mutable_root e2e_structs field_assign_mutable_root)
 add_wasm_file_test(tuple_destruct       e2e_tuples tuple_destruct)
 
 # Error handling

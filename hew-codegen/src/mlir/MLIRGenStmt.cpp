@@ -1471,7 +1471,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto varSlot = getMutableVarSlot(intern(objIdent->name));
     if (!varSlot) {
       ++errorCount_;
-      emitError(location) << "cannot assign field on immutable variable '" << objIdent->name << "'";
+      emitError(location) << "value struct field assignment root '" << objIdent->name
+                          << "' has no mutable storage slot; checker should reject immutable "
+                             "field-assignment roots";
       return;
     }
 

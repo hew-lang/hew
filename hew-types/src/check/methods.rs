@@ -239,6 +239,29 @@ impl Checker {
             .insert(SpanKey::from(span), rewrite);
     }
 
+    fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
+        let Ty::Named { name, .. } = receiver_ty else {
+            return None;
+        };
+        if self.module_registry.is_handle_type(name) {
+            return Some(name.clone());
+        }
+        if name.contains('.') {
+            return Some(name.clone());
+        }
+        self.module_registry.qualify_handle_type(name)
+    }
+
+    fn record_handle_method_call_receiver_kind_if_any(&mut self, receiver_ty: &Ty, span: &Span) {
+        let Some(type_name) = self.canonical_handle_receiver_type_name(receiver_ty) else {
+            return;
+        };
+        self.record_method_call_receiver_kind(
+            span,
+            MethodCallReceiverKind::HandleInstance { type_name },
+        );
+    }
+
     fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
         self.record_method_call_rewrite(
             span,
@@ -271,6 +294,7 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
+        self.record_handle_method_call_receiver_kind_if_any(receiver_ty, span);
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };

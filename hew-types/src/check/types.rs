@@ -127,6 +127,7 @@ impl From<&Span> for SpanKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallReceiverKind {
     NamedTypeInstance { type_name: String },
+    HandleInstance { type_name: String },
     TraitObject { trait_name: String },
 }
 

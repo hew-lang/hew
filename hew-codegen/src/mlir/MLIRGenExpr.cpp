@@ -4404,15 +4404,45 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
 /// Dispatch a method call on a typed handle (http.Server, net.Connection, etc.)
 /// or an i32-typed handle. Returns the result if handled, std::nullopt otherwise.
 std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMethodCall &mc,
+                                                             const ast::Span &exprSpan,
                                                              mlir::Value receiver,
                                                              mlir::Location location) {
   const auto &methodName = mc.method;
-  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
 
   // Local wrapper around member emitRuntimeCall, capturing `location`.
   auto rtCall = [&](llvm::StringRef callee, mlir::Type resultType,
                     mlir::ValueRange args) -> mlir::Value {
     return emitRuntimeCall(callee, resultType, args, location);
+  };
+  auto qualifyKnownHandleType = [&](llvm::StringRef typeName) -> std::string {
+    if (typeName.empty())
+      return {};
+    auto candidate = typeName.str();
+    if (knownHandleTypes.count(candidate))
+      return candidate;
+    for (const auto &known : knownHandleTypes) {
+      auto pos = known.rfind('.');
+      if (pos != std::string::npos && known.substr(pos + 1) == candidate)
+        return known;
+    }
+    return {};
+  };
+  auto handleReceiverTypeFromMetadata = [&](bool required) -> std::string {
+    auto *receiverKind =
+        required ? requireMethodCallReceiverKindOf(exprSpan, "handle method call", location)
+                 : methodCallReceiverKindOf(exprSpan);
+    if (!receiverKind)
+      return {};
+    if (auto *handle = std::get_if<ast::MethodCallReceiverKindHandleInstance>(&receiverKind->kind))
+      return qualifyKnownHandleType(handle->type_name);
+    if (auto *named =
+            std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind))
+      return qualifyKnownHandleType(named->type_name);
+    if (required) {
+      ++errorCount_;
+      emitError(location) << "unexpected method_call_receiver_kinds kind for handle method call";
+    }
+    return {};
   };
 
   // Shared timeout-method dispatch for net.Connection handles; used by both
@@ -4439,22 +4469,9 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         handleType != "regex.Pattern" && handleType != "process.Child")
       return std::nullopt;
 
-    bool haveResolvedHandleReceiver = false;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      haveResolvedHandleReceiver =
-          !typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr).empty();
-    if (!haveResolvedHandleReceiver && !currentActorName.empty()) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto key = currentActorName + "." + ie->name;
-        auto aft = actorFieldTypes.find(key);
-        if (aft != actorFieldTypes.end())
-          haveResolvedHandleReceiver = true;
-      }
-    }
-    if (!haveResolvedHandleReceiver) {
-      requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
+    auto authoritativeHandleType = handleReceiverTypeFromMetadata(/*required=*/true);
+    if (authoritativeHandleType.empty())
       return nullptr;
-    }
 
     const auto &method = methodName;
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
@@ -4563,30 +4580,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
   // These types map to i32 at the MLIR level but need handle method dispatch.
   auto receiverType = receiver.getType();
   if (receiverType.isInteger(32)) {
-    auto normalizeHandleType = [](std::string typeName) {
-      if (typeName == "Listener")
-        return std::string("net.Listener");
-      if (typeName == "Connection")
-        return std::string("net.Connection");
-      return typeName;
-    };
-
-    std::string handleType;
-    // Require resolved type from the type checker — no per-variable fallback.
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      handleType = typeExprToHandleString(*typeExpr, knownHandleTypes, resolveAliasExpr);
-    handleType = normalizeHandleType(handleType);
-    // Actor-field access: bare field name as receiver inside an actor body
-    // (e.g. `conn.method()` where `conn` is a handle-typed actor field).
-    // This is a deferred structural path, not a per-variable fallback.
-    if (handleType.empty() && !currentActorName.empty()) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto key = currentActorName + "." + ie->name;
-        auto aft = actorFieldTypes.find(key);
-        if (aft != actorFieldTypes.end())
-          handleType = normalizeHandleType(aft->second);
-      }
-    }
+    std::string handleType = handleReceiverTypeFromMetadata(/*required=*/false);
     if (!handleType.empty()) {
       const auto &method = methodName;
       auto i32Type = builder.getI32Type();
@@ -4632,6 +4626,16 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
           return rtCall("hew_tcp_close", i32Type, argVals);
         if (auto r = dispatchConnectionTimeoutMethod(method, i32Type, argVals))
           return r;
+      }
+    } else {
+      auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
+        return method == "accept" || method == "close" || method == "read" ||
+               method == "read_string" || method == "write" || method == "write_string" ||
+               method == "set_read_timeout" || method == "set_write_timeout";
+      };
+      if (isKnownI32HandleMethod(methodName)) {
+        (void)handleReceiverTypeFromMetadata(/*required=*/true);
+        return nullptr;
       }
     }
   }
@@ -4915,20 +4919,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   };
 
   // Handle type dispatch (http.Server, net.Connection, etc.)
-  if (auto result = generateHandleMethodCall(mc, receiver, location)) {
+  if (auto result = generateHandleMethodCall(mc, exprSpan, receiver, location)) {
     consumeCloneTemp();
     return *result;
-  }
-
-  auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
-    return method == "accept" || method == "close" || method == "read" || method == "read_string" ||
-           method == "write" || method == "write_string" || method == "set_read_timeout" ||
-           method == "set_write_timeout";
-  };
-  if (!resolvedTypeOf(mc.receiver->span) && receiverType.isInteger(32) &&
-      isKnownI32HandleMethod(methodName)) {
-    requireResolvedTypeOf(mc.receiver->span, "handle method receiver", location);
-    return nullptr;
   }
 
   // Actor / generator dispatch
@@ -4945,6 +4938,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     if (auto *named =
             std::get_if<ast::MethodCallReceiverKindNamedTypeInstance>(&receiverKind->kind)) {
       auto r = generateNamedTypeDispatch(named->type_name);
+      consumeCloneTemp();
+      return r;
+    }
+    if (auto *handle =
+            std::get_if<ast::MethodCallReceiverKindHandleInstance>(&receiverKind->kind)) {
+      auto r = generateNamedTypeDispatch(handle->type_name);
       consumeCloneTemp();
       return r;
     }

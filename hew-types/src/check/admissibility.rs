@@ -421,6 +421,7 @@ impl Checker {
                         || type_name.contains('.')
                         || known_type_params.contains(type_name.as_str())
                 }
+                MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
                 MethodCallReceiverKind::TraitObject { trait_name } => {
                     known_trait_names.contains(trait_name)
                 }

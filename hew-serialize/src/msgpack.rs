@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -44,6 +44,7 @@ pub struct ExprTypeEntry {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MethodCallReceiverKindData {
     NamedTypeInstance { type_name: String },
+    HandleInstance { type_name: String },
     TraitObject { trait_name: String },
 }
 
@@ -949,6 +950,46 @@ pub fn build_method_call_receiver_kind_entries(
                             type_name: type_name.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
+                        MethodCallReceiverKindData::HandleInstance {
+                            type_name: type_name.clone(),
+                        }
+                    }
+                    CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
+                        MethodCallReceiverKindData::TraitObject {
+                            trait_name: trait_name.clone(),
+                        }
+                    }
+                },
+            });
+        }
+        fn on_call_expr(
+            &self,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&expr.1);
+            if !tco.method_call_rewrites.contains_key(&key) {
+                return;
+            }
+            let Some(kind) = tco.method_call_receiver_kinds.get(&key) else {
+                return;
+            };
+            out.push(MethodCallReceiverKindEntry {
+                start: key.start,
+                end: key.end,
+                kind: match kind {
+                    CheckedMethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                        MethodCallReceiverKindData::NamedTypeInstance {
+                            type_name: type_name.clone(),
+                        }
+                    }
+                    CheckedMethodCallReceiverKind::HandleInstance { type_name } => {
+                        MethodCallReceiverKindData::HandleInstance {
+                            type_name: type_name.clone(),
+                        }
+                    }
                     CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
                         MethodCallReceiverKindData::TraitObject {
                             trait_name: trait_name.clone(),
@@ -1694,7 +1735,7 @@ mod tests {
                     start: method_call_span.start,
                     end: method_call_span.end,
                 },
-                CheckedMethodCallReceiverKind::NamedTypeInstance {
+                CheckedMethodCallReceiverKind::HandleInstance {
                     type_name: "json.Value".to_string(),
                 },
             )]),
@@ -1717,7 +1758,7 @@ mod tests {
         assert_eq!(entries[0].end, method_call_span.end);
         assert_eq!(
             entries[0].kind,
-            MethodCallReceiverKindData::NamedTypeInstance {
+            MethodCallReceiverKindData::HandleInstance {
                 type_name: "json.Value".to_string()
             }
         );
@@ -1768,6 +1809,98 @@ mod tests {
         // is extra metadata that Program doesn't carry, so it's silently ignored).
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
+    }
+
+    #[test]
+    fn build_method_call_receiver_kind_entries_retains_rewritten_direct_calls() {
+        use hew_parser::ast::{CallArg, Expr, FnDecl, Stmt, Visibility};
+        use hew_types::check::{SpanKey, TypeCheckOutput};
+        use std::collections::{HashMap, HashSet};
+
+        let call_span = 10..28;
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    is_pure: false,
+                    visibility: Visibility::Private,
+                    name: "use_conn".to_string(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Expression((
+                                Expr::Call {
+                                    function: Box::new((
+                                        Expr::Identifier("hew_tcp_close".to_string()),
+                                        call_span.clone(),
+                                    )),
+                                    type_args: None,
+                                    args: vec![CallArg::Positional((
+                                        Expr::Identifier("conn".to_string()),
+                                        10..14,
+                                    ))],
+                                    is_tail_call: false,
+                                },
+                                call_span.clone(),
+                            )),
+                            call_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                call_span.clone(),
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                CheckedMethodCallReceiverKind::HandleInstance {
+                    type_name: "net.Connection".to_string(),
+                },
+            )]),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                hew_types::MethodCallRewrite::RewriteToFunction {
+                    c_symbol: "hew_tcp_close".to_string(),
+                },
+            )]),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_method_call_receiver_kind_entries(&program, &tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].kind,
+            MethodCallReceiverKindData::HandleInstance {
+                type_name: "net.Connection".to_string()
+            }
+        );
     }
 
     /// Verify that `build_assign_target_shape_entries` populates `is_unsigned`
@@ -1980,7 +2113,7 @@ mod tests {
         assert_eq!(arr[1]["is_unsigned"], false);
     }
 
-    // ── v6 reader-boundary certification tests ────────────────────────────
+    // ── v7 reader-boundary certification tests ────────────────────────────
 
     /// Certify that `MethodCallReceiverKindData::TraitObject` reaches the wire
     /// with `kind = "trait_object"` and the correct `trait_name` field.
@@ -2031,6 +2164,56 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("Greeter"),
             "trait_name should be 'Greeter'"
+        );
+    }
+
+    #[test]
+    fn handle_receiver_kind_serializes_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![MethodCallReceiverKindEntry {
+                start: 5,
+                end: 15,
+                kind: MethodCallReceiverKindData::HandleInstance {
+                    type_name: "net.Connection".to_string(),
+                },
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let kinds = value
+            .get("method_call_receiver_kinds")
+            .and_then(serde_json::Value::as_array)
+            .expect("method_call_receiver_kinds should be present");
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(kinds[0]["start"], 5u64);
+        assert_eq!(kinds[0]["end"], 15u64);
+        assert_eq!(
+            kinds[0].get("kind").and_then(serde_json::Value::as_str),
+            Some("handle_instance"),
+            "kind should be 'handle_instance'"
+        );
+        assert_eq!(
+            kinds[0]
+                .get("type_name")
+                .and_then(serde_json::Value::as_str),
+            Some("net.Connection"),
+            "type_name should be 'net.Connection'"
         );
     }
 

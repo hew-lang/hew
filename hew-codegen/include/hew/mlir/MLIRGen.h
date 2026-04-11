@@ -266,6 +266,7 @@ private:
                                                       const ast::ExprIdentifier &ident,
                                                       mlir::Location location);
   std::optional<mlir::Value> generateHandleMethodCall(const ast::ExprMethodCall &mc,
+                                                      const ast::Span &exprSpan,
                                                       mlir::Value receiver,
                                                       mlir::Location location);
   std::optional<mlir::Value> generateActorMethodCall(const ast::ExprMethodCall &mc,

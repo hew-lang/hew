@@ -1006,12 +1006,17 @@ struct MethodCallReceiverKindNamedTypeInstance {
   std::string type_name;
 };
 
+struct MethodCallReceiverKindHandleInstance {
+  std::string type_name;
+};
+
 struct MethodCallReceiverKindTraitObject {
   std::string trait_name;
 };
 
 using MethodCallReceiverKindData =
-    std::variant<MethodCallReceiverKindNamedTypeInstance, MethodCallReceiverKindTraitObject>;
+    std::variant<MethodCallReceiverKindNamedTypeInstance, MethodCallReceiverKindHandleInstance,
+                 MethodCallReceiverKindTraitObject>;
 
 struct MethodCallReceiverKindEntry {
   uint64_t start = 0;

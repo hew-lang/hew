@@ -855,6 +855,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
             EXITED.store(true, Ordering::SeqCst);
+            // SAFETY: `task` is the live task pointer owned by this worker.
             unsafe { hew_task_complete_threaded(task) };
         }
 

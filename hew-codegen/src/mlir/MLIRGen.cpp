@@ -221,10 +221,22 @@ static ast::VariantDecl cloneVariantDecl(const ast::VariantDecl &variant) {
   llvm_unreachable("unhandled VariantDecl alternative");
 }
 
+static std::optional<std::string> getWireTypeBodyFieldName(const ast::TypeBodyItemField &field) {
+  auto *named = std::get_if<ast::TypeNamed>(&field.ty.value.kind);
+  if (!named || (named->type_args && !named->type_args->empty()))
+    return std::nullopt;
+  return named->name;
+}
+
 /// Convert a TypeDecl with wire metadata into a WireDecl for the existing
 /// codegen pipeline. This is temporary until the wire codegen is refactored
 /// to work directly with TypeDecl.
-static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
+///
+/// Fail closed when the struct body and wire metadata drift apart. The old
+/// fallback silently dropped body fields that were missing from field_meta and
+/// guessed `""` for metadata entries that no longer matched a real body field.
+static std::optional<ast::WireDecl> wireMetadataToWireDecl(const ast::TypeDecl &td,
+                                                           std::string &errorMessage) {
   ast::WireDecl wd;
   wd.visibility = td.visibility;
   wd.kind =
@@ -237,18 +249,33 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
   std::unordered_map<std::string, std::string> fieldTypeMap;
   for (const auto &bodyItem : td.body) {
     if (auto *f = std::get_if<ast::TypeBodyItemField>(&bodyItem.kind)) {
-      // For wire types, fields are simple Named types
-      if (auto *named = std::get_if<ast::TypeNamed>(&f->ty.value.kind)) {
-        fieldTypeMap[f->name] = named->name;
+      auto fieldType = getWireTypeBodyFieldName(*f);
+      if (!fieldType) {
+        errorMessage = "wire metadata for type '" + td.name + "' requires field '" + f->name +
+                       "' to use a plain named type";
+        return std::nullopt;
       }
+      fieldTypeMap[f->name] = *fieldType;
     }
   }
 
   // Convert WireFieldMeta → WireFieldDecl
+  std::unordered_set<std::string> metadataFieldNames;
   for (const auto &fm : wm.field_meta) {
+    if (!metadataFieldNames.insert(fm.field_name).second) {
+      errorMessage =
+          "wire metadata for type '" + td.name + "' repeats field '" + fm.field_name + "'";
+      return std::nullopt;
+    }
+    auto fieldIt = fieldTypeMap.find(fm.field_name);
+    if (fieldIt == fieldTypeMap.end()) {
+      errorMessage = "wire metadata for type '" + td.name + "' references unknown field '" +
+                     fm.field_name + "'";
+      return std::nullopt;
+    }
     ast::WireFieldDecl wf;
     wf.name = fm.field_name;
-    wf.ty = fieldTypeMap.count(fm.field_name) ? fieldTypeMap[fm.field_name] : "";
+    wf.ty = fieldIt->second;
     wf.field_number = fm.field_number;
     wf.is_optional = fm.is_optional;
     wf.is_repeated = fm.is_repeated;
@@ -258,6 +285,14 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
     wf.yaml_name = fm.yaml_name;
     wf.since = fm.since;
     wd.fields.push_back(std::move(wf));
+  }
+
+  for (const auto &[fieldName, _] : fieldTypeMap) {
+    if (!metadataFieldNames.count(fieldName)) {
+      errorMessage =
+          "wire metadata for type '" + td.name + "' is missing body field '" + fieldName + "'";
+      return std::nullopt;
+    }
   }
 
   for (const auto &bodyItem : td.body) {
@@ -2863,6 +2898,23 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
   });
 
+  std::unordered_map<const ast::TypeDecl *, ast::WireDecl> loweredTypeDeclWireDecls;
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    auto *td = std::get_if<ast::TypeDecl>(&item.kind);
+    if (!td || !td->wire.has_value())
+      return;
+
+    std::string errorMessage;
+    auto lowered = wireMetadataToWireDecl(*td, errorMessage);
+    if (!lowered) {
+      ++errorCount_;
+      emitError(loc(spannedItem.span)) << errorMessage;
+      return;
+    }
+    loweredTypeDeclWireDecls.emplace(td, std::move(*lowered));
+  });
+
   // Pass 1b2: Pre-register wire struct types with wire-aware field types.
   // This must happen before pass 1e (actor registration) so that actors with
   // wire-typed receive parameters can resolve the struct type. Uses
@@ -2870,10 +2922,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
-      if (td->wire.has_value()) {
-        auto wd = wireMetadataToWireDecl(*td);
-        preRegisterWireStructType(wd);
-      }
+      auto lowered = loweredTypeDeclWireDecls.find(td);
+      if (lowered != loweredTypeDeclWireDecls.end())
+        preRegisterWireStructType(lowered->second);
     } else if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
       preRegisterWireStructType(*wd);
     }
@@ -3059,10 +3110,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
       predeclareWireHelpers(*wd);
     } else if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
-      if (td->wire.has_value()) {
-        auto wd = wireMetadataToWireDecl(*td);
-        predeclareWireHelpers(wd);
-      }
+      auto lowered = loweredTypeDeclWireDecls.find(td);
+      if (lowered != loweredTypeDeclWireDecls.end())
+        predeclareWireHelpers(lowered->second);
     }
   });
 
@@ -3072,10 +3122,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
       generateWireDecl(*wd);
     } else if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
-      if (td->wire.has_value()) {
-        auto wd = wireMetadataToWireDecl(*td);
-        generateWireDecl(wd);
-      }
+      auto lowered = loweredTypeDeclWireDecls.find(td);
+      if (lowered != loweredTypeDeclWireDecls.end())
+        generateWireDecl(lowered->second);
     }
   });
 

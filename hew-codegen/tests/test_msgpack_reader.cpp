@@ -134,7 +134,7 @@ static void test_single_byte_garbage_rejects() {
 // Error handling: structurally valid msgpack, semantically wrong AST
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Helper: pack a map with schema_version = 6 and the given extra fields
+// Helper: pack a map with schema_version = 7 and the given extra fields
 static std::vector<uint8_t>
 packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFields,
                int extraCount) {
@@ -145,7 +145,7 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   // lowering_facts, handle_types, handle_type_repr
   pk.pack_map(9 + extraCount);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0); // empty array
   pk.pack(std::string("expr_types"));
@@ -195,7 +195,7 @@ static void test_schema_version_u32_overflow_rejects() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(UINT64_C(4294967296) + 6));
+  pk.pack(static_cast<uint64_t>(UINT64_C(4294967296) + 7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -222,7 +222,7 @@ static void test_items_wrong_type_rejects() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(2);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack(42); // should be array
   EXPECT_REJECTS(hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
@@ -234,8 +234,8 @@ static void test_minimal_valid_program_parses() {
   auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.schema_version != 6) {
-      FAIL("schema_version should be 6");
+    if (prog.schema_version != 7) {
+      FAIL("schema_version should be 7");
       return;
     }
     if (!prog.items.empty()) {
@@ -259,7 +259,7 @@ static void test_drop_funcs_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(10); // 9 required + drop_funcs
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -350,7 +350,7 @@ static void test_program_metadata_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(11); // 9 required + source_path + line_map
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -423,13 +423,13 @@ static void test_method_call_receiver_kinds_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
-  pk.pack_array(2);
+  pk.pack_array(3);
 
   pk.pack_map(4);
   pk.pack(std::string("start"));
@@ -451,6 +451,16 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("trait_name"));
   pk.pack(std::string("Greeter"));
 
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(50));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(60));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("handle_instance"));
+  pk.pack(std::string("type_name"));
+  pk.pack(std::string("net.Connection"));
+
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
@@ -466,8 +476,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
 
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.method_call_receiver_kinds.size() != 2) {
-      FAIL("expected two method_call_receiver_kinds entries");
+    if (prog.method_call_receiver_kinds.size() != 3) {
+      FAIL("expected three method_call_receiver_kinds entries");
       return;
     }
     auto *named = std::get_if<hew::ast::MethodCallReceiverKindNamedTypeInstance>(
@@ -480,6 +490,12 @@ static void test_method_call_receiver_kinds_roundtrip() {
         &prog.method_call_receiver_kinds[1].kind);
     if (!trait || trait->trait_name != "Greeter") {
       FAIL("trait-object receiver kind not parsed correctly");
+      return;
+    }
+    auto *handle = std::get_if<hew::ast::MethodCallReceiverKindHandleInstance>(
+        &prog.method_call_receiver_kinds[2].kind);
+    if (!handle || handle->type_name != "net.Connection") {
+      FAIL("handle receiver kind not parsed correctly");
       return;
     }
   } catch (const std::exception &e) {
@@ -496,7 +512,7 @@ static void test_lowering_facts_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -574,7 +590,7 @@ static void test_assign_target_shapes_roundtrip() {
   // 9 required fields; assign_target_shapes carries the populated entries.
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -651,7 +667,7 @@ static void test_assign_target_kinds_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -770,7 +786,7 @@ static void test_expr_types_named_roundtrip() {
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
 
@@ -859,7 +875,7 @@ static void test_type_infer_in_wire_rejects() {
 
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
   pk.pack(std::string("items"));
   pk.pack_array(0);
 
@@ -924,7 +940,7 @@ static void test_wire_unknown_decl_kind_rejects() {
 
   pk.pack_map(9);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(static_cast<uint64_t>(7));
 
   // items: one Wire item with an unknown kind.
   // Items are Spanned<Item> = [item_value, span], where item_value is

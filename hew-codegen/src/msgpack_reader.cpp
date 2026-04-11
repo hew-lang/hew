@@ -157,7 +157,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 6;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 7;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1831,6 +1831,12 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
   auto kind = getString(mapReq(obj, "kind"));
   if (kind == "named_type_instance") {
     ast::MethodCallReceiverKindNamedTypeInstance data;
+    data.type_name = getString(mapReq(obj, "type_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
+  if (kind == "handle_instance") {
+    ast::MethodCallReceiverKindHandleInstance data;
     data.type_name = getString(mapReq(obj, "type_name"));
     entry.kind = std::move(data);
     return entry;

@@ -220,6 +220,36 @@ fn use_greeter(g: dyn Greeter) -> String {
 }
 
 #[test]
+fn method_call_receiver_kinds_record_handle_dispatch() {
+    let output = typecheck_inline(
+        r"
+import std::net;
+
+fn close_conn(conn: net.Connection) -> int {
+    conn.close()
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_receiver_kinds
+            .values()
+            .any(|kind| matches!(
+                kind,
+                hew_types::MethodCallReceiverKind::HandleInstance { type_name }
+                    if type_name == "net.Connection"
+            )),
+        "expected handle method call receiver metadata, got: {:?}",
+        output.method_call_receiver_kinds
+    );
+}
+
+#[test]
 fn method_call_rewrites_record_builtin_runtime_dispatch() {
     let output = typecheck_inline(
         r"

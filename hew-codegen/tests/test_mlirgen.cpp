@@ -8102,14 +8102,15 @@ fn main() -> int {
 // ============================================================================
 // Test: aliased Node::lookup receivers lower through remote actor ask dispatch
 // ============================================================================
-// Test: handle dispatch requires a resolved receiver type annotation.
+// Test: handle dispatch survives when receiver expr_types metadata is absent.
 //
-// When the receiver span is rewritten to miss expr_types metadata, handle
-// dispatch must fail closed rather than silently emitting wrong code.
+// The checker now carries handle-dispatch authority in method_call_receiver_kinds.
+// Even if the restored receiver span lacks expr_types metadata, codegen should
+// still lower the method call through the authoritative receiver-kind entry.
 // ============================================================================
 
-static void test_handle_dispatch_requires_resolved_type() {
-  TEST(handle_dispatch_requires_resolved_type);
+static void test_handle_dispatch_uses_receiver_kind_metadata() {
+  TEST(handle_dispatch_uses_receiver_kind_metadata);
 
   hew::ast::Program program;
   if (!loadProgramFromSource(R"(
@@ -8149,9 +8150,87 @@ fn main() {}
   }
   *restoredReceiverSpan = {990000000000ULL, 990000000001ULL};
 
-  // Simulate absent type-checker metadata at the restored handle dispatch
-  // site by moving the receiver to a fresh span with no expr_types entry.
-  // i32-backed handle dispatch must now fail closed.
+  // Simulate absent expr_types metadata at the restored receiver site by
+  // moving the receiver to a fresh span with no expr_types entry. The
+  // method_call_receiver_kinds entry on the method call itself must remain
+  // sufficient for i32-backed handle dispatch.
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected codegen to succeed for handle dispatch with receiver-kind metadata");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for handle dispatch backed by receiver-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto useConnFn = lookupFuncBySuffix(module, "use_conn");
+  if (!useConnFn) {
+    FAIL("use_conn function not found for handle dispatch metadata test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(useConnFn.getOperation(), "hew_tcp_close") +
+          countRuntimeCallsByCallee(useConnFn.getOperation(), "hew_tcp_close") !=
+      1) {
+    FAIL("expected handle dispatch to lower to one hew_tcp_close call via receiver-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: handle dispatch requires a checker-carried receiver-kind entry.
+// ============================================================================
+
+static void test_handle_dispatch_requires_receiver_kind() {
+  TEST(handle_dispatch_requires_receiver_kind);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::net;
+
+extern "C" {
+    fn fake_conn() -> net.Connection;
+}
+
+fn use_conn() -> int {
+    let conn: net.Connection = unsafe { fake_conn() };
+    return conn.close();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable or std::net not found; cannot run handle dispatch negative test");
+    return;
+  }
+
+  auto *useConn = findFunctionDecl(program, "use_conn");
+  if (!useConn) {
+    FAIL("failed to find use_conn function for handle dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = restoreReturnedHandleMethodCall(*useConn, "hew_tcp_close", "close");
+  auto methodCallSpan = findFunctionMethodCallSpan(*useConn, "close");
+  if (!receiverSpan || !methodCallSpan) {
+    FAIL("failed to restore handle dispatch shape");
+    return;
+  }
+  (void)eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -8160,13 +8239,14 @@ fn main() {}
   auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
 
   if (module) {
-    FAIL("expected codegen to fail for handle dispatch without resolved type annotation");
+    FAIL("expected codegen to fail for handle dispatch without receiver-kind metadata");
     module.getOperation()->destroy();
     return;
   }
 
-  if (stderrText.find("missing expr_types entry for handle method receiver") == std::string::npos) {
-    FAIL("expected missing-expr_types diagnostic for unresolved handle dispatch");
+  if (stderrText.find("missing method_call_receiver_kinds entry for handle method call") ==
+      std::string::npos) {
+    FAIL("expected missing method_call_receiver_kinds diagnostic for handle dispatch");
     return;
   }
 
@@ -9772,7 +9852,8 @@ int main() {
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
   test_local_actor_void_ask_panics_on_failed_ask();
   test_handle_alias_call_receiver_is_recognized();
-  test_handle_dispatch_requires_resolved_type();
+  test_handle_dispatch_uses_receiver_kind_metadata();
+  test_handle_dispatch_requires_receiver_kind();
   test_actor_dispatch_requires_resolved_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_requires_receiver_kind();

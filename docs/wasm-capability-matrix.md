@@ -40,8 +40,8 @@ The **Checker disposition** column documents what the type checker emits when
 | Standard collections, arithmetic | ✅ Pass | Implemented | — |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | WASI socket I/O (HTTP/TCP clients) | ✅ Pass | Implemented via WASI | — |
-| `select {}` (single-arm, literal timeout) | ✅ Pass | Implemented (limited) | — |
-| `select {}` (multi-arm or computed timeout) | ⚠️ Warn (`Select`) | Diagnostic path | WASM-TODO |
+| `select {}` (literal timeout, any arm count) | ✅ Pass | Implemented | — |
+| `select {}` (computed timeout expression) | ⚠️ Warn (`Select`) | Diagnostic path | WASM-TODO |
 | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | ⚠️ Warn (`SupervisionTrees`) | Diagnostic path | WASM-TODO |
 | Actor `link` / `unlink` / `monitor` / `demonitor` | ⚠️ Warn (`LinkMonitor`) | Diagnostic path | WASM-TODO |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | ⚠️ Warn (`StructuredConcurrency`) | Diagnostic path | WASM-TODO |
@@ -142,7 +142,7 @@ These gaps are explicitly deferred and tracked here:
 | Single-threaded MPSC channel queues | Actor mailbox integration | `WASM-TODO: channels` |
 | Host-driven timer rescheduling | WASI `clock_time_get` / `setTimeout` | `WASM-TODO: timers` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
-| `select {}` with multiple arms | WASI clock_time_get + multi-mailbox | `WASM-TODO: select` |
+| `select {}` with computed timeouts | Dynamic timeout lowering for WASM select/ask paths | `WASM-TODO: select` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |

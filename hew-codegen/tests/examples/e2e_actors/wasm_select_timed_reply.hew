@@ -1,0 +1,20 @@
+// WASM timed-select parity: with a real deadline, the first enqueued ask still
+// wins before the timeout fires on the single-threaded cooperative scheduler.
+actor Responder {
+    let value: int;
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let first = spawn Responder(value: 1);
+    let second = spawn Responder(value: 2);
+
+    let result = select {
+        x from first.get() => x,
+        y from second.get() => y,
+        after 100ms => -1,
+    };
+    println(result);
+}

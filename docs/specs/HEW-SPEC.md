@@ -4143,7 +4143,7 @@ There are two WASM target tiers:
 - Pattern matching and algebraic data types
 - Arithmetic, collections, and general-purpose stdlib modules
 - HTTP/TCP clients and servers routed through WASI sockets
-- Single-arm `select {}` with a literal timeout duration
+- `select {}` with a literal timeout duration
 
 **Compile-time errors on wasm32-wasi (runtime traps → rejected at check time):**
 
@@ -4157,7 +4157,7 @@ There are two WASM target tiers:
 - Actor `link` / `unlink` / `monitor` / `demonitor` fault-propagation APIs
 - Structured concurrency scopes (`scope {}`, `scope.launch`, `scope.await`, `scope.cancel`)
 - Scope-spawned `Task` handles that rely on scoped schedulers
-- `select {}` expressions with multiple arms or computed timeouts
+- `select {}` expressions with computed timeouts
 
 When you compile with `--target=wasm32-wasi`, the type checker emits errors for the first group (preventing silent runtime traps) and warnings for the second group (preserving the diagnostic path through codegen).  Prefer the basic actor primitives above or run the program on a native target when advanced supervision is required.
 

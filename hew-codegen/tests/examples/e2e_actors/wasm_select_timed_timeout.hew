@@ -1,7 +1,5 @@
-// Negative test: multi-arm timed select should be rejected on WASM.
-// Timed select with multiple arms enqueues asks before hew.select.first
-// runs; without WASI clock_time_get the timeout cannot be implemented
-// correctly, so the codegen must reject this pattern.
+// WASM timed-select parity: `after 0ms` must win deterministically before any
+// cooperative scheduler tick runs.
 actor Responder {
     let value: int;
     receive fn get() -> int {
@@ -12,10 +10,11 @@ actor Responder {
 fn main() {
     let a = spawn Responder(value: 1);
     let b = spawn Responder(value: 2);
+
     let result = select {
         x from a.get() => x,
         y from b.get() => y,
-        after 100ms => -1,
+        after 0ms => -1,
     };
     println(result);
 }

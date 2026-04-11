@@ -9546,6 +9546,184 @@ actor MyActor {
             output.warnings
         );
     }
+
+    // ── ExternBlock scoped-lookup regression ───────────────────────────────────
+    //
+    // When an extern block lives in a non-root module, the key stored in
+    // `fn_sig_inference_holes` is scoped as `"mymod.extfn"` (set by
+    // `register_extern_block` → `scoped_module_item_name`).
+    //
+    // Before the fix, `report_unresolved_inference_in_items` used a bare-name
+    // lookup (`fn_sig_inference_holes.get("extfn")`), so the inference hole was
+    // never detected and no `InferenceFailed` error was emitted for non-root
+    // extern functions with `_`-typed parameters.
+    //
+    // After the fix the arm uses `lookup_scoped_item(…, module_name, "extfn")`
+    // which resolves the scoped key and the error is emitted + tagged correctly.
+
+    fn make_extern_block_with_infer_param(fn_name: &str) -> Item {
+        Item::ExternBlock(ExternBlock {
+            abi: "C".to_string(),
+            functions: vec![ExternFnDecl {
+                name: fn_name.to_string(),
+                params: vec![Param {
+                    name: "p".to_string(),
+                    ty: (TypeExpr::Infer, 20..21),
+                    is_mutable: false,
+                }],
+                return_type: None,
+                is_variadic: false,
+            }],
+        })
+    }
+
+    /// A non-root extern function with a `_`-typed parameter must fail closed
+    /// with `InferenceFailed` tagged `source_module = Some("mymod")`.
+    ///
+    /// Regression guard for the `Item::ExternBlock` bare-name lookup bug in
+    /// `report_unresolved_inference_in_items`.
+    #[test]
+    fn non_root_extern_fn_infer_param_fails_closed_with_source_module() {
+        let extern_item = make_extern_block_with_infer_param("extfn");
+        let root_id = ModuleId::root();
+        let mymod_id = ModuleId::new(vec!["mymod".to_string()]);
+
+        let mymod = Module {
+            id: mymod_id.clone(),
+            items: vec![(extern_item, 0..30)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module);
+        mg.add_module(mymod);
+        mg.topo_order = vec![mymod_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let inference_errs: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+            .collect();
+
+        assert!(
+            !inference_errs.is_empty(),
+            "non-root extern fn with `_` param must produce InferenceFailed; \
+             got errors: {:?}",
+            output.errors
+        );
+        for err in &inference_errs {
+            assert_eq!(
+                err.source_module.as_deref(),
+                Some("mymod"),
+                "InferenceFailed for non-root extern fn must carry \
+                 source_module='mymod'; got {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// A root-module extern function with a `_`-typed parameter must also fail
+    /// closed with `InferenceFailed`, with `source_module = None`.
+    ///
+    /// Confirms the fix does not break the root-module code path.
+    #[test]
+    fn root_extern_fn_infer_param_fails_closed_without_source_module() {
+        let extern_item = make_extern_block_with_infer_param("root_extfn");
+        let program = Program {
+            module_graph: None,
+            items: vec![(extern_item, 0..30)],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let inference_errs: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+            .collect();
+
+        assert!(
+            !inference_errs.is_empty(),
+            "root extern fn with `_` param must produce InferenceFailed; \
+             got errors: {:?}",
+            output.errors
+        );
+        for err in &inference_errs {
+            assert_eq!(
+                err.source_module, None,
+                "InferenceFailed for root extern fn must have source_module=None; got {:?}",
+                err.source_module
+            );
+        }
+    }
+
+    /// A non-root scope warning (`UnusedVariable`) carries `source_module`.
+    ///
+    /// Certifies that `emit_scope_warnings` copies `self.current_module` into
+    /// the warning and the snapshot module tagging pass in `check_program` does
+    /// not overwrite it when already set.
+    #[test]
+    fn non_root_unused_variable_warning_carries_source_module() {
+        // fn warns() { let x = 42; }  — `x` is never read
+        let stmts = vec![(
+            Stmt::Let {
+                pattern: (Pattern::Identifier("x".to_string()), 10..11),
+                ty: None,
+                value: Some((
+                    Expr::Literal(Literal::Integer {
+                        value: 42,
+                        radix: IntRadix::Decimal,
+                    }),
+                    14..16,
+                )),
+            },
+            10..16,
+        )];
+        let program = make_non_root_program_with_fn_body("warnmod", "warns", stmts);
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnusedVariable)
+            .collect();
+
+        assert!(
+            !unused.is_empty(),
+            "expected UnusedVariable warning for `x` in non-root module; got warnings: {:?}",
+            output.warnings
+        );
+        for w in &unused {
+            assert_eq!(
+                w.source_module.as_deref(),
+                Some("warnmod"),
+                "UnusedVariable warning must carry source_module='warnmod'; got {:?}",
+                w.source_module
+            );
+        }
+    }
 }
 
 // ── WASM compile-time reject tests ──────────────────────────────────────────

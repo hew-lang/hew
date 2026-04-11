@@ -1101,12 +1101,16 @@ fn run_wasm_eval_compiled(
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),
-        Ok(crate::wasi_runner::WasiCapturedOutcome::Failed { stderr }) => {
-            Err(CompiledEvalError::Message(if stderr.is_empty() {
-                "WASM program exited with non-zero status".to_string()
-            } else {
-                stderr
-            }))
+        Ok(crate::wasi_runner::WasiCapturedOutcome::Failed {
+            stdout,
+            stderr,
+            exit_code,
+        }) => {
+            // Write the WASM module's stderr directly to the parent's stderr.
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
+            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code })
         }
         Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
             Err(CompiledEvalError::Message(format!(

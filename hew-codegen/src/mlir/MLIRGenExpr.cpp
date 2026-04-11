@@ -2161,14 +2161,18 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     if (call.is_tail_call)
       callOp->setAttr("hew.tail_call", builder.getUnitAttr());
 
-    // When a consuming C function (like hew_regex_free) takes ownership of
-    // its argument, null out the drop alloca to prevent a scope-exit
-    // double-free.  The enricher rewrites:
+    // When a consuming C function (hew_regex_free, hew_json_free, …) takes
+    // ownership of its argument, null out the drop alloca to prevent a
+    // scope-exit double-free.  The enricher rewrites method calls that are
+    // registered as handle methods to direct C symbol calls before codegen,
+    // so they arrive here rather than in generateNamedTypeDispatch:
     //   re.free()        → hew_regex_free(re)           [identifier arg]
     //   re.clone().free()→ hew_regex_free(hew_regex_clone(re))  [temp arg]
+    //   val.free()       → hew_json_free(val)           [identifier arg]
     // • Materialized temporary (e.g. clone result): null via its alloca.
     // • Named identifier: null via the named drop slot.
-    if (calleeName == "hew_regex_free" && !materializedArgAllocas.empty()) {
+    if ((calleeName == "hew_regex_free" || calleeName == "hew_json_free") &&
+        !materializedArgAllocas.empty()) {
       if (materializedArgAllocas[0]) {
         nullOutDropSlotByAlloca(materializedArgAllocas[0], location);
       } else if (!call.args.empty()) {

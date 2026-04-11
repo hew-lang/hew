@@ -381,21 +381,42 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     }
 }
 
-unsafe fn send_user_message(
+/// Outcome of an overflow-policy-aware send into the user queue.
+///
+/// Mirrors the native `SendOutcome` in `mailbox.rs`. FFI entry points map
+/// these variants to their own return conventions.
+#[derive(Clone, Copy)]
+enum SendOutcome {
+    /// Message was successfully enqueued.
+    Enqueued,
+    /// Mailbox is closed — message was not sent.
+    Closed,
+    /// Message intentionally dropped (`DropNew` / `Fail` / `Block` on WASM).
+    Dropped,
+    /// Oldest message was evicted to make room (`DropOld` policy).
+    DroppedOld,
+    /// Message payload was merged with an existing queued message
+    /// (`Coalesce` policy).
+    Coalesced,
+    /// Memory allocation failed.
+    Oom,
+}
+
+unsafe fn send_user_message_inner(
     mb: &mut HewMailboxWasm,
     msg_type: i32,
     data: *const c_void,
     size: usize,
     reply_channel: *mut c_void,
-) -> i32 {
+) -> SendOutcome {
     if mb.closed {
-        return HewError::ErrClosed as i32;
+        return SendOutcome::Closed;
     }
 
     if mb.capacity > 0 && mb.count >= mb.capacity {
         match mb.overflow {
             HewOverflowPolicy::Block | HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => {
-                return HewError::ErrMailboxFull as i32;
+                return SendOutcome::Dropped;
             }
             HewOverflowPolicy::DropOld => {
                 if let Some(old) = mb.user_queue.pop_front() {
@@ -403,6 +424,23 @@ unsafe fn send_user_message(
                     unsafe { msg_node_free(old) };
                     mb.count -= 1;
                 }
+                // Fall through to allocate + enqueue below; return DroppedOld at the end.
+                // SAFETY: `data` validity guaranteed by caller.
+                let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                if node.is_null() {
+                    return SendOutcome::Oom;
+                }
+                if !reserve_queue_capacity(&mut mb.user_queue, 1) {
+                    // SAFETY: `node` is still exclusively owned.
+                    unsafe { msg_node_free(node) };
+                    return SendOutcome::Oom;
+                }
+                // SAFETY: node was just allocated and is exclusively owned.
+                unsafe { (*node).reply_channel = reply_channel };
+                mb.user_queue.push_back(node);
+                mb.count += 1;
+                update_high_water_mark(mb);
+                return SendOutcome::DroppedOld;
             }
             HewOverflowPolicy::Coalesce => {
                 // SAFETY: `data` validity guaranteed by caller.
@@ -431,7 +469,7 @@ unsafe fn send_user_message(
                     // SAFETY: `existing` remains owned by the mailbox queue.
                     let ok = unsafe { replace_node_payload(existing, msg_type, data, size) };
                     if !ok {
-                        return HewError::ErrOom as i32;
+                        return SendOutcome::Oom;
                     }
                     // Preserve the queued node's reply_channel to mirror the
                     // native mailbox contract for ask-style coalescing, but
@@ -440,14 +478,14 @@ unsafe fn send_user_message(
                         // SAFETY: the incoming ask waiter is no longer queued.
                         unsafe { retire_reply_channel(reply_channel) };
                     }
-                    return HewError::Ok as i32;
+                    return SendOutcome::Coalesced;
                 }
 
                 match normalize_coalesce_fallback(mb.coalesce_fallback) {
                     HewOverflowPolicy::Block
                     | HewOverflowPolicy::DropNew
                     | HewOverflowPolicy::Fail => {
-                        return HewError::ErrMailboxFull as i32;
+                        return SendOutcome::Dropped;
                     }
                     HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
                         if let Some(old) = mb.user_queue.pop_front() {
@@ -464,13 +502,13 @@ unsafe fn send_user_message(
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
     if node.is_null() {
-        return HewError::ErrOom as i32;
+        return SendOutcome::Oom;
     }
     if !reserve_queue_capacity(&mut mb.user_queue, 1) {
         // SAFETY: `node` is still exclusively owned by this send path and has
         // no reply channel attached yet.
         unsafe { msg_node_free(node) };
-        return HewError::ErrOom as i32;
+        return SendOutcome::Oom;
     }
     // SAFETY: node was just allocated and is exclusively owned.
     unsafe { (*node).reply_channel = reply_channel };
@@ -478,7 +516,32 @@ unsafe fn send_user_message(
     mb.count += 1;
     update_high_water_mark(mb);
 
-    HewError::Ok as i32
+    SendOutcome::Enqueued
+}
+
+/// Map [`SendOutcome`] to the `HewError`-based return convention used by
+/// `hew_mailbox_send` / `hew_mailbox_try_send` / `hew_mailbox_send_with_reply`.
+fn send_outcome_to_hew_error(outcome: SendOutcome) -> i32 {
+    match outcome {
+        SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
+            HewError::Ok as i32
+        }
+        SendOutcome::Closed => HewError::ErrClosed as i32,
+        SendOutcome::Dropped => HewError::ErrMailboxFull as i32,
+        SendOutcome::Oom => HewError::ErrOom as i32,
+    }
+}
+
+unsafe fn send_user_message(
+    mb: &mut HewMailboxWasm,
+    msg_type: i32,
+    data: *const c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+) -> i32 {
+    // SAFETY: caller guarantees all pointer invariants.
+    let outcome = unsafe { send_user_message_inner(mb, msg_type, data, size, reply_channel) };
+    send_outcome_to_hew_error(outcome)
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
@@ -677,6 +740,43 @@ wasm_no_mangle! {
 }
 
 wasm_no_mangle! {
+    /// Policy-aware push into the user queue.
+    ///
+    /// Returns `0` on success, `1` if the message was dropped (`DropNew` policy),
+    /// `2` if the oldest message was dropped (`DropOld` policy), `3` if coalesced,
+    /// or `-1` on failure (including OOM and closed mailbox).
+    ///
+    /// This is the WASM counterpart of `mailbox::hew_mailbox_try_push`. It
+    /// never carries a reply channel — use [`hew_mailbox_send_with_reply`] for
+    /// the ask pattern.
+    ///
+    /// # Safety
+    ///
+    /// - `mb` must be a valid mailbox pointer.
+    /// - `data` must point to at least `data_size` readable bytes, or be null
+    ///   when `data_size` is 0.
+    pub unsafe extern "C" fn hew_mailbox_try_push(
+        mb: *mut HewMailboxWasm,
+        msg_type: i32,
+        data: *const c_void,
+        data_size: usize,
+    ) -> i32 {
+        // SAFETY: Caller guarantees `mb` is valid.
+        let mbr = unsafe { &mut *mb };
+        // SAFETY: Caller guarantees `data` points to `data_size` readable bytes.
+        match unsafe {
+            send_user_message_inner(mbr, msg_type, data, data_size, ptr::null_mut())
+        } {
+            SendOutcome::Enqueued => 0,
+            SendOutcome::Dropped => 1,
+            SendOutcome::DroppedOld => 2,
+            SendOutcome::Coalesced => 3,
+            SendOutcome::Closed | SendOutcome::Oom => -1,
+        }
+    }
+}
+
+wasm_no_mangle! {
     /// Send a system message, bypassing capacity limits.
     ///
     /// System messages (actor stop / restart / supervisor lifecycle signals)
@@ -835,6 +935,18 @@ wasm_no_mangle! {
         // SAFETY: Caller guarantees `mb` is valid.
         let count = unsafe { &*mb }.count;
         usize::try_from(count).unwrap_or(0)
+    }
+}
+
+wasm_no_mangle! {
+    /// Return the number of system messages in the mailbox.
+    ///
+    /// # Safety
+    ///
+    /// `mb` must be a valid mailbox pointer.
+    pub unsafe extern "C" fn hew_mailbox_sys_len(mb: *const HewMailboxWasm) -> usize {
+        // SAFETY: Caller guarantees `mb` is valid.
+        unsafe { &*mb }.sys_queue.len()
     }
 }
 
@@ -1884,6 +1996,522 @@ mod tests {
 
             let node = hew_mailbox_try_recv(mb);
             msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    // ── hew_mailbox_try_push parity tests ───────────────────────────────
+    // These mirror the corresponding tests in mailbox.rs to certify that the
+    // WASM try_push returns the same fine-grained status codes as native.
+
+    #[test]
+    fn try_push_enqueued() {
+        // An unbounded mailbox must return 0 (Enqueued).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 42;
+            assert_eq!(
+                hew_mailbox_try_push(mb, 7, (&raw const val).cast(), size_of::<i32>()),
+                0,
+                "unbounded try_push must return 0 (Enqueued)"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 7);
+            assert_eq!(*((*node).data.cast::<i32>()), 42);
+            msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_dropped() {
+        // DropNew policy at capacity must return 1 (Dropped).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_bounded(1);
+            let a: i32 = 1;
+            let b: i32 = 2;
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const a).cast(), size_of::<i32>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 2, (&raw const b).cast(), size_of::<i32>()),
+                1,
+                "DropNew try_push at capacity must return 1 (Dropped)"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*node).data.cast::<i32>()), 1);
+            msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_dropped_old() {
+        // DropOld policy at capacity must return 2 (DroppedOld).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
+            let a: i32 = 10;
+            let b: i32 = 20;
+
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const a).cast(), size_of::<i32>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 2, (&raw const b).cast(), size_of::<i32>()),
+                2,
+                "DropOld try_push at capacity must return 2 (DroppedOld)"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*node).data.cast::<i32>()), 20, "oldest must be evicted");
+            msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_coalesced() {
+        // Coalesce policy with matching key must return 3 (Coalesced).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(2);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let a = PriceUpdate {
+                symbol: 7,
+                price: 10,
+            };
+            let b = PriceUpdate {
+                symbol: 9,
+                price: 20,
+            };
+            let c = PriceUpdate {
+                symbol: 7,
+                price: 99,
+            };
+
+            assert_eq!(
+                hew_mailbox_try_push(mb, 100, (&raw const a).cast(), size_of::<PriceUpdate>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 200, (&raw const b).cast(), size_of::<PriceUpdate>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 300, (&raw const c).cast(), size_of::<PriceUpdate>()),
+                3,
+                "coalesce try_push with matching key must return 3 (Coalesced)"
+            );
+            assert_eq!(hew_mailbox_len(mb), 2);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 300);
+            let payload = (*node).data.cast::<PriceUpdate>();
+            assert_eq!((*payload).symbol, 7);
+            assert_eq!((*payload).price, 99);
+            msg_node_free(node);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 200);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_coalesce_fallback_dropnew() {
+        // Coalesce with DropNew fallback and no match must return 1 (Dropped).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::DropNew);
+
+            let a: i32 = 10;
+            let b: i32 = 20;
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const a).cast(), size_of::<i32>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 2, (&raw const b).cast(), size_of::<i32>()),
+                1,
+                "coalesce fallback DropNew must return 1 (Dropped)"
+            );
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!((*node).msg_type, 1);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_closed_returns_negative() {
+        // Closed mailbox must return -1.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            hew_mailbox_close(mb);
+
+            let val: i32 = 1;
+            assert_eq!(
+                hew_mailbox_try_push(mb, 0, (&raw const val).cast(), size_of::<i32>()),
+                -1,
+                "try_push on closed mailbox must return -1"
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_null_data() {
+        // Null data with size 0 must succeed.
+        // SAFETY: test owns the mailbox exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert_eq!(hew_mailbox_try_push(mb, 42, ptr::null(), 0), 0);
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 42);
+            assert!((*node).data.is_null());
+            assert_eq!((*node).data_size, 0);
+            assert!(
+                (*node).reply_channel.is_null(),
+                "try_push must never set a reply channel"
+            );
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    // ── hew_mailbox_sys_len parity tests ────────────────────────────────
+
+    #[test]
+    fn sys_len_tracks_system_messages() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+
+            let val: i32 = 99;
+            hew_mailbox_send_sys(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+
+            hew_mailbox_send_sys(mb, 2, (&raw const val).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 2);
+
+            // User messages must not affect sys_len.
+            hew_mailbox_send(mb, 3, (&raw const val).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 2);
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            // Drain system messages.
+            let node = hew_mailbox_try_recv_sys(mb);
+            assert!(!node.is_null());
+            msg_node_free(node);
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+
+            let node = hew_mailbox_try_recv_sys(mb);
+            assert!(!node.is_null());
+            msg_node_free(node);
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+
+            assert!(hew_mailbox_try_recv_sys(mb).is_null());
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn sys_len_zero_on_fresh_mailbox() {
+        // SAFETY: test owns the mailbox exclusively.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+            hew_mailbox_free(mb);
+
+            let mb = hew_mailbox_new_bounded(5);
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn sys_len_unaffected_by_close() {
+        // System messages are accepted even after close; sys_len must track.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let val: i32 = 1;
+            hew_mailbox_close(mb);
+
+            hew_mailbox_send_sys(mb, -1, (&raw const val).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    // ── Coalesce + reply-channel contract certification ─────────────────
+    // These tests prove the coalesce/reply-channel invariants that the
+    // phase0/runtime-reliability concern flagged.
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coalesce_reply_channel_preserved_on_merge() {
+        // When a coalescing send replaces a queued message that already carries
+        // a reply channel, the QUEUED channel must be preserved (it was
+        // promised to the original sender) and the INCOMING channel must be
+        // retired as orphaned.
+        // SAFETY: test owns the mailbox and reply channels exclusively.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+
+            let first: i32 = 10;
+            let second: i32 = 20;
+            let queued_ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(queued_ch);
+            let incoming_ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(incoming_ch);
+
+            // Enqueue first message with queued_ch.
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>(),
+                    queued_ch.cast(),
+                ),
+                HewError::Ok as i32
+            );
+
+            // Coalesce with same key (msg_type=7) — queued_ch must survive,
+            // incoming_ch must be retired.
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const second).cast_mut().cast(),
+                    size_of::<i32>(),
+                    incoming_ch.cast(),
+                ),
+                HewError::Ok as i32
+            );
+
+            // Incoming channel must be retired (orphaned + replied).
+            assert!(
+                crate::reply_channel_wasm::test_replied(incoming_ch),
+                "superseded incoming reply channel must be retired"
+            );
+            assert!(
+                crate::reply_channel_wasm::reply_is_orphaned(incoming_ch),
+                "superseded incoming reply channel must be marked orphaned"
+            );
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(incoming_ch), 1);
+
+            // Queued channel must NOT be retired — it belongs to the first
+            // sender and the handler will eventually reply on it.
+            assert!(
+                !crate::reply_channel_wasm::test_replied(queued_ch),
+                "queued reply channel must NOT be retired during coalesce"
+            );
+
+            // Dequeue and verify the reply_channel on the coalesced node
+            // points to the original queued channel.
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 7);
+            assert_eq!(*((*node).data.cast::<i32>()), 20, "payload must be updated");
+            assert_eq!(
+                (*node).reply_channel,
+                queued_ch.cast(),
+                "coalesced node must preserve the original queued reply channel"
+            );
+            msg_node_free(node);
+
+            crate::reply_channel_wasm::hew_reply_channel_free(queued_ch);
+            crate::reply_channel_wasm::hew_reply_channel_free(incoming_ch);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coalesce_no_reply_channel_does_not_retire() {
+        // When neither the queued nor the incoming message carries a reply
+        // channel (fire-and-forget), coalesce must not attempt retirement.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+
+            let first: i32 = 10;
+            let second: i32 = 77;
+
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>()
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const second).cast_mut().cast(),
+                    size_of::<i32>()
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*node).data.cast::<i32>()), 77);
+            assert!(
+                (*node).reply_channel.is_null(),
+                "fire-and-forget coalesce must not fabricate a reply channel"
+            );
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coalesce_same_reply_channel_not_retired() {
+        // Edge case: if the same reply channel pointer is sent twice (e.g.
+        // retained and resent), it must NOT be retired — the identity check
+        // must prevent double-retirement.
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+
+            let ch = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+            crate::reply_channel_wasm::hew_reply_channel_retain(ch);
+
+            let first: i32 = 10;
+            let second: i32 = 20;
+
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>(),
+                    ch.cast(),
+                ),
+                HewError::Ok as i32
+            );
+            // Send again with the SAME channel pointer.
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    7,
+                    (&raw const second).cast_mut().cast(),
+                    size_of::<i32>(),
+                    ch.cast(),
+                ),
+                HewError::Ok as i32
+            );
+
+            // The channel must NOT be retired — it's the same pointer.
+            assert!(
+                !crate::reply_channel_wasm::test_replied(ch),
+                "same-pointer coalesce must not retire the reply channel"
+            );
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*node).data.cast::<i32>()), 20);
+            msg_node_free(node);
+
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+            crate::reply_channel_wasm::hew_reply_channel_free(ch);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coalesce_drop_old_fallback_retires_evicted_reply_channel() {
+        // When coalesce cannot find a matching key and falls back to DropOld,
+        // evicting a message with a reply channel must retire that channel.
+        // SAFETY: test owns the mailbox and reply channel exclusively.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            crate::reply_channel_wasm::hew_reply_channel_retain(reply);
+
+            let first = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            let different = PriceUpdate {
+                symbol: 2,
+                price: 20,
+            };
+
+            // Enqueue with reply channel.
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                    reply.cast(),
+                ),
+                HewError::Ok as i32
+            );
+
+            // Different key → no coalesce match → DropOld fallback evicts first.
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    2,
+                    (&raw const different).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            // Evicted message's reply channel must be retired.
+            assert!(
+                crate::reply_channel_wasm::test_replied(reply),
+                "DropOld eviction must retire the evicted message's reply channel"
+            );
+            assert!(
+                crate::reply_channel_wasm::reply_is_orphaned(reply),
+                "DropOld eviction must mark the reply channel as orphaned"
+            );
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            msg_node_free(node);
+
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
             hew_mailbox_free(mb);
         }
     }

@@ -601,11 +601,8 @@ fn reconnect_worker_loop(
                     };
                     return;
                 }
-                // SAFETY: connection belongs to this transport and was not installed.
-                unsafe {
-                    let mgr_ref = &*mgr_ptr;
-                    close_transport_conn(mgr_ref.transport, new_conn_id);
-                }
+                // hew_connmgr_add owns conn_id cleanup on failure (closes the
+                // transport connection on all failure paths), so no close here.
                 set_last_error(format!(
                     "hew_connmgr_reconnect: failed to install reconnected conn on attempt {attempt}/{}, addr={}",
                     plan.max_retries, plan.target_addr
@@ -1383,9 +1380,15 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
 )]
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
+        // Cannot close conn_id: no transport pointer available.  This is API
+        // misuse; the caller retains ownership of conn_id in this case only.
         set_last_error("hew_connmgr_add: manager is null");
         return -1;
     }
+    // Ownership: hew_connmgr_add takes ownership of conn_id on entry.
+    // On SUCCESS: ownership transfers to the manager (closed by remove/free).
+    // On FAILURE (any path below): conn_id is closed here; callers must not
+    // close it themselves after observing a -1 return.
     // Preserve the raw pointer before reborrowing — `SendConnMgr` needs
     // `*mut` for the reader thread, and round-tripping `&T → *mut T`
     // violates Rust aliasing rules.
@@ -1404,10 +1407,16 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         let Ok(conns) = mgr.connections.lock() else {
             // Policy: per-connection-manager state (C-ABI) — poisoned mutex
             // means connection registry is corrupted; report error and bail.
+            // SAFETY: conn_id is a valid transport handle; hew_connmgr_add
+            // owns cleanup for all failure paths after entry.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
             return -1;
         };
         if conns.iter().any(|c| c.conn_id == conn_id) {
+            // SAFETY: conn_id is a new transport handle that cannot be installed;
+            // close it so the caller does not need to clean up on failure.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} already exists"
             ));

@@ -1634,10 +1634,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 
     // SAFETY: conn_mgr pointer is valid and owned by this node.
     if unsafe { connection::hew_connmgr_add(node.conn_mgr, conn_id) } != 0 {
-        if let Some(close_fn) = ops.close_conn {
-            // SAFETY: transport impl and conn handle are valid here.
-            unsafe { close_fn(t.r#impl, conn_id) };
-        }
+        // hew_connmgr_add owns conn_id cleanup on failure; no close needed here.
         set_last_error("hew_node_connect: failed to add connection");
         return -1;
     }

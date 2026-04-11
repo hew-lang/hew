@@ -37,6 +37,12 @@ pub struct ReplSession {
 pub enum CliEvalError {
     DiagnosticsRendered,
     Message(String),
+    /// The compiled program exited non-zero.  Any stdout produced before the
+    /// failure is preserved so callers can surface it to the user.
+    RuntimeFailure {
+        stdout: String,
+        exit_code: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -50,6 +56,9 @@ impl fmt::Display for CliEvalError {
         match self {
             Self::DiagnosticsRendered => write!(f, "diagnostics already rendered"),
             Self::Message(message) => f.write_str(message),
+            Self::RuntimeFailure { exit_code, .. } => {
+                write!(f, "program exited with status {exit_code}")
+            }
         }
     }
 }
@@ -88,6 +97,7 @@ enum EvalCheckFailure {
 enum CompiledEvalError {
     DiagnosticsRendered,
     Message(String),
+    RuntimeFailure { stdout: String, exit_code: i32 },
 }
 
 impl Default for ReplSession {
@@ -422,6 +432,11 @@ impl ReplSession {
                 had_errors: true,
                 errors: vec![error],
             },
+            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => EvalResult {
+                output: stdout,
+                had_errors: true,
+                errors: vec![format!("program exited with status {exit_code}")],
+            },
         }
     }
 
@@ -483,6 +498,9 @@ impl ReplSession {
             }
             Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
             Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
+            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => {
+                Err(CliEvalError::RuntimeFailure { stdout, exit_code })
+            }
         }
     }
 
@@ -547,6 +565,9 @@ impl ReplSession {
             }
             Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
             Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
+            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => {
+                Err(CliEvalError::RuntimeFailure { stdout, exit_code })
+            }
         }
     }
 
@@ -689,6 +710,12 @@ impl ReplSession {
             .map_err(|error| match error {
                 CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
                 CliEvalError::Message(message) => LoadFileError::Message(message),
+                CliEvalError::RuntimeFailure { stdout, exit_code } => {
+                    if !stdout.is_empty() {
+                        print!("{stdout}");
+                    }
+                    LoadFileError::Message(format!("program exited with status {exit_code}"))
+                }
             })?;
 
         let added = session_count_delta(before, self.session.counts());
@@ -927,6 +954,13 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
         Ok(output) => InteractiveEvalOutcome::Output(output),
         Err(CliEvalError::DiagnosticsRendered) => InteractiveEvalOutcome::RenderedDiagnostics,
         Err(CliEvalError::Message(message)) => InteractiveEvalOutcome::MessageError(message),
+        Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
+            // Surface any output the program produced before it failed.
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
+            InteractiveEvalOutcome::MessageError(format!("program exited with status {exit_code}"))
+        }
     }
 }
 
@@ -973,12 +1007,20 @@ fn run_inprocess_compiled(
             // Normalize Windows \r\n line endings to \n for consistent output.
             Ok(stdout.replace("\r\n", "\n"))
         }
-        Ok(crate::process::BinaryRunOutcome::Failed { stderr, .. }) => {
-            Err(CompiledEvalError::Message(if stderr.is_empty() {
-                "program exited with non-zero status".to_string()
-            } else {
-                stderr
-            }))
+        Ok(crate::process::BinaryRunOutcome::Failed {
+            stdout,
+            stderr,
+            exit_code,
+        }) => {
+            // Write the child's stderr directly to the parent's stderr so the
+            // user sees runtime error output immediately.
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout: stdout.replace("\r\n", "\n"),
+                exit_code,
+            })
         }
         Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
             "evaluation timed out after {}",
@@ -1059,12 +1101,16 @@ fn run_wasm_eval_compiled(
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),
-        Ok(crate::wasi_runner::WasiCapturedOutcome::Failed { stderr }) => {
-            Err(CompiledEvalError::Message(if stderr.is_empty() {
-                "WASM program exited with non-zero status".to_string()
-            } else {
-                stderr
-            }))
+        Ok(crate::wasi_runner::WasiCapturedOutcome::Failed {
+            stdout,
+            stderr,
+            exit_code,
+        }) => {
+            // Write the WASM module's stderr directly to the parent's stderr.
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
+            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code })
         }
         Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
             Err(CompiledEvalError::Message(format!(

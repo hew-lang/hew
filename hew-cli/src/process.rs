@@ -12,7 +12,11 @@ pub(crate) enum BinaryRunOutcome {
     /// The process exited successfully and produced stdout.
     Success { stdout: String },
     /// The process exited unsuccessfully and produced captured output.
-    Failed { stdout: String, stderr: String },
+    Failed {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    },
     /// The process exceeded the timeout and was terminated.
     Timeout,
 }
@@ -286,7 +290,11 @@ pub(crate) fn run_command_captured(
                 if status.success() {
                     return Ok(BinaryRunOutcome::Success { stdout });
                 }
-                return Ok(BinaryRunOutcome::Failed { stdout, stderr });
+                return Ok(BinaryRunOutcome::Failed {
+                    stdout,
+                    stderr,
+                    exit_code: status.code().unwrap_or(1),
+                });
             }
             Ok(None) => {
                 if start.elapsed() > timeout {

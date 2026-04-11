@@ -13,8 +13,12 @@ pub(crate) enum WasiRunOutcome {
 pub(crate) enum WasiCapturedOutcome {
     /// Process exited successfully; captured stdout.
     Success { stdout: String },
-    /// Process exited unsuccessfully; captured stderr for diagnosis.
-    Failed { stderr: String },
+    /// Process exited unsuccessfully; stdout produced before failure and exit code are preserved.
+    Failed {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    },
     /// Process exceeded the timeout and was terminated.
     Timeout,
 }
@@ -79,9 +83,15 @@ pub(crate) fn run_module_captured(
         crate::process::BinaryRunOutcome::Success { stdout } => Ok(WasiCapturedOutcome::Success {
             stdout: stdout.replace("\r\n", "\n"),
         }),
-        crate::process::BinaryRunOutcome::Failed { stderr, .. } => {
-            Ok(WasiCapturedOutcome::Failed { stderr })
-        }
+        crate::process::BinaryRunOutcome::Failed {
+            stdout,
+            stderr,
+            exit_code,
+        } => Ok(WasiCapturedOutcome::Failed {
+            stdout: stdout.replace("\r\n", "\n"),
+            stderr,
+            exit_code,
+        }),
         crate::process::BinaryRunOutcome::Timeout => Ok(WasiCapturedOutcome::Timeout),
     }
 }

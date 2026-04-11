@@ -1024,3 +1024,179 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
         "expected WASM diagnostic from fast typecheck, stderr: {stderr}"
     );
 }
+
+// ── Runtime-failure output contract ──────────────────────────────────────────
+//
+// When a compiled Hew program exits non-zero, `hew eval` must:
+//   1. Print any stdout the program produced before failure to its own stdout.
+//   2. Exit with the child's exact exit code (not always 1).
+//
+// `panic()` is the Hew builtin that exits non-zero; it uses exit code 101
+// (Rust's panic convention), which is distinct from the CLI's own error exit
+// code (1) and therefore makes propagation detectable.
+
+#[test]
+fn eval_inline_runtime_failure_exits_with_child_exit_code() {
+    require_codegen();
+
+    // `panic` exits the child with code 101.  Without the fix `hew eval`
+    // would always return 1 regardless of the child's code.
+    let output = Command::new(hew_binary())
+        .args(["eval", r#"panic("deliberate failure")"#])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "expected child exit code 101 (Hew panic), got {:?}",
+        output.status.code()
+    );
+}
+
+#[test]
+fn eval_file_runtime_failure_exits_with_child_exit_code() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("failing_eval.hew");
+    // A single expression that unconditionally panics.  `panic` exits with
+    // code 101 (Hew's convention), which is distinct from the CLI's own
+    // error exit code (1) and makes propagation detectable.
+    std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "expected child exit code 101 (Hew panic), got {:?}",
+        output.status.code()
+    );
+}
+
+#[test]
+fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("partial_output_eval.hew");
+    // A helper that prints before panicking, called as a single expression so
+    // both print and panic run inside the same compiled binary.  Stdout
+    // produced before the panic must not be silently discarded.
+    std::fs::write(
+        &path,
+        "fn do_and_fail() {\n    print(\"partial\\n\");\n    panic(\"deliberate failure\");\n}\ndo_and_fail()\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("partial"),
+        "pre-failure stdout was discarded; got stdout: {stdout:?}"
+    );
+}
+
+// ── WASM runtime-failure output contract (parity with native path) ────────────
+//
+// `hew eval --target wasm32-wasi` must honour the same contract as native eval:
+//   1. Stdout produced before failure must not be discarded.
+//   2. The child's exit code must be propagated, not hard-coded to 1.
+
+#[test]
+fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    // `panic` exits the WASM module with code 101.  Without parity the WASM
+    // path would swallow the code and always return 1.
+    let output = Command::new(hew_binary())
+        .args([
+            "eval",
+            "--target",
+            "wasm32-wasi",
+            r#"panic("deliberate failure")"#,
+        ])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        output.status.code()
+    );
+}
+
+#[test]
+fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wasm_failing_eval.hew");
+    std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        output.status.code()
+    );
+}
+
+#[test]
+fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wasm_partial_output_eval.hew");
+    std::fs::write(
+        &path,
+        "fn do_and_fail() {\n    print(\"wasm-partial\\n\");\n    panic(\"deliberate failure\");\n}\ndo_and_fail()\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("wasm-partial"),
+        "WASM pre-failure stdout was discarded; got stdout: {stdout:?}"
+    );
+}

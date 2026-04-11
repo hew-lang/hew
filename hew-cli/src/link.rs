@@ -233,8 +233,8 @@ fn find_darwin_sdk() -> Option<String> {
 /// - the sysroot directory does not exist on this host.
 ///
 /// Sysroot paths follow the Debian/Ubuntu multiarch convention:
-/// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an x86_64 host
-/// - `/usr/x86_64-linux-gnu` — x86_64 cross-libs on an aarch64 host
+/// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an `x86_64` host
+/// - `/usr/x86_64-linux-gnu` — `x86_64` cross-libs on an aarch64 host
 ///
 /// The sysroot is non-fatal: the link proceeds even when absent and succeeds
 /// when the system linker already finds the target libs via other paths.

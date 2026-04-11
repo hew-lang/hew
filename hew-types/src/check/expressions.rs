@@ -2129,8 +2129,24 @@ impl Checker {
                     body, else_body, ..
                 } => {
                     self.scan_stmts_for_rc_param_return(&body.stmts, rc_params, param_tags);
+                    if let Some(then_trailing) = &body.trailing_expr {
+                        self.check_expr_is_rc_param_return(
+                            &then_trailing.0,
+                            &then_trailing.1,
+                            rc_params,
+                            param_tags,
+                        );
+                    }
                     if let Some(else_blk) = else_body {
                         self.scan_stmts_for_rc_param_return(&else_blk.stmts, rc_params, param_tags);
+                        if let Some(else_trailing) = &else_blk.trailing_expr {
+                            self.check_expr_is_rc_param_return(
+                                &else_trailing.0,
+                                &else_trailing.1,
+                                rc_params,
+                                param_tags,
+                            );
+                        }
                     }
                 }
                 Stmt::Match { arms, .. } => {

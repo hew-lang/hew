@@ -3230,6 +3230,87 @@ fn plain_named_struct_no_rc_vec_push_ok() {
     );
 }
 
+// ── IfLet trailing-expression escape paths ───────────────────────────────────
+
+/// An `if let` body that ends with a bare Rc param as its trailing expression
+/// must be diagnosed — the escape hole exists whether the pattern matches or not.
+#[test]
+fn rc_param_iflet_body_trailing_expr_errors() {
+    let output = typecheck_inline(
+        r"
+        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+            if let Some(_v) = opt {
+                r
+            } else {
+                Rc::new(0)
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "if-let body trailing-expr Rc escape should emit BorrowedParamReturn, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
+    );
+}
+
+/// An `if let` else block that ends with a bare Rc param as its trailing
+/// expression must also be diagnosed.
+#[test]
+fn rc_param_iflet_else_trailing_expr_errors() {
+    let output = typecheck_inline(
+        r"
+        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+            if let Some(_v) = opt {
+                Rc::new(0)
+            } else {
+                r
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "if-let else trailing-expr Rc escape should emit BorrowedParamReturn, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
+    );
+}
+
+/// Both branches of an `if let` returning Rc param must each be diagnosed.
+#[test]
+fn rc_param_iflet_both_branches_trailing_expr_errors() {
+    let output = typecheck_inline(
+        r"
+        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+            if let Some(_v) = opt {
+                r
+            } else {
+                r
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+            .count()
+            >= 2,
+        "both branches of if-let returning Rc param should emit >= 2 BorrowedParamReturn errors, got: {:#?}",
+        output.errors
+    );
+}
+
 // ── Known limitations of BorrowedParamReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and

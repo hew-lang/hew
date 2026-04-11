@@ -2269,4 +2269,84 @@ mod tests {
         assert_eq!(ty_arr[1]["start"], 3u64);
         assert_eq!(ty_arr[1]["end"], 12u64);
     }
+
+    #[test]
+    fn program_metadata_serializes_to_wire() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+        let handle_type_repr = HashMap::from([
+            ("fd.Socket".to_string(), "i32".to_string()),
+            ("http.Server".to_string(), "handle".to_string()),
+        ]);
+        let line_map = [0usize, 17, 42];
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec!["fd.Socket".to_string(), "http.Server".to_string()],
+            handle_type_repr,
+            vec![(
+                "http.Server".to_string(),
+                "hew_http_server_close".to_string(),
+            )],
+            Some("/workspace/examples/service.hew"),
+            Some(&line_map),
+        );
+
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+
+        let handle_types = value
+            .get("handle_types")
+            .and_then(serde_json::Value::as_array)
+            .expect("handle_types should be present on the wire");
+        assert_eq!(handle_types.len(), 2);
+        assert_eq!(handle_types[0].as_str(), Some("fd.Socket"));
+        assert_eq!(handle_types[1].as_str(), Some("http.Server"));
+
+        let handle_type_repr = value
+            .get("handle_type_repr")
+            .and_then(serde_json::Value::as_object)
+            .expect("handle_type_repr should be present on the wire");
+        assert_eq!(
+            handle_type_repr
+                .get("fd.Socket")
+                .and_then(serde_json::Value::as_str),
+            Some("i32")
+        );
+        assert_eq!(
+            handle_type_repr
+                .get("http.Server")
+                .and_then(serde_json::Value::as_str),
+            Some("handle")
+        );
+
+        let drop_funcs = value
+            .get("drop_funcs")
+            .and_then(serde_json::Value::as_array)
+            .expect("drop_funcs should be present on the wire");
+        assert_eq!(drop_funcs.len(), 1);
+        assert_eq!(drop_funcs[0][0].as_str(), Some("http.Server"));
+        assert_eq!(drop_funcs[0][1].as_str(), Some("hew_http_server_close"));
+        assert_eq!(
+            value.get("source_path").and_then(serde_json::Value::as_str),
+            Some("/workspace/examples/service.hew")
+        );
+
+        let line_map = value
+            .get("line_map")
+            .and_then(serde_json::Value::as_array)
+            .expect("line_map should be present on the wire");
+        assert_eq!(line_map.len(), 3);
+        assert_eq!(line_map[0].as_u64(), Some(0));
+        assert_eq!(line_map[1].as_u64(), Some(17));
+        assert_eq!(line_map[2].as_u64(), Some(42));
+    }
 }

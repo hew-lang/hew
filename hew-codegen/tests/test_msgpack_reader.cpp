@@ -189,6 +189,33 @@ static void test_wrong_schema_version_rejects() {
   PASS();
 }
 
+static void test_schema_version_u32_overflow_rejects() {
+  TEST(schema_version_u32_overflow_rejects);
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(9);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(UINT64_C(4294967296) + 6));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+  EXPECT_REJECTS(hew::parseMsgpackAST(reinterpret_cast<const uint8_t *>(buf.data()), buf.size()));
+  PASS();
+}
+
 static void test_items_wrong_type_rejects() {
   TEST(items_wrong_type_rejects);
   msgpack::sbuffer buf;
@@ -314,6 +341,79 @@ static void test_drop_funcs_wrong_type_rejects() {
       },
       1);
   EXPECT_REJECTS(hew::parseMsgpackAST(data.data(), data.size()));
+  PASS();
+}
+
+static void test_program_metadata_roundtrip() {
+  TEST(program_metadata_roundtrip);
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(11); // 9 required + source_path + line_map
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(6));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(2);
+  pk.pack(std::string("fd.Socket"));
+  pk.pack(std::string("http.Server"));
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(2);
+  pk.pack(std::string("fd.Socket"));
+  pk.pack(std::string("i32"));
+  pk.pack(std::string("http.Server"));
+  pk.pack(std::string("handle"));
+  pk.pack(std::string("source_path"));
+  pk.pack(std::string("/workspace/examples/service.hew"));
+  pk.pack(std::string("line_map"));
+  pk.pack_array(3);
+  pk.pack(static_cast<uint64_t>(0));
+  pk.pack(static_cast<uint64_t>(17));
+  pk.pack(static_cast<uint64_t>(42));
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.handle_types.size() != 2 || prog.handle_types[0] != "fd.Socket" ||
+        prog.handle_types[1] != "http.Server") {
+      FAIL("handle_types not parsed correctly");
+      return;
+    }
+    auto fd = prog.handle_type_repr.find("fd.Socket");
+    if (fd == prog.handle_type_repr.end() || fd->second != "i32") {
+      FAIL("fd.Socket handle_type_repr not parsed correctly");
+      return;
+    }
+    auto http = prog.handle_type_repr.find("http.Server");
+    if (http == prog.handle_type_repr.end() || http->second != "handle") {
+      FAIL("http.Server handle_type_repr not parsed correctly");
+      return;
+    }
+    if (prog.source_path != "/workspace/examples/service.hew") {
+      FAIL("source_path not parsed correctly");
+      return;
+    }
+    if (prog.line_map.size() != 3 || prog.line_map[0] != 0 || prog.line_map[1] != 17 ||
+        prog.line_map[2] != 42) {
+      FAIL("line_map not parsed correctly");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
   PASS();
 }
 
@@ -887,10 +987,12 @@ int main() {
   // Semantically wrong AST
   test_missing_schema_version_rejects();
   test_wrong_schema_version_rejects();
+  test_schema_version_u32_overflow_rejects();
   test_items_wrong_type_rejects();
   test_minimal_valid_program_parses();
 
   // drop_funcs field
+  test_program_metadata_roundtrip();
   test_method_call_receiver_kinds_roundtrip();
   test_lowering_facts_roundtrip();
   test_drop_funcs_roundtrip();

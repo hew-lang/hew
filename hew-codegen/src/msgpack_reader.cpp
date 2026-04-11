@@ -55,6 +55,14 @@ static uint64_t getUint(const msgpack::object &obj) {
   fail("expected unsigned integer, got type " + std::to_string(obj.type));
 }
 
+/// Get an exact uint32_t from msgpack object.
+static uint32_t getUint32(const msgpack::object &obj, std::string_view context) {
+  const auto value = getUint(obj);
+  if (value > static_cast<uint64_t>(UINT32_MAX))
+    fail(std::string(context) + " value " + std::to_string(value) + " overflows uint32_t");
+  return static_cast<uint32_t>(value);
+}
+
 /// Get float from msgpack object.
 static double getFloat(const msgpack::object &obj) {
   if (obj.type == msgpack::type::FLOAT32 || obj.type == msgpack::type::FLOAT64)
@@ -392,7 +400,7 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   result.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);
   const auto *mailbox_capacity = mapGet(obj, "mailbox_capacity");
   if (mailbox_capacity && !isNil(*mailbox_capacity))
-    result.mailbox_capacity = static_cast<uint32_t>(getUint(*mailbox_capacity));
+    result.mailbox_capacity = getUint32(*mailbox_capacity, "mailbox_capacity");
   const auto *overflow_policy = mapGet(obj, "overflow_policy");
   if (overflow_policy && !isNil(*overflow_policy))
     result.overflow_policy = parseOverflowPolicy(*overflow_policy);
@@ -620,7 +628,7 @@ static ast::NamingCase parseNamingCase(const msgpack::object &obj) {
 static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
   ast::WireFieldMeta result;
   result.field_name = getString(mapReq(obj, "field_name"));
-  result.field_number = static_cast<uint32_t>(getUint(mapReq(obj, "field_number")));
+  result.field_number = getUint32(mapReq(obj, "field_number"), "field_number");
   result.is_optional = getBool(mapReq(obj, "is_optional"));
   result.is_deprecated = getBool(mapReq(obj, "is_deprecated"));
   result.is_repeated = getBool(mapReq(obj, "is_repeated"));
@@ -632,14 +640,16 @@ static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
     result.yaml_name = getString(*yaml_name);
   const auto *since = mapGet(obj, "since");
   if (since && !isNil(*since))
-    result.since = static_cast<uint32_t>(getUint(*since));
+    result.since = getUint32(*since, "since");
   return result;
 }
 
 static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
   ast::WireMetadata result;
   result.field_meta = parseVec<ast::WireFieldMeta>(mapReq(obj, "field_meta"), parseWireFieldMeta);
-  result.reserved_numbers = parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); });
+  result.reserved_numbers = parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) {
+    return getUint32(o, "reserved_numbers entry");
+  });
   const auto *json_case = mapGet(obj, "json_case");
   if (json_case && !isNil(*json_case))
     result.json_case = parseNamingCase(*json_case);
@@ -648,10 +658,10 @@ static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
     result.yaml_case = parseNamingCase(*yaml_case);
   const auto *version = mapGet(obj, "version");
   if (version && !isNil(*version))
-    result.version = static_cast<uint32_t>(getUint(*version));
+    result.version = getUint32(*version, "version");
   const auto *min_version = mapGet(obj, "min_version");
   if (min_version && !isNil(*min_version))
-    result.min_version = static_cast<uint32_t>(getUint(*min_version));
+    result.min_version = getUint32(*min_version, "min_version");
   return result;
 }
 
@@ -666,7 +676,7 @@ static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {
   ast::WireFieldDecl result;
   result.name = getString(mapReq(obj, "name"));
   result.ty = getString(mapReq(obj, "ty"));
-  result.field_number = static_cast<uint32_t>(getUint(mapReq(obj, "field_number")));
+  result.field_number = getUint32(mapReq(obj, "field_number"), "field_number");
   result.is_optional = getBool(mapReq(obj, "is_optional"));
   result.is_repeated = getBool(mapReq(obj, "is_repeated"));
   result.is_reserved = getBool(mapReq(obj, "is_reserved"));
@@ -679,7 +689,7 @@ static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {
     result.yaml_name = getString(*yaml_name);
   const auto *since = mapGet(obj, "since");
   if (since && !isNil(*since))
-    result.since = static_cast<uint32_t>(getUint(*since));
+    result.since = getUint32(*since, "since");
   return result;
 }
 
@@ -1842,7 +1852,7 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   // The embedded msgpack boundary is internal to the current `hew` binary, so
   // require an explicit, exact schema version instead of carrying fallback
   // decoding for older payloads.
-  prog.schema_version = static_cast<uint32_t>(getUint(mapReq(obj, "schema_version")));
+  prog.schema_version = getUint32(mapReq(obj, "schema_version"), "schema_version");
   if (prog.schema_version != CURRENT_SCHEMA_VERSION) {
     fail("unsupported schema version " + std::to_string(prog.schema_version) +
          " (expected: " + std::to_string(CURRENT_SCHEMA_VERSION) + ")");

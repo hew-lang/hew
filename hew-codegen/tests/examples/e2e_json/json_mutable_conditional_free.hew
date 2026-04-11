@@ -1,0 +1,35 @@
+// Regression: explicit .free() on a mutable json.Value must null the existing
+// promoted drop slot so the scope-exit impl Drop does NOT double-free.  When
+// .free() is not called, the same promoted slot must still drive the implicit
+// drop at scope exit.
+//
+// Existing json_*_free coverage exercises immutable `let` bindings, which take
+// the retroactive guard-slot path in nullOutDropSlot(). This fixture performs a
+// real reassignment so it targets the separate entry.promotedSlot path used by
+// mutable `var` bindings.
+//
+// Falsifiable:
+//   - do_free=true: a stale promoted slot makes scope-exit drop free the same
+//     handle again (macOS malloc abort / ASAN double-free).
+//   - do_free=false: the mutable binding must still be dropped implicitly.
+
+import std::encoding::json;
+
+fn test(do_free: bool) -> i32 {
+    var val = json.parse("{\"n\": 1}");
+    let t = val.type_of();
+    if do_free {
+        val = json.parse("{\"n\": 1}");
+        val.free();
+        // scope exit: impl Drop must NOT fire again for val
+    }
+    // scope exit: impl Drop must fire here when do_free=false
+    t
+}
+
+fn main() {
+    println(test(true));
+    println(test(false));
+    println(test(true));
+    println("ok");
+}

@@ -27,7 +27,7 @@
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
-#   make playground-check          — repo-local browser/tooling smoke: manifest freshness + build hew-wasm
+#   make playground-check          — manifest freshness + curated analysis/WASI smoke + build hew-wasm
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
@@ -165,9 +165,12 @@ playground-manifest-check:
 	python3 scripts/gen-playground-manifest.py --check
 
 # Repo-local browser/tooling truth-alignment smoke:
-# manifest freshness + curated hew-wasm analysis smoke + analysis-only WASM build.
+# manifest freshness + curated hew-wasm analysis smoke + focused WASI runtime
+# preflight from the same manifest capability truth + analysis-only WASM build.
 playground-check: playground-manifest-check
 	cargo test -p hew-wasm --lib curated_playground_manifest_smoke -- --exact
+	cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
+	cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 	$(MAKE) wasm
 
 # Conservative diff-based local preflight dispatcher.

@@ -10,8 +10,14 @@ use crate::method_resolution::{
 
 impl Checker {
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
+        let key = SpanKey::from(span);
+        // If deferred admission was already recorded for this span, the
+        // lowering-fact finalizer becomes the sole authority for any
+        // InferenceFailed diagnostic at this site.  Remove the deferred entry
+        // to prevent a duplicate error from finalize_hashset_admission.
+        self.deferred_hashset_admission.remove(&key);
         self.pending_lowering_facts.insert(
-            SpanKey::from(span),
+            key,
             PendingLoweringFact::hashset(elem_ty.clone(), self.current_module.clone()),
         );
     }

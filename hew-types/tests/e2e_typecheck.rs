@@ -3463,6 +3463,25 @@ fn hashset_unresolved_element_type_fails_closed_at_boundary() {
         "expected InferenceFailed for unresolved HashSet element type, got: {:#?}",
         output.errors
     );
+    // Exactly one InferenceFailed per span — the lowering-fact path is the
+    // sole authority; finalize_hashset_admission must not emit a duplicate at
+    // the same span.
+    let mut span_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for e in output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+    {
+        *span_counts.entry(format!("{:?}", e.span)).or_insert(0) += 1;
+    }
+    for (span, count) in &span_counts {
+        assert_eq!(
+            *count, 1,
+            "duplicate InferenceFailed ({count}) at span {span}: {:#?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
@@ -3543,5 +3562,63 @@ fn hashset_annotation_with_infer_hole_fails_closed() {
     assert!(
         !output.errors.is_empty(),
         "expected error for HashSet<_> with unresolved element type, got no errors"
+    );
+}
+
+#[test]
+fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
+    // Multiple method calls on an unresolved HashSet should produce exactly
+    // one InferenceFailed, not one per call site.  This is the duplicate-
+    // diagnostic regression test: the lowering-fact path is the sole authority
+    // for method-call spans; finalize_hashset_admission must not fire again.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let _ = s.len();
+            let _ = s.is_empty();
+        }",
+    );
+    let inference_failed: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert!(
+        !inference_failed.is_empty(),
+        "expected at least one InferenceFailed, got: {:#?}",
+        output.errors
+    );
+    // Spans must not repeat — each call site should produce at most one error.
+    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &inference_failed {
+        let key = format!("{:?}", e.span);
+        assert!(
+            seen_spans.insert(key.clone()),
+            "duplicate InferenceFailed at span {key}: {inference_failed:#?}",
+        );
+    }
+}
+
+#[test]
+fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
+    // A HashSet annotation with no method calls means no lowering fact is
+    // recorded.  finalize_hashset_admission must still catch this and emit
+    // exactly one InferenceFailed.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s: HashSet<_> = HashSet::new();
+        }",
+    );
+    let inference_failed_count = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .count();
+    assert!(
+        inference_failed_count >= 1,
+        "expected InferenceFailed for annotation-only unresolved HashSet, got: {:#?}",
+        output.errors
     );
 }

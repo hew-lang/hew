@@ -504,6 +504,8 @@ mod tests {
         // SAFETY: ch_arr contains a live reply channel owned by this test.
         let result = unsafe { hew_select_first(ch_arr.as_mut_ptr(), ch_arr.len() as i32, 10) };
         assert_eq!(result, 0, "ready reply must win before the finite timeout");
+        // SAFETY: ch is valid; reply_take consumes the reply written above, and
+        // hew_reply_channel_free releases the channel after the reply is taken.
         unsafe {
             let result = reply_take(ch);
             assert!(!result.is_null());
@@ -523,6 +525,8 @@ mod tests {
             result, -1,
             "zero-ms timeout must fire before the scheduler ticks"
         );
+        // SAFETY: ch0 and ch1 are valid channels created above; cancel + free
+        // is the required teardown sequence when no reply was sent.
         unsafe {
             hew_reply_channel_cancel(ch0);
             hew_reply_channel_free(ch0);

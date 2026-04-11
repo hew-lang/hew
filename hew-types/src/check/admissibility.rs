@@ -279,10 +279,12 @@ impl Checker {
     /// do not.
     ///
     /// - `NamedTypeInstance { type_name }` entries are retained if the type is
-    ///   present in the resolved `type_defs` (user-defined type) or the name is
+    ///   present in the resolved `type_defs` (user-defined type), the name is
     ///   module-qualified (contains `'.'`, i.e., a stdlib handle type such as
     ///   `json.Value` or `http.Client` which live in the module registry rather
-    ///   than `type_defs`).
+    ///   than `type_defs`), or the name is a generic type parameter from a
+    ///   function signature (trait-bounded type-parameter dispatch records the
+    ///   type-parameter name as a `NamedTypeInstance`).
     /// - `TraitObject { trait_name }` entries are retained only if the trait name
     ///   is still present in the checker's trait registry.
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
@@ -293,10 +295,21 @@ impl Checker {
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
         let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
 
+        // Collect all type parameter names from function signatures so we can
+        // retain `NamedTypeInstance` entries produced by trait-bounded
+        // type-parameter method dispatch (e.g. `T` in `fn f<T: Show>(t: T)`).
+        let known_type_params: HashSet<&str> = self
+            .fn_sigs
+            .values()
+            .flat_map(|sig| sig.type_params.iter().map(String::as_str))
+            .collect();
+
         self.method_call_receiver_kinds
             .retain(|_, kind| match kind {
                 MethodCallReceiverKind::NamedTypeInstance { type_name } => {
-                    type_defs.contains_key(type_name) || type_name.contains('.')
+                    type_defs.contains_key(type_name)
+                        || type_name.contains('.')
+                        || known_type_params.contains(type_name.as_str())
                 }
                 MethodCallReceiverKind::TraitObject { trait_name } => {
                     known_trait_names.contains(trait_name)
@@ -938,6 +951,60 @@ mod tests {
                 .method_call_receiver_kinds
                 .contains_key(&unknown_trait_key),
             "TraitObject entry for a trait absent from trait_defs must be pruned"
+        );
+    }
+
+    /// `NamedTypeInstance` entries whose `type_name` matches a generic type
+    /// parameter from a function signature must survive validation — these are
+    /// produced by trait-bounded type-parameter method dispatch.
+    #[test]
+    fn validate_method_call_receiver_kinds_retains_type_param_entries() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let param_key = SpanKey {
+            start: 110,
+            end: 120,
+        };
+        checker.method_call_receiver_kinds.insert(
+            param_key.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "T".to_string(),
+            },
+        );
+
+        // Register a function signature whose type_params includes "T".
+        checker.fn_sigs.insert(
+            "display".to_string(),
+            FnSig {
+                type_params: vec!["T".to_string()],
+                type_param_bounds: HashMap::new(),
+                param_names: vec!["item".to_string()],
+                params: vec![Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }],
+                return_type: Ty::Unit,
+                is_async: false,
+                is_pure: false,
+                accepts_kwargs: false,
+                doc_comment: None,
+            },
+        );
+
+        let mut type_defs = HashMap::new(); // "T" is not a user-defined type
+        let mut expr_types = HashMap::new();
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&param_key),
+            "NamedTypeInstance entry for a type-parameter name must survive validation"
         );
     }
 }

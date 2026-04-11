@@ -8,6 +8,55 @@ pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
 }
 
+/// Enforce the fail-closed output contract for `lowering_facts` after
+/// [`Checker::finalize_lowering_facts`] has run.
+///
+/// Two conditions trigger removal of a [`LoweringFact`] entry:
+///
+/// 1. **Orphaned span** — the `SpanKey` is absent from the post-validation
+///    `expr_types` map.  If the owning expression was pruned by
+///    `validate_checker_output_contract` (leaked inference vars, cascading
+///    `Ty::Error`, etc.) the corresponding lowering fact must also be dropped so
+///    downstream serialization/codegen cannot observe a fact without a resolved
+///    expression type.
+///
+/// 2. **Internally inconsistent fact** (defensive) — the `element_type` /
+///    `abi_variant` pairing violates the checker-invariant.  In practice this
+///    cannot occur through the normal construction path
+///    (`LoweringFact::from_hashset_element_type`) but the check is kept as a
+///    hard contract at the boundary so that any future serialization round-trip
+///    or factory bypasses are caught at check time rather than in C++ codegen.
+///
+/// Note: element types that resolve to `Ty::Error` are already handled earlier
+/// in `finalize_lowering_facts` (silent drop, no new error).  The orphan-prune
+/// here is a secondary defence for any path that might add facts after the main
+/// validation pass.
+pub(super) fn validate_lowering_facts_output_contract(
+    lowering_facts: &mut HashMap<SpanKey, LoweringFact>,
+    expr_types: &HashMap<SpanKey, Ty>,
+) {
+    use crate::lowering_facts::{HashSetAbi, HashSetElementType, LoweringKind};
+    lowering_facts.retain(|key, fact| {
+        // Condition 1: orphaned span.
+        if !expr_types.contains_key(key) {
+            return false;
+        }
+        // Condition 2: element_type ↔ abi_variant internal consistency.
+        matches!(
+            (fact.kind, fact.element_type, fact.abi_variant),
+            (
+                LoweringKind::HashSet,
+                HashSetElementType::I64 | HashSetElementType::U64,
+                HashSetAbi::Int64
+            ) | (
+                LoweringKind::HashSet,
+                HashSetElementType::Str,
+                HashSetAbi::String
+            )
+        )
+    });
+}
+
 fn ty_contains_error(ty: &Ty) -> bool {
     ty.contains_error()
 }
@@ -1130,6 +1179,86 @@ mod tests {
         assert!(
             !call_type_args.contains_key(&leaked_key),
             "call_type_args entry with leaked inference var must be pruned"
+        );
+    }
+
+    // ── validate_lowering_facts_output_contract ────────────────────────────────
+
+    /// Well-formed facts whose spans exist in `expr_types` must survive.
+    #[test]
+    fn lowering_facts_output_contract_retains_valid_facts() {
+        use crate::lowering_facts::{
+            DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
+        };
+        let key = SpanKey { start: 1, end: 5 };
+        let mut facts = HashMap::from([(
+            key.clone(),
+            LoweringFact {
+                kind: LoweringKind::HashSet,
+                element_type: HashSetElementType::I64,
+                abi_variant: HashSetAbi::Int64,
+                drop_kind: DropKind::HashSetFree,
+            },
+        )]);
+        let expr_types = HashMap::from([(key.clone(), Ty::Bool)]);
+        validate_lowering_facts_output_contract(&mut facts, &expr_types);
+        assert!(
+            facts.contains_key(&key),
+            "a well-formed fact with a present span must survive the contract check"
+        );
+    }
+
+    /// A fact whose span has been pruned from `expr_types` (orphaned) must be
+    /// dropped so downstream codegen cannot observe a fact without a resolved
+    /// expression type.
+    #[test]
+    fn lowering_facts_output_contract_prunes_orphaned_facts() {
+        use crate::lowering_facts::{
+            DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
+        };
+        let key = SpanKey { start: 10, end: 20 };
+        let mut facts = HashMap::from([(
+            key.clone(),
+            LoweringFact {
+                kind: LoweringKind::HashSet,
+                element_type: HashSetElementType::Str,
+                abi_variant: HashSetAbi::String,
+                drop_kind: DropKind::HashSetFree,
+            },
+        )]);
+        // Span is absent from expr_types — simulates the expression being pruned
+        // by validate_expr_output_contract due to a leaked inference variable.
+        let expr_types: HashMap<SpanKey, Ty> = HashMap::new();
+        validate_lowering_facts_output_contract(&mut facts, &expr_types);
+        assert!(
+            facts.is_empty(),
+            "orphaned lowering fact (span absent from expr_types) must be pruned"
+        );
+    }
+
+    /// An internally inconsistent fact (`element_type` / `abi_variant` mismatch)
+    /// must be pruned even if its span exists in `expr_types`.
+    #[test]
+    fn lowering_facts_output_contract_prunes_inconsistent_facts() {
+        use crate::lowering_facts::{
+            DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
+        };
+        let key = SpanKey { start: 30, end: 40 };
+        let mut facts = HashMap::from([(
+            key.clone(),
+            // Intentionally wrong pairing: Str element with Int64 ABI.
+            LoweringFact {
+                kind: LoweringKind::HashSet,
+                element_type: HashSetElementType::Str,
+                abi_variant: HashSetAbi::Int64,
+                drop_kind: DropKind::HashSetFree,
+            },
+        )]);
+        let expr_types = HashMap::from([(key.clone(), Ty::Bool)]);
+        validate_lowering_facts_output_contract(&mut facts, &expr_types);
+        assert!(
+            facts.is_empty(),
+            "internally inconsistent fact (Str/Int64 mismatch) must be pruned"
         );
     }
 }

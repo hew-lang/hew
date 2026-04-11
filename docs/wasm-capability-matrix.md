@@ -190,4 +190,7 @@ that every checked-in manifest entry carries well-formed capability metadata.
 
 The WASI e2e test (`hew-cli/tests/wasi_run_e2e.rs`) reads `capabilities.wasi`
 from the manifest to determine which examples to run vs. which to verify on the
-diagnostic path, eliminating hard-coded example IDs from the test logic.
+diagnostic path, eliminating hard-coded runnable example IDs from the test
+logic. `make playground-check` includes that focused WASI preflight alongside
+the `hew-wasm` analysis smoke, so the curated playground contract is now proven
+through both repo-local validation paths without implying any in-browser runtime.

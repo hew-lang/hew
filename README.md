@@ -265,10 +265,10 @@ consumed by downstream browser tooling.
 ```bash
 make playground-manifest        # regenerate examples/playground/manifest.json
 make playground-manifest-check  # cheap freshness check for manifest.json only
-make playground-check           # repo-local preflight: manifest freshness + curated analyze smoke + build hew-wasm
+make playground-check           # repo-local preflight: manifest freshness + curated analyze/WASI smoke + build hew-wasm
 ```
 
-Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling. This lane does not imply browser/runtime/codegen execution coverage.
+Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` before browser/playground work when you also want the curated `hew-wasm` analysis smoke, the focused WASI runtime preflight driven by `examples/playground/manifest.json` capability truth, and the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling. This lane still does not imply downstream browser execution exists; browser coverage remains analysis-only.
 
 ### Optional Dependencies
 

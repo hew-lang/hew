@@ -835,8 +835,7 @@ MLIRGen::requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
 
   ++errorCount_;
   emitError(errorLoc.value_or(currentLoc)) << "missing lowering_facts entry for " << context
-                                           << " at span [" << span.start << ", " << span.end
-                                           << ")";
+                                           << " at span [" << span.start << ", " << span.end << ")";
   return nullptr;
 }
 
@@ -6164,10 +6163,6 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type, bool includeStructType
     auto stdlibIt = stdlibDropFuncs.find(kind.str());
     if (stdlibIt != stdlibDropFuncs.end())
       return stdlibIt->second;
-    // DROP-TODO: regex.Pattern does not yet have `impl Drop` in stdlib.
-    // Remove once regex.hew gains `impl Drop for Pattern`.
-    if (kind == "regex.Pattern")
-      return "hew_regex_free";
   }
   if (!includeStructTypes)
     return "";

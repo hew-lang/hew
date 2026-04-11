@@ -13,14 +13,14 @@
 //!         let m = re.find("abc123");
 //!         println(m);  // "123"
 //!     }
-//!     re.free();
+//!     // Pattern is released automatically at scope exit via `impl Drop`.
 //! }
 //! ```
 
 /// A compiled regular expression pattern.
 ///
-/// Created by `regex.new(pattern)`. Must be freed with `free()` when
-/// no longer needed to avoid leaking memory.
+/// Created by `regex.new(pattern)`. Released automatically at scope exit via
+/// `impl Drop`, or explicitly with `free()` when fine-grained control is needed.
 type Pattern {}
 
 /// Methods available on a compiled `Pattern`.
@@ -66,6 +66,13 @@ impl PatternMethods for Pattern {
     }
     /// Release the compiled pattern resources.
     fn free(pat: Pattern) { unsafe { hew_regex_free(pat) }; }
+}
+
+impl Drop for Pattern {
+    /// Release the compiled pattern resources at scope exit.
+    fn drop(pat: Pattern) {
+        unsafe { hew_regex_free(pat) };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

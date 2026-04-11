@@ -1,0 +1,24 @@
+// Regression: regex.Pattern must be released automatically at scope exit via
+// `impl Drop`, without any explicit `.free()` call.  Before this fix, Pattern
+// had no Drop impl and leaked unless the caller called `.free()` manually.
+
+import std::text::regex;
+
+fn check_digit(s: String) -> bool {
+    let re = regex.new("[0-9]+");
+    re.is_match(s)
+    // `re` is dropped here via hew_regex_free (impl Drop)
+}
+
+fn main() {
+    {
+        let re = regex.new("^hello");
+        println(re.is_match("hello world"));
+        println(re.is_match("world hello"));
+        // `re` dropped at inner scope exit
+    }
+
+    println(check_digit("abc123"));
+    println(check_digit("no digits"));
+    println("done");
+}

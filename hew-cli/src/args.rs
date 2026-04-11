@@ -301,6 +301,20 @@ pub struct EvalArgs {
     /// Compilation target triple (e.g. `wasm32-wasi`).
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// Emit a machine-readable JSON run contract on stdout instead of raw program output.
+    ///
+    /// The JSON object always contains:
+    ///   `status`   — `"ok"`, `"compile_error"`, or `"runtime_failure"`
+    ///   `stdout`   — captured program output (empty string when none)
+    ///   `exit_code`— integer exit code (0 for compile errors)
+    ///
+    /// On `"compile_error"` the object also contains:
+    ///   `diagnostics` — rendered compiler diagnostic text
+    ///
+    /// Incompatible with interactive REPL mode; requires `-f` or an inline
+    /// expression.
+    #[arg(long)]
+    pub json: bool,
     /// Expression to evaluate (if no -f given).
     pub expr: Vec<String>,
 }

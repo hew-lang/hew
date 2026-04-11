@@ -18,6 +18,43 @@ pub mod session;
 #[cfg(test)]
 mod type_tests;
 
+// ---------------------------------------------------------------------------
+// JSON run contract
+// ---------------------------------------------------------------------------
+
+/// Machine-readable result of a single `hew eval --json` invocation.
+///
+/// Emitted as a single JSON object on stdout when `--json` is passed.
+/// The schema is stable within the `0.x` series; new optional fields may be
+/// added without bumping the major version.
+///
+/// # Fields
+///
+/// - `status`      — `"ok"`, `"compile_error"`, or `"runtime_failure"`
+/// - `stdout`      — program output captured from the child process (empty
+///   string when the program produced no output or when a compile error
+///   prevented execution)
+/// - `exit_code`   — child exit code; `0` on success or compile error,
+///   non-zero on runtime failure
+/// - `diagnostics` — compiler diagnostic text (non-empty only when
+///   `status == "compile_error"`; empty string otherwise)
+#[derive(Debug, serde::Serialize)]
+pub struct EvalJsonOutput {
+    pub status: EvalStatus,
+    pub stdout: String,
+    pub exit_code: i32,
+    pub diagnostics: String,
+}
+
+/// Outcome category for [`EvalJsonOutput`].
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalStatus {
+    Ok,
+    CompileError,
+    RuntimeFailure,
+}
+
 /// Resolve and validate an optional `--target` string for `hew eval`.
 ///
 /// Returns `Ok(None)` when no target was supplied (native path).
@@ -64,6 +101,12 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         .as_ref()
         .map(|_| args.target.as_deref().unwrap_or("wasm32-wasi"));
 
+    // --json requires a non-interactive invocation.
+    if args.json && args.file.is_none() && args.expr.is_empty() {
+        eprintln!("Error: --json requires -f <file> or an inline expression; it cannot be used with the interactive REPL.");
+        std::process::exit(1);
+    }
+
     // Interactive REPL is not supported for explicit WASI targets.
     // Each WASI execution is compile-per-input via wasmtime; a persistent
     // session loop is intentionally out of scope for this bounded lane.
@@ -76,11 +119,40 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         std::process::exit(1);
     }
 
+    // --json mode: collect result into a structured contract and emit as JSON.
+    if args.json {
+        let result = if let Some(ref file) = args.file {
+            let path = file.display().to_string();
+            crate::diagnostic::start_diagnostic_capture();
+            let outcome = repl::eval_file(&path, timeout, target);
+            let diagnostics = crate::diagnostic::finish_diagnostic_capture();
+            eval_result_to_json(outcome, diagnostics)
+        } else {
+            let expr = args.expr.join(" ");
+            crate::diagnostic::start_diagnostic_capture();
+            let outcome = repl::eval_one(&expr, timeout, target);
+            let diagnostics = crate::diagnostic::finish_diagnostic_capture();
+            eval_result_to_json(outcome, diagnostics)
+        };
+        // Always exit 0 when --json is active: the structured `status` field
+        // carries the outcome; callers must not rely on the process exit code.
+        println!(
+            "{}",
+            serde_json::to_string(&result).expect("JSON serialization is infallible")
+        );
+        return;
+    }
+
     // Check for `-f <file>` flag first.
     if let Some(ref file) = args.file {
         let path = file.display().to_string();
-        if let Err(e) = repl::eval_file(&path, timeout, target) {
-            exit_eval_error(e);
+        match repl::eval_file(&path, timeout, target) {
+            Ok(output) => {
+                if !output.is_empty() {
+                    print!("{output}");
+                }
+            }
+            Err(e) => exit_eval_error(e),
         }
         return;
     }
@@ -103,6 +175,43 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
             }
         }
         Err(e) => exit_eval_error(e),
+    }
+}
+
+/// Convert a raw eval result into an [`EvalJsonOutput`].
+///
+/// `diagnostics` is the text captured via
+/// [`crate::diagnostic::start_diagnostic_capture`] during the eval call; it
+/// is non-empty only when a compile error was rendered.
+fn eval_result_to_json(
+    result: Result<String, repl::CliEvalError>,
+    diagnostics: String,
+) -> EvalJsonOutput {
+    match result {
+        Ok(stdout) => EvalJsonOutput {
+            status: EvalStatus::Ok,
+            stdout,
+            exit_code: 0,
+            diagnostics: String::new(),
+        },
+        Err(repl::CliEvalError::RuntimeFailure { stdout, exit_code }) => EvalJsonOutput {
+            status: EvalStatus::RuntimeFailure,
+            stdout,
+            exit_code,
+            diagnostics: String::new(),
+        },
+        Err(repl::CliEvalError::DiagnosticsRendered) => EvalJsonOutput {
+            status: EvalStatus::CompileError,
+            stdout: String::new(),
+            exit_code: 0,
+            diagnostics,
+        },
+        Err(repl::CliEvalError::Message(message)) => EvalJsonOutput {
+            status: EvalStatus::CompileError,
+            stdout: String::new(),
+            exit_code: 0,
+            diagnostics: message,
+        },
     }
 }
 

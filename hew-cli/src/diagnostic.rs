@@ -3,8 +3,53 @@
 //! Produces Rust/Elm-style diagnostics with `^^^` underlines pointing at the
 //! relevant source location.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+
+// ---------------------------------------------------------------------------
+// Thread-local diagnostic capture
+// ---------------------------------------------------------------------------
+//
+// When active, all `diag_println` calls append to a string buffer instead of
+// writing to stderr.  Used by `hew eval --json` to collect diagnostic text
+// into the JSON run contract without altering the normal (non-JSON) path.
+
+thread_local! {
+    static DIAG_CAPTURE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Activate per-thread diagnostic capture.
+///
+/// All subsequent [`diag_println`] calls on this thread append to an internal
+/// buffer instead of writing to stderr.  Call [`finish_diagnostic_capture`] to
+/// retrieve the accumulated text and deactivate capture.
+///
+/// Capture is not re-entrant: calling this while capture is already active
+/// resets the buffer.
+pub(crate) fn start_diagnostic_capture() {
+    DIAG_CAPTURE.with(|c| *c.borrow_mut() = Some(String::new()));
+}
+
+/// Deactivate per-thread diagnostic capture and return the accumulated text.
+///
+/// Returns an empty string if capture was not active.
+pub(crate) fn finish_diagnostic_capture() -> String {
+    DIAG_CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+/// Write a diagnostic line to the active capture buffer, or to stderr if no
+/// capture is active.
+fn diag_println(s: &str) {
+    DIAG_CAPTURE.with(|c| {
+        if let Some(ref mut buf) = *c.borrow_mut() {
+            buf.push_str(s);
+            buf.push('\n');
+        } else {
+            eprintln!("{s}");
+        }
+    });
+}
 
 // ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
@@ -44,23 +89,25 @@ pub fn render_diagnostic(
     let (line, col) = offset_to_line_col(source, span.start);
 
     // Header: filename:line:col: error: message
-    eprintln!("{BOLD}{filename}:{line}:{col}:{RESET} {RED}error{RESET}{BOLD}: {message}{RESET}");
+    diag_println(&format!(
+        "{BOLD}{filename}:{line}:{col}:{RESET} {RED}error{RESET}{BOLD}: {message}{RESET}"
+    ));
 
     render_source_underline(source, span, line);
 
     // Secondary notes with their own spans
     for note in notes {
         let (note_line, note_col) = offset_to_line_col(source, note.span.start);
-        eprintln!(
+        diag_println(&format!(
             "{BOLD}{filename}:{note_line}:{note_col}:{RESET} {CYAN}note{RESET}{BOLD}: {}{RESET}",
             note.message
-        );
+        ));
         render_source_underline(source, note.span, note_line);
     }
 
     // Suggestions
     for suggestion in suggestions {
-        eprintln!("  {CYAN}= help{RESET}: {suggestion}");
+        diag_println(&format!("  {CYAN}= help{RESET}: {suggestion}"));
     }
 }
 
@@ -77,23 +124,23 @@ pub fn render_warning(
 ) {
     let (line, col) = offset_to_line_col(source, span.start);
 
-    eprintln!(
+    diag_println(&format!(
         "{BOLD}{filename}:{line}:{col}:{RESET} {YELLOW}warning{RESET}{BOLD}: {message}{RESET}"
-    );
+    ));
 
     render_source_underline(source, span, line);
 
     for note in notes {
         let (note_line, note_col) = offset_to_line_col(source, note.span.start);
-        eprintln!(
+        diag_println(&format!(
             "{BOLD}{filename}:{note_line}:{note_col}:{RESET} {CYAN}note{RESET}{BOLD}: {}{RESET}",
             note.message
-        );
+        ));
         render_source_underline(source, note.span, note_line);
     }
 
     for suggestion in suggestions {
-        eprintln!("  {CYAN}= help{RESET}: {suggestion}");
+        diag_println(&format!("  {CYAN}= help{RESET}: {suggestion}"));
     }
 }
 
@@ -249,8 +296,8 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     if line > lines.len() {
         let line_num = line.to_string();
         let padding = " ".repeat(line_num.len());
-        eprintln!(" {BLUE}{line_num} |{RESET}");
-        eprintln!(" {padding} {BLUE}|{RESET} {RED}^{RESET}");
+        diag_println(&format!(" {BLUE}{line_num} |{RESET}"));
+        diag_println(&format!(" {padding} {BLUE}|{RESET} {RED}^{RESET}"));
         return;
     }
 
@@ -261,7 +308,7 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     let padding = " ".repeat(line_num.len());
 
     // Print the source line
-    eprintln!(" {BLUE}{line_num} |{RESET} {display_line}");
+    diag_println(&format!(" {BLUE}{line_num} |{RESET} {display_line}"));
 
     // Compute underline position within the line using character counts,
     // not byte offsets, so multi-byte UTF-8 characters align correctly.
@@ -287,11 +334,11 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
 
     let underline_len = end_chars.saturating_sub(start_chars).max(1);
 
-    eprintln!(
+    diag_println(&format!(
         " {padding} {BLUE}|{RESET} {}{RED}{}{RESET}",
         " ".repeat(start_chars),
         "^".repeat(underline_len),
-    );
+    ));
 }
 
 /// Convert a byte offset to a 1-based (line, column) pair.

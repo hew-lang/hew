@@ -15,6 +15,7 @@ hew watch --run file.hew          # Watch and re-run on successful check
 hew doc file.hew                  # Generate documentation
 hew eval "expr"                   # Evaluate an expression
 hew eval -f file.hew              # Evaluate a file in REPL context
+hew eval --json "expr"            # Evaluate and emit a machine-readable JSON run contract
 hew test file.hew                 # Run tests
 hew wire check file.hew --against baseline.hew
                                   # Validate wire compatibility
@@ -117,7 +118,47 @@ the REPL started (or since the last `:clear`) is discarded. Names that were
 defined before `:clear` are no longer in scope and can be safely redefined
 after it. The REPL prints `Session cleared.` to confirm the reset.
 
-## Watch mode
+### JSON run contract (`--json`)
+
+`hew eval --json` emits a single JSON object on stdout (and always exits 0)
+suitable for downstream tooling, playground workers, and CI scripts that need
+to inspect the outcome programmatically.
+
+```sh
+hew eval --json "1 + 2"          # inline expression
+hew eval --json -f script.hew    # file
+```
+
+The JSON object always contains these fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `"ok"`, `"compile_error"`, or `"runtime_failure"` |
+| `stdout` | string | Output the program wrote to stdout (may be empty) |
+| `exit_code` | integer | Child process exit code; `0` on success or compile error |
+| `diagnostics` | string | Compiler diagnostic text; non-empty only when `status == "compile_error"` |
+
+**Examples:**
+
+```json
+{"status":"ok","stdout":"3\n","exit_code":0,"diagnostics":""}
+
+{"status":"compile_error","stdout":"","exit_code":0,"diagnostics":"<eval>:1:1: error: unknown name ..."}
+
+{"status":"runtime_failure","stdout":"partial output\n","exit_code":101,"diagnostics":""}
+```
+
+Key properties:
+- The process **always exits 0** when `--json` is active; callers must
+  inspect `status`, not the exit code.
+- `stdout` is preserved even on `runtime_failure` (matches the non-JSON
+  behaviour that surfaces pre-failure output).
+- `diagnostics` contains the full rendered compiler diagnostic text,
+  including source underlines.
+- `--json` requires `-f <file>` or an inline expression; it is rejected for
+  interactive REPL mode.
+
+
 
 `hew watch` continuously monitors a `.hew` file (or directory) for changes
 and re-runs type-checking automatically. It is the fastest inner-loop

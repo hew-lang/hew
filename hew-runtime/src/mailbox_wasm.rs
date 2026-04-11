@@ -391,8 +391,10 @@ enum SendOutcome {
     Enqueued,
     /// Mailbox is closed — message was not sent.
     Closed,
-    /// Message intentionally dropped (`DropNew` / `Fail` / `Block` on WASM).
+    /// Message intentionally dropped (`DropNew` policy).
     Dropped,
+    /// Overflow policy is `Fail` — operation rejected.
+    Failed,
     /// Oldest message was evicted to make room (`DropOld` policy).
     DroppedOld,
     /// Message payload was merged with an existing queued message
@@ -402,6 +404,10 @@ enum SendOutcome {
     Oom,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "overflow-policy dispatch is inherently complex — splitting further would scatter the state machine"
+)]
 unsafe fn send_user_message_inner(
     mb: &mut HewMailboxWasm,
     msg_type: i32,
@@ -415,16 +421,14 @@ unsafe fn send_user_message_inner(
 
     if mb.capacity > 0 && mb.count >= mb.capacity {
         match mb.overflow {
-            HewOverflowPolicy::Block | HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => {
+            HewOverflowPolicy::Block | HewOverflowPolicy::DropNew => {
                 return SendOutcome::Dropped;
             }
+            HewOverflowPolicy::Fail => {
+                return SendOutcome::Failed;
+            }
             HewOverflowPolicy::DropOld => {
-                if let Some(old) = mb.user_queue.pop_front() {
-                    // SAFETY: node was allocated by msg_node_alloc.
-                    unsafe { msg_node_free(old) };
-                    mb.count -= 1;
-                }
-                // Fall through to allocate + enqueue below; return DroppedOld at the end.
+                // Allocate BEFORE evicting so OOM leaves the queue unchanged.
                 // SAFETY: `data` validity guaranteed by caller.
                 let node = unsafe { msg_node_alloc(msg_type, data, size) };
                 if node.is_null() {
@@ -434,6 +438,12 @@ unsafe fn send_user_message_inner(
                     // SAFETY: `node` is still exclusively owned.
                     unsafe { msg_node_free(node) };
                     return SendOutcome::Oom;
+                }
+                // Allocation succeeded — now safe to evict the oldest.
+                if let Some(old) = mb.user_queue.pop_front() {
+                    // SAFETY: node was allocated by msg_node_alloc.
+                    unsafe { msg_node_free(old) };
+                    mb.count -= 1;
                 }
                 // SAFETY: node was just allocated and is exclusively owned.
                 unsafe { (*node).reply_channel = reply_channel };
@@ -482,17 +492,36 @@ unsafe fn send_user_message_inner(
                 }
 
                 match normalize_coalesce_fallback(mb.coalesce_fallback) {
-                    HewOverflowPolicy::Block
-                    | HewOverflowPolicy::DropNew
-                    | HewOverflowPolicy::Fail => {
+                    HewOverflowPolicy::Block | HewOverflowPolicy::DropNew => {
                         return SendOutcome::Dropped;
                     }
+                    HewOverflowPolicy::Fail => {
+                        return SendOutcome::Failed;
+                    }
                     HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
+                        // Allocate BEFORE evicting so OOM leaves the queue unchanged.
+                        // SAFETY: `data` validity guaranteed by caller.
+                        let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                        if node.is_null() {
+                            return SendOutcome::Oom;
+                        }
+                        if !reserve_queue_capacity(&mut mb.user_queue, 1) {
+                            // SAFETY: `node` is still exclusively owned.
+                            unsafe { msg_node_free(node) };
+                            return SendOutcome::Oom;
+                        }
+                        // Allocation succeeded — now safe to evict the oldest.
                         if let Some(old) = mb.user_queue.pop_front() {
                             // SAFETY: node was allocated by msg_node_alloc.
                             unsafe { msg_node_free(old) };
                             mb.count -= 1;
                         }
+                        // SAFETY: node was just allocated and is exclusively owned.
+                        unsafe { (*node).reply_channel = reply_channel };
+                        mb.user_queue.push_back(node);
+                        mb.count += 1;
+                        update_high_water_mark(mb);
+                        return SendOutcome::DroppedOld;
                     }
                 }
             }
@@ -527,7 +556,7 @@ fn send_outcome_to_hew_error(outcome: SendOutcome) -> i32 {
             HewError::Ok as i32
         }
         SendOutcome::Closed => HewError::ErrClosed as i32,
-        SendOutcome::Dropped => HewError::ErrMailboxFull as i32,
+        SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
 }
@@ -771,7 +800,7 @@ wasm_no_mangle! {
             SendOutcome::Dropped => 1,
             SendOutcome::DroppedOld => 2,
             SendOutcome::Coalesced => 3,
-            SendOutcome::Closed | SendOutcome::Oom => -1,
+            SendOutcome::Closed | SendOutcome::Failed | SendOutcome::Oom => -1,
         }
     }
 }
@@ -2195,6 +2224,173 @@ mod tests {
                 (*node).reply_channel.is_null(),
                 "try_push must never set a reply channel"
             );
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_fail_policy_returns_negative() {
+        // Fail policy at capacity must return -1 (Failed), not 1 (Dropped).
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Fail);
+            let a: i32 = 1;
+            let b: i32 = 2;
+
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const a).cast(), size_of::<i32>()),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(mb, 2, (&raw const b).cast(), size_of::<i32>()),
+                -1,
+                "Fail policy try_push at capacity must return -1 (Failed)"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert_eq!(*((*node).data.cast::<i32>()), 1);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_coalesce_fallback_fail_returns_negative() {
+        // Coalesce with Fail fallback and no matching key must return -1.
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::Fail);
+
+            let first = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            let different = PriceUpdate {
+                symbol: 2,
+                price: 20,
+            };
+
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const first).cast(), size_of::<PriceUpdate>(),),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_try_push(
+                    mb,
+                    2,
+                    (&raw const different).cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                -1,
+                "Coalesce+Fail fallback with no key match must return -1"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let node = hew_mailbox_try_recv(mb);
+            let got = (*node).data.cast::<PriceUpdate>();
+            assert_eq!((*got).symbol, 1, "original message must be preserved");
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_drop_old_oom_preserves_queue() {
+        // If allocation fails under DropOld, the old message must NOT be
+        // evicted — OOM must leave the queue unchanged.
+        // SAFETY: test owns the mailbox exclusively; failure injection only
+        // affects allocations performed by this thread.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropOld);
+            let original: i32 = 42;
+
+            assert_eq!(
+                hew_mailbox_try_push(mb, 1, (&raw const original).cast(), size_of::<i32>()),
+                0
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            // Force OOM on the next node allocation.
+            let _oom = fail_mailbox_alloc_on_nth(0);
+
+            let replacement: i32 = 99;
+            assert_eq!(
+                hew_mailbox_try_push(mb, 2, (&raw const replacement).cast(), size_of::<i32>()),
+                -1,
+                "DropOld try_push OOM must return -1"
+            );
+            assert_eq!(
+                hew_mailbox_len(mb),
+                1,
+                "OOM under DropOld must not evict the existing message"
+            );
+
+            // The original message must still be there, intact.
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 1);
+            assert_eq!(*((*node).data.cast::<i32>()), 42);
+            msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn try_push_coalesce_fallback_drop_old_oom_preserves_queue() {
+        // Same as above but through the coalesce → DropOld fallback path.
+        // SAFETY: test owns the mailbox exclusively; failure injection only
+        // affects allocations performed by this thread.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropOld);
+
+            let original = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            assert_eq!(
+                hew_mailbox_try_push(
+                    mb,
+                    1,
+                    (&raw const original).cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                0
+            );
+
+            // Force OOM — different key so coalesce won't match, falls to DropOld.
+            let _oom = fail_mailbox_alloc_on_nth(0);
+            let different = PriceUpdate {
+                symbol: 2,
+                price: 20,
+            };
+            assert_eq!(
+                hew_mailbox_try_push(
+                    mb,
+                    2,
+                    (&raw const different).cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                -1,
+                "Coalesce+DropOld fallback OOM must return -1"
+            );
+            assert_eq!(
+                hew_mailbox_len(mb),
+                1,
+                "OOM under Coalesce+DropOld fallback must not evict"
+            );
+
+            let node = hew_mailbox_try_recv(mb);
+            let got = (*node).data.cast::<PriceUpdate>();
+            assert_eq!((*got).symbol, 1, "original message must be preserved");
+            assert_eq!((*got).price, 10);
             msg_node_free(node);
 
             hew_mailbox_free(mb);

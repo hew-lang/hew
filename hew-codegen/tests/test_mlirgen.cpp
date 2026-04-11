@@ -713,6 +713,175 @@ makeActorFieldAssignmentAuthorityProgram(hew::ast::AssignTargetKindData targetKi
   return program;
 }
 
+static hew::ast::Program makeMissingStructFieldAssignmentProgram() {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 940000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name.str(), std::nullopt};
+    auto span = mkSpan();
+    return {std::move(typeExpr), span};
+  };
+  auto mkIntExpr = [&](int64_t value) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprLiteral{LitInteger{value}};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprIdentifier{name.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkFieldAccessExpr = [&](llvm::StringRef objectName,
+                               llvm::StringRef fieldName) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind =
+        ExprFieldAccess{std::make_unique<Spanned<Expr>>(mkIdentExpr(objectName)), fieldName.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    auto span = mkSpan();
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    stmt.span = span;
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span});
+  };
+
+  TypeDecl boxed;
+  boxed.visibility = Visibility::Pub;
+  boxed.kind = TypeDeclKind::Struct;
+  boxed.name = "Boxed";
+  TypeBodyItem boxedFieldItem;
+  boxedFieldItem.kind = TypeBodyItemField{"value", mkType("int")};
+  boxed.body.push_back(std::move(boxedFieldItem));
+
+  StmtVar varStmt;
+  varStmt.name = "boxed";
+  varStmt.ty = mkType("Boxed");
+  varStmt.value = std::nullopt;
+
+  StmtAssign assignStmt;
+  assignStmt.target = mkFieldAccessExpr("boxed", "missing");
+  auto targetSpan = assignStmt.target.span;
+  assignStmt.value = mkIntExpr(1);
+
+  FnDecl mainFn;
+  mainFn.is_async = false;
+  mainFn.is_generator = false;
+  mainFn.is_pure = false;
+  mainFn.visibility = Visibility::Pub;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(mkStmt(std::move(varStmt)));
+  mainFn.body.stmts.push_back(mkStmt(std::move(assignStmt)));
+  mainFn.body.trailing_expr = std::make_unique<Spanned<Expr>>(mkIntExpr(0));
+
+  Item typeItem;
+  typeItem.kind = std::move(boxed);
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+
+  Program program;
+  program.schema_version = 5;
+  program.items.push_back({std::move(typeItem), mkSpan()});
+  program.items.push_back({std::move(mainItem), mkSpan()});
+  program.assign_target_kinds.push_back(
+      {targetSpan.start, targetSpan.end, AssignTargetKindFieldAccess{}});
+  program.assign_target_shapes.push_back({targetSpan.start, targetSpan.end, /*is_unsigned=*/false});
+  return program;
+}
+
+static hew::ast::Program makeNonStructFieldAssignmentProgram() {
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 950000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name.str(), std::nullopt};
+    auto span = mkSpan();
+    return {std::move(typeExpr), span};
+  };
+  auto mkIntExpr = [&](int64_t value) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprLiteral{LitInteger{value}};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprIdentifier{name.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkFieldAccessExpr = [&](llvm::StringRef objectName,
+                               llvm::StringRef fieldName) -> Spanned<Expr> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind =
+        ExprFieldAccess{std::make_unique<Spanned<Expr>>(mkIdentExpr(objectName)), fieldName.str()};
+    expr.span = span;
+    return {std::move(expr), span};
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    auto span = mkSpan();
+    Stmt stmt;
+    stmt.kind = std::move(node);
+    stmt.span = span;
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span});
+  };
+
+  StmtVar varStmt;
+  varStmt.name = "count";
+  varStmt.ty = mkType("int");
+  varStmt.value = mkIntExpr(0);
+
+  StmtAssign assignStmt;
+  assignStmt.target = mkFieldAccessExpr("count", "value");
+  auto targetSpan = assignStmt.target.span;
+  assignStmt.value = mkIntExpr(1);
+
+  FnDecl mainFn;
+  mainFn.is_async = false;
+  mainFn.is_generator = false;
+  mainFn.is_pure = false;
+  mainFn.visibility = Visibility::Pub;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.stmts.push_back(mkStmt(std::move(varStmt)));
+  mainFn.body.stmts.push_back(mkStmt(std::move(assignStmt)));
+  mainFn.body.trailing_expr = std::make_unique<Spanned<Expr>>(mkIntExpr(0));
+
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+
+  Program program;
+  program.schema_version = 5;
+  program.items.push_back({std::move(mainItem), mkSpan()});
+  program.assign_target_kinds.push_back(
+      {targetSpan.start, targetSpan.end, AssignTargetKindFieldAccess{}});
+  program.assign_target_shapes.push_back({targetSpan.start, targetSpan.end, /*is_unsigned=*/false});
+  return program;
+}
+
 static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast::Span &span) {
   auto oldSize = program.expr_types.size();
   program.expr_types.erase(std::remove_if(program.expr_types.begin(), program.expr_types.end(),
@@ -5426,6 +5595,60 @@ static void test_identifier_actor_field_assignment_kind_mismatch_fails_closed() 
   PASS();
 }
 
+static void test_missing_struct_field_assignment_fails_closed() {
+  TEST(missing_struct_field_assignment_fails_closed);
+
+  auto program = makeMissingStructFieldAssignmentProgram();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when field assignment metadata names a missing field");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("checker invariant violated: field assignment target is missing field "
+                      "'missing'") == std::string::npos) {
+    FAIL("expected missing-field assignment invariant diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_nonstruct_field_assignment_fails_closed() {
+  TEST(nonstruct_field_assignment_fails_closed);
+
+  auto program = makeNonStructFieldAssignmentProgram();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when field assignment metadata targets a non-struct");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("checker invariant violated: non-struct value field assignment reached "
+                      "MLIRGen") == std::string::npos) {
+    FAIL("expected non-struct field-assignment invariant diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
 // ============================================================================
 // Test: Multiple functions calling each other
 // ============================================================================
@@ -10064,6 +10287,8 @@ int main() {
   test_compound_assignment();
   test_identifier_local_assignment_kind_mismatch_fails_closed();
   test_identifier_actor_field_assignment_kind_mismatch_fails_closed();
+  test_missing_struct_field_assignment_fails_closed();
+  test_nonstruct_field_assignment_fails_closed();
   test_function_calls();
   test_void_function();
   test_void_trailing_if_match_stmt_lowering();

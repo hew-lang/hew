@@ -1,5 +1,11 @@
 # Journey
 
+## 2026-04-11 — fix/field-assign-codegen-invariant
+
+- Symptom: `MLIRGenStmt.cpp` still surfaced user-facing backend diagnostics for field-assignment states the checker already rejects (`missing field`, `non-struct value field assignment`, and immutable value-struct roots), so a corrupted or stale `assign_target_kinds` path looked like a frontend error instead of an internal invariant failure.
+- Root cause: the earlier assignment-authority hardening only converted part of the field/index fallback surface, leaving several field-only fail-closed branches with old backend wording even though `hew-types` already owns the target classification and field validity.
+- Decision: keep the lane bounded to codegen hardening; rewrite the remaining checker-owned field-assignment fallbacks as explicit invariant diagnostics and add focused MLIRGen regressions that synthesize stale field-assignment metadata without relying on the frontend CLI.
+
 ## 2026-04-11 — fix/task-scope-cancelled-worker-reclamation
 
 - Symptom: `hew_task_scope_destroy()` stayed bounded after cancelling a live running task, but `hew_task_scope_join_all()` marked that task `detached_on_cancel` and dropped its join handle, so destroy returned early forever and leaked the entire `HewTaskScope` task list.

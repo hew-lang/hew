@@ -1,0 +1,24 @@
+// Regression: Vec<struct>.pop() must use out-ptr ABI (hew_vec_pop_generic).
+// Before the fix, VecPopOpLowering had no _generic branch and would call
+// hew_vec_pop_generic expecting a direct struct return — wrong ABI.
+type Point {
+    x: int;
+    y: int;
+}
+
+fn main() {
+    let v: Vec<Point> = Vec::new();
+    v.push(Point { x: 1, y: 2 });
+    v.push(Point { x: 3, y: 4 });
+    v.push(Point { x: 5, y: 6 });
+
+    let p = v.pop();
+    println(p.x);
+    println(p.y);
+    println(v.len());
+
+    let q = v.pop();
+    println(q.x);
+    println(q.y);
+    println(v.len());
+}

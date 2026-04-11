@@ -1127,6 +1127,7 @@ add_wasm_file_test(bytes_literal              e2e_bytes            bytes_literal
 
 # Vec (extended)
 add_wasm_file_test(vec_bool                   e2e_vec              vec_bool)
+add_wasm_file_test(vec_struct_pop               e2e_vec              vec_struct_pop)
 
 # Indirect enums
 add_wasm_file_test(indirect_expr              e2e_indirect_enum    indirect_expr)

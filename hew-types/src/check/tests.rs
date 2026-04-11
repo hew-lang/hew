@@ -359,7 +359,21 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     // expr_types has the matching span with a concrete, fully-resolved type.
     let mut expr_types = HashMap::new();
     expr_types.insert(span.clone(), Ty::I64);
-    let mut type_defs = HashMap::new();
+    // type_defs must include "Foo" so validate_method_call_receiver_kinds_output_contract
+    // retains the NamedTypeInstance entry after validate_method_call_output_contract passes it.
+    let mut type_defs = HashMap::from([(
+        "Foo".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Foo".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    )]);
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
     checker.validate_checker_output_contract(
@@ -462,7 +476,21 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     expr_types.insert(leaked_span.clone(), Ty::Var(TypeVar::fresh()));
     expr_types.insert(good_span.clone(), Ty::Bool);
 
-    let mut type_defs = HashMap::new();
+    // type_defs must include "Good" so validate_method_call_receiver_kinds_output_contract
+    // retains the NamedTypeInstance entry for the good span after the span-based pruner passes it.
+    let mut type_defs = HashMap::from([(
+        "Good".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Good".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    )]);
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
     checker.validate_checker_output_contract(

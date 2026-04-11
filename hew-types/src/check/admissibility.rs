@@ -172,6 +172,7 @@ impl Checker {
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
         self.validate_assign_target_output_contract();
         self.validate_method_call_output_contract(expr_types);
+        self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
     }
 
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
@@ -268,6 +269,54 @@ impl Checker {
             .retain(|key, _| expr_types.contains_key(key));
         self.method_call_rewrites
             .retain(|key, _| expr_types.contains_key(key));
+    }
+
+    /// Validates `method_call_receiver_kinds` at the checker output boundary.
+    ///
+    /// This pass graduates the side-table from producer discipline to a validated
+    /// contract by asserting that every surviving entry references a type or trait
+    /// that still exists in the resolved program environment, then pruning any that
+    /// do not.
+    ///
+    /// - `NamedTypeInstance { type_name }` entries are retained if the type is
+    ///   present in the resolved `type_defs` (user-defined type), the name is
+    ///   module-qualified (contains `'.'`, i.e., a stdlib handle type such as
+    ///   `json.Value` or `http.Client` which live in the module registry rather
+    ///   than `type_defs`), or the name is a generic type parameter from a
+    ///   function signature (trait-bounded type-parameter dispatch records the
+    ///   type-parameter name as a `NamedTypeInstance`).
+    /// - `TraitObject { trait_name }` entries are retained only if the trait name
+    ///   is still present in the checker's trait registry.
+    pub(super) fn validate_method_call_receiver_kinds_output_contract(
+        &mut self,
+        type_defs: &HashMap<String, TypeDef>,
+        fn_sigs: &HashMap<String, FnSig>,
+    ) {
+        // Collect known trait names before the mutable borrow on
+        // `method_call_receiver_kinds` to avoid a split-borrow conflict.
+        let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
+
+        // Collect all type parameter names from the resolved function signatures
+        // so we can retain `NamedTypeInstance` entries produced by trait-bounded
+        // type-parameter method dispatch (e.g. `T` in `fn f<T: Show>(t: T)`).
+        // NOTE: we receive `fn_sigs` as a parameter because the production path
+        // drains `self.fn_sigs` via `std::mem::take` before this validator runs.
+        let known_type_params: HashSet<&str> = fn_sigs
+            .values()
+            .flat_map(|sig| sig.type_params.iter().map(String::as_str))
+            .collect();
+
+        self.method_call_receiver_kinds
+            .retain(|_, kind| match kind {
+                MethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                    type_defs.contains_key(type_name)
+                        || type_name.contains('.')
+                        || known_type_params.contains(type_name.as_str())
+                }
+                MethodCallReceiverKind::TraitObject { trait_name } => {
+                    known_trait_names.contains(trait_name)
+                }
+            });
     }
 
     fn validate_assign_target_output_contract(&mut self) {
@@ -754,6 +803,222 @@ mod tests {
         assert!(
             !fn_sigs.contains_key("error_return_fn"),
             "signature with Ty::Error as return type must be pruned"
+        );
+    }
+
+    /// `validate_method_call_receiver_kinds_output_contract` retains entries
+    /// for types that exist in the resolved `type_defs` map and prunes those
+    /// that do not.
+    #[test]
+    fn validate_method_call_receiver_kinds_prunes_unknown_named_type_entries() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let known_key = SpanKey { start: 10, end: 20 };
+        let unknown_key = SpanKey { start: 30, end: 40 };
+
+        checker.method_call_receiver_kinds.insert(
+            known_key.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Widget".to_string(),
+            },
+        );
+        checker.method_call_receiver_kinds.insert(
+            unknown_key.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Phantom".to_string(),
+            },
+        );
+
+        let mut type_defs = HashMap::from([(
+            "Widget".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Widget".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        )]);
+
+        // Populate expr_types for both spans so that validate_method_call_output_contract
+        // (span-based pruner) does not wipe entries before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types =
+            HashMap::from([(known_key.clone(), Ty::I64), (unknown_key.clone(), Ty::I64)]);
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&known_key),
+            "NamedTypeInstance entry for a type in type_defs must survive"
+        );
+        assert!(
+            !checker
+                .method_call_receiver_kinds
+                .contains_key(&unknown_key),
+            "NamedTypeInstance entry for a type absent from type_defs must be pruned"
+        );
+    }
+
+    /// Module-qualified type names (e.g. `json.Value`) are retained even though
+    /// they are not present in `type_defs` — they live in the module registry.
+    #[test]
+    fn validate_method_call_receiver_kinds_retains_qualified_handle_type_entries() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let handle_key = SpanKey { start: 50, end: 60 };
+        checker.method_call_receiver_kinds.insert(
+            handle_key.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "json.Value".to_string(),
+            },
+        );
+
+        let mut type_defs = HashMap::new(); // empty — json.Value is not a user type
+                                            // Populate expr_types for the span so that validate_method_call_output_contract
+                                            // (span-based pruner) does not wipe the entry before the name-based validator runs.
+        let mut expr_types = HashMap::from([(handle_key.clone(), Ty::I64)]);
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&handle_key),
+            "qualified handle-type entry (contains '.') must survive validation"
+        );
+    }
+
+    /// `TraitObject` entries survive when the trait is present in `trait_defs`
+    /// and are pruned when the trait is absent.
+    #[test]
+    fn validate_method_call_receiver_kinds_prunes_unknown_trait_object_entries() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let known_trait_key = SpanKey { start: 70, end: 80 };
+        let unknown_trait_key = SpanKey {
+            start: 90,
+            end: 100,
+        };
+
+        checker.method_call_receiver_kinds.insert(
+            known_trait_key.clone(),
+            MethodCallReceiverKind::TraitObject {
+                trait_name: "Greeter".to_string(),
+            },
+        );
+        checker.method_call_receiver_kinds.insert(
+            unknown_trait_key.clone(),
+            MethodCallReceiverKind::TraitObject {
+                trait_name: "GhostTrait".to_string(),
+            },
+        );
+
+        // Seed trait_defs with only the known trait.
+        checker.trait_defs.insert(
+            "Greeter".to_string(),
+            TraitInfo {
+                methods: vec![],
+                associated_types: vec![],
+                type_params: vec![],
+            },
+        );
+
+        let mut type_defs = HashMap::new();
+        // Populate expr_types for both trait spans so the span-based pruner does not
+        // wipe entries before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types = HashMap::from([
+            (known_trait_key.clone(), Ty::I64),
+            (unknown_trait_key.clone(), Ty::I64),
+        ]);
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker
+                .method_call_receiver_kinds
+                .contains_key(&known_trait_key),
+            "TraitObject entry for a trait in trait_defs must survive"
+        );
+        assert!(
+            !checker
+                .method_call_receiver_kinds
+                .contains_key(&unknown_trait_key),
+            "TraitObject entry for a trait absent from trait_defs must be pruned"
+        );
+    }
+
+    /// `NamedTypeInstance` entries whose `type_name` matches a generic type
+    /// parameter from a function signature must survive validation — these are
+    /// produced by trait-bounded type-parameter method dispatch.
+    #[test]
+    fn validate_method_call_receiver_kinds_retains_type_param_entries() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let param_key = SpanKey {
+            start: 110,
+            end: 120,
+        };
+        checker.method_call_receiver_kinds.insert(
+            param_key.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "T".to_string(),
+            },
+        );
+
+        // Populate the resolved fn_sigs map (mimicking the production path where
+        // mod.rs drains self.fn_sigs via std::mem::take into resolved_fn_sigs before
+        // calling validate_checker_output_contract).
+        let mut fn_sigs = HashMap::from([(
+            "display".to_string(),
+            FnSig {
+                type_params: vec!["T".to_string()],
+                type_param_bounds: HashMap::new(),
+                param_names: vec!["item".to_string()],
+                params: vec![Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                }],
+                return_type: Ty::Unit,
+                is_async: false,
+                is_pure: false,
+                accepts_kwargs: false,
+                doc_comment: None,
+            },
+        )]);
+        let mut type_defs = HashMap::new(); // "T" is not a user-defined type
+                                            // Populate expr_types for the span so the span-based pruner does not wipe
+                                            // the entry before validate_method_call_receiver_kinds_output_contract runs.
+        let mut expr_types = HashMap::from([(param_key.clone(), Ty::I64)]);
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&param_key),
+            "NamedTypeInstance entry for a type-parameter name must survive validation"
         );
     }
 }

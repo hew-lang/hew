@@ -814,8 +814,8 @@ struct FieldDecl {
 };
 
 struct ReceiveFnDecl {
-  bool is_generator;
-  bool is_pure;
+  bool is_generator = false;
+  bool is_pure = false;
   std::string name;
   std::optional<std::vector<TypeParam>> type_params;
   std::vector<Param> params;
@@ -923,10 +923,10 @@ struct MachineDecl {
 
 struct FnDecl {
   std::vector<Attribute> attributes;
-  bool is_async;
-  bool is_generator;
+  bool is_async = false;
+  bool is_generator = false;
   Visibility visibility = Visibility::Private;
-  bool is_pure;
+  bool is_pure = false;
   std::string name;
   std::optional<std::vector<TypeParam>> type_params;
   std::vector<Param> params;

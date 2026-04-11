@@ -974,6 +974,13 @@ private:
   void nullOutTransferredHandleFields(const std::string &varName, mlir::Location loc);
   /// Null out a variable's RAII close alloca (after ownership transfer).
   void nullOutRaiiAlloca(const std::string &varName);
+  /// After an explicit .free() call, prevent the scope-exit Drop from
+  /// double-freeing the same handle. Matches by varName (innermost scope first)
+  /// when non-empty, otherwise by receiverVal bindingIdentity. If the matching
+  /// DropEntry has no promotedSlot yet (immutable `let` binding), a new null-
+  /// holding alloca is created and recorded as the slot so emitDropEntry's
+  /// null-guard skips the drop.
+  void nullOutDropSlot(const std::string &varName, mlir::Value receiverVal, mlir::Location loc);
   /// Emit a drop for a single variable if it has a registered drop function.
   void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);

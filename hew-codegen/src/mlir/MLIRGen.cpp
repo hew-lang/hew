@@ -6663,6 +6663,38 @@ void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {
   }
 }
 
+void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVal,
+                              mlir::Location loc) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+    for (auto &entry : *scopeIt) {
+      bool matched = (!varName.empty() && entry.varName == varName) ||
+                     (varName.empty() && receiverVal && entry.bindingIdentity == receiverVal);
+      if (!matched)
+        continue;
+      if (entry.promotedSlot) {
+        // Slot exists — zero it so emitDropEntry's null-guard skips the drop.
+        auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(entry.promotedSlot.getType());
+        if (!memrefTy)
+          return;
+        auto zero = createDefaultValue(builder, loc, memrefTy.getElementType());
+        mlir::memref::StoreOp::create(builder, loc, zero, entry.promotedSlot);
+      } else {
+        // No promoted slot yet (immutable `let` binding): create a null-
+        // holding alloca and record it. emitDropEntry will load null and skip
+        // the drop via its null-guard, preventing double-free.
+        auto allocaType = mlir::MemRefType::get({}, ptrType);
+        auto newSlot = mlir::memref::AllocaOp::create(builder, loc, allocaType);
+        auto nullVal = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+        mlir::memref::StoreOp::create(builder, loc, nullVal, newSlot);
+        entry.promotedSlot = newSlot;
+        entry.bindingIdentity = newSlot;
+      }
+      return;
+    }
+  }
+}
+
 void MLIRGen::emitDropForVariable(const std::string &varName) {
   for (auto &scope : dropScopes) {
     for (auto &entry : scope) {

@@ -2222,6 +2222,66 @@ fn mutable_param_field_assignment_root_counts_as_mutation() {
 }
 
 #[test]
+fn immutable_index_assignment_root_is_rejected() {
+    let (errors, warnings) = parse_and_check("fn main() { let xs = [1, 2]; xs[0] = 3; }\n");
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable `xs`")),
+        "expected immutable index-assignment root error, got: {errors:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "immutable index assignment should not produce unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn immutable_param_index_assignment_root_is_rejected() {
+    let (errors, warnings) = parse_and_check("fn bump(xs: Vec<int>) { xs[0] = 2; }\n");
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable `xs`")),
+        "expected immutable parameter index-assignment root error, got: {errors:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "immutable parameter index assignment should not produce unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn mutable_index_assignment_root_counts_as_mutation() {
+    let (errors, warnings) =
+        parse_and_check("fn main() { var xs = [1, 2]; xs[0] = 3; println(xs[0]); }\n");
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "index assignment should count as a mutation of the root binding, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn mutable_param_index_assignment_root_counts_as_mutation() {
+    let (errors, warnings) =
+        parse_and_check("fn bump(var xs: Vec<int>) { xs[0] = 2; println(xs[0]); }\n");
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "parameter index assignment should count as a mutation of the root binding, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn warn_var_never_mutated_suggestion() {
     let (_, warnings) = parse_and_check("fn main() { var x = 10; println(x); }");
     let w = warnings

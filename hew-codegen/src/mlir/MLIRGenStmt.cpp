@@ -1572,7 +1572,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       auto varSlot = getMutableVarSlot(intern(ie->name));
       if (!varSlot) {
         ++errorCount_;
-        emitError(location) << "cannot assign index on immutable variable '" << ie->name << "'";
+        emitError(location) << "checker invariant violated: immutable array indexed assignment "
+                               "reached MLIRGen for '"
+                            << ie->name << "'";
         return;
       }
 

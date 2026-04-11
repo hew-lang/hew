@@ -214,6 +214,63 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut WasmReplyChannel) {
     }
 }
 
+// ── Reply wait / timeout parity ─────────────────────────────────────────
+
+/// Block until a reply has been deposited on `ch` or `timeout_ms`
+/// milliseconds have elapsed, then return the value (or null on timeout).
+///
+/// WASM counterpart of [`crate::reply_channel::hew_reply_wait_timeout`].
+/// Uses the same monotonic deadline-loop pattern as [`hew_select_first`]:
+/// drives the cooperative scheduler one activation at a time until the
+/// reply arrives, the deadline expires, or the run queue drains.
+///
+/// The caller owns the returned pointer and must free it with
+/// [`libc::free`].
+///
+/// # Safety
+///
+/// - `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+/// - Must be called at most once per channel.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_wait_timeout(
+    ch: *mut WasmReplyChannel,
+    timeout_ms: i32,
+) -> *mut c_void {
+    if ch.is_null() {
+        return ptr::null_mut();
+    }
+
+    let deadline =
+        Instant::now() + Duration::from_millis(u64::try_from(timeout_ms.max(0)).unwrap_or(0));
+
+    // SAFETY: Single-threaded on WASM; hew_wasm_sched_tick is re-entrant-safe.
+    unsafe {
+        loop {
+            if reply_ready(ch) {
+                return reply_take(ch);
+            }
+            if Instant::now() >= deadline {
+                return ptr::null_mut();
+            }
+            let remaining = crate::scheduler_wasm::hew_wasm_sched_tick(1);
+            if Instant::now() >= deadline {
+                // Check one last time in case the tick deposited the reply.
+                if reply_ready(ch) {
+                    return reply_take(ch);
+                }
+                return ptr::null_mut();
+            }
+            if remaining == 0 {
+                // Run queue empty — do a final readiness check.
+                if reply_ready(ch) {
+                    return reply_take(ch);
+                }
+                return ptr::null_mut();
+            }
+        }
+    }
+}
+
 // ── Select parity ───────────────────────────────────────────────────────
 
 /// Block until a reply has been deposited on `ch`, then return the value.
@@ -456,6 +513,75 @@ mod tests {
             let result = hew_reply_wait(ch).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, 99);
+            libc::free(result.cast());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    // ── hew_reply_wait_timeout tests ────────────────────────────────────
+
+    #[test]
+    fn reply_wait_timeout_null_channel_returns_null() {
+        // SAFETY: null input is explicitly handled.
+        let result = unsafe { hew_reply_wait_timeout(ptr::null_mut(), 100) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn reply_wait_timeout_returns_deposited_value() {
+        let ch = hew_reply_channel_new();
+        let value = 77_i32;
+
+        // SAFETY: ch is valid; retain + reply mimics the ask/reply pattern.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply(
+                ch,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+            // Reply is already deposited; timeout should return immediately.
+            let result = hew_reply_wait_timeout(ch, 1000).cast::<i32>();
+            assert!(!result.is_null());
+            assert_eq!(*result, 77);
+            libc::free(result.cast());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn reply_wait_timeout_zero_ms_no_reply_returns_null() {
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: ch is valid; no reply deposited, zero-ms deadline expires immediately.
+        unsafe {
+            let result = hew_reply_wait_timeout(ch, 0);
+            assert!(
+                result.is_null(),
+                "zero-ms timeout with no reply must return null"
+            );
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn reply_wait_timeout_ready_before_deadline_returns_value() {
+        let ch = hew_reply_channel_new();
+        let value = 42_i32;
+
+        // SAFETY: ch is valid; deposit reply before calling wait_timeout.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply(
+                ch,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+            // Even with a short timeout, the ready reply should be returned.
+            let result = hew_reply_wait_timeout(ch, 1).cast::<i32>();
+            assert!(!result.is_null());
+            assert_eq!(*result, 42);
             libc::free(result.cast());
             hew_reply_channel_free(ch);
         }

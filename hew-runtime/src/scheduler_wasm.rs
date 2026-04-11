@@ -849,6 +849,60 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
     unsafe { CURRENT_REPLY_CHANNEL }
 }
 
+// ── Cooperative yielding (WASM) ─────────────────────────────────────────
+
+/// Cooperatively yield if the actor's reduction budget is exhausted.
+///
+/// WASM counterpart of [`crate::scheduler::hew_actor_cooperate`]. The
+/// compiler inserts calls to this function at yield points (loop headers,
+/// function calls). Each call decrements the reduction counter. When it
+/// reaches 0 the actor yields by driving one cooperative scheduler tick
+/// via [`hew_wasm_sched_tick`], and the counter is reset.
+///
+/// Returns 0 if the actor should continue, 1 if it yielded.
+///
+/// # Safety
+///
+/// No preconditions — may be called from any context. When called
+/// outside an actor dispatch (i.e. `CURRENT_ACTOR_WASM` is null), this
+/// is a no-op.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+#[must_use]
+pub extern "C" fn hew_actor_cooperate() -> c_int {
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return 0;
+    }
+
+    // SAFETY: hew_actor_self returned a valid, non-null actor pointer.
+    // The WASM HewActor and crate::actor::HewActor have identical layouts
+    // (verified by the compile-time offset_of! assertions above), so we
+    // can safely read the reductions field through the actor pointer.
+    let a = unsafe { &*actor };
+
+    // Decrement reduction counter. If still positive, continue.
+    let prev = a.reductions.fetch_sub(1, Ordering::Relaxed);
+    if prev > 1 {
+        return 0;
+    }
+
+    // Budget exhausted — reset counter and yield via cooperative tick.
+    a.reductions
+        .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
+
+    // Drive one cooperative scheduler tick so other actors can make
+    // progress.  This is the WASM equivalent of the native
+    // `thread::yield_now()`.
+    //
+    // SAFETY: hew_wasm_sched_tick is re-entrant-safe for the WASM
+    // cooperative scheduler (reentrancy is tested and supported).
+    unsafe {
+        let _ = hew_wasm_sched_tick(1);
+    }
+
+    1
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -3147,6 +3201,93 @@ mod tests {
         // is a no-op.
         unsafe { crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>()) };
 
+        hew_sched_shutdown();
+    }
+
+    // ── hew_actor_cooperate tests ───────────────────────────────────────
+
+    #[test]
+    fn cooperate_outside_dispatch_is_noop() {
+        // When no actor is being dispatched, cooperate must return 0 (no-op).
+        let result = hew_actor_cooperate();
+        assert_eq!(result, 0, "cooperate outside dispatch must return 0");
+    }
+
+    #[test]
+    fn cooperate_decrements_reductions_and_returns_zero_when_budget_remains() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        actor.reductions.store(100, Ordering::Relaxed);
+
+        // Install the actor as the current dispatch actor.
+        let prev =
+            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+
+        let result = hew_actor_cooperate();
+        assert_eq!(result, 0, "cooperate must return 0 when budget remains");
+        assert_eq!(
+            actor.reductions.load(Ordering::Relaxed),
+            99,
+            "cooperate must decrement reductions by 1"
+        );
+
+        crate::actor::set_current_actor(prev);
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn cooperate_yields_and_resets_when_budget_exhausted() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        // Set reductions to 1 so the next cooperate exhausts the budget.
+        actor.reductions.store(1, Ordering::Relaxed);
+
+        let prev =
+            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+
+        let result = hew_actor_cooperate();
+        assert_eq!(result, 1, "cooperate must return 1 when budget exhausted");
+        assert_eq!(
+            actor.reductions.load(Ordering::Relaxed),
+            HEW_DEFAULT_REDUCTIONS,
+            "cooperate must reset reductions to default after yield"
+        );
+
+        crate::actor::set_current_actor(prev);
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn cooperate_at_exactly_zero_reductions_yields() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut actor = stub_actor();
+        // Edge case: reductions already at 0 (fetch_sub wraps to -1 < 1).
+        actor.reductions.store(0, Ordering::Relaxed);
+
+        let prev =
+            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+
+        let result = hew_actor_cooperate();
+        assert_eq!(result, 1, "cooperate at zero reductions must yield");
+        assert_eq!(
+            actor.reductions.load(Ordering::Relaxed),
+            HEW_DEFAULT_REDUCTIONS,
+            "cooperate must reset reductions after yield at zero"
+        );
+
+        crate::actor::set_current_actor(prev);
         hew_sched_shutdown();
     }
 }

@@ -1,0 +1,10 @@
+type Point {
+    x: int;
+}
+
+fn main() {
+    var p = Point { x: 1 };
+    p.x = 2;
+    p.x += 3;
+    println(p.x);
+}

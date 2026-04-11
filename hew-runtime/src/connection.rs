@@ -2228,6 +2228,7 @@ mod tests {
             (52, true),
             "shutdown rejection should close transport after releasing the connections lock"
         );
+        // SAFETY: mgr remains valid until the free call below.
         assert_eq!(unsafe { hew_connmgr_count(mgr) }, 0);
 
         // SAFETY: test-owned pointers remain valid until this cleanup completes.

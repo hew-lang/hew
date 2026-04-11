@@ -10403,3 +10403,124 @@ mod wasm_rejects {
         );
     }
 }
+
+// ── if-let / while-let pattern contract ──────────────────────────────────
+//
+// These tests verify that the checker rejects Struct, Tuple, Or, and
+// Literal patterns at the top level of `if let` / `while let`, because
+// codegen has no support for them.  Constructor, Wildcard, and Identifier
+// are the only allowed patterns.
+#[cfg(test)]
+mod iflet_whilelet_pattern_contract {
+    use super::*;
+
+    fn check_iflet_whilelet(source: &str) -> Vec<crate::error::TypeError> {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&result.program).errors
+    }
+
+    #[test]
+    fn iflet_stmt_literal_pattern_is_rejected() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let 1 = x { 0 } }");
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("literal")),
+            "expected InvalidOperation for literal if-let pattern; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn iflet_stmt_tuple_pattern_is_rejected() {
+        let errors = check_iflet_whilelet(r"fn foo(x: (int, int)) { if let (a, b) = x { 0 } }");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("tuple")),
+            "expected InvalidOperation for tuple if-let pattern; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn iflet_stmt_or_pattern_is_rejected() {
+        let errors =
+            check_iflet_whilelet(r"enum E { A; B; } fn foo(x: E) { if let A | B = x { 0 } }");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("or")),
+            "expected InvalidOperation for or if-let pattern; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn iflet_stmt_wildcard_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let _ = x { 0 } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "wildcard if-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn iflet_stmt_identifier_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let y = x { 0 } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "identifier if-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_literal_pattern_is_rejected() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let 1 = x { break; } }");
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("literal")),
+            "expected InvalidOperation for literal while-let pattern; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_tuple_pattern_is_rejected() {
+        let errors =
+            check_iflet_whilelet(r"fn foo(x: (int, int)) { while let (a, b) = x { break; } }");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("tuple")),
+            "expected InvalidOperation for tuple while-let pattern; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_wildcard_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let _ = x { break; } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "wildcard while-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_identifier_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let y = x { break; } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "identifier while-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+}

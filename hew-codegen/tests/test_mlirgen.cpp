@@ -9698,6 +9698,250 @@ fn main() {
 }
 
 // ============================================================================
+// if-let / while-let pattern contract tests
+//
+// Wildcard and Identifier patterns at the top level of if-let / while-let
+// must lower without errors.  Unsupported patterns (Struct, Tuple, etc.) that
+// bypass the checker must increment errorCount_ and produce no module.
+// ============================================================================
+
+static void test_iflet_stmt_wildcard_pattern_lowers() {
+  TEST(iflet_stmt_wildcard_pattern_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn always_run(x: int) -> int {
+    var result: int = 0;
+    if let _ = x {
+        result = 1;
+    }
+    result
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for wildcard if-let statement");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_iflet_stmt_identifier_pattern_lowers() {
+  TEST(iflet_stmt_identifier_pattern_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn use_identifier(x: int) -> int {
+    var result: int = 0;
+    if let y = x {
+        result = y;
+    }
+    result
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for identifier if-let statement");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_iflet_expr_wildcard_pattern_lowers() {
+  TEST(iflet_expr_wildcard_pattern_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn always_one(x: int) -> int {
+    return if let _ = x { 1 } else { 0 };
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for wildcard if-let expression");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_whilelet_stmt_wildcard_pattern_lowers() {
+  TEST(whilelet_stmt_wildcard_pattern_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  // while let _ = expr always continues; break prevents infinite loop.
+  auto module = generateMLIR(ctx, R"(
+fn run_once(x: int) -> int {
+    var count: int = 0;
+    while let _ = x {
+        count = count + 1;
+        break;
+    }
+    count
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for wildcard while-let statement");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_whilelet_stmt_identifier_pattern_lowers() {
+  TEST(whilelet_stmt_identifier_pattern_lowers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn capture_once(x: int) -> int {
+    var result: int = 0;
+    while let v = x {
+        result = v;
+        break;
+    }
+    result
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for identifier while-let statement");
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// Fail-closed: inject an unsupported PatTuple into an if-let statement's
+// pattern after successful type-checking, then verify that codegen increments
+// errorCount_ and produces no module.
+static void test_iflet_stmt_unsupported_pattern_fails_closed() {
+  TEST(iflet_stmt_unsupported_pattern_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+enum Wrap { Val(int); }
+fn test(w: Wrap) -> int {
+    if let Val(x) = w { x } else { 0 }
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for unsupported-pattern fail-closed test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "test");
+  if (!fn) {
+    FAIL("test function not found");
+    return;
+  }
+
+  auto *ifLetStmt = findFirstIfLetStmt(*fn);
+  if (!ifLetStmt) {
+    FAIL("if-let statement not found");
+    return;
+  }
+
+  // Replace the Constructor pattern with an unsupported PatTuple.
+  ifLetStmt->pattern.value.kind = hew::ast::PatTuple{};
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for unsupported pattern in if-let");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("only supports constructor") == std::string::npos) {
+    FAIL(("expected unsupported-pattern diagnostic for if-let; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// Fail-closed: inject an unsupported PatTuple into a while-let statement's
+// pattern after successful type-checking.
+static void test_whilelet_stmt_unsupported_pattern_fails_closed() {
+  TEST(whilelet_stmt_unsupported_pattern_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+enum Wrap { Val(int); }
+fn length(w: Wrap) -> int {
+    var n: int = 0;
+    while let Val(x) = w {
+        n = n + x;
+        break;
+    }
+    n
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for while-let unsupported-pattern fail-closed test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "length");
+  if (!fn) {
+    FAIL("length function not found");
+    return;
+  }
+
+  auto *whileLetStmt = findFirstWhileLetStmt(*fn);
+  if (!whileLetStmt) {
+    FAIL("while-let statement not found");
+    return;
+  }
+
+  // Replace the Constructor pattern with an unsupported PatTuple.
+  whileLetStmt->pattern.value.kind = hew::ast::PatTuple{};
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for unsupported pattern in while-let");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("only supports constructor") == std::string::npos) {
+    FAIL(("expected unsupported-pattern diagnostic for while-let; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: `let _ = expr` wildcard let materializes droppable temporaries
 // (regression for the drop-leak fix: PatWildcard in generateLetStmt must call
 // materializeTemporary so heap-allocated returns are freed at scope exit)
@@ -9875,6 +10119,13 @@ int main() {
   test_match_arm_unknown_constructor_fails_closed();
   test_json_nested_scope_free_guard_slot_populated();
   test_wildcard_let_droppable_temporary_is_materialized();
+  test_iflet_stmt_wildcard_pattern_lowers();
+  test_iflet_stmt_identifier_pattern_lowers();
+  test_iflet_expr_wildcard_pattern_lowers();
+  test_whilelet_stmt_wildcard_pattern_lowers();
+  test_whilelet_stmt_identifier_pattern_lowers();
+  test_iflet_stmt_unsupported_pattern_fails_closed();
+  test_whilelet_stmt_unsupported_pattern_fails_closed();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

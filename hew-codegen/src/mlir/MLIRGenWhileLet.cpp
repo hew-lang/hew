@@ -44,9 +44,93 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
     return;
 
   const auto &pattern = stmt.pattern.value;
+
+  // Wildcard: always matches; the loop body runs unconditionally each iteration.
+  if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
+    auto lc = pushLoopControl(stmt.label, location);
+    auto whileOp =
+        mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
+
+    auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
+    builder.setInsertionPointToStart(beforeBlock);
+    auto activeCond =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{})
+            .getResult();
+    activeCond = andNotReturned(activeCond, location);
+    mlir::scf::ConditionOp::create(builder, location, activeCond, mlir::ValueRange{});
+
+    auto *afterBlock = builder.createBlock(&whileOp.getAfter());
+    builder.setInsertionPointToStart(afterBlock);
+    auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
+
+    mlir::Value scrutinee = generateExpression(stmt.expr->value);
+    if (!scrutinee) {
+      mlir::memref::StoreOp::create(builder, location, falseVal, lc.activeFlag);
+      ensureYieldTerminator(location);
+      popLoopControl(lc, whileOp);
+      return;
+    }
+
+    {
+      SymbolTableScopeT bodyScope(symbolTable);
+      MutableTableScopeT bodyMutScope(mutableVars);
+      pushDropScope();
+      generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                         lc.continueFlag, location);
+      popDropScope();
+    }
+    ensureYieldTerminator(location);
+    popLoopControl(lc, whileOp);
+    return;
+  }
+
+  // Identifier: always matches, bind the whole scrutinee to the named variable.
+  if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
+    auto lc = pushLoopControl(stmt.label, location);
+    auto whileOp =
+        mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
+
+    auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
+    builder.setInsertionPointToStart(beforeBlock);
+    auto activeCond =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{})
+            .getResult();
+    activeCond = andNotReturned(activeCond, location);
+    mlir::scf::ConditionOp::create(builder, location, activeCond, mlir::ValueRange{});
+
+    auto *afterBlock = builder.createBlock(&whileOp.getAfter());
+    builder.setInsertionPointToStart(afterBlock);
+    auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
+
+    mlir::Value scrutinee = generateExpression(stmt.expr->value);
+    if (!scrutinee) {
+      mlir::memref::StoreOp::create(builder, location, falseVal, lc.activeFlag);
+      ensureYieldTerminator(location);
+      popLoopControl(lc, whileOp);
+      return;
+    }
+
+    {
+      SymbolTableScopeT bodyScope(symbolTable);
+      MutableTableScopeT bodyMutScope(mutableVars);
+      pushDropScope();
+      declareVariable(intern(identPat->name), scrutinee);
+      generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                         lc.continueFlag, location);
+      popDropScope();
+    }
+    ensureYieldTerminator(location);
+    popLoopControl(lc, whileOp);
+    return;
+  }
+
+  // Constructor: enum tag-test.
   auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
   if (!ctorPat) {
-    emitError(location) << "while-let currently only supports constructor patterns";
+    ++errorCount_;
+    emitError(location) << "while-let only supports constructor, wildcard, and identifier patterns";
     return;
   }
 
@@ -70,9 +154,8 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
   // ── "before" region: check activeFlag ──
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
-  auto cond =
-      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{})
-          .getResult();
+  auto cond = mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{})
+                  .getResult();
   cond = andNotReturned(cond, location);
   mlir::scf::ConditionOp::create(builder, location, cond, mlir::ValueRange{});
 
@@ -104,7 +187,7 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
 
   // Create scf.if: if tag matches, bind + body; else, break.
   auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, tagMatch,
-                                       /*withElseRegion=*/true);
+                                      /*withElseRegion=*/true);
 
   // Then: pattern matched — bind variables and run the loop body.
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -114,8 +197,8 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
     pushDropScope();
 
     bindConstructorPatternVars(*ctorPat, scrutinee, location);
-    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
-                                       lc.continueFlag, location);
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
+                                       location);
     popDropScope();
   }
   ensureYieldTerminator(location);

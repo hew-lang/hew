@@ -43,19 +43,58 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   if (!scrutinee)
     return;
 
+  const auto &pattern = stmt.pattern.value;
+  bool hasElse = stmt.else_body.has_value();
+
+  // Wildcard: always matches, no bindings, no enum deref needed.
+  if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
+    auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, trueVal, hasElse);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    generateBlock(stmt.body, /*statementPosition=*/true);
+    ensureYieldTerminator(location);
+    if (hasElse) {
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      generateBlock(*stmt.else_body, /*statementPosition=*/true);
+      ensureYieldTerminator(location);
+    }
+    builder.setInsertionPointAfter(ifOp);
+    return;
+  }
+
+  // Identifier: always matches, bind the whole scrutinee to the named variable.
+  if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
+    auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, trueVal, hasElse);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    {
+      SymbolTableScopeT scope(symbolTable);
+      MutableTableScopeT mutScope(mutableVars);
+      declareVariable(intern(identPat->name), scrutinee);
+      generateBlock(stmt.body, /*statementPosition=*/true);
+      ensureYieldTerminator(location);
+    }
+    if (hasElse) {
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      generateBlock(*stmt.else_body, /*statementPosition=*/true);
+      ensureYieldTerminator(location);
+    }
+    builder.setInsertionPointAfter(ifOp);
+    return;
+  }
+
+  // Constructor: enum tag-test with indirect-enum deref.
+  auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
+  if (!ctorPat) {
+    ++errorCount_;
+    emitError(location) << "if-let only supports constructor, wildcard, and identifier patterns";
+    return;
+  }
+
   // Indirect enum: dereference pointer to get the inner struct
   scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.expr->span, location);
   if (!scrutinee)
     return;
-
-  const auto &pattern = stmt.pattern.value;
-
-  // Check if this is a constructor pattern (e.g., Some(x))
-  auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
-  if (!ctorPat) {
-    emitError(location) << "if-let currently only supports constructor patterns";
-    return;
-  }
 
   const auto &ctorName = ctorPat->name;
   auto ctorVarIt = variantLookup.find(ctorName);
@@ -68,7 +107,6 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   mlir::Value cond = emitTagEqualCondition(scrutinee, variantIndex, location);
 
   // Create scf.if for the branch
-  bool hasElse = stmt.else_body.has_value();
   auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond, hasElse);
 
   // Then region: pattern matches
@@ -111,11 +149,6 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   if (!scrutinee)
     return nullptr;
 
-  // Indirect enum: dereference pointer to get the inner struct
-  scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.expr->span, location);
-  if (!scrutinee)
-    return nullptr;
-
   // Use the type checker's resolved type for this if-let expression
   mlir::Type resultType = nullptr;
   if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
@@ -129,12 +162,81 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
 
   const auto &pattern = expr.pattern.value;
 
-  // Check if this is a constructor pattern (e.g., Some(x))
+  // Wildcard: always matches, no bindings, no enum deref needed.
+  if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
+    auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
+    auto ifOp =
+        mlir::scf::IfOp::create(builder, location, resultType, trueVal, /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    {
+      mlir::Value thenVal = generateBlock(expr.body);
+      auto *thenBlock = builder.getInsertionBlock();
+      if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
+        auto yieldVal = thenVal ? coerceType(thenVal, resultType, location)
+                                : createDefaultValue(builder, location, resultType);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+      }
+    }
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    {
+      mlir::Value elseVal = expr.else_body ? generateBlock(*expr.else_body)
+                                           : createDefaultValue(builder, location, resultType);
+      auto *elseBlock = builder.getInsertionBlock();
+      if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
+        auto yieldVal = elseVal ? coerceType(elseVal, resultType, location)
+                                : createDefaultValue(builder, location, resultType);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+      }
+    }
+    builder.setInsertionPointAfter(ifOp);
+    return ifOp.getResult(0);
+  }
+
+  // Identifier: always matches, bind the whole scrutinee to the named variable.
+  if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
+    auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
+    auto ifOp =
+        mlir::scf::IfOp::create(builder, location, resultType, trueVal, /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    {
+      SymbolTableScopeT scope(symbolTable);
+      MutableTableScopeT mutScope(mutableVars);
+      declareVariable(intern(identPat->name), scrutinee);
+      mlir::Value thenVal = generateBlock(expr.body);
+      auto *thenBlock = builder.getInsertionBlock();
+      if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
+        auto yieldVal = thenVal ? coerceType(thenVal, resultType, location)
+                                : createDefaultValue(builder, location, resultType);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+      }
+    }
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    {
+      mlir::Value elseVal = expr.else_body ? generateBlock(*expr.else_body)
+                                           : createDefaultValue(builder, location, resultType);
+      auto *elseBlock = builder.getInsertionBlock();
+      if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
+        auto yieldVal = elseVal ? coerceType(elseVal, resultType, location)
+                                : createDefaultValue(builder, location, resultType);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
+      }
+    }
+    builder.setInsertionPointAfter(ifOp);
+    return ifOp.getResult(0);
+  }
+
+  // Constructor: enum tag-test with indirect-enum deref.
   auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
   if (!ctorPat) {
-    emitError(location) << "if-let currently only supports constructor patterns";
+    ++errorCount_;
+    emitError(location) << "if-let only supports constructor, wildcard, and identifier patterns";
     return nullptr;
   }
+
+  // Indirect enum: dereference pointer to get the inner struct
+  scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.expr->span, location);
+  if (!scrutinee)
+    return nullptr;
 
   const auto &ctorName = ctorPat->name;
   auto ctorVarIt = variantLookup.find(ctorName);

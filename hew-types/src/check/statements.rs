@@ -191,6 +191,9 @@ impl Checker {
                 else_body,
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
+                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
+                    return Ty::Error;
+                }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 let then_ty = self.check_block(body, expected);
@@ -525,6 +528,9 @@ impl Checker {
                 else_body,
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
+                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
+                    return;
+                }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 self.check_block(body, None);
@@ -751,6 +757,9 @@ impl Checker {
                 ..
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
+                if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
+                    return;
+                }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 self.loop_depth += 1;

@@ -163,6 +163,17 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A `HashSet` element admission check deferred until after all inference has
+/// settled.  Recorded when `validate_hashset_element_type` encounters a
+/// `Ty::Var` element (type still in-flight); drained by
+/// `finalize_hashset_admission` in `check_program`.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredHashSetAdmission {
+    pub(super) span: Span,
+    pub(super) elem_ty: Ty,
+    pub(super) source_module: Option<String>,
+}
+
 impl PendingLoweringFact {
     pub(super) fn hashset(hashset_element_ty: Ty, source_module: Option<String>) -> Self {
         Self {
@@ -394,6 +405,10 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same map).
     pub(super) deferred_hashmap_admission: HashMap<SpanKey, DeferredHashMapAdmission>,
+    /// `HashSet` element admission checks deferred until after inference
+    /// completes.  Keyed by span to suppress duplicates from repeated
+    /// traversals of the same site (annotation + method call on the same set).
+    pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
@@ -549,6 +564,7 @@ impl Checker {
             method_call_receiver_kinds: HashMap::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
+            deferred_hashset_admission: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),

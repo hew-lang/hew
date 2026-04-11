@@ -3437,3 +3437,111 @@ fn hashmap_annotation_with_infer_hole_key_fails_closed() {
         "expected error for HashMap<_, String> with unresolved key, got no errors"
     );
 }
+
+// ── HashSet admission fail-closed ────────────────────────────────────────────
+//
+// Regression tests for the fix that ensures Ty::Var and Ty::Error in HashSet
+// element positions fail closed at the checker boundary rather than leaking
+// into codegen.
+
+#[test]
+fn hashset_unresolved_element_type_fails_closed_at_boundary() {
+    // `s.len()` is called before anything constrains the element type.  The
+    // inline check must defer; finalize_hashset_admission must fail closed.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            let _ = s.len();
+        }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for unresolved HashSet element type, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_error_element_type_fails_closed_silently() {
+    // An already-errored element type (from an undefined name) should not
+    // produce a *second* diagnostic about HashSet admission — only one error.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let e = undefined_fn();
+            var s = HashSet::new();
+            s.insert(e);
+        }",
+    );
+    // There must be at least one error (the undefined_fn reference).
+    assert!(
+        !output.errors.is_empty(),
+        "expected at least one error for undefined function"
+    );
+    // But there must be NO InvalidOperation about HashSet admission cascaded
+    // on top of the existing error.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("HashSet")),
+        "unexpected cascading HashSet admission error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_valid_string_element_not_rejected() {
+    // Ensure the deferred path does not incorrectly reject well-typed HashSets.
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var s = HashSet::new();
+            s.insert("hello");
+            let _ = s.len();
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for HashSet<String>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_valid_i64_element_not_rejected() {
+    // Ensure that HashSet<i64> (the other supported element type) passes cleanly.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var s = HashSet::new();
+            s.insert(42);
+            let _ = s.contains(42);
+        }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for HashSet<i64>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_annotation_with_infer_hole_fails_closed() {
+    // A HashSet annotation with an explicit inference hole (`_`) for the element
+    // that is never constrained must fail closed.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let s: HashSet<_> = HashSet::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashSet<_> with unresolved element type, got no errors"
+    );
+}

@@ -130,6 +130,54 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
+    /// Drain `deferred_hashset_admission`, resolve element types through the
+    /// current substitution, and fail closed on any that are still unresolved
+    /// or error-typed at the checker boundary.
+    ///
+    /// * `Ty::Var` → `InferenceFailed`: inference did not resolve the element type.
+    /// * `Ty::Error` → silent drop: upstream already emitted a diagnostic.
+    /// * Fully-resolved unsupported elements → already caught inline; silently
+    ///   skipped here to avoid duplicate diagnostics.
+    pub(super) fn finalize_hashset_admission(&mut self) {
+        let checks = std::mem::take(&mut self.deferred_hashset_admission);
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        for (_span_key, check) in checks {
+            let resolved = self
+                .subst
+                .resolve(&check.elem_ty)
+                .materialize_literal_defaults();
+
+            // Already-errored type: fail closed without cascading.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+
+            // Still unresolved at the checker boundary → fail closed.
+            if matches!(resolved, Ty::Var(_)) {
+                let mut err = crate::error::TypeError::new(
+                    TypeErrorKind::InferenceFailed,
+                    check.span.clone(),
+                    format!(
+                        "cannot infer HashSet element type at the checker boundary \
+                         (HashSet<{}>); add an explicit type annotation, \
+                         e.g. `HashSet<String>` or `HashSet<i64>`",
+                        resolved.user_facing(),
+                    ),
+                );
+                if let Some(module) = check.source_module {
+                    err = err.with_source_module(module);
+                }
+                new_errors.push(err);
+            }
+
+            // Fully resolved but unsupported element: the inline check should
+            // have already emitted a diagnostic. Skip to avoid duplicates.
+        }
+
+        self.errors.extend(new_errors);
+    }
+
     fn record_method_call_receiver_kind(&mut self, span: &Span, kind: MethodCallReceiverKind) {
         self.method_call_receiver_kinds
             .insert(SpanKey::from(span), kind);

@@ -567,10 +567,28 @@ impl Checker {
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
-        if matches!(
-            resolved,
-            Ty::Var(_) | Ty::Error | Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral
-        ) {
+
+        // Ty::Error: upstream already emitted a diagnostic; fail closed silently
+        // to prevent cascading errors from admission logic.
+        if matches!(resolved, Ty::Error) {
+            return false;
+        }
+
+        // Ty::Var: inference is still in-flight at this call site.  Defer the
+        // admission check until finalize_hashset_admission() runs after all
+        // inference has settled, mirroring the HashMap deferred-admission pattern.
+        if matches!(resolved, Ty::Var(_)) {
+            self.deferred_hashset_admission
+                .entry(SpanKey::from(span))
+                .or_insert_with(|| DeferredHashSetAdmission {
+                    span: span.clone(),
+                    elem_ty: elem_ty.clone(),
+                    source_module: self.current_module.clone(),
+                });
+            return true; // optimistically admit; finalization will fail closed
+        }
+
+        if matches!(resolved, Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral) {
             return true;
         }
 

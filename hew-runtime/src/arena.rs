@@ -326,6 +326,15 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
     }
 }
 
+// Address of the arena most recently freed by `hew_arena_free_all` on this thread.
+// Thread-local so parallel tests on other threads cannot interfere with the
+// snapshot/assert window.  Storing usize avoids holding a dangling typed pointer.
+#[cfg(test)]
+thread_local! {
+    pub static LAST_FREED_ARENA_ADDR: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Free all memory and destroy the arena.
 ///
 /// # Safety
@@ -335,6 +344,8 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     if !arena.is_null() {
+        #[cfg(test)]
+        LAST_FREED_ARENA_ADDR.with(|c| c.set(arena as usize));
         // SAFETY: caller guarantees arena is valid
         let arena = unsafe { Box::from_raw(arena) };
         arena.free_all();

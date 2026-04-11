@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
-use hew_analysis::calls::collect_calls_in_item;
+use hew_analysis::calls::{collect_calls_in_block, collect_calls_in_item};
 use hew_analysis::references::count_all_references;
 use hew_analysis::util::{compute_line_offsets, non_empty, offset_to_line_col, word_at_offset};
 use hew_parser::ast::{Attribute, ImportDecl, ImportSpec, Item, Span, TypeDeclKind};
@@ -2661,9 +2661,9 @@ fn find_incoming_calls(
                 });
             }
             Item::Actor(a) => {
-                // Attribute calls to the specific receive fn when identifiable.
+                // Attribute calls to the specific receive fn or method when identifiable.
                 for recv in &a.receive_fns {
-                    let recv_calls: Vec<_> = calls
+                    let fn_calls: Vec<_> = calls
                         .iter()
                         .filter(|c| {
                             c.name == target_name
@@ -2671,15 +2671,10 @@ fn find_incoming_calls(
                                 && recv.span.contains(&c.span.start)
                         })
                         .collect();
-                    if recv_calls.is_empty() {
+                    if fn_calls.is_empty() {
                         continue;
                     }
-                    let fn_span = if recv.span.is_empty() {
-                        item_span
-                    } else {
-                        &recv.span
-                    };
-                    let range = span_to_range(source, lo, fn_span);
+                    let range = span_to_range(source, lo, &recv.span);
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
                             name: recv.name.clone(),
@@ -2691,7 +2686,39 @@ fn find_incoming_calls(
                             selection_range: range,
                             data: None,
                         },
-                        from_ranges: recv_calls
+                        from_ranges: fn_calls
+                            .iter()
+                            .map(|c| span_to_range(source, lo, &c.span))
+                            .collect(),
+                    });
+                }
+                for method in &a.methods {
+                    let mut method_calls = Vec::new();
+                    collect_calls_in_block(&method.body, &mut method_calls);
+                    let fn_calls: Vec<_> = method_calls
+                        .iter()
+                        .filter(|c| c.name == target_name)
+                        .collect();
+                    if fn_calls.is_empty() {
+                        continue;
+                    }
+                    let range = if method.decl_span.is_empty() {
+                        span_to_range(source, lo, item_span)
+                    } else {
+                        span_to_range(source, lo, &method.decl_span)
+                    };
+                    result.push(CallHierarchyIncomingCall {
+                        from: CallHierarchyItem {
+                            name: method.name.clone(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(format!("actor {}", a.name)),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: range,
+                            data: None,
+                        },
+                        from_ranges: fn_calls
                             .iter()
                             .map(|c| span_to_range(source, lo, &c.span))
                             .collect(),
@@ -2734,6 +2761,54 @@ fn find_incoming_calls(
                     from_ranges,
                 });
             }
+            Item::Trait(t) => {
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: t.name.clone(),
+                        kind: SymbolKind::INTERFACE,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
+            Item::Supervisor(s) => {
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: s.name.clone(),
+                        kind: SymbolKind::MODULE,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
+            Item::Machine(m) => {
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: m.name.clone(),
+                        kind: SymbolKind::ENUM,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
             _ => {}
         }
     }
@@ -2760,6 +2835,13 @@ fn find_outgoing_calls(
             Item::Impl(i) => i.methods.iter().any(|m| m.name == caller_name),
             Item::TypeDecl(td) => td.body.iter().any(|b| {
                 if let hew_parser::ast::TypeBodyItem::Method(m) = b {
+                    m.name == caller_name
+                } else {
+                    false
+                }
+            }),
+            Item::Trait(t) => t.items.iter().any(|ti| {
+                if let hew_parser::ast::TraitItem::Method(m) = ti {
                     m.name == caller_name
                 } else {
                     false

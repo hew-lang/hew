@@ -4181,13 +4181,24 @@ mod tests {
         }));
         track_actor(actor);
 
+        // Zero the thread-local witness immediately before the call under test.
+        // Without this, a prior test on the same worker thread that freed an
+        // arena at the same address could leave LAST_FREED_ARENA_ADDR == arena_addr
+        // before we even reach actor_free_wasm_impl, making the assertion a
+        // false-positive if the teardown path is later removed.
+        // arena_addr is always non-zero (hew_arena_new is asserted non-null above),
+        // so 0 is a safe sentinel: if hew_arena_free_all is never called,
+        // the witness stays 0 and the assert_eq below fails.
+        crate::arena::LAST_FREED_ARENA_ADDR.with(|c| c.set(0));
+
         // SAFETY: actor is Box-allocated, tracked, in Stopped state, not dispatching.
         // state / init_state are null (libc::free(null) is a no-op), mailbox is null.
         let rc = unsafe { actor_free_wasm_impl(actor) };
 
         // Primary assertion: hew_arena_free_all must have been called with exactly
         // this actor's arena address.  LAST_FREED_ARENA_ADDR is thread-local so
-        // parallel tests on other threads cannot interfere.
+        // parallel tests on other threads cannot interfere, and it was zeroed above
+        // so stale same-thread state cannot produce a false positive.
         let last_freed = crate::arena::LAST_FREED_ARENA_ADDR.with(std::cell::Cell::get);
         assert_eq!(
             last_freed, arena_addr,

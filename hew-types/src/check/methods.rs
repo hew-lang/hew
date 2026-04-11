@@ -109,6 +109,12 @@ impl Checker {
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        // Track which (key_var, val_var) pairs have already produced a
+        // diagnostic so that repeated method calls on the same unresolved
+        // HashMap (e.g. `m.len(); m.is_empty()`) emit exactly one
+        // InferenceFailed rather than one per call site.
+        let mut reported_var_pairs: std::collections::HashSet<(Option<TypeVar>, Option<TypeVar>)> =
+            std::collections::HashSet::new();
 
         for (_span_key, check) in checks {
             let resolved_key = self
@@ -125,17 +131,41 @@ impl Checker {
                 continue;
             }
 
-            // Still unresolved at the checker boundary → fail closed.
+            // Still unresolved at the checker boundary → fail closed, but
+            // deduplicate across multiple call sites that share the same
+            // unresolved root vars.
             if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
+                let key_var = if let Ty::Var(v) = resolved_key {
+                    Some(v)
+                } else {
+                    None
+                };
+                let val_var = if let Ty::Var(v) = resolved_val {
+                    Some(v)
+                } else {
+                    None
+                };
+                if !reported_var_pairs.insert((key_var, val_var)) {
+                    // Already emitted for this root (key_var, val_var) pair.
+                    continue;
+                }
+                let key_resolved_display = self
+                    .subst
+                    .resolve(&check.key_ty)
+                    .materialize_literal_defaults();
+                let val_resolved_display = self
+                    .subst
+                    .resolve(&check.val_ty)
+                    .materialize_literal_defaults();
+                let key_display = key_resolved_display.user_facing();
+                let val_display = val_resolved_display.user_facing();
                 let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InferenceFailed,
                     check.span.clone(),
                     format!(
                         "cannot infer HashMap key or value type at the checker boundary \
-                         (HashMap<{}, {}>); add an explicit type annotation, \
-                         e.g. `HashMap<String, i64>`",
-                        resolved_key.user_facing(),
-                        resolved_val.user_facing(),
+                         (HashMap<{key_display}, {val_display}>); add an explicit type \
+                         annotation, e.g. `HashMap<String, i64>`",
                     ),
                 );
                 if let Some(module) = check.source_module {

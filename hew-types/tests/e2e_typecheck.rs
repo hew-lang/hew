@@ -3809,3 +3809,34 @@ fn registration_fn_param_hashmap_val_hole_single_error() {
         output.errors
     );
 }
+
+// ── HashMap repeated-method-call spray regression ────────────────────────────
+
+#[test]
+fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
+    // Multiple method calls on the same unresolved HashMap must not spray one
+    // InferenceFailed per call site.  finalize_hashmap_admission deduplicates
+    // by (key_TypeVar, val_TypeVar) pair, so exactly one admission
+    // InferenceFailed appears regardless of how many methods are called.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var m = HashMap::new();
+            let _ = m.len();
+            let _ = m.is_empty();
+        }",
+    );
+    let hashmap_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashMap"))
+        .collect();
+    assert_eq!(
+        hashmap_errors.len(),
+        1,
+        "expected exactly one HashMap InferenceFailed (var-pair dedup), \
+         got {}: {:#?}",
+        hashmap_errors.len(),
+        output.errors
+    );
+}

@@ -527,4 +527,133 @@ mod tests {
         let result = rename(source, 3, "bar"); // rename 'foo' to 'bar'
         let _ = result;
     }
+
+    // ── WasmDiagnostic notes/suggestions serialization contract ─────────────
+
+    /// Every diagnostic in `analyze()` JSON must carry `notes` and `suggestions`
+    /// fields, even when they are empty.  This locks down the serialized shape
+    /// introduced by PR #967 for both the parse-error and type-error paths.
+    #[test]
+    fn diagnostic_always_has_notes_and_suggestions_fields() {
+        // Parse error path — the checker never runs.
+        let json = analyze("fn {");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let diags = v["diagnostics"].as_array().unwrap();
+        assert!(!diags.is_empty(), "expected at least one parse diagnostic");
+        for d in diags {
+            assert!(
+                d.get("notes").and_then(|n| n.as_array()).is_some(),
+                "parse-path diagnostic missing `notes` array: {d}"
+            );
+            assert!(
+                d.get("suggestions").and_then(|s| s.as_array()).is_some(),
+                "parse-path diagnostic missing `suggestions` array: {d}"
+            );
+        }
+
+        // Type-error path (clean parse, type error).
+        let json = analyze("fn main() { let x = 1; x = 2; }");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let diags = v["diagnostics"].as_array().unwrap();
+        // There may be zero type errors on this program if the checker doesn't
+        // enforce immutability here; in that case only shape of a valid program
+        // matters, which is covered by analyze_valid_program.  If there are
+        // diagnostics, every one must carry both fields.
+        for d in diags {
+            assert!(
+                d.get("notes").and_then(|n| n.as_array()).is_some(),
+                "type-path diagnostic missing `notes` array: {d}"
+            );
+            assert!(
+                d.get("suggestions").and_then(|s| s.as_array()).is_some(),
+                "type-path diagnostic missing `suggestions` array: {d}"
+            );
+        }
+    }
+
+    /// A mutability violation must produce a diagnostic whose `suggestions`
+    /// array is non-empty and whose entries are non-empty strings.
+    #[test]
+    fn diagnostic_suggestions_populated_for_mutability_error() {
+        // `let x` is immutable; `x = 2` should produce a MutabilityError with
+        // a "consider changing this to `var x`" suggestion.
+        let json = analyze("fn main() { let x = 1; x = 2; }");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let diags = v["diagnostics"].as_array().unwrap();
+
+        let with_suggestions: Vec<&serde_json::Value> = diags
+            .iter()
+            .filter(|d| {
+                d.get("suggestions")
+                    .and_then(|s| s.as_array())
+                    .is_some_and(|a| !a.is_empty())
+            })
+            .collect();
+
+        assert!(
+            !with_suggestions.is_empty(),
+            "expected at least one diagnostic with non-empty suggestions for \
+             mutability violation, got: {json}"
+        );
+
+        for d in &with_suggestions {
+            let suggestions = d["suggestions"].as_array().unwrap();
+            for s in suggestions {
+                assert!(
+                    s.as_str().is_some_and(|t| !t.is_empty()),
+                    "suggestion must be a non-empty string, got: {s}"
+                );
+            }
+        }
+    }
+
+    /// A duplicate function definition must produce a diagnostic whose `notes`
+    /// array is non-empty and whose entries carry the expected named fields
+    /// (`start_offset`, `end_offset`, `message`).
+    #[test]
+    fn diagnostic_notes_populated_for_duplicate_definition() {
+        // Two functions named `foo` — duplicate_definition attaches a note
+        // "previous definition here" pointing at the first span.
+        let json = analyze("fn foo() {} fn foo() {}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let diags = v["diagnostics"].as_array().unwrap();
+
+        let with_notes: Vec<&serde_json::Value> = diags
+            .iter()
+            .filter(|d| {
+                d.get("notes")
+                    .and_then(|n| n.as_array())
+                    .is_some_and(|a| !a.is_empty())
+            })
+            .collect();
+
+        assert!(
+            !with_notes.is_empty(),
+            "expected at least one diagnostic with non-empty notes for \
+             duplicate definition, got: {json}"
+        );
+
+        for d in &with_notes {
+            for note in d["notes"].as_array().unwrap() {
+                assert!(
+                    note.get("start_offset")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some(),
+                    "note missing numeric `start_offset`: {note}"
+                );
+                assert!(
+                    note.get("end_offset")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some(),
+                    "note missing numeric `end_offset`: {note}"
+                );
+                assert!(
+                    note.get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| !s.is_empty()),
+                    "note missing non-empty string `message`: {note}"
+                );
+            }
+        }
+    }
 }

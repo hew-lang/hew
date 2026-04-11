@@ -48,6 +48,29 @@ need to confirm that manifest is current, or `make playground-check` when you
 also want the curated `analyze()` smoke over every manifest entry plus the
 repo-local `hew-wasm` build that backs browser-side analysis.
 
+Each manifest entry carries a `capabilities` object:
+
+```jsonc
+{
+  "capabilities": {
+    "browser": "analysis-only",  // invariant — Tier 1 is analysis-only
+    "wasi":    "runnable"        // or "unsupported"
+  }
+}
+```
+
+`browser: "analysis-only"` is invariant for all curated entries: `hew-wasm`
+exposes lex/parse/typecheck only; no in-browser execution exists.  The `wasi`
+value reflects whether the example runs correctly under
+`hew build --target=wasm32-wasi` (`"runnable"`) or triggers a known WASM32
+diagnostic path (`"unsupported"`).  See
+[`docs/wasm-capability-matrix.md § Playground capability contract`](../docs/wasm-capability-matrix.md#playground-capability-contract)
+for the full per-entry table and the rationale behind each disposition.
+
+The `cargo test -p hew-wasm --lib curated_playground_manifest_smoke` step
+verifies that every manifest entry carries well-formed capability metadata in
+addition to running the `analyze()` smoke.
+
 CI protects this surface with the dedicated `playground-wasm-build` lane. That
 lane intentionally stays repo-local and runs only:
 

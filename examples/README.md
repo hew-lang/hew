@@ -89,6 +89,12 @@ The learning paths here are mostly language-focused. When you want shipped libra
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
   - `types/` -- Collections, pattern matching, wire types
 
+  Each manifest entry includes a `capabilities` block that records
+  `browser: "analysis-only"` (invariant — `hew-wasm` is Tier 1 analysis-only)
+  and `wasi: "runnable"|"unsupported"` (whether the snippet runs correctly under
+  `hew build --target=wasm32-wasi`).  The authoritative per-feature table is in
+  [`docs/wasm-capability-matrix.md`](../docs/wasm-capability-matrix.md#playground-capability-contract).
+
 ### Cross-Language Comparisons
 
 - **benchmarks/** -- Cross-language benchmark fixtures: paired `bench_*` implementations under `hew/`, `go/`, and `rust/`, plus the HTTP server comparison files at the directory root ([README](benchmarks/README.md))

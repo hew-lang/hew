@@ -36,6 +36,23 @@ EXAMPLE_ORDER = {
     ),
 }
 
+# Capability contract for the browser/WASI manifest slice.
+#
+# browser: always "analysis-only" — hew-wasm (Tier 1) exposes lex/parse/typecheck
+#          only; no in-browser program execution exists today.
+# wasi:    "runnable"   — the example compiles and executes correctly under
+#                         hew build --target=wasm32-wasi (Tier 2).
+#          "unsupported" — the example triggers a known WASM32 diagnostic path;
+#                          it will fail to compile or produce a non-zero exit code
+#                          under WASI because one or more features are rejected or
+#                          warned at the type-checker level (see
+#                          docs/wasm-capability-matrix.md for the full table).
+#
+# Entries omitted from WASI_CAPABILITY default to "runnable".
+WASI_CAPABILITY: dict[str, str] = {
+    "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
+}
+
 
 def curated_source_paths() -> list[Path]:
     curated_categories = set(CATEGORY_ORDER)
@@ -137,14 +154,19 @@ def build_manifest_entries() -> list[dict[str, str]]:
         metadata = parse_header_metadata(source_path)
         category = source_path.parent.name
 
+        entry_id = f"{category}/{source_path.stem}"
         entries.append(
             {
-                "id": f"{category}/{source_path.stem}",
+                "id": entry_id,
                 "category": category,
                 "name": metadata["name"],
                 "description": metadata["description"],
                 "source_path": source_path.relative_to(PLAYGROUND_DIR).as_posix(),
                 "expected_path": expected_path.relative_to(PLAYGROUND_DIR).as_posix(),
+                "capabilities": {
+                    "browser": "analysis-only",
+                    "wasi": WASI_CAPABILITY.get(entry_id, "runnable"),
+                },
             }
         )
 
@@ -172,7 +194,7 @@ def check_manifest(rendered: str) -> int:
     existing = OUTPUT_FILE.read_text()
     if existing == rendered:
         print(f"{rel_output} is up to date.")
-        return 0
+        return _verify_capability_fields(json.loads(existing), rel_output)
 
     diff = difflib.unified_diff(
         existing.splitlines(keepends=True),
@@ -186,6 +208,43 @@ def check_manifest(rendered: str) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _verify_capability_fields(entries: list[dict], rel_output: str) -> int:
+    """Verify every entry carries well-formed capability metadata."""
+    valid_wasi = {"runnable", "unsupported"}
+    errors: list[str] = []
+
+    for entry in entries:
+        entry_id = entry.get("id", "<unknown>")
+        caps = entry.get("capabilities")
+        if caps is None:
+            errors.append(f"  {entry_id}: missing 'capabilities' field")
+            continue
+        if not isinstance(caps, dict):
+            errors.append(f"  {entry_id}: 'capabilities' must be an object")
+            continue
+        if caps.get("browser") != "analysis-only":
+            errors.append(
+                f"  {entry_id}: capabilities.browser must be 'analysis-only', "
+                f"got {caps.get('browser')!r}"
+            )
+        wasi = caps.get("wasi")
+        if wasi not in valid_wasi:
+            errors.append(
+                f"  {entry_id}: capabilities.wasi must be one of "
+                f"{sorted(valid_wasi)}, got {wasi!r}"
+            )
+
+    if errors:
+        print(
+            f"error: {rel_output} has invalid capability metadata:\n"
+            + "\n".join(errors),
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
 
 
 def main() -> int:

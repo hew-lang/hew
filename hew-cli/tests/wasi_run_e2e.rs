@@ -8,10 +8,16 @@ use serde::Deserialize;
 use support::{hew_binary, repo_root, require_wasi_runner};
 
 #[derive(Debug, Deserialize)]
+struct Capabilities {
+    wasi: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PlaygroundEntry {
     id: String,
     source_path: PathBuf,
     expected_path: PathBuf,
+    capabilities: Capabilities,
 }
 
 fn playground_root() -> PathBuf {
@@ -35,6 +41,13 @@ fn run_wasi_example(source: &Path) -> Output {
         .expect("run hew --target wasm32-wasi")
 }
 
+// Exact set of curated playground entries that declare wasi: "unsupported".
+// Update this constant AND scripts/gen-playground-manifest.py :: WASI_CAPABILITY
+// together whenever the unsupported set changes intentionally.  The coverage
+// guard in curated_playground_examples_run_under_wasi relies on this to catch
+// misclassified manifest entries before they silently drop out of the runnable loop.
+const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor"];
+
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -46,15 +59,25 @@ fn curated_playground_examples_run_under_wasi() {
         "expected the curated 11-snippet manifest"
     );
 
+    let mut actual_unsupported: Vec<&str> = manifest
+        .iter()
+        .filter(|entry| entry.capabilities.wasi == "unsupported")
+        .map(|entry| entry.id.as_str())
+        .collect();
+    actual_unsupported.sort_unstable();
+
+    assert_eq!(
+        actual_unsupported, EXPECTED_WASI_UNSUPPORTED,
+        "wasi 'unsupported' set mismatch: if a new example is intentionally \
+         unsupported update EXPECTED_WASI_UNSUPPORTED in wasi_run_e2e.rs and \
+         WASI_CAPABILITY in scripts/gen-playground-manifest.py together; if \
+         an example was misclassified, fix its manifest capability instead"
+    );
+
     let runnable: Vec<_> = manifest
         .iter()
-        .filter(|entry| entry.id != "concurrency/supervisor")
+        .filter(|entry| entry.capabilities.wasi == "runnable")
         .collect();
-    assert_eq!(
-        runnable.len(),
-        10,
-        "expected exactly 10 WASI-runnable playground snippets"
-    );
 
     for entry in runnable {
         let source = playground_root().join(&entry.source_path);
@@ -85,7 +108,17 @@ fn curated_playground_examples_run_under_wasi() {
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
 
-    let source = playground_root().join("concurrency").join("supervisor.hew");
+    let manifest = load_playground_manifest();
+    let supervisor_entry = manifest
+        .iter()
+        .find(|entry| entry.id == "concurrency/supervisor")
+        .expect("concurrency/supervisor entry in manifest");
+    assert_eq!(
+        supervisor_entry.capabilities.wasi, "unsupported",
+        "concurrency/supervisor must declare wasi capability 'unsupported' in manifest"
+    );
+
+    let source = playground_root().join(&supervisor_entry.source_path);
     let output = run_wasi_example(&source);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

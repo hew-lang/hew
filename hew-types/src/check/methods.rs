@@ -33,6 +33,12 @@ impl Checker {
         let pending = std::mem::take(&mut self.pending_lowering_facts);
         let mut result = HashMap::with_capacity(pending.len());
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        // Track which unresolved TypeVars have already produced a diagnostic so
+        // that repeated method calls on the same unresolved HashSet (e.g.
+        // `s.len(); s.is_empty()`) emit exactly one InferenceFailed rather than
+        // one per call site.  Each unique unresolved root var gets one error.
+        let mut reported_unresolved_vars: std::collections::HashSet<TypeVar> =
+            std::collections::HashSet::new();
 
         for (span_key, pending_fact) in pending {
             let resolved_ty = self
@@ -54,8 +60,17 @@ impl Checker {
                 }
                 Err(LoweringFactError::UnresolvedHashSetElementType) => {
                     // Inference did not resolve the element type by the checker
-                    // boundary.  Emit a clear diagnostic and prune the fact so
+                    // boundary.  Emit a clear diagnostic (at most once per
+                    // unique unresolved TypeVar) and prune the fact so
                     // downstream codegen fails closed via requireLoweringFactOf.
+                    if let Ty::Var(var) = resolved_ty {
+                        if !reported_unresolved_vars.insert(var) {
+                            // Already emitted for this root var (another call
+                            // site on the same unresolved set).  Skip to avoid
+                            // spraying one error per method-call site.
+                            continue;
+                        }
+                    }
                     let span = span_key.start..span_key.end;
                     let mut err = crate::error::TypeError::new(
                         TypeErrorKind::InferenceFailed,

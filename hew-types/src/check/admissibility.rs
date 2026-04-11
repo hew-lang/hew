@@ -183,9 +183,28 @@ impl ConcreteCollectionKind {
                 Some(checker.validate_vec_element_type(&args[0], span))
             }
             Self::HashSet if name == "HashSet" && args.len() == 1 => {
+                // Skip admission when the element type is still unresolved or
+                // erroneous: Ty::Var is not yet decidable (inference may
+                // resolve it), and Ty::Error already has an upstream
+                // diagnostic.  The dedicated deferred-admission paths
+                // (validate_hashset_element_type from method-call sites) and
+                // the inference-holes path handle those cases with proper
+                // authority and without duplication.
+                let resolved = checker.subst.resolve(&args[0]);
+                if matches!(resolved, Ty::Var(_) | Ty::Error) {
+                    return Some(true);
+                }
                 Some(checker.validate_hashset_element_type(&args[0], span))
             }
             Self::HashMap if name == "HashMap" && args.len() == 2 => {
+                // Same: skip admission for undecidable/erroneous args.
+                let resolved_key = checker.subst.resolve(&args[0]);
+                let resolved_val = checker.subst.resolve(&args[1]);
+                if matches!(resolved_key, Ty::Var(_) | Ty::Error)
+                    || matches!(resolved_val, Ty::Var(_) | Ty::Error)
+                {
+                    return Some(true);
+                }
                 Some(checker.validate_hashmap_key_value_types(&args[0], &args[1], span))
             }
             _ => None,

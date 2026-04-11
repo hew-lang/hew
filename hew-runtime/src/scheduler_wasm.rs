@@ -3023,8 +3023,7 @@ mod tests {
     #[test]
     fn spawn_path_arena_is_installed_during_dispatch_and_freed_on_teardown() {
         // Items before statements required by clippy::items_after_statements.
-        static ARENA_SEEN: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+        static ARENA_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
         unsafe extern "C" fn capture_arena_ptr(
             _state: *mut c_void,
@@ -3045,11 +3044,15 @@ mod tests {
 
         // ── 1. Allocate an arena exactly as the updated spawn path does ──────
         let arena = crate::arena::hew_arena_new();
-        assert!(!arena.is_null(), "hew_arena_new must succeed (spawn-path precondition)");
+        assert!(
+            !arena.is_null(),
+            "hew_arena_new must succeed (spawn-path precondition)"
+        );
 
         // ── 2. Wire up a heap-allocated actor with that arena ─────────────────
         //      We use Box::into_raw so that free_actor_resources_wasm can
         //      reclaim it via Box::from_raw at teardown.
+        // SAFETY: hew_mailbox_new has no preconditions; returns an owned pointer.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
         assert!(!mailbox.is_null(), "mailbox allocation must succeed");
 
@@ -3084,7 +3087,11 @@ mod tests {
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────
+        // SAFETY: actor points to a live test actor allocated above and is valid
+        // to enqueue on the single-threaded test scheduler.
         unsafe { sched_enqueue(actor) };
+        // SAFETY: actor remains live and queue_wasm_message requires a valid actor
+        // pointer plus a trivially copyable i32 payload.
         unsafe { queue_wasm_message(actor, 0) };
 
         hew_sched_run();
@@ -3114,9 +3121,7 @@ mod tests {
         // SAFETY: actor is Box-allocated, not being dispatched, and the arena +
         // mailbox are both valid.  state / init_state are null so libc::free(null)
         // is a no-op.
-        unsafe {
-            crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>())
-        };
+        unsafe { crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>()) };
 
         hew_sched_shutdown();
     }

@@ -194,7 +194,7 @@ add_e2e_test(actor_hashmap_ownership test_actor_hashmap_ownership.hew "true\ntru
 add_e2e_test(actor_struct_message test_actor_struct_message.hew "alpha:10\nbeta:20\n30\n")
 add_e2e_test(actor_nested_struct_message test_actor_nested_struct_message.hew "first:10\nsecond:25\n35\n")
 add_e2e_test(actor_closure_struct_message test_actor_closure_struct_message.hew "105\n105\n")
-add_e2e_test(actor_nested_handle_struct_message test_actor_nested_handle_struct_message.hew "false\ntrue\nfalse\n")
+add_e2e_test(actor_nested_handle_struct_message test_actor_nested_handle_struct_message.hew "true\nfalse\n")
 add_e2e_test(vec_basic test_vec_basic.hew "3\n10\n20\n30\n60\n")
 add_e2e_test(vec_append test_vec_append.hew "5\n1\n4\n5\n1\n99\n")
 add_e2e_test(else_if test_else_if.hew "2\n-1\n0\n")

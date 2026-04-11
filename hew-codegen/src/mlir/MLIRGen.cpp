@@ -6696,6 +6696,16 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
       if (entry.varName != varName)
         continue;
 
+      // Auto-field-drop entries back pointer-free struct types (String, Vec,
+      // etc. fields).  Their slot is a struct value, not a pointer; creating a
+      // memref<ptr> guard and bitcasting the struct into it would corrupt the
+      // emitDropEntry path and cause a runtime crash (SIGTRAP / WASM
+      // unreachable).  No-op free() calls on these types (e.g. csv.Table,
+      // semver.Version) do not actually release anything, so the scope-exit
+      // __auto_field_drop must fire unchanged to free the owned fields.
+      if (entry.dropFuncName == "__auto_field_drop")
+        return;
+
       if (entry.promotedSlot) {
         // Slot exists — zero it.
         //   • LLVMPointerType slot: the existing null-guard in emitDropEntry skips

@@ -37,7 +37,10 @@ fn main() {
     {
         let msg = Outer { inner: Inner { pat: re"[0-9]+" } };
         m.check(msg);
-        println(msg.inner.pat.is_match("hello123"));
+        // msg was moved into check(); accessing msg.inner.pat after the move
+        // is a compile-time use-of-moved-value error now that regex.Pattern
+        // has impl Drop (ownership tracking).  The actor results below verify
+        // the pattern was correctly transferred and used inside the actor.
     };
     println(await m.get_matched());
     println(await m.get_missed());

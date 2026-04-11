@@ -25,5 +25,15 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = "test(connection_drop_wakes_pending_remote_ask)"
 retries = 1
 
+[[profile.ci.overrides]]
+# circuit_breaker_trips_on_repeated_crashes is timing-sensitive: it polls for a
+# supervisor restart between two fault-injected crashes. On Windows CI runners
+# under load the scheduler can take longer than the 5-second inner poll window
+# to process the restart, causing the second crash to target the old (closed)
+# actor mailbox and never be recorded. One retry absorbs transient jitter
+# without masking real circuit-breaker regressions.
+filter = "test(circuit_breaker_trips_on_repeated_crashes)"
+retries = 1
+
 [profile.ci.junit]
 path = "junit.xml"

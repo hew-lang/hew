@@ -76,15 +76,17 @@ pub(crate) const HEW_REPLY_REJECT_MSG_TYPE: i32 = 65_535;
 /// handler thread exits (or panics — the `Drop` impl runs in both cases).
 static INBOUND_ASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-/// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] exactly once on drop.
+/// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] and the per-manager
+/// active counter exactly once on drop.
 ///
-/// Constructed in the spawned ask-handler thread so the counter stays
+/// Constructed in the spawned ask-handler thread so both counters stay
 /// accurate even under panics or early returns.
-struct InboundAskGuard;
+struct InboundAskGuard(Arc<AtomicUsize>);
 
 impl Drop for InboundAskGuard {
     fn drop(&mut self) {
         INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -618,9 +620,30 @@ unsafe extern "C" fn node_inbound_router(
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             return;
         };
+        // Close the spawn window: if node teardown has already called
+        // hew_connmgr_mark_stopping, the worker would bail immediately inside
+        // handle_inbound_ask without sending a reply, and conn_mgr may be on the
+        // verge of being freed.  Bail here so no new workers are created once
+        // the STOPPING flag is visible.
+        if shutdown_started.load(Ordering::Acquire) {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        // Acquire the per-manager active counter. This tracks workers for THIS
+        // conn_mgr specifically, allowing hew_node_stop to drain only its own
+        // workers (not workers from other nodes in multi-node test setups).
+        // SAFETY: conn_mgr is live for the duration of this router call.
+        let Some(per_mgr_active) =
+            (unsafe { connection::hew_connmgr_inbound_ask_active(conn_mgr) })
+        else {
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            return;
+        };
+        per_mgr_active.fetch_add(1, Ordering::AcqRel);
         thread::spawn(move || {
-            // Guard decrements INBOUND_ASK_ACTIVE on drop (including on panic).
-            let _guard = InboundAskGuard;
+            // Guard decrements both INBOUND_ASK_ACTIVE and the per-manager
+            // counter on drop (including on panic).
+            let _guard = InboundAskGuard(per_mgr_active);
             handle_inbound_ask(
                 target_actor_id,
                 msg_type,
@@ -1285,10 +1308,43 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     // serialization above prevents concurrent actor cleanup from racing this teardown.
     unsafe { unregister_local_names_for_node(node) };
 
+    // Capture the per-manager active counter before freeing conn_mgr.  We hold
+    // the Arc so the AtomicUsize remains alive for the drain below even after
+    // the manager is freed.
+    let inbound_active_arc = if node.conn_mgr.is_null() {
+        None
+    } else {
+        // SAFETY: conn_mgr is valid here (freed immediately below).
+        unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
+    };
+
     if !node.conn_mgr.is_null() {
         // SAFETY: valid manager pointer from hew_connmgr_new.
         unsafe { connection::hew_connmgr_free(node.conn_mgr) };
         node.conn_mgr = ptr::null_mut();
+    }
+    // Postcondition: drain this conn_mgr's inbound-ask workers.
+    //
+    // Every worker spawned by `node_inbound_router` holds a `SendConnMgr` raw
+    // pointer for the lifetime of `handle_inbound_ask`. The workers bail safely
+    // (via the CURRENT_NODE=0 / shutdown_started=true guards), but we must not
+    // advance teardown — or let callers free the node — while any worker thread
+    // still holds that pointer.  We drain the per-manager counter (not the
+    // global INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node
+    // test does not wait for workers on a different node's manager.
+    //
+    // 5-second ceiling prevents a misbehaving actor dispatch from hanging stop
+    // indefinitely; in practice well-behaved nodes drain in microseconds.
+    if let Some(active) = inbound_active_arc {
+        const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+        const POLL: std::time::Duration = std::time::Duration::from_millis(1);
+        let deadline = std::time::Instant::now() + MAX_DRAIN;
+        while active.load(Ordering::Acquire) > 0 {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(POLL);
+        }
     }
 
     if !node.routing_table.is_null() {
@@ -3404,27 +3460,39 @@ mod tests {
     // All of these tests acquire the shared runtime test lock so they serialize with any
     // other test that runs a node or manipulates INBOUND_ASK_ACTIVE.
 
-    /// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` exactly once on drop,
-    /// including when the enclosing scope exits via panic.
+    /// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` and the per-manager
+    /// counter exactly once on drop, including when the enclosing scope exits
+    /// via panic.
     #[test]
     fn inbound_ask_guard_decrements_on_drop() {
         let _lock = crate::runtime_test_guard();
         // Reset to a known value; restore on exit.
         let saved = INBOUND_ASK_ACTIVE.swap(1, Ordering::AcqRel);
+        let per_mgr = Arc::new(AtomicUsize::new(1));
         {
-            let _guard = InboundAskGuard;
+            let _guard = InboundAskGuard(Arc::clone(&per_mgr));
             assert_eq!(
                 INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
                 1,
-                "counter must be 1 while guard is live"
+                "global counter must be 1 while guard is live"
+            );
+            assert_eq!(
+                per_mgr.load(Ordering::Acquire),
+                1,
+                "per-mgr counter must be 1 while guard is live"
             );
         }
-        // Guard dropped — counter must be 0.
-        let after = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+        // Guard dropped — both counters must be 0.
+        let after_global = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+        let after_per_mgr = per_mgr.load(Ordering::Acquire);
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
         assert_eq!(
-            after, 0,
+            after_global, 0,
             "InboundAskGuard must decrement INBOUND_ASK_ACTIVE on drop"
+        );
+        assert_eq!(
+            after_per_mgr, 0,
+            "InboundAskGuard must decrement per-manager counter on drop"
         );
     }
 
@@ -3433,19 +3501,31 @@ mod tests {
     fn inbound_ask_guard_pair_decrements_twice() {
         let _lock = crate::runtime_test_guard();
         let saved = INBOUND_ASK_ACTIVE.swap(2, Ordering::AcqRel);
-        let g1 = InboundAskGuard;
-        let g2 = InboundAskGuard;
+        let per_mgr1 = Arc::new(AtomicUsize::new(1));
+        let per_mgr2 = Arc::new(AtomicUsize::new(1));
+        let g1 = InboundAskGuard(Arc::clone(&per_mgr1));
+        let g2 = InboundAskGuard(Arc::clone(&per_mgr2));
         drop(g1);
         assert_eq!(
             INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
             1,
-            "first guard must decrement by 1"
+            "first guard must decrement global by 1"
+        );
+        assert_eq!(
+            per_mgr1.load(Ordering::Acquire),
+            0,
+            "first guard must decrement its per-mgr counter to 0"
         );
         drop(g2);
         assert_eq!(
             INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
             0,
-            "second guard must decrement back to zero"
+            "second guard must decrement global back to zero"
+        );
+        assert_eq!(
+            per_mgr2.load(Ordering::Acquire),
+            0,
+            "second guard must decrement its per-mgr counter to 0"
         );
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
     }
@@ -3756,6 +3836,142 @@ mod tests {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── Regression: race-window fixes ────────────────────────────────────
+
+    /// After `hew_connmgr_mark_stopping` is called, `node_inbound_router`
+    /// must not spawn a new inbound-ask worker (the spawn-window fix).
+    ///
+    /// This test marks the connection manager as stopping, then calls the
+    /// inbound router directly with an ask-shaped message and asserts that
+    /// neither `INBOUND_ASK_ACTIVE` nor the per-manager counter increases —
+    /// no worker was spawned.
+    #[test]
+    fn inbound_router_no_spawn_after_shutdown_started() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let (node, _port) = start_tcp_test_listener_node(351);
+
+        // Capture per-manager counter before marking stopping.
+        // SAFETY: node was just started and conn_mgr is valid here.
+        let per_mgr_active =
+            unsafe { connection::hew_connmgr_inbound_ask_active((*node.as_ptr()).conn_mgr) }
+                .expect("conn_mgr must have inbound_ask_active");
+
+        // Mark the connection manager as stopping — this is what hew_node_stop
+        // does inside its CURRENT_NODE write lock.
+        // SAFETY: node was just started and conn_mgr is valid here.
+        unsafe { connection::hew_connmgr_mark_stopping((*node.as_ptr()).conn_mgr) };
+
+        // The per-manager counter is fresh for this node and must be zero.
+        // The global counter may be non-zero due to other tests sharing the
+        // process — record it and verify it is UNCHANGED after the router call.
+        let global_before = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
+        assert_eq!(
+            per_mgr_active.load(Ordering::Acquire),
+            0,
+            "precondition: per-manager counter must be zero before the test call"
+        );
+
+        // Call the inbound router with an ask-shaped message (request_id > 0,
+        // source_node_id > 0).  The router should bail without spawning.
+        // SAFETY: conn_mgr is valid; null data with size 0 is the empty-payload contract.
+        unsafe {
+            node_inbound_router(
+                0,
+                1,
+                ptr::null_mut(),
+                0,
+                /*request_id=*/ 1,
+                /*source_node_id=*/ 1,
+                (*node.as_ptr()).conn_mgr,
+            );
+        }
+
+        // Give any mistakenly-spawned thread time to increment the counters.
+        thread::sleep(Duration::from_millis(20));
+
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            global_before,
+            "global counter must not change after shutdown has started"
+        );
+        assert_eq!(
+            per_mgr_active.load(Ordering::Acquire),
+            0,
+            "per-manager counter must not increase after shutdown has started"
+        );
+
+        // SAFETY: node is valid and owned by the TestNode guard.
+        unsafe { assert_eq!(hew_node_stop(node.as_ptr()), 0) };
+        crate::registry::hew_registry_clear();
+    }
+
+    /// `hew_node_stop` must return only after the per-manager inbound-ask
+    /// active counter reaches zero (the drain postcondition).
+    ///
+    /// This test artificially inflates both `INBOUND_ASK_ACTIVE` and the
+    /// per-conn_mgr counter by one to simulate an in-flight worker, schedules
+    /// a background thread to decrement them after a short delay, and then
+    /// asserts that stop waited for the decrement (counter is zero on return).
+    #[test]
+    fn node_stop_drains_inbound_ask_active() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let (node, _port) = start_tcp_test_listener_node(352);
+
+        // Capture the per-manager counter Arc while conn_mgr is still live.
+        // SAFETY: node was just started and conn_mgr is valid here.
+        let per_mgr_active =
+            unsafe { connection::hew_connmgr_inbound_ask_active((*node.as_ptr()).conn_mgr) }
+                .expect("conn_mgr must have inbound_ask_active");
+
+        // Simulate one active inbound-ask worker: increment both counters as
+        // the real spawn path does.  A background thread decrements them after
+        // 60 ms — long enough to make the drain observable without being slow.
+        let global_saved = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        per_mgr_active.fetch_add(1, Ordering::AcqRel);
+        let per_mgr_clone = Arc::clone(&per_mgr_active);
+        let decrement_handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            per_mgr_clone.fetch_sub(1, Ordering::AcqRel);
+        });
+
+        let stop_start = std::time::Instant::now();
+        // SAFETY: node is valid and owned by TestNode.
+        unsafe { assert_eq!(hew_node_stop(node.as_ptr()), 0) };
+        let elapsed = stop_start.elapsed();
+
+        // Join the decrement thread (it should already be done by now).
+        decrement_handle.join().expect("decrement thread panicked");
+
+        assert_eq!(
+            per_mgr_active.load(Ordering::Acquire),
+            0,
+            "per-manager counter must be zero after node_stop"
+        );
+        assert_eq!(
+            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
+            global_saved,
+            "global INBOUND_ASK_ACTIVE must be back to its pre-test value"
+        );
+
+        // stop must have waited at least ~60 ms for the drain — but at most
+        // a generous 4 s to avoid flakiness on heavily loaded CI machines.
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "node_stop returned too quickly ({elapsed:?}); drain did not wait"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "node_stop took too long ({elapsed:?}); drain may have stalled"
+        );
+
         crate::registry::hew_registry_clear();
     }
 }

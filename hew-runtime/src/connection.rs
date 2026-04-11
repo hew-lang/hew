@@ -32,7 +32,7 @@
 //! - [`hew_connmgr_broadcast`] — Send to all connections.
 
 use std::ffi::{c_char, c_int, CStr};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -191,6 +191,12 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
+    /// Count of inbound-ask worker threads currently active for this manager.
+    ///
+    /// Incremented in `node_inbound_router` before spawning; decremented by
+    /// the worker's `InboundAskGuard` on exit.  Used by `hew_node_stop` to
+    /// drain workers before freeing node resources.
+    pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
     reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
     /// Monotonic token generator for connection-lifecycle publications.
@@ -1081,6 +1087,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_enabled: AtomicBool::new(false),
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+        inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         reconnect_workers: Mutex::new(Vec::new()),
         next_publication_token: AtomicU64::new(1),
         local_node_id,
@@ -1161,6 +1168,25 @@ pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<A
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     Some(Arc::clone(&mgr_ref.reconnect_shutdown))
+}
+
+/// Return a clone of the per-manager inbound-ask active counter.
+///
+/// Used by `node_inbound_router` to track workers for this specific manager
+/// and by `hew_node_stop` to drain them before freeing node resources.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_inbound_ask_active(
+    mgr: *mut HewConnMgr,
+) -> Option<Arc<AtomicUsize>> {
+    if mgr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    Some(Arc::clone(&mgr_ref.inbound_ask_active))
 }
 
 /// Configure manager-wide reconnect policy.
@@ -1984,6 +2010,7 @@ mod tests {
             reconnect_enabled: AtomicBool::new(false),
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: Mutex::new(Vec::new()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,

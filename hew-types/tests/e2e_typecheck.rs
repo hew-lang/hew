@@ -3317,7 +3317,7 @@ fn rc_param_iflet_both_branches_trailing_expr_errors() {
 // are explicitly deferred to a future escape-analysis pass:
 //
 // 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` is safe when called
-//    with value types (int, String, structs) but unsound when `T = Rc<U>`.
+//    with value types (int, String, String, structs) but unsound when `T = Rc<U>`.
 //    Definition-site checking was removed because it rejects all generic
 //    identity patterns.  Needs call-site / monomorphisation-time checking.
 //
@@ -3327,3 +3327,113 @@ fn rc_param_iflet_both_branches_trailing_expr_errors() {
 // 3. Deeply nested non-constructor call chains are not caught.
 //
 // These are tracked as future escape-analysis work.
+
+// ── HashMap admission fail-closed ────────────────────────────────────────────
+//
+// Regression tests for the fix that ensures Ty::Var and Ty::Error in HashMap
+// key/value positions fail closed at the checker boundary rather than leaking
+// into C++ codegen.
+
+#[test]
+fn hashmap_unresolved_key_type_fails_closed_at_boundary() {
+    // `m.len()` is called before anything constrains the key type.  The inline
+    // check defers; finalize_hashmap_admission must fail closed.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var m = HashMap::new();
+            let _ = m.len();
+        }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for unresolved HashMap key/value type, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_unresolved_val_type_fails_closed_at_boundary() {
+    // Key is constrained (String), value is not.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var m = HashMap::new();
+            let _ = m.is_empty();
+        }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for fully-unresolved HashMap, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_error_key_type_fails_closed_silently() {
+    // An already-errored key type (from an undefined name) should not produce
+    // a *second* diagnostic about the HashMap admission — only one error.
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let k = undefined_fn();
+            var m = HashMap::new();
+            m.insert(k, "val");
+        }"#,
+    );
+    // There must be at least one error (the undefined_fn reference).
+    assert!(
+        !output.errors.is_empty(),
+        "expected at least one error for undefined function"
+    );
+    // But there must be NO InvalidOperation about HashMap admission cascaded
+    // on top of the existing error.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("HashMap")),
+        "unexpected cascading HashMap admission error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_valid_string_key_int_val_not_rejected() {
+    // Ensure the deferred path does not incorrectly reject well-typed HashMaps.
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m = HashMap::new();
+            m.insert("key", 42);
+            let _ = m.len();
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for HashMap<String, int>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_annotation_with_infer_hole_key_fails_closed() {
+    // A HashMap annotation with an explicit inference hole (`_`) for the key
+    // that is never constrained must fail closed.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let m: HashMap<_, String> = HashMap::new();
+        }",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected error for HashMap<_, String> with unresolved key, got no errors"
+    );
+}

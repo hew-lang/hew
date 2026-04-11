@@ -145,10 +145,14 @@ impl Checker {
     ) -> Ty {
         let (ty, hole_vars) = self.resolve_annotation_holes(annotation);
         self.record_deferred_inference_holes(annotation, context, hole_vars);
-        if let Ty::Named { name, args } = &ty {
-            if name == "HashSet" && args.len() == 1 {
+        match &ty {
+            Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => {
                 self.validate_hashset_element_type(&args[0], &annotation.1);
             }
+            Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => {
+                self.validate_hashmap_key_value_types(&args[0], &args[1], &annotation.1);
+            }
+            _ => {}
         }
         ty
     }

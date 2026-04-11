@@ -37,9 +37,9 @@ pub use self::types::{
     SpanKey, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
-    ConstValue, DeferredCastCheck, DeferredInferenceHole, DeferredMonomorphicSite, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo,
-    TraitInfo, WasmUnsupportedFeature,
+    ConstValue, DeferredCastCheck, DeferredHashMapAdmission, DeferredInferenceHole,
+    DeferredMonomorphicSite, ImplAliasEntry, ImplAliasScope, ImportKey, IntegerTypeInfo,
+    PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo, WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -252,6 +252,7 @@ impl Checker {
             &mut resolved_lowering_facts,
             &resolved_expr_types,
         );
+        self.finalize_hashmap_admission();
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();

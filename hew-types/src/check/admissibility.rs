@@ -472,14 +472,11 @@ impl Checker {
     }
 
     fn is_supported_hashmap_key_type(ty: &Ty) -> bool {
-        matches!(ty, Ty::Var(_) | Ty::Error | Ty::String)
+        matches!(ty, Ty::String)
     }
 
     fn is_supported_hashmap_value_type(ty: &Ty) -> bool {
-        matches!(
-            ty,
-            Ty::Var(_) | Ty::Error | Ty::String | Ty::Bool | Ty::Char | Ty::Duration
-        ) || ty.is_numeric()
+        matches!(ty, Ty::String | Ty::Bool | Ty::Char | Ty::Duration) || ty.is_numeric()
     }
 
     pub(super) fn validate_hashmap_key_value_types(
@@ -490,6 +487,28 @@ impl Checker {
     ) -> bool {
         let resolved_key = self.subst.resolve(key_ty);
         let resolved_val = self.subst.resolve(val_ty);
+
+        // Ty::Error: upstream already emitted a diagnostic; fail closed silently
+        // to prevent cascading errors from admission logic.
+        if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
+            return false;
+        }
+
+        // Ty::Var: inference is still in-flight at this call site.  Defer the
+        // admission check until finalize_hashmap_admission() runs after all
+        // inference has settled, mirroring the HashSet lowering-fact pattern.
+        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
+            self.deferred_hashmap_admission
+                .entry(SpanKey::from(span))
+                .or_insert_with(|| DeferredHashMapAdmission {
+                    span: span.clone(),
+                    key_ty: key_ty.clone(),
+                    val_ty: val_ty.clone(),
+                    source_module: self.current_module.clone(),
+                });
+            return true; // optimistically admit; finalization will fail closed
+        }
+
         if Self::is_supported_hashmap_key_type(&resolved_key)
             && Self::is_supported_hashmap_value_type(&resolved_val)
         {

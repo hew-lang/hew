@@ -8,10 +8,16 @@ use serde::Deserialize;
 use support::{hew_binary, repo_root, require_wasi_runner};
 
 #[derive(Debug, Deserialize)]
+struct Capabilities {
+    wasi: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PlaygroundEntry {
     id: String,
     source_path: PathBuf,
     expected_path: PathBuf,
+    capabilities: Capabilities,
 }
 
 fn playground_root() -> PathBuf {
@@ -48,13 +54,8 @@ fn curated_playground_examples_run_under_wasi() {
 
     let runnable: Vec<_> = manifest
         .iter()
-        .filter(|entry| entry.id != "concurrency/supervisor")
+        .filter(|entry| entry.capabilities.wasi == "runnable")
         .collect();
-    assert_eq!(
-        runnable.len(),
-        10,
-        "expected exactly 10 WASI-runnable playground snippets"
-    );
 
     for entry in runnable {
         let source = playground_root().join(&entry.source_path);
@@ -85,7 +86,17 @@ fn curated_playground_examples_run_under_wasi() {
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
 
-    let source = playground_root().join("concurrency").join("supervisor.hew");
+    let manifest = load_playground_manifest();
+    let supervisor_entry = manifest
+        .iter()
+        .find(|entry| entry.id == "concurrency/supervisor")
+        .expect("concurrency/supervisor entry in manifest");
+    assert_eq!(
+        supervisor_entry.capabilities.wasi, "unsupported",
+        "concurrency/supervisor must declare wasi capability 'unsupported' in manifest"
+    );
+
+    let source = playground_root().join(&supervisor_entry.source_path);
     let output = run_wasi_example(&source);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

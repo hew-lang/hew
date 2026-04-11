@@ -311,6 +311,8 @@ fn curated_playground_manifest_smoke() {
         "curated playground manifest should contain at least one example"
     );
 
+    let valid_wasi = ["runnable", "unsupported"];
+
     for entry in entries {
         let id = entry
             .get("id")
@@ -318,6 +320,29 @@ fn curated_playground_manifest_smoke() {
             .unwrap_or_else(|| {
                 panic!("curated playground manifest entry missing string id: {entry}")
             });
+
+        // Verify capability contract: every entry must carry well-formed capability metadata.
+        let caps = entry
+            .get("capabilities")
+            .unwrap_or_else(|| panic!("manifest entry {id} missing 'capabilities' field"));
+        let browser_cap = caps
+            .get("browser")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("manifest entry {id} missing capabilities.browser"));
+        assert_eq!(
+            browser_cap, "analysis-only",
+            "manifest entry {id}: capabilities.browser must be 'analysis-only' \
+             (hew-wasm is Tier 1 analysis-only; no in-browser execution exists)"
+        );
+        let wasi_cap = caps
+            .get("wasi")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("manifest entry {id} missing capabilities.wasi"));
+        assert!(
+            valid_wasi.contains(&wasi_cap),
+            "manifest entry {id}: capabilities.wasi must be one of {valid_wasi:?}, got {wasi_cap:?}"
+        );
+
         let source_path_rel = entry
             .get("source_path")
             .and_then(serde_json::Value::as_str)

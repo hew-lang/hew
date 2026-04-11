@@ -146,3 +146,48 @@ These gaps are explicitly deferred and tracked here:
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |
+
+---
+
+## Playground capability contract
+
+`examples/playground/manifest.json` carries a `capabilities` object on every
+entry that maps the feature disposition from this table into a machine-readable
+form consumed by browser/playground tooling and the WASI e2e test suite.
+
+```jsonc
+{
+  "capabilities": {
+    "browser": "analysis-only",  // always — Tier 1 is analysis-only
+    "wasi":    "runnable"        // or "unsupported" — see table below
+  }
+}
+```
+
+### Capability values
+
+| Field | Value | Meaning |
+|-------|-------|---------|
+| `browser` | `"analysis-only"` | The entry can be analysed (lex/parse/typecheck) in-browser via `hew-wasm`, but no in-browser program execution is available yet. This value is invariant for all curated entries. |
+| `wasi` | `"runnable"` | The example compiles and executes correctly under `hew build --target=wasm32-wasi` (Tier 2). |
+| `wasi` | `"unsupported"` | The example triggers a Warn or Reject disposition in the type checker when targeting WASM32 (see the feature table above). It will produce a non-zero exit code or a diagnostic under WASI. |
+
+### Current WASI capability summary
+
+| Example | `capabilities.wasi` | Reason |
+|---------|---------------------|--------|
+| `basics/*` (4 entries) | `runnable` | No WASM-limited features |
+| `concurrency/actor_pipeline` | `runnable` | Basic actors supported |
+| `concurrency/async_await` | `runnable` | Async/await supported |
+| `concurrency/counter_actor` | `runnable` | Basic actors supported |
+| `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Warn disposition |
+| `types/*` (3 entries) | `runnable` | No WASM-limited features |
+
+The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the
+single source of truth for these per-entry values.  Entries absent from that
+table default to `"runnable"`.  The `--check` mode of that script validates
+that every checked-in manifest entry carries well-formed capability metadata.
+
+The WASI e2e test (`hew-cli/tests/wasi_run_e2e.rs`) reads `capabilities.wasi`
+from the manifest to determine which examples to run vs. which to verify on the
+diagnostic path, eliminating hard-coded example IDs from the test logic.

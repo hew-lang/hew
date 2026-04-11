@@ -5,7 +5,11 @@
     "name": "Hello World",
     "description": "Your first Hew program",
     "source_path": "basics/hello_world.hew",
-    "expected_path": "basics/hello_world.expected"
+    "expected_path": "basics/hello_world.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "basics/fibonacci",
@@ -13,7 +17,11 @@
     "name": "Fibonacci",
     "description": "Calculate Fibonacci numbers recursively",
     "source_path": "basics/fibonacci.hew",
-    "expected_path": "basics/fibonacci.expected"
+    "expected_path": "basics/fibonacci.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "basics/higher_order_functions",
@@ -21,7 +29,11 @@
     "name": "Higher-Order Functions",
     "description": "Lambdas and function passing",
     "source_path": "basics/higher_order_functions.hew",
-    "expected_path": "basics/higher_order_functions.expected"
+    "expected_path": "basics/higher_order_functions.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "basics/string_interpolation",
@@ -29,7 +41,11 @@
     "name": "String Interpolation",
     "description": "Format strings with embedded expressions",
     "source_path": "basics/string_interpolation.hew",
-    "expected_path": "basics/string_interpolation.expected"
+    "expected_path": "basics/string_interpolation.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "concurrency/actor_pipeline",
@@ -37,7 +53,11 @@
     "name": "Actor Pipeline",
     "description": "Actors processing messages independently",
     "source_path": "concurrency/actor_pipeline.hew",
-    "expected_path": "concurrency/actor_pipeline.expected"
+    "expected_path": "concurrency/actor_pipeline.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "concurrency/async_await",
@@ -45,7 +65,11 @@
     "name": "Async/Await",
     "description": "Async functions with await",
     "source_path": "concurrency/async_await.hew",
-    "expected_path": "concurrency/async_await.expected"
+    "expected_path": "concurrency/async_await.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "concurrency/counter_actor",
@@ -53,7 +77,11 @@
     "name": "Counter Actor",
     "description": "A simple actor that counts messages",
     "source_path": "concurrency/counter_actor.hew",
-    "expected_path": "concurrency/counter_actor.expected"
+    "expected_path": "concurrency/counter_actor.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "concurrency/supervisor",
@@ -61,7 +89,11 @@
     "name": "Supervisor",
     "description": "Supervision tree for fault-tolerant actors",
     "source_path": "concurrency/supervisor.hew",
-    "expected_path": "concurrency/supervisor.expected"
+    "expected_path": "concurrency/supervisor.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "unsupported"
+    }
   },
   {
     "id": "types/collections",
@@ -69,7 +101,11 @@
     "name": "Collections",
     "description": "Vec and HashMap usage",
     "source_path": "types/collections.hew",
-    "expected_path": "types/collections.expected"
+    "expected_path": "types/collections.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "types/pattern_matching",
@@ -77,7 +113,11 @@
     "name": "Pattern Matching",
     "description": "Match expressions with enums",
     "source_path": "types/pattern_matching.hew",
-    "expected_path": "types/pattern_matching.expected"
+    "expected_path": "types/pattern_matching.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   },
   {
     "id": "types/wire_types",
@@ -85,6 +125,10 @@
     "name": "Wire Types",
     "description": "Wire structs and enums for serialization",
     "source_path": "types/wire_types.hew",
-    "expected_path": "types/wire_types.expected"
+    "expected_path": "types/wire_types.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   }
 ]

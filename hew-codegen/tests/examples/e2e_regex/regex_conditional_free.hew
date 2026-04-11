@@ -1,0 +1,28 @@
+// Regression: explicit .free() inside a conditional branch must not
+// double-free at scope exit, AND the implicit drop must still fire when
+// .free() was NOT called (branch not taken).
+//
+// Falsifiable:
+//   - double-free (branch taken): macOS malloc aborts on the second free
+//     (non-zero exit → ctest FAILED). ASAN guarantees this on all platforms.
+//   - missing drop (branch not taken): cannot be detected at runtime without
+//     ASAN; the correct-output check only verifies no crash.
+import std::text::regex;
+
+fn test(do_free: bool) -> bool {
+    let re = regex.new("[0-9]+");
+    let matched = re.is_match("abc42");
+    if do_free {
+        re.free();
+        // scope exit: impl Drop must NOT fire again for re
+    }
+    // scope exit: impl Drop fires here when do_free=false
+    matched
+}
+
+fn main() {
+    println(test(true));   // explicit free path — no double-free
+    println(test(false));  // implicit drop path — drop fires at scope exit
+    println(test(true));   // repeat to stress heap allocator
+    println("ok");
+}

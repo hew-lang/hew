@@ -10,6 +10,7 @@ pub(crate) enum WasiRunOutcome {
 }
 
 /// Result of a captured WASI module execution (stdout/stderr collected).
+#[derive(Debug)]
 pub(crate) enum WasiCapturedOutcome {
     /// Process exited successfully; captured stdout.
     Success { stdout: String },
@@ -96,7 +97,12 @@ pub(crate) fn run_module_captured(
     }
 }
 
-fn find_wasmtime() -> Option<PathBuf> {
+/// Returns the path to `wasmtime` if it is available, using the same lookup
+/// order as the production `run_module` / `run_module_captured` functions.
+///
+/// Exposed so that callers (e.g. test skip guards) can use consistent
+/// availability detection without duplicating the search logic.
+pub(crate) fn find_wasmtime() -> Option<PathBuf> {
     if tool_available("wasmtime") {
         return Some(PathBuf::from("wasmtime"));
     }

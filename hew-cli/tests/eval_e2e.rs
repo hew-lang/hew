@@ -977,28 +977,29 @@ fn eval_wasm_unsupported_feature_reports_diagnostic() {
     );
 }
 
-/// `hew eval --target wasm32-wasi` without an expression starts the interactive
-/// REPL with WASM mode. Sending EOF immediately should exit cleanly (exit 0).
+/// `hew eval --target wasm32-wasi` without an expression or file is rejected
+/// with a clear diagnostic — interactive REPL is not supported for WASI targets.
 #[test]
-fn eval_wasm_interactive_mode_exits_on_eof() {
-    // No codegen needed — we just send EOF immediately.
+fn eval_wasm_interactive_mode_rejected() {
     let output = Command::new(hew_binary())
         .args(["eval", "--target", "wasm32-wasi"])
         .current_dir(repo_root())
-        // Provide EOF on stdin so the REPL exits after printing the banner.
         .stdin(Stdio::null())
         .output()
         .unwrap();
 
     assert!(
-        output.status.success(),
-        "expected REPL to exit 0 on EOF with --target, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "expected non-zero exit for WASI interactive REPL attempt"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("Hew REPL"),
-        "expected REPL banner, stdout: {stdout}"
+        stderr.contains("interactive REPL is not supported"),
+        "expected rejection diagnostic in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("wasm32-wasi"),
+        "expected target name in rejection message, got: {stderr}"
     );
 }
 

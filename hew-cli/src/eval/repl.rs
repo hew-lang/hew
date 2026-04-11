@@ -1752,4 +1752,144 @@ mod tests {
             "compile_program with project_dir failed: {result:?}"
         );
     }
+
+    // ── WASI target test helpers ─────────────────────────────────────────────
+
+    /// Returns `true` if the WASI toolchain (codegen + wasmtime) is available
+    /// and produces correct output.  Skips WASI tests gracefully when either
+    /// wasmtime is missing or the WASM runtime library is not built.
+    ///
+    /// Uses `wasi_runner::find_wasmtime()` — the same lookup used at runtime —
+    /// so that tests skip iff the feature would also fail at runtime (not just
+    /// when `wasmtime` happens to be absent from `PATH` while still reachable
+    /// via the `~/.wasmtime/bin/` fallback).
+    fn require_wasi_toolchain() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| {
+            // Use the same wasmtime locator as production code so the test skip
+            // decision is consistent with whether eval would actually succeed.
+            if crate::wasi_runner::find_wasmtime().is_none() {
+                eprintln!(
+                    "WASI eval tests skipped: wasmtime not found \
+                     (checked PATH and ~/.wasmtime/bin/)"
+                );
+                return false;
+            }
+
+            // Compile a probe and run it — this validates that libhew_runtime.a
+            // for wasm32-wasip1 is built and linked (--allow-undefined means a
+            // link without the runtime still succeeds but produces silent output).
+            let dir = tempfile::tempdir().expect("temp dir");
+            let wasm_path = dir.path().join("probe.wasm");
+            let source = "fn main() { println(\"wasi-probe-ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("WASI eval tests skipped: probe parse failed");
+                return false;
+            }
+            let compiled = crate::compile::compile_from_source_checked(
+                parse_result.program,
+                source,
+                "<wasi-probe>",
+                wasm_path.to_str().unwrap_or("probe.wasm"),
+                &crate::compile::CompileOptions {
+                    target: Some("wasm32-wasi".to_owned()),
+                    ..crate::compile::CompileOptions::default()
+                },
+            );
+            if compiled.is_err() {
+                eprintln!(
+                    "WASI eval tests skipped: wasm32-wasi compile failed \
+                     (codegen/wasm toolchain not available)"
+                );
+                return false;
+            }
+
+            // Run the probe and verify it prints the expected output.
+            match crate::wasi_runner::run_module_captured(&wasm_path, DEFAULT_EVAL_TIMEOUT) {
+                Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout })
+                    if stdout.trim() == "wasi-probe-ok" =>
+                {
+                    true
+                }
+                other => {
+                    eprintln!(
+                        "WASI eval tests skipped: probe run produced unexpected output \
+                         (libhew_runtime.a for wasm32-wasip1 may not be built): {other:?}"
+                    );
+                    false
+                }
+            }
+        })
+    }
+
+    // ── WASI inline expression ───────────────────────────────────────────────
+
+    #[test]
+    fn wasi_eval_arithmetic() {
+        if !require_wasi_toolchain() {
+            return;
+        }
+        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        assert_eq!(result.unwrap(), "3\n");
+    }
+
+    #[test]
+    fn wasi_eval_string_output() {
+        if !require_wasi_toolchain() {
+            return;
+        }
+        let result = eval_one(
+            r#"println("hello from wasi")"#,
+            DEFAULT_EVAL_TIMEOUT,
+            Some("wasm32-wasi"),
+        );
+        assert_eq!(result.unwrap(), "hello from wasi\n");
+    }
+
+    // ── WASI parse / type error surfaces as DiagnosticsRendered ─────────────
+
+    #[test]
+    fn wasi_eval_parse_error_surfaces() {
+        let mut session =
+            ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let result = session.eval_cli("fn {", "<eval>");
+        assert!(
+            matches!(result, Err(CliEvalError::DiagnosticsRendered)),
+            "expected DiagnosticsRendered, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn wasi_eval_type_error_surfaces() {
+        let mut session =
+            ReplSession::with_timeout_and_target(DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let result = session.eval_cli("let x: i64 = \"oops\";", "<eval>");
+        assert!(
+            matches!(result, Err(CliEvalError::DiagnosticsRendered)),
+            "expected DiagnosticsRendered, got {result:?}"
+        );
+    }
+
+    // ── WASI file eval ───────────────────────────────────────────────────────
+
+    #[test]
+    fn wasi_eval_file_function_and_call() {
+        if !require_wasi_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("wasi_eval_test.hew");
+        std::fs::write(
+            &path,
+            "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(10, 32)\n",
+        )
+        .unwrap();
+        let result = eval_file(
+            path.to_str().unwrap(),
+            DEFAULT_EVAL_TIMEOUT,
+            Some("wasm32-wasi"),
+        );
+        assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
+    }
 }

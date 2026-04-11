@@ -169,7 +169,7 @@ impl Checker {
             !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
-        call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
+        Self::validate_call_type_args_output_contract(call_type_args, expr_types);
         self.validate_assign_target_output_contract();
         self.validate_method_call_output_contract(expr_types);
         self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
@@ -253,6 +253,27 @@ impl Checker {
         for span in leaked_expr_type_spans {
             expr_types.remove(&span);
         }
+    }
+
+    /// Validates `call_type_args` at the checker output boundary.
+    ///
+    /// Two conditions trigger removal:
+    ///
+    /// 1. **Orphaned span** — the `SpanKey` is absent from the post-validation
+    ///    `expr_types` map, meaning the owning expression was pruned by
+    ///    `validate_expr_output_contract` (leaked inference vars, cascading
+    ///    errors, etc.).  This mirrors the fail-closed pruning already applied
+    ///    to `method_call_receiver_kinds` / `method_call_rewrites`.
+    /// 2. **Leaked inference variable** — any type argument still contains an
+    ///    unresolved `Ty::Var`.  A call site whose type arguments are
+    ///    unresolved must not cross the checker output boundary into codegen.
+    fn validate_call_type_args_output_contract(
+        call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
+        expr_types: &HashMap<SpanKey, Ty>,
+    ) {
+        call_type_args.retain(|key, args| {
+            expr_types.contains_key(key) && args.iter().all(|ty| !ty.has_inference_var())
+        });
     }
 
     /// Prune `method_call_receiver_kinds` and `method_call_rewrites` entries
@@ -1019,6 +1040,96 @@ mod tests {
         assert!(
             checker.method_call_receiver_kinds.contains_key(&param_key),
             "NamedTypeInstance entry for a type-parameter name must survive validation"
+        );
+    }
+
+    /// `validate_call_type_args_output_contract` retains entries whose span is
+    /// present in `expr_types` and whose type arguments contain no inference vars.
+    #[test]
+    fn validate_call_type_args_output_contract_retains_valid_entries() {
+        let valid_key = SpanKey { start: 10, end: 20 };
+        let mut call_type_args = HashMap::from([(valid_key.clone(), vec![Ty::I32, Ty::Bool])]);
+        let expr_types = HashMap::from([(valid_key.clone(), Ty::I32)]);
+
+        Checker::validate_call_type_args_output_contract(&mut call_type_args, &expr_types);
+
+        assert!(
+            call_type_args.contains_key(&valid_key),
+            "call_type_args entry with concrete types and a present span must survive"
+        );
+    }
+
+    /// `validate_call_type_args_output_contract` prunes entries whose owning
+    /// expression span is absent from the validated `expr_types` map.  An absent
+    /// span means `validate_expr_output_contract` already pruned the expression
+    /// (leaked inference state, cascading errors, etc.), so the side-table entry
+    /// is orphaned and must not reach codegen.
+    #[test]
+    fn validate_call_type_args_output_contract_prunes_orphaned_entries() {
+        let orphan_key = SpanKey { start: 30, end: 40 };
+        let mut call_type_args = HashMap::from([(orphan_key.clone(), vec![Ty::I32])]);
+        // expr_types is empty — the owning expression was pruned.
+        let expr_types: HashMap<SpanKey, Ty> = HashMap::new();
+
+        Checker::validate_call_type_args_output_contract(&mut call_type_args, &expr_types);
+
+        assert!(
+            call_type_args.is_empty(),
+            "orphaned call_type_args entry (span absent from expr_types) must be pruned"
+        );
+    }
+
+    /// `validate_call_type_args_output_contract` prunes entries that still contain
+    /// unresolved `Ty::Var` inference holes even when the owning span is present in
+    /// `expr_types`.  Leaked inference state must not cross the output boundary.
+    #[test]
+    fn validate_call_type_args_output_contract_prunes_leaked_inference_vars() {
+        let present_key = SpanKey { start: 50, end: 60 };
+        let inference_var = Ty::Var(crate::ty::TypeVar(42));
+        let mut call_type_args =
+            HashMap::from([(present_key.clone(), vec![Ty::I32, inference_var])]);
+        // The span IS present in expr_types — only the inference var triggers pruning.
+        let expr_types = HashMap::from([(present_key.clone(), Ty::I32)]);
+
+        Checker::validate_call_type_args_output_contract(&mut call_type_args, &expr_types);
+
+        assert!(
+            call_type_args.is_empty(),
+            "call_type_args entry containing Ty::Var must be pruned even if span is present"
+        );
+    }
+
+    /// Mixed scenario: one valid entry, one orphaned entry, one entry with leaked
+    /// inference state — only the valid entry must survive.
+    #[test]
+    fn validate_call_type_args_output_contract_mixed() {
+        let valid_key = SpanKey { start: 10, end: 20 };
+        let orphan_key = SpanKey { start: 30, end: 40 };
+        let leaked_key = SpanKey { start: 50, end: 60 };
+        let inference_var = Ty::Var(crate::ty::TypeVar(7));
+
+        let mut call_type_args = HashMap::from([
+            (valid_key.clone(), vec![Ty::I64]),
+            (orphan_key.clone(), vec![Ty::Bool]),
+            (leaked_key.clone(), vec![inference_var]),
+        ]);
+        // Only valid_key and leaked_key are present in expr_types.
+        let expr_types =
+            HashMap::from([(valid_key.clone(), Ty::I64), (leaked_key.clone(), Ty::I64)]);
+
+        Checker::validate_call_type_args_output_contract(&mut call_type_args, &expr_types);
+
+        assert!(
+            call_type_args.contains_key(&valid_key),
+            "valid call_type_args entry must survive"
+        );
+        assert!(
+            !call_type_args.contains_key(&orphan_key),
+            "orphaned call_type_args entry must be pruned"
+        );
+        assert!(
+            !call_type_args.contains_key(&leaked_key),
+            "call_type_args entry with leaked inference var must be pruned"
         );
     }
 }

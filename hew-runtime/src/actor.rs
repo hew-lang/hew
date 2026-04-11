@@ -66,14 +66,25 @@ pub(crate) fn actor_ask_take_last_error_raw() -> i32 {
 }
 
 /// Map a send-side [`HewError`] code to its [`AskError`] discriminant.
+///
+/// Only `ErrMailboxFull` has a dedicated ask-error discriminant.  All other
+/// failure codes mean the actor is unreachable and map to `ActorStopped`.
+/// The WASM ask path normalises `ErrClosed` → `ErrActorStopped` before
+/// calling this function, so `ErrClosed` never reaches the `_` arm in
+/// practice.
 #[inline]
 fn send_err_to_ask_err(code: i32) -> AskError {
-    if code == HewError::ErrMailboxFull as i32 {
-        AskError::MailboxFull
-    } else {
-        // ErrActorStopped, ErrClosed, actor-not-found, or any unknown error
-        // all map to ActorStopped from the caller's perspective.
-        AskError::ActorStopped
+    const FULL: i32 = HewError::ErrMailboxFull as i32;
+    match code {
+        FULL => AskError::MailboxFull,
+        // JUSTIFIED: `ErrActorStopped` (-2) is the normal "unreachable" code.
+        // `ErrOom` (-5) has no dedicated ask-error discriminant — OOM is a
+        // fatal system condition and callers cannot usefully retry.  `ErrClosed`
+        // (-4) is normalised to `ErrActorStopped` by the WASM ask path before
+        // reaching here, but would also be correctly subsumed.  Any future
+        // unknown code is similarly "actor unreachable" — the only actionable
+        // send-side distinction for callers is `MailboxFull` vs `ActorStopped`.
+        _ => AskError::ActorStopped,
     }
 }
 
@@ -89,8 +100,9 @@ fn send_err_to_ask_err(code: i32) -> AskError {
 /// - `0` (`None`): the ask succeeded (non-null reply) or returned a
 ///   legitimate null reply; no error.
 /// - `5` (`Timeout`): deadline elapsed before the handler replied.
-/// - `9` (`ActorStopped`): the target actor was stopped or the mailbox
-///   rejected the send (actor not found, closed, etc.).
+/// - `9` (`ActorStopped`): the target actor was stopped, the mailbox was
+///   closed (actor not found), or message-node allocation failed (OOM) —
+///   all cases where the send could not be delivered and retry is not useful.
 /// - `10` (`MailboxFull`): bounded mailbox was at capacity.
 /// - `11` (`OrphanedAsk`): send succeeded but the actor's mailbox was torn
 ///   down before the handler called `hew_reply`.
@@ -3565,6 +3577,136 @@ mod tests {
         );
     }
 
+    // ── MailboxFull / NoRunnableWork discrimination (native) ─────────────
+
+    /// `hew_actor_ask` on a bounded mailbox that is at capacity returns `MailboxFull`.
+    ///
+    /// The send inside the ask sees a full mailbox (capacity = 1, one pre-queued
+    /// message) and returns `ErrMailboxFull` before the ask-wait loop is entered.
+    ///
+    /// The pre-fill is done by calling `hew_mailbox_send` directly on the mailbox
+    /// pointer.  This bypasses `actor_send_result_internal_reply` (and therefore
+    /// `sched_enqueue`) intentionally: we want the message to sit in the mailbox
+    /// without the actor being scheduled, so the slot is still occupied when the
+    /// ask executes.  The actor remains in the `Idle` state throughout, which lets
+    /// `hew_actor_stop` CAS it directly to `Stopped` for clean teardown — no
+    /// scheduler is required.
+    #[test]
+    fn native_ask_bounded_mailbox_full_sets_mailbox_full_error() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn_bounded(ptr::null_mut(), 0, Some(noop_dispatch), 1) };
+        assert!(!actor.is_null());
+
+        // Directly enqueue one message into the mailbox, bypassing the actor-state
+        // transition and scheduler enqueue.  The actor stays Idle; the mailbox now
+        // has count=1 == capacity=1.
+        // SAFETY: actor is valid; mailbox pointer is valid for the actor's lifetime.
+        let mb = unsafe { (*actor).mailbox.cast::<mailbox::HewMailbox>() };
+        // SAFETY: mb is a valid, non-null pointer to a HewMailbox owned by this actor.
+        // The null data pointer is intentional — the message slot just needs to exist.
+        let pre_fill = unsafe { mailbox::hew_mailbox_send(mb, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            pre_fill,
+            HewError::Ok as i32,
+            "pre-fill into empty bounded mailbox must succeed"
+        );
+
+        // Reset the error slot, then ask. The send inside the ask hits the full
+        // mailbox and returns ErrMailboxFull immediately — the ask-wait loop is
+        // never entered.
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        // SAFETY: actor is valid; the ask send will fail with MailboxFull.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(
+            reply.is_null(),
+            "ask into full bounded mailbox must return null"
+        );
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::MailboxFull as i32,
+            "full bounded mailbox must report MailboxFull"
+        );
+
+        // Actor is still Idle (no state transition occurred during pre-fill).
+        // hew_actor_stop CAS Idle → Stopped succeeds; no scheduler needed.
+        // SAFETY: actor is valid; closing a live actor's mailbox is safe.
+        unsafe { hew_actor_stop(actor) };
+        // SAFETY: actor is Stopped (quiescent); hew_mailbox_free drains the
+        // pre-filled message during free_actor_resources.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
+    /// Bounded-mailbox actor that self-stops without replying sets `OrphanedAsk`,
+    /// not `MailboxFull`: the mailbox has room for the ask message, so the
+    /// discriminant is the orphaned reply channel, not a send failure.
+    #[test]
+    fn native_ask_bounded_actor_orphan_sets_orphaned_ask_error() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
+        // capacity=8: plenty of room for the ask message, so the send succeeds
+        // and the discriminant is the orphaned reply channel.
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe {
+            hew_actor_spawn_bounded(
+                ptr::null_mut(),
+                0,
+                Some(native_self_stop_without_reply_dispatch),
+                8,
+            )
+        };
+        assert!(!actor.is_null());
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+
+        let actor_addr = actor as usize;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let actor = actor_addr as *mut HewActor;
+            // SAFETY: actor was spawned above and remains live until the thread joins.
+            let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+            let is_null = reply.is_null();
+            if !reply.is_null() {
+                // SAFETY: reply was allocated by the runtime and ownership transfers to caller.
+                unsafe { libc::free(reply) };
+            }
+            let err = hew_actor_ask_take_last_error();
+            tx.send((is_null, err)).expect("sender should be live");
+        });
+
+        let (is_null, err) = if let Ok(v) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            v
+        } else {
+            let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
+            if !ch.is_null() {
+                // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
+                unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+            }
+            rx.recv_timeout(std::time::Duration::from_secs(1))
+                .expect("fallback reply should unblock ask")
+        };
+        handle.join().expect("ask thread must not panic");
+
+        assert!(is_null, "bounded-actor orphaned ask must return null");
+        assert_eq!(
+            err,
+            AskError::OrphanedAsk as i32,
+            "bounded-actor orphaned ask must report OrphanedAsk, not MailboxFull"
+        );
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "orphaned ask on bounded actor must release its reply channel"
+        );
+        // SAFETY: actor has self-stopped; all channels are released.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        drop(runtime);
+    }
+
     #[test]
     fn stop_idle_actor_is_idempotent_and_queues_no_shutdown_sys_messages() {
         let _guard = crate::runtime_test_guard();
@@ -4296,6 +4438,118 @@ mod wasm_tests {
             assert_eq!(hew_actor_free(actor), 0);
             crate::scheduler_wasm::hew_sched_shutdown();
             crate::scheduler_wasm::hew_runtime_cleanup();
+        }
+    }
+
+    // ── MailboxFull / NoRunnableWork discrimination (WASM) ───────────────
+
+    /// Dispatch that does nothing: receives the message but does not reply and
+    /// does not self-stop. Used to drive `MailboxFull` and `NoRunnableWork` tests.
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
+
+    /// `hew_actor_ask` on a bounded WASM mailbox that is at capacity returns
+    /// `MailboxFull`.
+    ///
+    /// WASM is cooperative: the scheduler only runs when ticked, so a pre-queued
+    /// message stays in the mailbox until `hew_wasm_tick` is called. The ask send
+    /// therefore hits a full mailbox and fails before the scheduler loop is entered.
+    #[test]
+    fn wasm_ask_bounded_mailbox_full_sets_mailbox_full_error() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            // Spawn with capacity=1 (default DropNew overflow policy).
+            let actor = hew_actor_spawn_bounded(ptr::null_mut(), 0, Some(noop_dispatch), 1);
+            assert!(!actor.is_null());
+
+            // Pre-fill the single slot before ticking the scheduler.
+            // On WASM the scheduler is cooperative: the actor stays Runnable until
+            // we call hew_wasm_tick, so the slot remains occupied.
+            hew_actor_send(actor, 1, ptr::null_mut(), 0);
+
+            // The ask send hits the full mailbox and returns ErrMailboxFull before
+            // the scheduler loop is entered.
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(
+                reply.is_null(),
+                "ask into full bounded WASM mailbox must return null"
+            );
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::MailboxFull as i32,
+                "full bounded WASM mailbox must report MailboxFull"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "failed WASM ask must not leak reply channels"
+            );
+
+            // Tick to drain the pre-filled message (actor → Idle after noop_dispatch).
+            crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS);
+            // Actor is Idle — close and free without a separate stop.
+            hew_actor_stop(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    /// WASM unbounded ask returns `NoRunnableWork` when the scheduler has no more
+    /// runnable actors and the handler never replied.
+    ///
+    /// `noop_dispatch` processes the ask message but does not call `hew_reply` and
+    /// does not self-stop. After one tick the run queue is empty (`remaining == 0`)
+    /// and the actor is alive (Idle), so the ask path returns `NoRunnableWork`.
+    #[test]
+    fn wasm_ask_no_runnable_work_sets_no_runnable_work_error() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+
+            LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+            let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
+            assert!(
+                reply.is_null(),
+                "ask when handler does not reply must return null"
+            );
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::NoRunnableWork as i32,
+                "no-reply handler with drained scheduler must report NoRunnableWork"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::active_channel_count(),
+                0,
+                "NoRunnableWork path must not leak reply channels"
+            );
+
+            // Actor is Idle after noop_dispatch drained its message.
+            // Idle is quiescent — free directly without an explicit stop.
+            assert_eq!(hew_actor_free(actor), 0);
+
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+
+            assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
         }
     }
 }

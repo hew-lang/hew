@@ -586,8 +586,27 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     || (actor_state != HewActorState::Stopping as i32
                         && actor_state != HewActorState::Stopped as i32)
                 {
-                    // SAFETY: msg is exclusively owned by this scheduler tick.
-                    unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                    // SAFETY: msg is exclusively owned by this scheduler tick;
+                    // orig_reply_channel is the sender-side reference retained by
+                    // ask_with_channel_wasm_internal and is valid while the message
+                    // node is alive.
+                    unsafe {
+                        let orig_reply_channel = (*msg).reply_channel;
+                        (*msg).reply_channel = std::ptr::null_mut();
+                        // When the handler is alive but did NOT call hew_reply, the
+                        // sender-side reference retained by ask_with_channel_wasm_internal
+                        // must be released here.  msg_node_free will skip
+                        // retire_reply_channel (reply_channel is now null), so without
+                        // this free the reference leaks and active_channel_count stays
+                        // non-zero on the NoRunnableWork return path.
+                        // When reply_consumed=true, hew_reply already released the
+                        // sender-side ref, so we must not free again.
+                        if !reply_consumed && !orig_reply_channel.is_null() {
+                            crate::reply_channel_wasm::hew_reply_channel_free(
+                                orig_reply_channel.cast(),
+                            );
+                        }
+                    }
                 }
 
                 msgs_processed += 1;

@@ -1,0 +1,40 @@
+// Regression: explicit .free() on a json.Value that is defined inside a
+// nested SCF region (an if branch) must null the guard slot so the scope-exit
+// impl Drop does NOT double-free.  When .free() is not called, the scope-exit
+// drop must still fire (no leak — detectable under ASAN/LSAN).
+//
+// Before the fix, nullOutDropSlot skipped the retroactive guard-slot store
+// when the defining op lived inside a nested SCF region.  The slot stayed
+// null-initialised, causing the scope-exit drop to be silently skipped even
+// on the do_free=false path — a guaranteed leak under ASAN/LSAN.
+//
+// Falsifiable (without ASAN):
+//   double-free: macOS malloc aborts on the second free (exit 139).
+// Falsifiable (with ASAN):
+//   leak: ASAN/LSAN reports json.Value handles that were never freed on the
+//         do_free=false path.
+
+import std::encoding::json;
+
+fn test(do_free: bool) -> i32 {
+    // always-true branch: defOp for `val` lives inside this nested SCF region
+    if true {
+        let val = json.parse("{\"n\": 42}");
+        let t = val.type_of();
+        if do_free {
+            val.free();
+            // scope exit of outer-if: impl Drop must NOT fire again for val
+        }
+        // scope exit of outer-if: impl Drop must fire here when do_free=false
+        t
+    } else {
+        0
+    }
+}
+
+fn main() {
+    println(test(true));   // explicit free path — no double-free
+    println(test(true));   // repeat to stress heap allocator
+    println(test(false));  // implicit drop path — drop fires at scope exit
+    println("ok");
+}

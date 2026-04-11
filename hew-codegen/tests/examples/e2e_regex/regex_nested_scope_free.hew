@@ -1,0 +1,32 @@
+// Regression: explicit .free() on a regex.Pattern that is defined inside a
+// nested SCF region (an if branch) must null the guard slot so the scope-exit
+// impl Drop does NOT double-free.  When .free() is not called, the scope-exit
+// drop must still fire (no leak — detectable under ASAN/LSAN).
+//
+// Mirror of json_nested_scope_free for the regex.Pattern type.  regex.Pattern
+// uses the same nullOutDropSlot mechanism via the generateHandleMethodCall
+// dispatch path.
+import std::text::regex;
+
+fn test(do_free: bool) -> bool {
+    // always-true branch: defOp for `re` lives inside this nested SCF region
+    if true {
+        let re = regex.new("[0-9]+");
+        let matched = re.is_match("abc42");
+        if do_free {
+            re.free();
+            // scope exit of outer-if: impl Drop must NOT fire again for re
+        }
+        // scope exit of outer-if: impl Drop must fire here when do_free=false
+        matched
+    } else {
+        false
+    }
+}
+
+fn main() {
+    println(test(true));   // explicit free path — no double-free
+    println(test(true));   // repeat to stress heap allocator
+    println(test(false));  // implicit drop path — drop fires at scope exit
+    println("ok");
+}

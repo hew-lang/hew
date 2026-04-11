@@ -6,10 +6,12 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 
 impl Checker {
-    fn field_assignment_root_binding_name(expr: &Expr) -> Option<&str> {
+    fn assignment_root_binding_name(expr: &Expr) -> Option<&str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
-            Expr::FieldAccess { object, .. } => Self::field_assignment_root_binding_name(&object.0),
+            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+                Self::assignment_root_binding_name(&object.0)
+            }
             _ => None,
         }
     }
@@ -476,8 +478,9 @@ impl Checker {
                         .insert(SpanKey::from(&target.1), shape);
                 }
                 let root_binding_name = match &target.0 {
-                    Expr::Identifier(name) => Some(name.as_str()),
-                    Expr::FieldAccess { .. } => Self::field_assignment_root_binding_name(&target.0),
+                    Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
+                        Self::assignment_root_binding_name(&target.0)
+                    }
                     _ => None,
                 };
                 if let Some(name) = root_binding_name {

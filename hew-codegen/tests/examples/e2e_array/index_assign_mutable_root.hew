@@ -1,0 +1,7 @@
+fn main() {
+    var xs = [10, 20, 30];
+    xs[1] = 99;
+    println(xs[0]);
+    println(xs[1]);
+    println(xs[2]);
+}

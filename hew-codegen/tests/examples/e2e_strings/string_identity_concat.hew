@@ -11,7 +11,7 @@
 fn main() {
     var round = 0;
     while round < 50 {
-        let names: Vec<String> = Vec::new();
+        var names: Vec<String> = Vec::new();
         names.push("foxtrot_padding_to_make_strings_longer_for_allocator");
         names.push("echo_padding_to_make_strings_longer_for_allocator__");
         names.push("delta_padding_to_make_strings_longer_for_allocator_");

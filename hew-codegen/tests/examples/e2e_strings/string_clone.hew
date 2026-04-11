@@ -27,7 +27,7 @@ fn main() {
     }
 
     // Clone used in insertion sort (proper replacement for "" + s)
-    let names: Vec<String> = Vec::new();
+    var names: Vec<String> = Vec::new();
     names.push("charlie");
     names.push("bravo");
     names.push("alpha");

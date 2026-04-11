@@ -34,6 +34,8 @@ mod type_tests;
 /// - `stdout`      — program output captured from the child process (empty
 ///   string when the program produced no output or when a compile error
 ///   prevented execution)
+/// - `stderr`      — runtime stderr captured from the child process (empty
+///   string unless `status == "runtime_failure"`)
 /// - `exit_code`   — child exit code; `0` on success or compile error,
 ///   non-zero on runtime failure
 /// - `diagnostics` — compiler diagnostic text (non-empty only when
@@ -42,6 +44,7 @@ mod type_tests;
 pub struct EvalJsonOutput {
     pub status: EvalStatus,
     pub stdout: String,
+    pub stderr: String,
     pub exit_code: i32,
     pub diagnostics: String,
 }
@@ -191,24 +194,32 @@ fn eval_result_to_json(
         Ok(stdout) => EvalJsonOutput {
             status: EvalStatus::Ok,
             stdout,
+            stderr: String::new(),
             exit_code: 0,
             diagnostics: String::new(),
         },
-        Err(repl::CliEvalError::RuntimeFailure { stdout, exit_code }) => EvalJsonOutput {
+        Err(repl::CliEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        }) => EvalJsonOutput {
             status: EvalStatus::RuntimeFailure,
             stdout,
+            stderr,
             exit_code,
             diagnostics: String::new(),
         },
         Err(repl::CliEvalError::DiagnosticsRendered) => EvalJsonOutput {
             status: EvalStatus::CompileError,
             stdout: String::new(),
+            stderr: String::new(),
             exit_code: 0,
             diagnostics,
         },
         Err(repl::CliEvalError::Message(message)) => EvalJsonOutput {
             status: EvalStatus::CompileError,
             stdout: String::new(),
+            stderr: String::new(),
             exit_code: 0,
             diagnostics: message,
         },
@@ -221,12 +232,14 @@ fn exit_eval_error(error: repl::CliEvalError) -> ! {
             eprintln!("Error: {message}");
             std::process::exit(1);
         }
-        repl::CliEvalError::RuntimeFailure { stdout, exit_code } => {
+        repl::CliEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        } => {
             // Surface any output the program produced before it failed, then
             // exit with the child's own exit code so callers can observe it.
-            if !stdout.is_empty() {
-                print!("{stdout}");
-            }
+            repl::emit_runtime_failure_output(&stdout, &stderr);
             std::process::exit(exit_code);
         }
         repl::CliEvalError::DiagnosticsRendered => {

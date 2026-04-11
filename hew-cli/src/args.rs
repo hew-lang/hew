@@ -306,6 +306,7 @@ pub struct EvalArgs {
     /// The JSON object always contains:
     ///   `status`   — `"ok"`, `"compile_error"`, or `"runtime_failure"`
     ///   `stdout`   — captured program output (empty string when none)
+    ///   `stderr`   — captured runtime stderr (empty string unless runtime failed)
     ///   `exit_code`— integer exit code (0 for compile errors)
     ///
     /// On `"compile_error"` the object also contains:

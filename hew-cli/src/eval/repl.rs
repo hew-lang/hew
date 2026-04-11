@@ -37,10 +37,12 @@ pub struct ReplSession {
 pub enum CliEvalError {
     DiagnosticsRendered,
     Message(String),
-    /// The compiled program exited non-zero.  Any stdout produced before the
-    /// failure is preserved so callers can surface it to the user.
+    /// The compiled program exited non-zero. Any stdout produced before the
+    /// failure is preserved so callers can surface it to the user, and runtime
+    /// stderr is captured so JSON callers can include it in the contract.
     RuntimeFailure {
         stdout: String,
+        stderr: String,
         exit_code: i32,
     },
 }
@@ -97,7 +99,24 @@ enum EvalCheckFailure {
 enum CompiledEvalError {
     DiagnosticsRendered,
     Message(String),
-    RuntimeFailure { stdout: String, exit_code: i32 },
+    RuntimeFailure {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    },
+}
+
+pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
+    if !stdout.is_empty() {
+        print!("{stdout}");
+    }
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+    }
+}
+
+fn normalize_captured_output(output: &str) -> String {
+    output.replace("\r\n", "\n")
 }
 
 impl Default for ReplSession {
@@ -432,11 +451,20 @@ impl ReplSession {
                 had_errors: true,
                 errors: vec![error],
             },
-            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => EvalResult {
-                output: stdout,
-                had_errors: true,
-                errors: vec![format!("program exited with status {exit_code}")],
-            },
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }) => {
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+                EvalResult {
+                    output: stdout,
+                    had_errors: true,
+                    errors: vec![format!("program exited with status {exit_code}")],
+                }
+            }
         }
     }
 
@@ -498,9 +526,15 @@ impl ReplSession {
             }
             Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
             Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => {
-                Err(CliEvalError::RuntimeFailure { stdout, exit_code })
-            }
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }) => Err(CliEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }),
         }
     }
 
@@ -565,9 +599,15 @@ impl ReplSession {
             }
             Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
             Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code }) => {
-                Err(CliEvalError::RuntimeFailure { stdout, exit_code })
-            }
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }) => Err(CliEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }),
         }
     }
 
@@ -711,10 +751,12 @@ impl ReplSession {
                 .map_err(|error| match error {
                     CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
                     CliEvalError::Message(message) => LoadFileError::Message(message),
-                    CliEvalError::RuntimeFailure { stdout, exit_code } => {
-                        if !stdout.is_empty() {
-                            print!("{stdout}");
-                        }
+                    CliEvalError::RuntimeFailure {
+                        stdout,
+                        stderr,
+                        exit_code,
+                    } => {
+                        emit_runtime_failure_output(&stdout, &stderr);
                         LoadFileError::Message(format!("program exited with status {exit_code}"))
                     }
                 })?;
@@ -921,7 +963,11 @@ impl ReplSession {
 
             match self.eval_file_cli(input, input_name, source_label) {
                 Ok(output) => collected.push_str(&output),
-                Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
+                Err(CliEvalError::RuntimeFailure {
+                    stdout,
+                    stderr,
+                    exit_code,
+                }) => {
                     // Prepend output collected from successful earlier chunks so
                     // callers (non-JSON print path, JSON stdout field, :load) all
                     // see the full pre-failure output rather than just the partial
@@ -930,10 +976,15 @@ impl ReplSession {
                         collected.push_str(&stdout);
                         return Err(CliEvalError::RuntimeFailure {
                             stdout: collected,
+                            stderr,
                             exit_code,
                         });
                     }
-                    return Err(CliEvalError::RuntimeFailure { stdout, exit_code });
+                    return Err(CliEvalError::RuntimeFailure {
+                        stdout,
+                        stderr,
+                        exit_code,
+                    });
                 }
                 Err(e) => return Err(e),
             }
@@ -944,15 +995,24 @@ impl ReplSession {
         if !input.is_empty() {
             match self.eval_file_cli(input, input_name, source_label) {
                 Ok(output) => collected.push_str(&output),
-                Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
+                Err(CliEvalError::RuntimeFailure {
+                    stdout,
+                    stderr,
+                    exit_code,
+                }) => {
                     if !collected.is_empty() {
                         collected.push_str(&stdout);
                         return Err(CliEvalError::RuntimeFailure {
                             stdout: collected,
+                            stderr,
                             exit_code,
                         });
                     }
-                    return Err(CliEvalError::RuntimeFailure { stdout, exit_code });
+                    return Err(CliEvalError::RuntimeFailure {
+                        stdout,
+                        stderr,
+                        exit_code,
+                    });
                 }
                 Err(e) => return Err(e),
             }
@@ -984,11 +1044,12 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
         Ok(output) => InteractiveEvalOutcome::Output(output),
         Err(CliEvalError::DiagnosticsRendered) => InteractiveEvalOutcome::RenderedDiagnostics,
         Err(CliEvalError::Message(message)) => InteractiveEvalOutcome::MessageError(message),
-        Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
-            // Surface any output the program produced before it failed.
-            if !stdout.is_empty() {
-                print!("{stdout}");
-            }
+        Err(CliEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        }) => {
+            emit_runtime_failure_output(&stdout, &stderr);
             InteractiveEvalOutcome::MessageError(format!("program exited with status {exit_code}"))
         }
     }
@@ -1034,24 +1095,17 @@ fn run_inprocess_compiled(
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
-            // Normalize Windows \r\n line endings to \n for consistent output.
-            Ok(stdout.replace("\r\n", "\n"))
+            Ok(normalize_captured_output(&stdout))
         }
         Ok(crate::process::BinaryRunOutcome::Failed {
             stdout,
             stderr,
             exit_code,
-        }) => {
-            // Write the child's stderr directly to the parent's stderr so the
-            // user sees runtime error output immediately.
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-            }
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout: stdout.replace("\r\n", "\n"),
-                exit_code,
-            })
-        }
+        }) => Err(CompiledEvalError::RuntimeFailure {
+            stdout: normalize_captured_output(&stdout),
+            stderr: normalize_captured_output(&stderr),
+            exit_code,
+        }),
         Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
             "evaluation timed out after {}",
             crate::process::format_timeout(timeout)
@@ -1135,13 +1189,11 @@ fn run_wasm_eval_compiled(
             stdout,
             stderr,
             exit_code,
-        }) => {
-            // Write the WASM module's stderr directly to the parent's stderr.
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-            }
-            Err(CompiledEvalError::RuntimeFailure { stdout, exit_code })
-        }
+        }) => Err(CompiledEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        }),
         Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
             Err(CompiledEvalError::Message(format!(
                 "evaluation timed out after {}",
@@ -1333,6 +1385,45 @@ fn pluralize_session_entry(count: usize, singular: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
+        use std::fs::File;
+        use std::io::Write;
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        // SAFETY: We temporarily redirect the process stderr fd to a pipe,
+        // restore it before returning, and only use valid file descriptors
+        // created by `pipe`/`dup`.
+        unsafe {
+            let mut pipe_fds = [0; 2];
+            assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0, "pipe failed");
+
+            let stderr_fd = std::io::stderr().as_raw_fd();
+            let saved_stderr = libc::dup(stderr_fd);
+            assert!(saved_stderr >= 0, "dup failed");
+            assert_eq!(libc::dup2(pipe_fds[1], stderr_fd), stderr_fd, "dup2 failed");
+            libc::close(pipe_fds[1]);
+
+            let result = f();
+
+            std::io::stderr().flush().expect("flush stderr");
+            assert_eq!(
+                libc::dup2(saved_stderr, stderr_fd),
+                stderr_fd,
+                "restore dup2 failed"
+            );
+            libc::close(saved_stderr);
+
+            let mut reader = File::from_raw_fd(pipe_fds[0]);
+            let mut captured = String::new();
+            reader
+                .read_to_string(&mut captured)
+                .expect("read captured stderr");
+
+            (result, captured)
+        }
+    }
+
     /// Verifies the in-process codegen pipeline is available by compiling a
     /// trivial program.  Returns false (and prints a skip message) when the
     /// embedded `hew-codegen` backend or `libhew_runtime.a` aren't built yet.
@@ -1493,6 +1584,37 @@ mod tests {
         let result = session.eval("spin_forever()");
         assert!(result.had_errors);
         assert!(result.errors[0].contains("evaluation timed out after 100ms"));
+    }
+
+    #[test]
+    fn native_runtime_failure_normalizes_captured_stderr() {
+        assert_eq!(
+            normalize_captured_output("line1\r\nline2\r\n"),
+            "line1\nline2\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn eval_runtime_failure_still_surfaces_stderr() {
+        if !require_toolchain() {
+            return;
+        }
+
+        let mut session = ReplSession::new();
+        let (result, stderr) = capture_stderr(|| session.eval(r#"panic("eval stderr")"#));
+
+        assert!(result.had_errors);
+        assert_eq!(result.output, "");
+        assert!(
+            result.errors[0].contains("program exited with status 101"),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+        assert!(
+            stderr.contains("eval stderr"),
+            "expected runtime stderr to remain visible, got: {stderr:?}"
+        );
     }
 
     #[test]

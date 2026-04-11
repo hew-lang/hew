@@ -1058,6 +1058,24 @@ fn eval_inline_runtime_failure_exits_with_child_exit_code() {
 }
 
 #[test]
+fn eval_inline_runtime_failure_surfaces_child_stderr() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", r#"panic("deliberate failure")"#])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deliberate failure"),
+        "expected runtime stderr on the terminal path, got: {stderr:?}"
+    );
+}
+
+#[test]
 fn eval_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
 
@@ -1212,6 +1230,7 @@ fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
 //   - Process exits 0 regardless of outcome.
 //   - `status`      distinguishes the three outcome categories.
 //   - `stdout`      contains program output (may be empty).
+//   - `stderr`      contains captured runtime stderr (empty otherwise).
 //   - `exit_code`   is the child exit code (0 for ok/compile_error).
 //   - `diagnostics` is non-empty exactly when status == "compile_error".
 
@@ -1237,6 +1256,7 @@ fn eval_json_ok_inline_expression() {
 
     assert_eq!(v["status"], "ok", "unexpected status: {v}");
     assert_eq!(v["stdout"], "3\n", "unexpected stdout: {v}");
+    assert_eq!(v["stderr"], "", "stderr must be empty on ok: {v}");
     assert_eq!(v["exit_code"], 0, "unexpected exit_code: {v}");
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
 }
@@ -1257,6 +1277,11 @@ fn eval_json_runtime_failure() {
         "expected exit 0 with --json, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !parent_stderr.contains("deliberate"),
+        "runtime stderr leaked to the parent stderr stream: {parent_stderr:?}"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
@@ -1266,6 +1291,10 @@ fn eval_json_runtime_failure() {
     assert_eq!(
         v["exit_code"], 101,
         "expected child exit code 101 (Hew panic): {v}"
+    );
+    assert!(
+        v["stderr"].as_str().unwrap_or("").contains("deliberate"),
+        "runtime stderr missing from JSON contract: {v}"
     );
     assert_eq!(
         v["diagnostics"], "",
@@ -1303,6 +1332,53 @@ fn eval_json_runtime_failure_preserves_stdout() {
         v["stdout"].as_str().unwrap_or("").contains("before-fail"),
         "pre-failure stdout was not preserved in JSON: {v}"
     );
+    assert!(
+        v["stderr"].as_str().unwrap_or("").contains("deliberate"),
+        "runtime stderr missing from JSON contract: {v}"
+    );
+}
+
+#[test]
+fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args([
+            "eval",
+            "--json",
+            "--target",
+            "wasm32-wasi",
+            r#"panic("deliberate wasm failure")"#,
+        ])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !parent_stderr.contains("deliberate wasm failure"),
+        "WASM runtime stderr leaked to parent stderr: {parent_stderr:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert_eq!(v["exit_code"], 101, "expected child exit code 101: {v}");
+    assert!(
+        v["stderr"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deliberate wasm failure"),
+        "WASM runtime stderr missing from JSON contract: {v}"
+    );
 }
 
 #[test]
@@ -1331,6 +1407,10 @@ fn eval_json_compile_error() {
     assert_eq!(
         v["stdout"], "",
         "stdout must be empty on compile error: {v}"
+    );
+    assert_eq!(
+        v["stderr"], "",
+        "stderr must be empty on compile error: {v}"
     );
     assert!(
         !v["diagnostics"].as_str().unwrap_or("").is_empty(),

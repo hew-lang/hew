@@ -135,17 +135,18 @@ The JSON object always contains these fields:
 |---|---|---|
 | `status` | string | `"ok"`, `"compile_error"`, or `"runtime_failure"` |
 | `stdout` | string | Output the program wrote to stdout (may be empty) |
+| `stderr` | string | Runtime stderr captured from the program (empty unless `status == "runtime_failure"`) |
 | `exit_code` | integer | Child process exit code; `0` on success or compile error |
 | `diagnostics` | string | Compiler diagnostic text; non-empty only when `status == "compile_error"` |
 
 **Examples:**
 
 ```json
-{"status":"ok","stdout":"3\n","exit_code":0,"diagnostics":""}
+{"status":"ok","stdout":"3\n","stderr":"","exit_code":0,"diagnostics":""}
 
-{"status":"compile_error","stdout":"","exit_code":0,"diagnostics":"<eval>:1:1: error: unknown name ..."}
+{"status":"compile_error","stdout":"","stderr":"","exit_code":0,"diagnostics":"<eval>:1:1: error: unknown name ..."}
 
-{"status":"runtime_failure","stdout":"partial output\n","exit_code":101,"diagnostics":""}
+{"status":"runtime_failure","stdout":"partial output\n","stderr":"panic text\n","exit_code":101,"diagnostics":""}
 ```
 
 Key properties:
@@ -153,6 +154,8 @@ Key properties:
   inspect `status`, not the exit code.
 - `stdout` is preserved even on `runtime_failure` (matches the non-JSON
   behaviour that surfaces pre-failure output).
+- `stderr` is captured into the JSON contract on `runtime_failure` and is not
+  also mirrored to the parent stderr stream.
 - `diagnostics` contains the full rendered compiler diagnostic text,
   including source underlines.
 - `--json` requires `-f <file>` or an inline expression; it is rejected for

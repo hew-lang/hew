@@ -919,15 +919,43 @@ impl ReplSession {
                 continue;
             }
 
-            let output = self.eval_file_cli(input, input_name, source_label)?;
-            collected.push_str(&output);
+            match self.eval_file_cli(input, input_name, source_label) {
+                Ok(output) => collected.push_str(&output),
+                Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
+                    // Prepend output collected from successful earlier chunks so
+                    // callers (non-JSON print path, JSON stdout field, :load) all
+                    // see the full pre-failure output rather than just the partial
+                    // output of the failing chunk.
+                    if !collected.is_empty() {
+                        collected.push_str(&stdout);
+                        return Err(CliEvalError::RuntimeFailure {
+                            stdout: collected,
+                            exit_code,
+                        });
+                    }
+                    return Err(CliEvalError::RuntimeFailure { stdout, exit_code });
+                }
+                Err(e) => return Err(e),
+            }
             buffer.clear();
         }
 
         let input = buffer.trim();
         if !input.is_empty() {
-            let output = self.eval_file_cli(input, input_name, source_label)?;
-            collected.push_str(&output);
+            match self.eval_file_cli(input, input_name, source_label) {
+                Ok(output) => collected.push_str(&output),
+                Err(CliEvalError::RuntimeFailure { stdout, exit_code }) => {
+                    if !collected.is_empty() {
+                        collected.push_str(&stdout);
+                        return Err(CliEvalError::RuntimeFailure {
+                            stdout: collected,
+                            exit_code,
+                        });
+                    }
+                    return Err(CliEvalError::RuntimeFailure { stdout, exit_code });
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(collected)

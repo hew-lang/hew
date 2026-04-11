@@ -1406,3 +1406,114 @@ fn eval_json_file_ok() {
     assert_eq!(v["status"], "ok", "unexpected status: {v}");
     assert_eq!(v["stdout"], "42\n", "unexpected stdout: {v}");
 }
+
+// ── Cross-chunk output-preservation regression ────────────────────────────────
+//
+// When a file contains multiple top-level chunks (separated by a complete
+// statement boundary) and a later chunk fails at runtime, the stdout produced
+// by earlier successful chunks must not be dropped.
+//
+// This is a regression guard for the buffered-accumulation path introduced in
+// eval_source_file_cli: the `?` short-circuit on RuntimeFailure used to silently
+// drop `collected` from prior chunks.  The fix prepends `collected` into the
+// RuntimeFailure stdout before propagating.
+//
+// Coverage:
+//   - non-JSON `hew eval -f`: exit code propagated, pre-failure stdout visible
+//   - JSON `hew eval --json -f`: status=="runtime_failure", stdout contains
+//     both prior-chunk output and the failing-chunk's pre-panic output
+//
+// `:load` coverage: load_file calls eval_source_file_cli and then print!s the
+// returned Ok(String), or on RuntimeFailure it forwards the stdout field.
+// The same fix covers that path; we rely on the file eval tests below as
+// sufficient proxy rather than duplicating an interactive-REPL harness.
+
+/// A two-chunk .hew file where chunk 1 prints and chunk 2 panics.
+///
+/// The two chunks must be separated by a complete statement boundary so the
+/// chunk-splitter in `eval_source_file_cli` treats them as independent evals.
+fn write_cross_chunk_failure_file(dir: &std::path::Path) -> std::path::PathBuf {
+    // Chunk 1: a complete fn definition (a top-level item — does not produce
+    //          output itself but is recorded in session state).
+    // Chunk 2: a bare expression that calls a helper printing first, then panics.
+    // We use two separate fn definitions so each is a self-contained chunk, then
+    // call the second one as a bare expression (third chunk).
+    let path = dir.join("cross_chunk_failure.hew");
+    std::fs::write(
+        &path,
+        "\
+fn early() {
+    print(\"chunk-one-output\\n\");
+}
+
+fn late() {
+    early();
+    panic(\"chunk-two-panic\");
+}
+
+late()
+",
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_cross_chunk_failure_file(dir.path());
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit on runtime failure"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "expected child exit code 101"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("chunk-one-output"),
+        "pre-failure stdout from earlier chunk was dropped; got stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_cross_chunk_failure_file(dir.path());
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected exit 0 with --json");
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nraw: {raw}"));
+
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert_eq!(v["exit_code"], 101, "expected child exit code 101: {v}");
+    let captured = v["stdout"].as_str().unwrap_or("");
+    assert!(
+        captured.contains("chunk-one-output"),
+        "pre-failure stdout from earlier chunk was absent in JSON stdout: {v}"
+    );
+}

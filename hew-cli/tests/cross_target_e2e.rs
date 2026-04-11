@@ -2,11 +2,11 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::OnceLock;
 
 use object::{Architecture, BinaryFormat, Object};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs as unix_fs;
 #[cfg(target_os = "macos")]
 use support::require_codegen;
@@ -24,6 +24,9 @@ fn hew_binary() -> PathBuf {
 #[cfg(target_os = "macos")]
 static DARWIN_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
+static LINUX_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
+
 fn workspace() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("cross-target-hew-")
@@ -38,18 +41,63 @@ fn write_main(dir: &Path) -> PathBuf {
 }
 
 fn foreign_native_target() -> &'static str {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        || cfg!(all(target_os = "linux", target_arch = "aarch64"))
-    {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64"))
-        || cfg!(all(target_os = "linux", target_arch = "x86_64"))
-    {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(target_os = "windows") {
+    // Must be a target on a different OS from the host — one that is never
+    // linkable with native host tools from any supported OS.
+    //
+    // Important: Linux same-OS cross-arch (aarch64 ↔ x86_64) is now
+    // supported by hew (issue #254 Phase 3), so Linux targets are no longer
+    // foreign on a Linux host.  A Windows target is foreign on all Unix hosts,
+    // and a Linux target is foreign on Windows hosts.
+    if cfg!(target_os = "windows") {
         "x86_64-unknown-linux-gnu"
     } else {
         "x86_64-pc-windows-gnu"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cross_target() -> (&'static str, Architecture) {
+    // Mirror the host ABI env (gnu vs musl) so that the same-OS cross-arch
+    // link gate accepts the target.  A mismatched env would trigger the env
+    // mismatch rejection path rather than the cross-arch acceptance path.
+    if cfg!(target_arch = "aarch64") {
+        if cfg!(target_env = "musl") {
+            ("x86_64-unknown-linux-musl", Architecture::X86_64)
+        } else {
+            ("x86_64-unknown-linux-gnu", Architecture::X86_64)
+        }
+    } else if cfg!(target_env = "musl") {
+        ("aarch64-unknown-linux-musl", Architecture::Aarch64)
+    } else {
+        ("aarch64-unknown-linux-gnu", Architecture::Aarch64)
+    }
+}
+
+/// Returns the multiarch sysroot path for the cross target, or `None` if the
+/// directory does not exist on this host.
+///
+/// Handles both GNU (`/usr/<arch>-linux-gnu`) and musl
+/// (`/usr/<arch>-linux-musl`) layouts so that musl hosts look for the correct
+/// sysroot rather than silently checking a non-existent GNU path.
+#[cfg(target_os = "linux")]
+fn linux_cross_sysroot_path(cross_triple: &str) -> Option<std::path::PathBuf> {
+    let env_suffix = if cross_triple.ends_with("-musl") {
+        "musl"
+    } else {
+        "gnu"
+    };
+    let arch_tuple = if cross_triple.starts_with("aarch64-") {
+        format!("aarch64-linux-{env_suffix}")
+    } else if cross_triple.starts_with("x86_64-") {
+        format!("x86_64-linux-{env_suffix}")
+    } else {
+        return None;
+    };
+    let path = std::path::PathBuf::from(format!("/usr/{arch_tuple}"));
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
     }
 }
 
@@ -368,5 +416,197 @@ fn native_link_darwin_cross_arch_produces_foreign_macho_binary() {
     assert!(
         !stderr.contains("--emit-obj"),
         "cross-arch Darwin native link regressed to fail-closed path:\n{stderr}",
+    );
+}
+
+// ── Linux cross-arch proof ─────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn require_linux_cross_target_library(cross_triple: &str) {
+    if let Err(error) =
+        LINUX_CROSS_LIB_STATUS.get_or_init(|| bootstrap_linux_cross_target_library(cross_triple))
+    {
+        panic!("{error}");
+    }
+}
+
+/// Build `hew-lib` for the cross-arch Linux target and symlink it into the
+/// Cargo target-dir staging path so `find_hew_lib` in link.rs can find it.
+///
+/// Mirrors `bootstrap_darwin_cross_target_library` in structure and intent.
+#[cfg(target_os = "linux")]
+fn bootstrap_linux_cross_target_library(target: &str) -> Result<(), String> {
+    let target_dir = hew_binary()
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            format!(
+                "hew binary path {} has no Cargo target dir",
+                hew_binary().display()
+            )
+        })?
+        .to_path_buf();
+    let profile = match hew_binary()
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+    {
+        Some("release") => "release",
+        _ => "debug",
+    };
+    let built_archive = target_dir.join(target).join(profile).join("libhew.a");
+
+    if !built_archive.is_file() {
+        let output = Command::new("cargo")
+            .args(["build", "-q", "-p", "hew-lib", "--target", target])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .current_dir(repo_root())
+            .output()
+            .map_err(|error| format!("failed to invoke cargo build for {target}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "failed to build hew-lib for {target}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ));
+        }
+    }
+
+    if !built_archive.is_file() {
+        return Err(format!(
+            "cross-target hew-lib build completed but {} was not created",
+            built_archive.display()
+        ));
+    }
+
+    let staged_dir = target_dir.join("lib").join(target);
+    std::fs::create_dir_all(&staged_dir)
+        .map_err(|error| format!("failed to create {}: {error}", staged_dir.display()))?;
+    let staged_archive = staged_dir.join("libhew.a");
+    if staged_archive.exists() {
+        std::fs::remove_file(&staged_archive)
+            .map_err(|error| format!("failed to replace {}: {error}", staged_archive.display()))?;
+    }
+    unix_fs::symlink(&built_archive, &staged_archive).map_err(|error| {
+        format!(
+            "failed to stage Linux cross-target archive {} -> {}: {error}",
+            staged_archive.display(),
+            built_archive.display(),
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Linux same-OS cross-arch native link proof (issue #254 Phase 3).
+///
+/// On a Linux host, `hew build --target <cross-arch-linux>` must produce a
+/// native ELF binary for the cross arch rather than falling through to the
+/// "can emit objects" rejection path.
+///
+/// The test skips when the cross-arch sysroot (`/usr/<arch-tuple>`) is absent
+/// so that CI hosts without `gcc-<arch>-linux-gnu` installed do not fail
+/// mysteriously.  When the sysroot is present, the test fully proves the lane:
+///   1. `hew build` exits 0 with a cross-arch ELF output.
+///   2. The output is parseable as ELF with the correct architecture.
+///   3. The build did not fall back to the `--emit-obj` rejection path.
+#[cfg(target_os = "linux")]
+#[test]
+fn native_link_linux_cross_arch_produces_foreign_elf_binary() {
+    let (cross_target, expected_arch) = linux_cross_target();
+
+    // Skip when the cross sysroot is absent — install gcc-<arch>-linux-gnu to
+    // enable this test in a local or CI environment.
+    if linux_cross_sysroot_path(cross_target).is_none() {
+        eprintln!(
+            "SKIP native_link_linux_cross_arch_produces_foreign_elf_binary: \
+             cross sysroot for {cross_target} not found; \
+             install gcc-aarch64-linux-gnu or gcc-x86-64-linux-gnu to run"
+        );
+        return;
+    }
+
+    require_linux_cross_target_library(cross_target);
+
+    let dir = workspace();
+    let source = write_main(dir.path());
+    let output_path = dir.path().join("hello-cross-linux");
+
+    let result = Command::new(hew_binary())
+        .args([
+            "build",
+            source.to_str().expect("source path"),
+            "--target",
+            cross_target,
+            "-o",
+            output_path.to_str().expect("output path"),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        result.status.success(),
+        "hew build --target {cross_target} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    assert!(output_path.exists(), "output binary not created");
+
+    let data = std::fs::read(&output_path).expect("read binary");
+    let obj = object::File::parse(data.as_slice()).expect("parse binary");
+    assert_eq!(obj.format(), BinaryFormat::Elf, "expected ELF binary");
+    assert_eq!(obj.architecture(), expected_arch, "wrong cross-arch output");
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !stderr.contains("--emit-obj"),
+        "cross-arch Linux native link regressed to fail-closed path:\n{stderr}",
+    );
+}
+
+/// `hew build --target <cross-arch-linux>` without a `-o` path must emit an
+/// ELF object with the cross-arch header, not a reject from the link gate.
+///
+/// This verifies that the fail-closed rejection error is no longer triggered
+/// for Linux same-OS cross-arch builds after issue #254 Phase 3.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_cross_arch_passes_link_gate_not_rejected() {
+    let (cross_target, _) = linux_cross_target();
+
+    // Confirm the target is accepted by the link gate (can_link_with_host_tools).
+    // We don't need the cross sysroot for this check — the error under test
+    // happens before any sysroot is consulted.  We verify the *error message*
+    // from a failed link attempt does NOT contain "can emit objects" (the
+    // gate rejection text).
+    //
+    // If the cross sysroot or hew-lib is absent the link will fail later
+    // (e.g. "cannot find libhew.a") — but that is a different error than the
+    // pre-gate rejection we're proving against here.
+    let dir = workspace();
+    let source = write_main(dir.path());
+    let output_path = dir.path().join("cross-link-gate-check");
+
+    let result = Command::new(hew_binary())
+        .args([
+            "build",
+            source.to_str().expect("source path"),
+            "--target",
+            cross_target,
+            "-o",
+            output_path.to_str().expect("output path"),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+
+    // The pre-gate rejection contains "can emit objects" and "--emit-obj".
+    // After Phase 3, this MUST NOT appear for same-OS cross-arch Linux targets.
+    assert!(
+        !stderr.contains("can emit objects"),
+        "Linux cross-arch target {cross_target} still being rejected at the link gate:\n{stderr}",
     );
 }

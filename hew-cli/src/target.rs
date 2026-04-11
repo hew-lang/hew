@@ -233,8 +233,50 @@ impl TargetSpec {
         !self.is_wasm() && self.matches_host_environment()
     }
 
+    /// Returns the target architecture.
+    ///
+    /// Used by Linux cross-arch sysroot probing in `link.rs`; only called from
+    /// `#[cfg(target_os = "linux")]` code so the warning is suppressed on other
+    /// hosts.
+    #[allow(
+        dead_code,
+        reason = "only called from #[cfg(target_os=\"linux\")] code in link.rs; unused on non-Linux hosts"
+    )]
+    pub fn arch(&self) -> TargetArch {
+        self.arch
+    }
+
+    /// Returns the target OS.
+    ///
+    /// Used by Linux cross-arch sysroot probing in `link.rs`; only called from
+    /// `#[cfg(target_os = "linux")]` code so the warning is suppressed on other
+    /// hosts.
+    #[allow(
+        dead_code,
+        reason = "only called from #[cfg(target_os=\"linux\")] code in link.rs; unused on non-Linux hosts"
+    )]
+    pub fn os(&self) -> TargetOs {
+        self.os
+    }
+
+    /// Returns the object file format for this target.
+    ///
+    /// Used by linker-side helpers that need to distinguish ELF, Mach-O, COFF,
+    /// and Wasm targets without pattern-matching the full OS.  Currently
+    /// exercised by tests; linker callers in this crate use `native_link_plan`.
+    #[allow(
+        dead_code,
+        reason = "exercised by tests and cfg-gated linker helpers; not all callers are visible to the linter on every host"
+    )]
+    pub fn object_format(&self) -> ObjectFormat {
+        self.object_format
+    }
+
     pub fn can_link_with_host_tools(&self) -> bool {
-        self.is_wasm() || self.matches_host_environment() || self.can_cross_link_on_darwin_host()
+        self.is_wasm()
+            || self.matches_host_environment()
+            || self.can_cross_link_on_darwin_host()
+            || self.can_cross_link_on_linux_host()
     }
 
     pub fn cross_target_run_error(&self, verb: &str) -> String {
@@ -265,6 +307,18 @@ impl TargetSpec {
         let host = host_platform();
         host.os == TargetOs::Darwin
             && self.os == TargetOs::Darwin
+            && self.env == host.env
+            && self.arch != host.arch
+    }
+
+    /// Linux same-OS cross-arch linking is supported by clang/LLD with a
+    /// Debian/Ubuntu multiarch sysroot.  Both arches must share the same
+    /// runtime ABI environment (e.g. both `gnu` or both `musl`) so that the
+    /// pre-built `libhew.a` and runtime ABI contract are compatible.
+    fn can_cross_link_on_linux_host(&self) -> bool {
+        let host = host_platform();
+        host.os == TargetOs::Linux
+            && self.os == TargetOs::Linux
             && self.env == host.env
             && self.arch != host.arch
     }
@@ -534,6 +588,89 @@ mod tests {
     fn non_darwin_foreign_targets_still_cannot_link_with_host_tools() {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         assert!(!spec.can_link_with_host_tools());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn linux_cross_arch_x86_64_can_link_with_host_tools_on_aarch64() {
+        // Mirror the host env so the same-OS env-match gate accepts the target.
+        let triple = if cfg!(target_env = "musl") {
+            "x86_64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+        let spec = TargetSpec::from_requested(Some(triple)).expect("target");
+        assert!(
+            spec.can_link_with_host_tools(),
+            "{triple} must be linkable from aarch64 Linux host"
+        );
+        assert!(
+            !spec.can_run_on_host(),
+            "cross-arch binary must not be runnable on host"
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn linux_cross_arch_aarch64_can_link_with_host_tools_on_x86_64() {
+        // Mirror the host env so the same-OS env-match gate accepts the target.
+        let triple = if cfg!(target_env = "musl") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        };
+        let spec = TargetSpec::from_requested(Some(triple)).expect("target");
+        assert!(
+            spec.can_link_with_host_tools(),
+            "{triple} must be linkable from x86_64 Linux host"
+        );
+        assert!(
+            !spec.can_run_on_host(),
+            "cross-arch binary must not be runnable on host"
+        );
+    }
+
+    /// Linux cross-arch with a mismatched ABI env (gnu vs musl) must be
+    /// rejected: the pre-built `libhew.a` and runtime ABI contract are
+    /// env-specific.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_cross_arch_env_mismatch_cannot_link() {
+        // Construct a cross-arch target with a different env than the host.
+        // On a gnu host we target musl; on a musl host we target gnu.
+        let cross_env_triple = if cfg!(target_arch = "x86_64") {
+            if cfg!(target_env = "musl") {
+                "aarch64-unknown-linux-gnu"
+            } else {
+                "aarch64-unknown-linux-musl"
+            }
+        } else {
+            // aarch64 host
+            if cfg!(target_env = "musl") {
+                "x86_64-unknown-linux-gnu"
+            } else {
+                "x86_64-unknown-linux-musl"
+            }
+        };
+        let spec = TargetSpec::from_requested(Some(cross_env_triple)).expect("target");
+        assert!(
+            !spec.can_link_with_host_tools(),
+            "cross-arch cross-env target {cross_env_triple} must not be linkable (ABI mismatch)"
+        );
+    }
+
+    /// A completely foreign OS target (Darwin on a Linux host, or vice-versa)
+    /// must never pass the link gate regardless of arch.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn darwin_target_cannot_link_from_linux_host() {
+        for triple in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            let spec = TargetSpec::from_requested(Some(triple)).expect("target");
+            assert!(
+                !spec.can_link_with_host_tools(),
+                "{triple} must not be linkable from a Linux host"
+            );
+        }
     }
 
     // ── native_link_plan ───────────────────────────────────────────────

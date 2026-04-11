@@ -243,7 +243,25 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     }
                 }
             }
-            _ => {}
+            Item::Const(c) => {
+                collect_locals_from_spanned_expr(&c.value, offset, &mut locals);
+            }
+            Item::Supervisor(s) => {
+                for child in &s.children {
+                    for arg in &child.args {
+                        collect_locals_from_spanned_expr(arg, offset, &mut locals);
+                    }
+                }
+            }
+            Item::Machine(m) => {
+                for transition in &m.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_locals_from_spanned_expr(guard, offset, &mut locals);
+                    }
+                    collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
+                }
+            }
+            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
         }
     }
 

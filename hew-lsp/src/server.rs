@@ -2908,6 +2908,8 @@ fn find_outgoing_calls(
                     false
                 }
             }),
+            Item::Supervisor(s) => s.name == caller_name,
+            Item::Machine(m) => m.name == caller_name,
             _ => false,
         };
         if is_caller {

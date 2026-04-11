@@ -73,11 +73,15 @@ pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
                 }
             }
         }
-        Item::Import(_)
-        | Item::ExternBlock(_)
-        | Item::Wire(_)
-        | Item::TypeAlias(_)
-        | Item::Machine(_) => {}
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    collect_calls_in_expr(guard, calls);
+                }
+                collect_calls_in_expr(&transition.body, calls);
+            }
+        }
+        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 

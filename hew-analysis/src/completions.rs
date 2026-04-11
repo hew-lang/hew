@@ -196,6 +196,15 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for field in &a.fields {
                     locals.push(local_completion(&field.name));
                 }
+                if let Some(init) = &a.init {
+                    for p in &init.params {
+                        locals.push(local_completion(&p.name));
+                    }
+                    collect_locals_from_block(&init.body, offset, &mut locals);
+                }
+                if let Some(term) = &a.terminate {
+                    collect_locals_from_block(&term.body, offset, &mut locals);
+                }
                 for recv in &a.receive_fns {
                     for p in &recv.params {
                         locals.push(local_completion(&p.name));

@@ -245,11 +245,10 @@ fn collect_binding_starts_in_item(item: &Item, name: &str, out: &mut Vec<usize>)
                 collect_binding_starts_in_expr(&transition.body.0, name, out);
             }
         }
-        Item::Const(_)
-        | Item::Import(_)
-        | Item::ExternBlock(_)
-        | Item::Wire(_)
-        | Item::TypeAlias(_) => {}
+        Item::Const(c) => {
+            collect_binding_starts_in_expr(&c.value.0, name, out);
+        }
+        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 

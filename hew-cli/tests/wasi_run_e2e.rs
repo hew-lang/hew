@@ -41,6 +41,13 @@ fn run_wasi_example(source: &Path) -> Output {
         .expect("run hew --target wasm32-wasi")
 }
 
+// Exact set of curated playground entries that declare wasi: "unsupported".
+// Update this constant AND scripts/gen-playground-manifest.py :: WASI_CAPABILITY
+// together whenever the unsupported set changes intentionally.  The coverage
+// guard in curated_playground_examples_run_under_wasi relies on this to catch
+// misclassified manifest entries before they silently drop out of the runnable loop.
+const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor"];
+
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -50,6 +57,21 @@ fn curated_playground_examples_run_under_wasi() {
         manifest.len(),
         11,
         "expected the curated 11-snippet manifest"
+    );
+
+    let mut actual_unsupported: Vec<&str> = manifest
+        .iter()
+        .filter(|entry| entry.capabilities.wasi == "unsupported")
+        .map(|entry| entry.id.as_str())
+        .collect();
+    actual_unsupported.sort_unstable();
+
+    assert_eq!(
+        actual_unsupported, EXPECTED_WASI_UNSUPPORTED,
+        "wasi 'unsupported' set mismatch: if a new example is intentionally \
+         unsupported update EXPECTED_WASI_UNSUPPORTED in wasi_run_e2e.rs and \
+         WASI_CAPABILITY in scripts/gen-playground-manifest.py together; if \
+         an example was misclassified, fix its manifest capability instead"
     );
 
     let runnable: Vec<_> = manifest

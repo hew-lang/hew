@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDeclKind,
+    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
+    TypeDeclKind,
 };
 use hew_types::check::FnSig;
 use hew_types::TypeCheckOutput;
@@ -195,6 +196,15 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for field in &a.fields {
                     locals.push(local_completion(&field.name));
                 }
+                if let Some(init) = &a.init {
+                    for p in &init.params {
+                        locals.push(local_completion(&p.name));
+                    }
+                    collect_locals_from_block(&init.body, offset, &mut locals);
+                }
+                if let Some(term) = &a.terminate {
+                    collect_locals_from_block(&term.body, offset, &mut locals);
+                }
                 for recv in &a.receive_fns {
                     for p in &recv.params {
                         locals.push(local_completion(&p.name));
@@ -226,7 +236,41 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     collect_locals_from_block(&method.body, offset, &mut locals);
                 }
             }
-            _ => {}
+            Item::Trait(t) => {
+                // TODO: params are pushed for every method in the trait; without per-method
+                // body spans we cannot determine which method contains the cursor, so params
+                // from sibling methods leak into completions. The same over-approximation
+                // exists for Item::Actor and Item::Impl above.
+                for trait_item in &t.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if let Some(body) = &method.body {
+                            for p in &method.params {
+                                locals.push(local_completion(&p.name));
+                            }
+                            collect_locals_from_block(body, offset, &mut locals);
+                        }
+                    }
+                }
+            }
+            Item::Const(c) => {
+                collect_locals_from_spanned_expr(&c.value, offset, &mut locals);
+            }
+            Item::Supervisor(s) => {
+                for child in &s.children {
+                    for arg in &child.args {
+                        collect_locals_from_spanned_expr(arg, offset, &mut locals);
+                    }
+                }
+            }
+            Item::Machine(m) => {
+                for transition in &m.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_locals_from_spanned_expr(guard, offset, &mut locals);
+                    }
+                    collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
+                }
+            }
+            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
         }
     }
 

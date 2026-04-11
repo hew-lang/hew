@@ -2870,6 +2870,22 @@ fn find_incoming_calls(
                     from_ranges,
                 });
             }
+            Item::Const(c) => {
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: c.name.clone(),
+                        kind: SymbolKind::CONSTANT,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
             _ => {}
         }
     }

@@ -273,8 +273,15 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          # Combined runtime + stdlib library
+          # Combined runtime + stdlib library (flat path — universal fallback)
           cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
+
+          # Target-specific lib subtree so find_hew_lib() prefers lib/<triple>/
+          # over the flat fallback on Darwin installs.
+          if [[ "${{ matrix.target }}" == darwin-* ]]; then
+            mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
+            cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+          fi
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"

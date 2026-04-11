@@ -28,6 +28,14 @@ class Hew < Formula
     bin.install "bin/hew-lsp"
     lib.install "lib/libhew.a"
 
+    # Install target-specific lib subtree so find_hew_lib() can probe
+    # lib/<triple>/libhew.a before falling back to the flat path.
+    triple = Hardware::CPU.arm? ? "aarch64-apple-darwin" : "x86_64-apple-darwin"
+    if (buildpath/"lib"/triple/"libhew.a").exist?
+      (lib/triple).mkpath
+      (lib/triple).install "lib/#{triple}/libhew.a"
+    end
+
     (share/"hew/std").mkpath
     (share/"hew/std").install Dir["std/*"] if (buildpath/"std").exist?
 

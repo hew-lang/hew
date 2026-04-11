@@ -52,6 +52,15 @@ in stdenv.mkDerivation rec {
     install -Dm755 bin/hew-lsp      $out/bin/hew-lsp
     install -Dm644 lib/libhew.a $out/lib/hew/libhew.a
 
+    # Install target-specific lib subtree for Darwin so find_hew_lib() can
+    # probe lib/<triple>/libhew.a before falling back to the flat path.
+    ${lib.optionalString stdenv.isDarwin ''
+      triple="${if stdenv.hostPlatform.isAarch64 then "aarch64-apple-darwin" else "x86_64-apple-darwin"}"
+      if [ -f "lib/$triple/libhew.a" ]; then
+        install -Dm644 "lib/$triple/libhew.a" "$out/lib/$triple/libhew.a"
+      fi
+    ''}
+
     if [ -d std ]; then
       mkdir -p $out/share/hew/std
       cp -r std/. $out/share/hew/std/

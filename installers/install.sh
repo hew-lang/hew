@@ -270,6 +270,16 @@ main() {
 
     cp -f "${extracted_dir}/lib/libhew.a" "${INSTALL_PREFIX}/lib/libhew.a"
 
+    # Install target-specific lib subtrees so find_hew_lib() can probe
+    # lib/<triple>/libhew.a before falling back to the flat path.
+    for triple_dir in "${extracted_dir}/lib"/*/; do
+        [ -d "$triple_dir" ] || continue
+        triple="$(basename "$triple_dir")"
+        [ -f "${triple_dir}/libhew.a" ] || continue
+        mkdir -p "${INSTALL_PREFIX}/lib/${triple}"
+        cp -f "${triple_dir}/libhew.a" "${INSTALL_PREFIX}/lib/${triple}/libhew.a"
+    done
+
     # Standard library (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then
         cp -rf "${extracted_dir}/std/." "${INSTALL_PREFIX}/std/"

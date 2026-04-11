@@ -552,7 +552,7 @@ mod tests {
     fn darwin_link_plan_platform_libs_include_frameworks() {
         let spec = TargetSpec::from_requested(Some("aarch64-apple-darwin")).expect("target");
         let plan = spec.native_link_plan();
-        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        let libs: Vec<_> = plan.platform_libs.to_vec();
         assert!(libs.contains(&"-lpthread"), "expected -lpthread");
         assert!(libs.contains(&"-lm"), "expected -lm");
         assert!(libs.contains(&"CoreFoundation"), "expected CoreFoundation");
@@ -585,7 +585,7 @@ mod tests {
     fn linux_link_plan_platform_libs() {
         let spec = TargetSpec::from_requested(Some("aarch64-unknown-linux-gnu")).expect("target");
         let plan = spec.native_link_plan();
-        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        let libs: Vec<_> = plan.platform_libs.to_vec();
         assert!(libs.contains(&"-lpthread"));
         assert!(libs.contains(&"-lm"));
         assert!(libs.contains(&"-ldl"));
@@ -616,7 +616,7 @@ mod tests {
     fn windows_link_plan_platform_libs() {
         let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
         let plan = spec.native_link_plan();
-        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        let libs: Vec<_> = plan.platform_libs.to_vec();
         assert!(libs.contains(&"-lws2_32"));
         assert!(libs.contains(&"-luserenv"));
         assert!(libs.contains(&"-lbcrypt"));

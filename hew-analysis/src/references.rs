@@ -230,13 +230,26 @@ fn collect_binding_starts_in_item(item: &Item, name: &str, out: &mut Vec<usize>)
                 }
             }
         }
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    collect_binding_starts_in_expr(&arg.0, name, out);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    collect_binding_starts_in_expr(&guard.0, name, out);
+                }
+                collect_binding_starts_in_expr(&transition.body.0, name, out);
+            }
+        }
         Item::Const(_)
         | Item::Import(_)
         | Item::ExternBlock(_)
         | Item::Wire(_)
-        | Item::TypeAlias(_)
-        | Item::Supervisor(_)
-        | Item::Machine(_) => {}
+        | Item::TypeAlias(_) => {}
     }
 }
 

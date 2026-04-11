@@ -3,8 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
-use hew_analysis::calls::collect_calls_in_block;
+use hew_analysis::calls::collect_calls_in_item;
 use hew_analysis::references::count_all_references;
+use hew_analysis::util::{compute_line_offsets, non_empty, offset_to_line_col, word_at_offset};
 use hew_parser::ast::{Attribute, ImportDecl, ImportSpec, Item, Span, TypeDeclKind};
 use hew_parser::ParseResult;
 use hew_types::error::{Severity, TypeErrorKind};
@@ -1505,8 +1506,13 @@ fn symbol_info_to_doc_symbol(
     lo: &[usize],
     info: hew_analysis::SymbolInfo,
 ) -> DocumentSymbol {
-    let range = offset_span_to_range(source, lo, info.span);
-    let selection_range = offset_span_to_range(source, lo, info.selection_span);
+    let range = offset_range_to_lsp(source, lo, info.span.start, info.span.end);
+    let selection_range = offset_range_to_lsp(
+        source,
+        lo,
+        info.selection_span.start,
+        info.selection_span.end,
+    );
     let children = if info.children.is_empty() {
         None
     } else {
@@ -1526,16 +1532,6 @@ fn symbol_info_to_doc_symbol(
         range,
         selection_range,
         children,
-    }
-}
-
-/// Convert an `OffsetSpan` to an LSP `Range`.
-fn offset_span_to_range(source: &str, lo: &[usize], span: hew_analysis::OffsetSpan) -> Range {
-    let (sl, sc, el, ec) =
-        hew_analysis::util::span_to_line_col_range(source, lo, span.start, span.end);
-    Range {
-        start: Position::new(sl, sc),
-        end: Position::new(el, ec),
     }
 }
 
@@ -1602,36 +1598,15 @@ fn analysis_tokens_to_lsp(
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Return `None` for an empty vec, `Some(v)` otherwise.
-fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
-    hew_analysis::util::non_empty(v)
-}
-
-/// Compute byte offsets of each line start.
-fn compute_line_offsets(source: &str) -> Vec<usize> {
-    hew_analysis::util::compute_line_offsets(source)
-}
-
-/// Convert byte offset to (line, character) — both 0-based, character in UTF-16 code units.
-fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -> (usize, usize) {
-    hew_analysis::util::offset_to_line_col(source, line_offsets, offset)
-}
-
-/// Convert a parser `Span` (byte-offset `Range<usize>`) to an LSP `Range`,
-/// using pre-computed line offsets.
-fn span_to_range(source: &str, lo: &[usize], span: &Span) -> Range {
-    let (sl, sc, el, ec) =
-        hew_analysis::util::span_to_line_col_range(source, lo, span.start, span.end);
-    Range {
-        start: Position::new(sl, sc),
-        end: Position::new(el, ec),
-    }
-}
-
 /// Convert an LSP `Position` (UTF-16 character offset) to a byte offset in source,
 /// using pre-computed line offsets.
 fn position_to_offset(source: &str, lo: &[usize], position: Position) -> usize {
     hew_analysis::util::position_to_offset(source, lo, position.line, position.character)
+}
+
+/// Convert a parser `Span` (byte offsets) to an LSP `Range`.
+fn span_to_range(source: &str, lo: &[usize], span: &Span) -> Range {
+    offset_range_to_lsp(source, lo, span.start, span.end)
 }
 
 /// Convert byte offset range to LSP `Range`, using pre-computed line offsets.
@@ -1654,14 +1629,6 @@ fn find_definition_in_ast(
 ) -> Option<Range> {
     let span = hew_analysis::definition::find_definition(source, parse_result, word)?;
     Some(offset_range_to_lsp(source, lo, span.start, span.end))
-}
-
-// ── Helpers (delegated to hew-analysis) ──────────────────────────────
-
-/// Extract the word (identifier) at a byte offset in the source.
-/// Also tries `offset - 1` when the cursor is right after an identifier.
-fn word_at_offset(source: &str, offset: usize) -> Option<String> {
-    hew_analysis::util::word_at_offset(source, offset)
 }
 
 // ── Import path resolution ────────────────────────────────────────────
@@ -2650,6 +2617,10 @@ fn find_callable_at(
     None
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over caller item kinds is clearest as one function"
+)]
 fn find_incoming_calls(
     uri: &Url,
     source: &str,
@@ -2659,61 +2630,109 @@ fn find_incoming_calls(
 ) -> Vec<CallHierarchyIncomingCall> {
     let mut result = Vec::new();
     for (item, item_span) in &parse_result.program.items {
+        // Collect all call sites inside this item using the exhaustive item walker.
+        let mut calls = Vec::new();
+        collect_calls_in_item(item, &mut calls);
+        let matching: Vec<_> = calls.iter().filter(|c| c.name == target_name).collect();
+        if matching.is_empty() {
+            continue;
+        }
+        let from_ranges: Vec<_> = matching
+            .iter()
+            .map(|c| span_to_range(source, lo, &c.span))
+            .collect();
+
+        // Derive display metadata from the item kind.
         match item {
             Item::Function(f) => {
-                let mut calls = Vec::new();
-                collect_calls_in_block(&f.body, &mut calls);
-                let matching: Vec<_> = calls.iter().filter(|c| c.name == target_name).collect();
-                if !matching.is_empty() {
-                    let range = span_to_range(source, lo, item_span);
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: f.name.clone(),
+                        kind: SymbolKind::FUNCTION,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
+            Item::Actor(a) => {
+                // Attribute calls to the specific receive fn when identifiable.
+                for recv in &a.receive_fns {
+                    let recv_calls: Vec<_> = calls
+                        .iter()
+                        .filter(|c| {
+                            c.name == target_name
+                                && !recv.span.is_empty()
+                                && recv.span.contains(&c.span.start)
+                        })
+                        .collect();
+                    if recv_calls.is_empty() {
+                        continue;
+                    }
+                    let fn_span = if recv.span.is_empty() {
+                        item_span
+                    } else {
+                        &recv.span
+                    };
+                    let range = span_to_range(source, lo, fn_span);
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
-                            name: f.name.clone(),
-                            kind: SymbolKind::FUNCTION,
+                            name: recv.name.clone(),
+                            kind: SymbolKind::METHOD,
                             tags: None,
-                            detail: None,
+                            detail: Some(format!("actor {}", a.name)),
                             uri: uri.clone(),
                             range,
                             selection_range: range,
                             data: None,
                         },
-                        from_ranges: matching
+                        from_ranges: recv_calls
                             .iter()
                             .map(|c| span_to_range(source, lo, &c.span))
                             .collect(),
                     });
                 }
             }
-            Item::Actor(a) => {
-                for recv in &a.receive_fns {
-                    let mut calls = Vec::new();
-                    collect_calls_in_block(&recv.body, &mut calls);
-                    let matching: Vec<_> = calls.iter().filter(|c| c.name == target_name).collect();
-                    if !matching.is_empty() {
-                        let fn_span = if recv.span.is_empty() {
-                            item_span
-                        } else {
-                            &recv.span
-                        };
-                        let range = span_to_range(source, lo, fn_span);
-                        result.push(CallHierarchyIncomingCall {
-                            from: CallHierarchyItem {
-                                name: recv.name.clone(),
-                                kind: SymbolKind::METHOD,
-                                tags: None,
-                                detail: Some(format!("actor {}", a.name)),
-                                uri: uri.clone(),
-                                range,
-                                selection_range: range,
-                                data: None,
-                            },
-                            from_ranges: matching
-                                .iter()
-                                .map(|c| span_to_range(source, lo, &c.span))
-                                .collect(),
-                        });
-                    }
-                }
+            Item::Impl(i) => {
+                let impl_name = match &i.target_type.0 {
+                    hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.clone(),
+                    _ => "<impl>".to_string(),
+                };
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: impl_name,
+                        kind: SymbolKind::NAMESPACE,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
+            }
+            Item::TypeDecl(td) => {
+                let range = span_to_range(source, lo, item_span);
+                result.push(CallHierarchyIncomingCall {
+                    from: CallHierarchyItem {
+                        name: td.name.clone(),
+                        kind: SymbolKind::STRUCT,
+                        tags: None,
+                        detail: None,
+                        uri: uri.clone(),
+                        range,
+                        selection_range: range,
+                        data: None,
+                    },
+                    from_ranges,
+                });
             }
             _ => {}
         }
@@ -2730,19 +2749,26 @@ fn find_outgoing_calls(
 ) -> Vec<CallHierarchyOutgoingCall> {
     let mut call_sites = Vec::new();
 
+    // Collect calls only from the item whose name matches the caller.
     for (item, _) in &parse_result.program.items {
-        match item {
-            Item::Function(f) if f.name == caller_name => {
-                collect_calls_in_block(&f.body, &mut call_sites);
-            }
+        let is_caller = match item {
+            Item::Function(f) => f.name == caller_name,
             Item::Actor(a) => {
-                for recv in &a.receive_fns {
-                    if recv.name == caller_name {
-                        collect_calls_in_block(&recv.body, &mut call_sites);
-                    }
-                }
+                a.receive_fns.iter().any(|r| r.name == caller_name)
+                    || a.methods.iter().any(|m| m.name == caller_name)
             }
-            _ => {}
+            Item::Impl(i) => i.methods.iter().any(|m| m.name == caller_name),
+            Item::TypeDecl(td) => td.body.iter().any(|b| {
+                if let hew_parser::ast::TypeBodyItem::Method(m) = b {
+                    m.name == caller_name
+                } else {
+                    false
+                }
+            }),
+            _ => false,
+        };
+        if is_caller {
+            collect_calls_in_item(item, &mut call_sites);
         }
     }
 

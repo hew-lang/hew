@@ -208,6 +208,8 @@ struct WasmDiagnostic {
     start_offset: usize,
     end_offset: usize,
     kind: String,
+    notes: Vec<(usize, usize, String)>,
+    suggestions: Vec<String>,
 }
 
 /// Combined analysis result returned by `analyze()`.
@@ -257,6 +259,8 @@ fn run_analysis(source: &str) -> AnalysisResult {
             start_offset: err.span.start,
             end_offset: err.span.end,
             kind: "parse_error".to_string(),
+            notes: Vec::new(),
+            suggestions: Vec::new(),
         });
     }
 
@@ -272,6 +276,12 @@ fn run_analysis(source: &str) -> AnalysisResult {
                 start_offset: err.span.start,
                 end_offset: err.span.end,
                 kind: err.kind.as_kind_str().to_string(),
+                notes: err
+                    .notes
+                    .iter()
+                    .map(|(span, msg)| (span.start, span.end, msg.clone()))
+                    .collect(),
+                suggestions: err.suggestions.clone(),
             });
         }
     }

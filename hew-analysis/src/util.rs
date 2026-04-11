@@ -105,7 +105,7 @@ pub fn word_at_offset(source: &str, offset: usize) -> Option<String> {
 /// Extract the identifier at exactly `offset`, or try to extend it with a
 /// preceding dot-separated qualifier (e.g. `http.listen` -> `"http.listen"`).
 #[must_use]
-pub fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
+fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
     if offset >= source.len() {
         return None;
     }

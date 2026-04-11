@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDeclKind,
+    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
+    TypeDeclKind,
 };
 use hew_types::check::FnSig;
 use hew_types::TypeCheckOutput;
@@ -224,6 +225,18 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                         locals.push(local_completion(&p.name));
                     }
                     collect_locals_from_block(&method.body, offset, &mut locals);
+                }
+            }
+            Item::Trait(t) => {
+                for trait_item in &t.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if let Some(body) = &method.body {
+                            for p in &method.params {
+                                locals.push(local_completion(&p.name));
+                            }
+                            collect_locals_from_block(body, offset, &mut locals);
+                        }
+                    }
                 }
             }
             _ => {}

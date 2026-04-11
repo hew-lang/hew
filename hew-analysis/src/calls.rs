@@ -4,7 +4,8 @@
 //! Returns parser-level `Span` values so callers can convert to LSP ranges
 //! without an extra allocation layer.
 
-use hew_parser::ast::{Block, Expr, Span, Stmt, StringPart};
+use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem};
+use hew_parser::ParseResult;
 
 /// A single call site found in the AST.
 #[derive(Debug, Clone)]
@@ -13,6 +14,71 @@ pub struct CallSite {
     pub name: String,
     /// Byte-offset span of the call expression (not just the callee identifier).
     pub span: Span,
+}
+
+/// Collect all call sites across every item body in the parse result.
+#[must_use]
+pub fn collect_calls_in_parse_result(parse_result: &ParseResult) -> Vec<CallSite> {
+    let mut calls = Vec::new();
+    for (item, _) in &parse_result.program.items {
+        collect_calls_in_item(item, &mut calls);
+    }
+    calls
+}
+
+/// Collect all call sites reachable from a single top-level item.
+pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
+    match item {
+        Item::Function(f) => collect_calls_in_block(&f.body, calls),
+        Item::Actor(a) => {
+            if let Some(init) = &a.init {
+                collect_calls_in_block(&init.body, calls);
+            }
+            if let Some(term) = &a.terminate {
+                collect_calls_in_block(&term.body, calls);
+            }
+            for recv in &a.receive_fns {
+                collect_calls_in_block(&recv.body, calls);
+            }
+            for method in &a.methods {
+                collect_calls_in_block(&method.body, calls);
+            }
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &td.body {
+                if let TypeBodyItem::Method(m) = body_item {
+                    collect_calls_in_block(&m.body, calls);
+                }
+            }
+        }
+        Item::Impl(i) => {
+            for method in &i.methods {
+                collect_calls_in_block(&method.body, calls);
+            }
+        }
+        Item::Trait(t) => {
+            for trait_item in &t.items {
+                if let TraitItem::Method(m) = trait_item {
+                    if let Some(body) = &m.body {
+                        collect_calls_in_block(body, calls);
+                    }
+                }
+            }
+        }
+        Item::Const(c) => collect_calls_in_expr(&c.value, calls),
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    collect_calls_in_expr(arg, calls);
+                }
+            }
+        }
+        Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_)
+        | Item::Machine(_) => {}
+    }
 }
 
 /// Collect all call sites reachable from `block`.
@@ -274,5 +340,102 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    fn names(calls: &[CallSite]) -> Vec<&str> {
+        calls.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn direct_function_call() {
+        let source = "fn f() { foo(); }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        assert!(names(&calls).contains(&"foo"), "should find call to foo");
+    }
+
+    #[test]
+    fn method_call_found() {
+        let source = "fn f() { x.bar(); }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        assert!(
+            names(&calls).contains(&"bar"),
+            "should find method call bar"
+        );
+    }
+
+    #[test]
+    fn actor_receive_fn_calls_found() {
+        let source = "actor A { receive fn on_msg() { helper(); } }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        assert!(
+            names(&calls).contains(&"helper"),
+            "should find calls inside actor receive fn"
+        );
+    }
+
+    #[test]
+    fn impl_method_calls_found() {
+        let source = "impl Foo { fn bar() { baz(); } }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        assert!(
+            names(&calls).contains(&"baz"),
+            "should find calls inside impl method"
+        );
+    }
+
+    #[test]
+    fn nested_call_in_condition_found() {
+        let source = "fn f() { if check() { work(); } }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        let ns = names(&calls);
+        assert!(ns.contains(&"check"), "should find call in if condition");
+        assert!(ns.contains(&"work"), "should find call in if body");
+    }
+
+    #[test]
+    fn no_false_positives_for_identifiers() {
+        let source = "fn f() { let x = 1; let y = x; }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        // Identifier references are not calls
+        assert!(
+            !names(&calls).contains(&"x"),
+            "plain identifier usage must not appear as a call"
+        );
+    }
+
+    #[test]
+    fn collect_calls_in_item_function() {
+        let source = "fn f() { a(); b(); }";
+        let pr = parse(source);
+        let mut calls = Vec::new();
+        collect_calls_in_item(&pr.program.items[0].0, &mut calls);
+        let ns = names(&calls);
+        assert!(ns.contains(&"a") && ns.contains(&"b"));
+    }
+
+    #[test]
+    fn span_covers_call_expression() {
+        let source = "fn f() { foo(); }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        let foo_call = calls.iter().find(|c| c.name == "foo").expect("foo call");
+        // Span should be non-empty and within source bounds
+        assert!(foo_call.span.start < foo_call.span.end);
+        assert!(foo_call.span.end <= source.len());
     }
 }

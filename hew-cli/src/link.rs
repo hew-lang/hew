@@ -28,6 +28,12 @@ pub fn link_executable(
         return Err(target.unsupported_native_link_error());
     }
 
+    // Collect the target-driven link plan before touching the command builder.
+    // Every platform-specific decision below (gc flags, platform libs, SDK,
+    // dsymutil) derives from the *target* TargetOs via NativeLinkPlan, not
+    // from the compile-time host `#[cfg]` world.
+    let plan = target.native_link_plan();
+
     let hew_lib = find_hew_lib(target.hew_lib_name(), target.normalized_triple())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
@@ -37,6 +43,8 @@ pub fn link_executable(
         output_path.to_string()
     };
 
+    // ── Compiler selection (host-driven) ───────────────────────────────
+    // We run the linker on the host, so tool availability is a host concern.
     // Prefer clang (consistent with the LLVM/MLIR toolchain), fall back to cc.
     #[cfg(not(target_os = "windows"))]
     let compiler = if has_tool("clang") { "clang" } else { "cc" };
@@ -49,7 +57,9 @@ pub fn link_executable(
 
     let mut cmd = std::process::Command::new(compiler);
 
-    // Use lld when available — ~20x faster than GNU ld for large static libs
+    // ── lld selection (host-driven) ────────────────────────────────────
+    // Use lld when available — ~20x faster than GNU ld for large static libs.
+    // Which lld variant exists depends on the host toolchain installation.
     #[cfg(not(target_os = "windows"))]
     if has_tool("ld.lld") {
         cmd.arg("-fuse-ld=lld");
@@ -73,70 +83,38 @@ pub fn link_executable(
         cmd.arg("-g");
     }
 
-    // Dead-code elimination: discard unreferenced sections from the archive.
-    // Skip stripping when building for debug so symbols are preserved.
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        cmd.arg("-Wl,--gc-sections");
-        if !debug {
-            cmd.arg("-Wl,--strip-all");
-        }
+    // ── Dead-code elimination (target-driven via NativeLinkPlan) ──────
+    cmd.args(plan.gc_flags);
+    if !debug {
+        cmd.args(plan.strip_flags);
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        cmd.arg("-Wl,-dead_strip");
-        if !debug {
-            cmd.arg("-Wl,-x");
-        }
-        // Anchor the SDK path explicitly so the linker finds system frameworks
-        // even when invoked from a non-standard PATH (e.g. in CI or from a PATH
-        // that does not include the Xcode toolchain root).  Failure is
-        // non-fatal: clang will fall back to its own SDK search heuristics.
-        if let Some(sdk) = find_macos_sdk() {
+    // ── Darwin SDK path (target-driven intent, host tool resolves path) ─
+    // Anchor the SDK explicitly so the linker finds system frameworks even
+    // when invoked from a non-standard PATH (e.g. CI without Xcode on PATH).
+    // Failure is non-fatal: clang falls back to its own SDK search heuristics.
+    if plan.needs_darwin_sdk {
+        if let Some(sdk) = find_darwin_sdk() {
             cmd.arg("-isysroot").arg(sdk);
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // Clang defaults to the static CRT (libcmt) but the Rust-compiled
-        // runtime uses the DLL CRT (msvcrt). Override the default so the
-        // CRT linkage matches.
+    // ── Windows CRT linkage fixup (target-driven) ─────────────────────
+    // Clang defaults to the static CRT (libcmt) but the Rust-compiled runtime
+    // uses the DLL CRT (msvcrt).  Override so the CRT linkage matches.
+    if plan.needs_windows_crt_fixup {
         cmd.args(["-Wl,/NODEFAULTLIB:libcmt", "-Wl,/DEFAULTLIB:msvcrt"]);
     }
 
-    // Platform-specific libraries
-    #[cfg(target_os = "linux")]
-    cmd.args(["-lpthread", "-lm", "-ldl", "-lrt"]);
+    // ── Platform system libraries (target-driven via NativeLinkPlan) ──
+    cmd.args(plan.platform_libs);
 
-    // FreeBSD: dlopen/clock_gettime are in libc — no -ldl or -lrt needed.
+    // FreeBSD: compiled natively on a FreeBSD host (TargetOs has no FreeBsd
+    // variant yet, so the plan above doesn't cover it).
+    // FOLLOW-UP (#254 Phase 3): add TargetOs::FreeBsd and integrate into
+    // NativeLinkPlan; dlopen/clock_gettime are in libc — no -ldl or -lrt.
     #[cfg(target_os = "freebsd")]
     cmd.args(["-lpthread", "-lm"]);
-
-    #[cfg(target_os = "macos")]
-    cmd.args([
-        "-lpthread",
-        "-lm",
-        "-framework",
-        "CoreFoundation",
-        "-framework",
-        "Security",
-    ]);
-
-    #[cfg(target_os = "windows")]
-    cmd.args([
-        // The Rust runtime references `printf` via __declspec(dllimport), but
-        // the UCRT inlines printf through __stdio_common_vfprintf. The legacy
-        // definitions library provides the classic __imp_printf symbol.
-        "-llegacy_stdio_definitions",
-        // Windows system libraries required by the runtime
-        "-lws2_32",
-        "-luserenv",
-        "-lbcrypt",
-        "-lntdll",
-        "-ladvapi32",
-    ]);
 
     for lib in extra_libs {
         cmd.arg(lib);
@@ -159,16 +137,29 @@ pub fn link_executable(
         return Err("linking failed".into());
     }
 
-    // On macOS, debug info in linked binaries requires a separate dSYM bundle.
-    // The linker writes a "debug map" referencing the object file, and dsymutil
-    // pulls the actual DWARF from the object into a .dSYM bundle.  Without this
-    // step the debugger sees no Hew debug info in the linked binary.
-    #[cfg(target_os = "macos")]
-    if debug {
-        run_dsymutil(&safe_output);
+    // ── dsymutil for Darwin debug builds (target-driven intent) ───────
+    // Darwin debug info requires a separate dSYM bundle: the linker writes a
+    // "debug map" referencing the object file, and dsymutil pulls the DWARF
+    // into a .dSYM bundle next to the binary.  Without this the debugger sees
+    // no Hew debug info in the linked binary.
+    if debug && plan.needs_dsymutil {
+        run_dsymutil_for_darwin(&safe_output);
     }
 
     Ok(())
+}
+
+/// Run `dsymutil` after a Darwin debug link, if the tool is present on the host.
+///
+/// `plan.needs_dsymutil` is set for any Darwin target.  The actual invocation
+/// is guarded to macOS hosts at compile time because dsymutil is a macOS tool;
+/// on other hosts this is a no-op (unreachable in practice, since
+/// `can_link_with_host_tools` only permits Darwin targets on macOS hosts).
+fn run_dsymutil_for_darwin(binary_path: &str) {
+    #[cfg(target_os = "macos")]
+    run_dsymutil(binary_path);
+    #[cfg(not(target_os = "macos"))]
+    let _ = binary_path;
 }
 
 /// Run `dsymutil` on a linked binary to produce a `.dSYM` bundle.
@@ -202,6 +193,23 @@ fn run_dsymutil(binary_path: &str) {
         Err(e) => {
             eprintln!("warning: failed to run dsymutil: {e}");
         }
+    }
+}
+
+/// Find the Darwin SDK path using `xcrun --show-sdk-path`.
+///
+/// Returns `None` on non-macOS hosts (where `xcrun` is not available) and when
+/// `xcrun` fails.  Failure is non-fatal; clang falls back to its own SDK search
+/// heuristics.  The `#[cfg]` guard ensures the function compiles on all hosts
+/// while making availability explicit.
+fn find_darwin_sdk() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        find_macos_sdk()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

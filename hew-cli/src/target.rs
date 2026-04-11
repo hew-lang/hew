@@ -34,6 +34,50 @@ pub struct TargetSpec {
     object_format: ObjectFormat,
 }
 
+/// Platform-specific components of a native link plan, driven entirely by the
+/// *target* [`TargetOs`], not by the compile-time host `#[cfg]` world.
+///
+/// Separating target intent from host availability makes the Darwin/Linux/
+/// Windows contracts explicit, independently unit-testable, and correct even
+/// when the link plan is inspected in contexts that differ from the running
+/// host (e.g. dry-run, documentation, or future cross-OS paths).
+///
+/// Host-side concerns (which linker binary to invoke, whether lld is installed,
+/// whether `dsymutil` is available) are intentionally *not* captured here —
+/// those remain runtime checks in `link.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeLinkPlan {
+    /// Dead-code-elimination flags passed to the linker unconditionally.
+    ///
+    /// Darwin: `["-Wl,-dead_strip"]`; Linux/ELF: `["-Wl,--gc-sections"]`;
+    /// Windows: `[]` (lld-link uses `/OPT:REF` by default).
+    pub gc_flags: &'static [&'static str],
+
+    /// Strip flags applied only for release (non-debug) builds.
+    ///
+    /// Darwin: `["-Wl,-x"]`; Linux/ELF: `["-Wl,--strip-all"]`; Windows: `[]`.
+    pub strip_flags: &'static [&'static str],
+
+    /// System libraries required by the Hew runtime on this target.
+    pub platform_libs: &'static [&'static str],
+
+    /// `true` when the Darwin SDK path should be anchored via `-isysroot`.
+    ///
+    /// The path is resolved at link time via `xcrun --show-sdk-path`; failure
+    /// is non-fatal (clang falls back to its own SDK search heuristics).
+    pub needs_darwin_sdk: bool,
+
+    /// `true` when the Windows DLL CRT override (`/NODEFAULTLIB:libcmt
+    /// /DEFAULTLIB:msvcrt`) is required to match the Rust runtime's CRT.
+    pub needs_windows_crt_fixup: bool,
+
+    /// `true` when a `dsymutil` pass should follow a successful debug link.
+    ///
+    /// Set for Darwin targets; whether the tool is actually present on the
+    /// host is checked at link time — the step is skipped if unavailable.
+    pub needs_dsymutil: bool,
+}
+
 impl TargetSpec {
     pub fn from_requested(requested: Option<&str>) -> Result<Self, String> {
         let normalized_triple = match requested {
@@ -88,6 +132,74 @@ impl TargetSpec {
 
     pub fn is_wasm(&self) -> bool {
         self.os == TargetOs::Wasi
+    }
+
+    /// Returns the target-driven native link plan for this target.
+    ///
+    /// Every field is derived from `self.os` — not from the host `#[cfg]`
+    /// world — so the plan is deterministic and unit-testable regardless of
+    /// which machine compiled hew.  See [`NativeLinkPlan`] for field
+    /// semantics.
+    pub fn native_link_plan(&self) -> NativeLinkPlan {
+        match self.os {
+            TargetOs::Darwin => NativeLinkPlan {
+                gc_flags: &["-Wl,-dead_strip"],
+                strip_flags: &["-Wl,-x"],
+                // CoreFoundation and Security are pulled in by the Hew runtime.
+                // `-lpthread` and `-lm` satisfy runtime math and threading
+                // references; clang implicitly links libc++ for C++ TLS support.
+                platform_libs: &[
+                    "-lpthread",
+                    "-lm",
+                    "-framework",
+                    "CoreFoundation",
+                    "-framework",
+                    "Security",
+                ],
+                needs_darwin_sdk: true,
+                needs_windows_crt_fixup: false,
+                needs_dsymutil: true,
+            },
+            TargetOs::Linux => NativeLinkPlan {
+                gc_flags: &["-Wl,--gc-sections"],
+                strip_flags: &["-Wl,--strip-all"],
+                platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
+                needs_darwin_sdk: false,
+                needs_windows_crt_fixup: false,
+                needs_dsymutil: false,
+            },
+            TargetOs::Windows => NativeLinkPlan {
+                // The Windows linker (lld-link) does not accept ELF-style -Wl
+                // gc flags; dead code is trimmed by the linker by default via
+                // /OPT:REF.
+                gc_flags: &[],
+                strip_flags: &[],
+                platform_libs: &[
+                    // The Rust runtime references `printf` via __declspec(dllimport),
+                    // but the UCRT inlines printf; the legacy definitions library
+                    // provides the classic __imp_printf symbol.
+                    "-llegacy_stdio_definitions",
+                    "-lws2_32",
+                    "-luserenv",
+                    "-lbcrypt",
+                    "-lntdll",
+                    "-ladvapi32",
+                ],
+                needs_darwin_sdk: false,
+                // Clang defaults to the static CRT (libcmt) but the Rust-compiled
+                // runtime uses the DLL CRT (msvcrt).  The CRT linkage must match.
+                needs_windows_crt_fixup: true,
+                needs_dsymutil: false,
+            },
+            TargetOs::Wasi => NativeLinkPlan {
+                gc_flags: &[],
+                strip_flags: &[],
+                platform_libs: &[],
+                needs_darwin_sdk: false,
+                needs_windows_crt_fixup: false,
+                needs_dsymutil: false,
+            },
+        }
     }
 
     /// Returns the clang-compatible target triple for the linker `-target` flag.
@@ -422,5 +534,114 @@ mod tests {
     fn non_darwin_foreign_targets_still_cannot_link_with_host_tools() {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         assert!(!spec.can_link_with_host_tools());
+    }
+
+    // ── native_link_plan ───────────────────────────────────────────────
+    //
+    // All assertions below are target-driven: they hold on *any* host.
+
+    #[test]
+    fn darwin_link_plan_gc_flags() {
+        let spec = TargetSpec::from_requested(Some("aarch64-apple-darwin")).expect("target");
+        let plan = spec.native_link_plan();
+        assert_eq!(plan.gc_flags, &["-Wl,-dead_strip"]);
+        assert_eq!(plan.strip_flags, &["-Wl,-x"]);
+    }
+
+    #[test]
+    fn darwin_link_plan_platform_libs_include_frameworks() {
+        let spec = TargetSpec::from_requested(Some("aarch64-apple-darwin")).expect("target");
+        let plan = spec.native_link_plan();
+        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        assert!(libs.contains(&"-lpthread"), "expected -lpthread");
+        assert!(libs.contains(&"-lm"), "expected -lm");
+        assert!(libs.contains(&"CoreFoundation"), "expected CoreFoundation");
+        assert!(libs.contains(&"Security"), "expected Security");
+        // -framework flags must immediately precede their framework names
+        let cf_pos = libs.iter().position(|&l| l == "CoreFoundation").unwrap();
+        assert_eq!(libs[cf_pos - 1], "-framework");
+        let sec_pos = libs.iter().position(|&l| l == "Security").unwrap();
+        assert_eq!(libs[sec_pos - 1], "-framework");
+    }
+
+    #[test]
+    fn darwin_link_plan_flags() {
+        let spec = TargetSpec::from_requested(Some("x86_64-apple-darwin")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(plan.needs_darwin_sdk, "Darwin must request SDK anchoring");
+        assert!(plan.needs_dsymutil, "Darwin must request dsymutil pass");
+        assert!(!plan.needs_windows_crt_fixup);
+    }
+
+    #[test]
+    fn linux_link_plan_gc_flags() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        assert_eq!(plan.gc_flags, &["-Wl,--gc-sections"]);
+        assert_eq!(plan.strip_flags, &["-Wl,--strip-all"]);
+    }
+
+    #[test]
+    fn linux_link_plan_platform_libs() {
+        let spec = TargetSpec::from_requested(Some("aarch64-unknown-linux-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        assert!(libs.contains(&"-lpthread"));
+        assert!(libs.contains(&"-lm"));
+        assert!(libs.contains(&"-ldl"));
+        assert!(libs.contains(&"-lrt"));
+    }
+
+    #[test]
+    fn linux_link_plan_flags() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(!plan.needs_darwin_sdk);
+        assert!(!plan.needs_dsymutil);
+        assert!(!plan.needs_windows_crt_fixup);
+    }
+
+    #[test]
+    fn windows_link_plan_gc_flags_are_empty() {
+        let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(
+            plan.gc_flags.is_empty(),
+            "Windows lld-link has no ELF-style gc flags"
+        );
+        assert!(plan.strip_flags.is_empty());
+    }
+
+    #[test]
+    fn windows_link_plan_platform_libs() {
+        let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        let libs: Vec<_> = plan.platform_libs.iter().copied().collect();
+        assert!(libs.contains(&"-lws2_32"));
+        assert!(libs.contains(&"-luserenv"));
+        assert!(libs.contains(&"-lbcrypt"));
+        assert!(libs.contains(&"-lntdll"));
+        assert!(libs.contains(&"-ladvapi32"));
+    }
+
+    #[test]
+    fn windows_link_plan_flags() {
+        let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(plan.needs_windows_crt_fixup, "Windows needs DLL CRT fixup");
+        assert!(!plan.needs_darwin_sdk);
+        assert!(!plan.needs_dsymutil);
+    }
+
+    #[test]
+    fn wasm_link_plan_is_empty() {
+        let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(plan.gc_flags.is_empty());
+        assert!(plan.strip_flags.is_empty());
+        assert!(plan.platform_libs.is_empty());
+        assert!(!plan.needs_darwin_sdk);
+        assert!(!plan.needs_dsymutil);
+        assert!(!plan.needs_windows_crt_fixup);
     }
 }

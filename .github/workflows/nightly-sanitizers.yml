@@ -129,6 +129,7 @@ jobs:
           CARGO_TARGET_DIR: target/sanitizer-runtime-asan
           RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
           ASAN_OPTIONS: detect_leaks=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-runtime/lsan.supp
           ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
           # Nightly Rust supports ASan for this target; UBSan coverage is provided

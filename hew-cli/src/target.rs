@@ -593,10 +593,16 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     #[test]
     fn linux_cross_arch_x86_64_can_link_with_host_tools_on_aarch64() {
-        let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        // Mirror the host env so the same-OS env-match gate accepts the target.
+        let triple = if cfg!(target_env = "musl") {
+            "x86_64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+        let spec = TargetSpec::from_requested(Some(triple)).expect("target");
         assert!(
             spec.can_link_with_host_tools(),
-            "x86_64-linux-gnu must be linkable from aarch64 Linux host"
+            "{triple} must be linkable from aarch64 Linux host"
         );
         assert!(
             !spec.can_run_on_host(),
@@ -607,10 +613,16 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn linux_cross_arch_aarch64_can_link_with_host_tools_on_x86_64() {
-        let spec = TargetSpec::from_requested(Some("aarch64-unknown-linux-gnu")).expect("target");
+        // Mirror the host env so the same-OS env-match gate accepts the target.
+        let triple = if cfg!(target_env = "musl") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        };
+        let spec = TargetSpec::from_requested(Some(triple)).expect("target");
         assert!(
             spec.can_link_with_host_tools(),
-            "aarch64-linux-gnu must be linkable from x86_64 Linux host"
+            "{triple} must be linkable from x86_64 Linux host"
         );
         assert!(
             !spec.can_run_on_host(),

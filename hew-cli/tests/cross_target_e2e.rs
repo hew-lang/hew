@@ -57,21 +57,39 @@ fn foreign_native_target() -> &'static str {
 
 #[cfg(target_os = "linux")]
 fn linux_cross_target() -> (&'static str, Architecture) {
+    // Mirror the host ABI env (gnu vs musl) so that the same-OS cross-arch
+    // link gate accepts the target.  A mismatched env would trigger the env
+    // mismatch rejection path rather than the cross-arch acceptance path.
     if cfg!(target_arch = "aarch64") {
-        ("x86_64-unknown-linux-gnu", Architecture::X86_64)
+        if cfg!(target_env = "musl") {
+            ("x86_64-unknown-linux-musl", Architecture::X86_64)
+        } else {
+            ("x86_64-unknown-linux-gnu", Architecture::X86_64)
+        }
+    } else if cfg!(target_env = "musl") {
+        ("aarch64-unknown-linux-musl", Architecture::Aarch64)
     } else {
         ("aarch64-unknown-linux-gnu", Architecture::Aarch64)
     }
 }
 
-/// Returns the Debian/Ubuntu multiarch sysroot path for the cross target, or
-/// `None` if the directory does not exist on this host.
+/// Returns the multiarch sysroot path for the cross target, or `None` if the
+/// directory does not exist on this host.
+///
+/// Handles both GNU (`/usr/<arch>-linux-gnu`) and musl
+/// (`/usr/<arch>-linux-musl`) layouts so that musl hosts look for the correct
+/// sysroot rather than silently checking a non-existent GNU path.
 #[cfg(target_os = "linux")]
 fn linux_cross_sysroot_path(cross_triple: &str) -> Option<std::path::PathBuf> {
+    let env_suffix = if cross_triple.ends_with("-musl") {
+        "musl"
+    } else {
+        "gnu"
+    };
     let arch_tuple = if cross_triple.starts_with("aarch64-") {
-        "aarch64-linux-gnu"
+        format!("aarch64-linux-{env_suffix}")
     } else if cross_triple.starts_with("x86_64-") {
-        "x86_64-linux-gnu"
+        format!("x86_64-linux-{env_suffix}")
     } else {
         return None;
     };

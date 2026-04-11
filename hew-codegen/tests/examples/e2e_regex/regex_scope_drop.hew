@@ -1,0 +1,32 @@
+// Regression: regex.Pattern must be released automatically at scope exit via
+// `impl Drop`, without any explicit `.free()` call.  This test verifies that
+// patterns allocated inside nested scopes and helper functions do not require
+// manual cleanup.
+//
+// Proof of scope-exit drop: patterns allocated in inner scopes are released
+// when those scopes exit.  Under LSAN/Valgrind, a leak here would be reported
+// as a definite loss.  Under the system allocator, a missing drop causes the
+// handles to accumulate but the program still completes; LSAN is the definitive
+// check.  The test is falsifiable for double-free even without sanitizers
+// because the system malloc aborts on double-free (see regex_no_double_free).
+
+import std::text::regex;
+
+fn check_digit(s: String) -> bool {
+    let re = regex.new("[0-9]+");
+    re.is_match(s)
+    // `re` dropped here via impl Drop → hew_regex_free
+}
+
+fn main() {
+    {
+        let re = regex.new("^hello");
+        println(re.is_match("hello world"));
+        println(re.is_match("world hello"));
+        // `re` dropped at inner scope exit
+    }
+
+    println(check_digit("abc123"));
+    println(check_digit("no digits"));
+    println("done");
+}

@@ -835,8 +835,7 @@ MLIRGen::requireLoweringFactOf(const ast::Span &span, llvm::StringRef context,
 
   ++errorCount_;
   emitError(errorLoc.value_or(currentLoc)) << "missing lowering_facts entry for " << context
-                                           << " at span [" << span.start << ", " << span.end
-                                           << ")";
+                                           << " at span [" << span.start << ", " << span.end << ")";
   return nullptr;
 }
 
@@ -6164,10 +6163,6 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type, bool includeStructType
     auto stdlibIt = stdlibDropFuncs.find(kind.str());
     if (stdlibIt != stdlibDropFuncs.end())
       return stdlibIt->second;
-    // DROP-TODO: regex.Pattern does not yet have `impl Drop` in stdlib.
-    // Remove once regex.hew gains `impl Drop for Pattern`.
-    if (kind == "regex.Pattern")
-      return "hew_regex_free";
   }
   if (!includeStructTypes)
     return "";
@@ -6396,6 +6391,25 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     dropVal = hew::ClosureGetEnvOp::create(builder, loc, ptrType, val);
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !entry.isUserDrop)
     dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+
+  // Null-guard for isUserDrop handle types (e.g. stdlib `impl Drop` on opaque
+  // handles like regex.Pattern).  These skip the bitcast above (isUserDrop
+  // suppresses it) so we apply a separate bitcast here just for the null
+  // check.  This allows zeroing the promoted slot at explicit .free() sites
+  // to correctly skip the scope-exit drop without a double-free.
+  if (entry.isUserDrop && mlir::isa<hew::HandleType>(dropVal.getType())) {
+    auto handlePtr = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, loc, builder.getI1Type(),
+                                                mlir::LLVM::ICmpPredicate::ne, handlePtr, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+    clearPromotedSlot();
+    builder.setInsertionPointAfter(guard);
+    return;
+  }
 
   // Null-guard: skip the drop if the value is a null pointer.  This handles
   // zero-initialized allocas (early return before the let-binding) and will
@@ -6668,6 +6682,98 @@ void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {
   }
 }
 
+void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVal,
+                              mlir::Location loc) {
+  // Only handle bare-identifier receivers.  Non-identifier shapes (field
+  // accesses, chained calls) cannot be reliably traced to an owning
+  // DropEntry via name; skip them rather than risk unsound matching.
+  if (varName.empty())
+    return;
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+    for (auto &entry : *scopeIt) {
+      if (entry.varName != varName)
+        continue;
+
+      // Auto-field-drop entries back pointer-free struct types (String, Vec,
+      // etc. fields).  Their slot is a struct value, not a pointer; creating a
+      // memref<ptr> guard and bitcasting the struct into it would corrupt the
+      // emitDropEntry path and cause a runtime crash (SIGTRAP / WASM
+      // unreachable).  No-op free() calls on these types (e.g. csv.Table,
+      // semver.Version) do not actually release anything, so the scope-exit
+      // __auto_field_drop must fire unchanged to free the owned fields.
+      if (entry.dropFuncName == "__auto_field_drop")
+        return;
+
+      if (entry.promotedSlot) {
+        // Slot exists — zero it.
+        //   • LLVMPointerType slot: the existing null-guard in emitDropEntry skips
+        //     the drop when the slot holds null.
+        //   • HandleType slot (mutable var): the new HandleType null-guard in
+        //     emitDropEntry skips the drop when the slot holds a null handle.
+        auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(entry.promotedSlot.getType());
+        if (!memrefTy)
+          return;
+        auto zero = createDefaultValue(builder, loc, memrefTy.getElementType());
+        mlir::memref::StoreOp::create(builder, loc, zero, entry.promotedSlot);
+      } else {
+        // No promoted slot yet (immutable `let` binding).  Create a hoisted
+        // LLVMPointerType guard alloca so the slot dominates the scope-exit
+        // drop regardless of which SCF block .free() appears in.
+        //
+        // The alloca is null-initialized at function entry by createHoistedAlloca.
+        // We also store the live handle value right after its defining op so
+        // that the drop correctly fires at scope exit when .free() was NOT
+        // called (e.g. the enclosing branch was not taken).
+        auto guardSlot = createHoistedAlloca(ptrType, ptrType);
+
+        // Retroactively insert the handle-value store at the definition site
+        // so it dominates both the .free() call site and the scope-exit drop.
+        // Only do this when the defining op is directly inside the function
+        // body (not inside a nested SCF region) to keep dominance sound.
+        auto *defOp = receiverVal.getDefiningOp();
+        if (defOp && currentFunction && defOp->getParentRegion() == &currentFunction.getBody()) {
+          auto savedIP = builder.saveInsertionPoint();
+          builder.setInsertionPointAfter(defOp);
+          mlir::Value handlePtr = receiverVal;
+          if (!mlir::isa<mlir::LLVM::LLVMPointerType>(handlePtr.getType()))
+            handlePtr = hew::BitcastOp::create(builder, loc, ptrType, handlePtr);
+          mlir::memref::StoreOp::create(builder, loc, handlePtr, guardSlot);
+          builder.restoreInsertionPoint(savedIP);
+        }
+        // When defOp is inside a nested SCF region or is a block argument,
+        // the guard slot stays null-initialized.  In that case .free() inside
+        // a branch correctly nulls the slot, but if the branch is not taken
+        // the slot stays null and the scope-exit drop is skipped (a leak).
+        // This edge case is documented; the common case (handle defined
+        // directly in the function body) is handled correctly above.
+
+        // At the .free() call site: null out the guard slot.
+        auto nullVal = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+        mlir::memref::StoreOp::create(builder, loc, nullVal, guardSlot);
+
+        entry.promotedSlot = guardSlot;
+        entry.bindingIdentity = guardSlot;
+      }
+      return;
+    }
+  }
+}
+
+void MLIRGen::nullOutDropSlotByAlloca(mlir::Value alloca, mlir::Location loc) {
+  // Zero the alloca so every DropEntry that shares this promotedSlot (both
+  // the inner-scope entry and the safety-net function-level duplicate) will
+  // load null at scope exit and skip the drop.  The slot type is always
+  // LLVMPointerType for HandleType temporaries, so createDefaultValue
+  // produces a LLVM null pointer.
+  auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(alloca.getType());
+  if (!memrefTy)
+    return;
+  auto zero = createDefaultValue(builder, loc, memrefTy.getElementType());
+  mlir::memref::StoreOp::create(builder, loc, zero, alloca);
+}
+
 void MLIRGen::emitDropForVariable(const std::string &varName) {
   for (auto &scope : dropScopes) {
     for (auto &entry : scope) {
@@ -6846,7 +6952,8 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   return {};
 }
 
-bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
+bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr,
+                                   mlir::Value *outAlloca) {
   auto info = inferDropFuncForTemporary(val, astExpr);
   if (info.dropFunc.empty())
     return false;
@@ -6954,6 +7061,8 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
     dropScopes[funcLevelDropScopeBase].push_back(std::move(funcEntry));
   }
 
+  if (outAlloca)
+    *outAlloca = alloca;
   return true;
 }
 

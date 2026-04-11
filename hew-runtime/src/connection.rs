@@ -286,9 +286,9 @@ impl Drop for ConnectionActor {
 }
 
 struct ConnectionInstallPublication {
-    publication_token: u64,
-    publication_sync: Arc<Mutex<()>>,
-    publication_removed: Arc<AtomicBool>,
+    token: u64,
+    sync: Arc<Mutex<()>>,
+    removed: Arc<AtomicBool>,
 }
 
 enum ConnectionInstallError {
@@ -783,9 +783,9 @@ fn install_connection_actor(
                     .as_ref()
                     .expect("actor should remain available until install succeeds");
                 let publication = ConnectionInstallPublication {
-                    publication_token: actor_ref.publication_token,
-                    publication_sync: Arc::clone(&actor_ref.publication_sync),
-                    publication_removed: Arc::clone(&actor_ref.publication_removed),
+                    token: actor_ref.publication_token,
+                    sync: Arc::clone(&actor_ref.publication_sync),
+                    removed: Arc::clone(&actor_ref.publication_removed),
                 };
                 conns.push(
                     actor
@@ -1492,9 +1492,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     }
 
     let ConnectionInstallPublication {
-        publication_token,
-        publication_sync,
-        publication_removed,
+        token: publication_token,
+        sync: publication_sync,
+        removed: publication_removed,
     } = match install_connection_actor(mgr, actor) {
         Ok(publication) => publication,
         Err(ConnectionInstallError::MutexPoisoned) => {

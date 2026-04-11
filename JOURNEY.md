@@ -1,5 +1,11 @@
 # Journey
 
+## 2026-04-11 — fix/astgen-u32-overflow-guards
+
+- Symptom: `make astgen` regenerated `hew-codegen/src/msgpack_reader.cpp` without the exact `uint32_t` overflow guard, which made `test_schema_version_u32_overflow_rejects` fail even though the generated-reader freshness gate passed.
+- Root cause: the source-of-truth generator had regressed to emitting `static_cast<uint32_t>(getUint(...))` for `RustType::U32`, and the special-cased `parseProgram` schema-version parser duplicated the same unchecked narrowing outside the generic path.
+- Decision: restore one checked `getUint32` helper in the shared helper preamble, route generated `u32` field/vector parses through it, and make the special-cased schema-version parser use the same fail-closed helper before regenerating the checked-in reader.
+
 ## 2026-04-09 — refactor/checker-collection-capability-dedup
 
 - Chose to centralise the repeated structural `Ty` recursion in `hew-types/src/check/admissibility.rs` behind one helper that dispatches back into the existing Vec, HashSet, and HashMap validators at the named-collection boundary.

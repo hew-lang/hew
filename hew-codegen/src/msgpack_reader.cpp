@@ -400,7 +400,7 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   result.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);
   const auto *mailbox_capacity = mapGet(obj, "mailbox_capacity");
   if (mailbox_capacity && !isNil(*mailbox_capacity))
-    result.mailbox_capacity = getUint32(*mailbox_capacity, "mailbox_capacity");
+    result.mailbox_capacity = getUint32(*mailbox_capacity, "field value");
   const auto *overflow_policy = mapGet(obj, "overflow_policy");
   if (overflow_policy && !isNil(*overflow_policy))
     result.overflow_policy = parseOverflowPolicy(*overflow_policy);
@@ -628,7 +628,7 @@ static ast::NamingCase parseNamingCase(const msgpack::object &obj) {
 static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
   ast::WireFieldMeta result;
   result.field_name = getString(mapReq(obj, "field_name"));
-  result.field_number = getUint32(mapReq(obj, "field_number"), "field_number");
+  result.field_number = getUint32(mapReq(obj, "field_number"), "field value");
   result.is_optional = getBool(mapReq(obj, "is_optional"));
   result.is_deprecated = getBool(mapReq(obj, "is_deprecated"));
   result.is_repeated = getBool(mapReq(obj, "is_repeated"));
@@ -640,16 +640,14 @@ static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
     result.yaml_name = getString(*yaml_name);
   const auto *since = mapGet(obj, "since");
   if (since && !isNil(*since))
-    result.since = getUint32(*since, "since");
+    result.since = getUint32(*since, "field value");
   return result;
 }
 
 static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
   ast::WireMetadata result;
   result.field_meta = parseVec<ast::WireFieldMeta>(mapReq(obj, "field_meta"), parseWireFieldMeta);
-  result.reserved_numbers = parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) {
-    return getUint32(o, "reserved_numbers entry");
-  });
+  result.reserved_numbers = parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) { return getUint32(o, "array entry"); });
   const auto *json_case = mapGet(obj, "json_case");
   if (json_case && !isNil(*json_case))
     result.json_case = parseNamingCase(*json_case);
@@ -658,10 +656,10 @@ static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
     result.yaml_case = parseNamingCase(*yaml_case);
   const auto *version = mapGet(obj, "version");
   if (version && !isNil(*version))
-    result.version = getUint32(*version, "version");
+    result.version = getUint32(*version, "field value");
   const auto *min_version = mapGet(obj, "min_version");
   if (min_version && !isNil(*min_version))
-    result.min_version = getUint32(*min_version, "min_version");
+    result.min_version = getUint32(*min_version, "field value");
   return result;
 }
 
@@ -676,7 +674,7 @@ static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {
   ast::WireFieldDecl result;
   result.name = getString(mapReq(obj, "name"));
   result.ty = getString(mapReq(obj, "ty"));
-  result.field_number = getUint32(mapReq(obj, "field_number"), "field_number");
+  result.field_number = getUint32(mapReq(obj, "field_number"), "field value");
   result.is_optional = getBool(mapReq(obj, "is_optional"));
   result.is_repeated = getBool(mapReq(obj, "is_repeated"));
   result.is_reserved = getBool(mapReq(obj, "is_reserved"));
@@ -689,7 +687,7 @@ static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {
     result.yaml_name = getString(*yaml_name);
   const auto *since = mapGet(obj, "since");
   if (since && !isNil(*since))
-    result.since = getUint32(*since, "since");
+    result.since = getUint32(*since, "field value");
   return result;
 }
 

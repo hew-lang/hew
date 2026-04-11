@@ -2152,6 +2152,26 @@ fn immutable_field_assignment_root_is_rejected() {
 }
 
 #[test]
+fn immutable_param_field_assignment_root_is_rejected() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "type Point { x: int; }\n",
+        "fn bump(p: Point) { p.x = 2; }\n",
+    ));
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable `p`")),
+        "expected immutable parameter field-assignment root error, got: {errors:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "immutable parameter field assignment should not produce unused-mut warning, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn immutable_compound_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
         "type Point { x: int; }\n",
@@ -2183,6 +2203,21 @@ fn mutable_field_assignment_root_counts_as_mutation() {
             .iter()
             .any(|w| w.message.contains("never reassigned")),
         "field assignment should count as a mutation of the root binding, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn mutable_param_field_assignment_root_counts_as_mutation() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "type Point { x: int; }\n",
+        "fn bump(var p: Point) { p.x = 2; println(p.x); }\n",
+    ));
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "parameter field assignment should count as a mutation of the root binding, got: {warnings:?}"
     );
 }
 

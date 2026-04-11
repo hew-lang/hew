@@ -1339,7 +1339,8 @@ static bool desugarWireStructToTypeDecl(hew::ast::Program &program, const std::s
   const hew::ast::Span span{0, 0};
   for (auto &item : program.items) {
     auto *wireDecl = std::get_if<hew::ast::WireDecl>(&item.value.kind);
-    if (!wireDecl || wireDecl->kind != hew::ast::WireDeclKind::Struct || wireDecl->name != structName)
+    if (!wireDecl || wireDecl->kind != hew::ast::WireDeclKind::Struct ||
+        wireDecl->name != structName)
       continue;
 
     hew::ast::TypeDecl typeDecl;
@@ -6456,10 +6457,10 @@ static void test_wire_struct_typedecl_missing_field_metadata_rejects() {
   WireDecl packetDecl;
   packetDecl.kind = WireDeclKind::Struct;
   packetDecl.name = "Packet";
-  packetDecl.fields.push_back(
-      WireFieldDecl{"id", "int", 1, false, false, false, false, std::nullopt, std::nullopt, std::nullopt});
-  packetDecl.fields.push_back(WireFieldDecl{
-      "count", "int", 2, false, false, false, false, std::nullopt, std::nullopt, std::nullopt});
+  packetDecl.fields.push_back(WireFieldDecl{"id", "int", 1, false, false, false, false,
+                                            std::nullopt, std::nullopt, std::nullopt});
+  packetDecl.fields.push_back(WireFieldDecl{"count", "int", 2, false, false, false, false,
+                                            std::nullopt, std::nullopt, std::nullopt});
 
   FnDecl mainFn;
   mainFn.name = "main";
@@ -9344,6 +9345,151 @@ fn main() -> int {
   PASS();
 }
 
+// ============================================================================
+// Test: break outside a loop increments errorCount_ and aborts codegen
+// (regression for the fail-closed fix in MLIRGenStmt.cpp)
+// ============================================================================
+static void test_break_outside_loop_stmt_fails_closed() {
+  TEST(break_outside_loop_stmt_fails_closed);
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::nullopt};
+    return {std::move(ty), span};
+  };
+
+  // Build: fn main() -> i64 { break; }
+  StmtBreak breakStmt;
+  breakStmt.label = std::nullopt;
+  breakStmt.value = std::nullopt;
+
+  Stmt stmtNode;
+  stmtNode.kind = std::move(breakStmt);
+  stmtNode.span = span;
+
+  FnDecl fn;
+  fn.name = "main";
+  fn.is_async = false;
+  fn.is_generator = false;
+  fn.visibility = Visibility::Pub;
+  fn.is_pure = false;
+  fn.return_type = mkType("i64");
+  fn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmtNode), span}));
+
+  Program program;
+  program.items.push_back({Item{std::move(fn)}, span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail for break outside a loop");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "break used outside of a loop";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL("expected 'break used outside of a loop' diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: match arm with unknown constructor pattern increments errorCount_ and
+// aborts codegen (regression for the fail-closed fix in MLIRGenMatch.cpp)
+// ============================================================================
+static void test_match_arm_unknown_constructor_fails_closed() {
+  TEST(match_arm_unknown_constructor_fails_closed);
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::nullopt};
+    return {std::move(ty), span};
+  };
+
+  // Build: fn main(x: i64) -> i64 { match x { Foo => 0, } }
+  // PatConstructor "Foo" has no entry in variantLookup for an i64 scrutinee,
+  // so generateMatchArmCondition hits "unknown constructor pattern 'Foo'".
+  PatConstructor ctor;
+  ctor.name = "Foo";
+
+  Pattern ctorPat;
+  ctorPat.kind = std::move(ctor);
+
+  Expr bodyExpr;
+  bodyExpr.kind = ExprLiteral{Literal(LitInteger{0})};
+  bodyExpr.span = span;
+
+  MatchArm arm;
+  arm.pattern = {std::move(ctorPat), span};
+  arm.guard = nullptr;
+  arm.body = std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(bodyExpr), span});
+
+  Expr scrutineeExpr;
+  scrutineeExpr.kind = ExprIdentifier{"x"};
+  scrutineeExpr.span = span;
+
+  StmtMatch matchStmt;
+  matchStmt.scrutinee = {std::move(scrutineeExpr), span};
+  matchStmt.arms.push_back(std::move(arm));
+
+  Stmt stmtNode;
+  stmtNode.kind = std::move(matchStmt);
+  stmtNode.span = span;
+
+  Param param;
+  param.name = "x";
+  param.ty = mkType("i64");
+  param.is_mutable = false;
+
+  FnDecl fn;
+  fn.name = "main";
+  fn.is_async = false;
+  fn.is_generator = false;
+  fn.visibility = Visibility::Pub;
+  fn.is_pure = false;
+  fn.return_type = mkType("i64");
+  fn.params.push_back(std::move(param));
+  fn.body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmtNode), span}));
+
+  Program program;
+  program.items.push_back({Item{std::move(fn)}, span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail for match arm with unknown constructor");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "unknown constructor pattern 'Foo' in match arm";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL("expected 'unknown constructor pattern' diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -9470,6 +9616,8 @@ int main() {
   test_prim_struct_no_serial_call_emits_no_wrappers();
   test_prim_struct_instance_serial_call_emits_demanded_wrapper();
   test_prim_struct_static_serial_call_emits_demanded_wrapper();
+  test_break_outside_loop_stmt_fails_closed();
+  test_match_arm_unknown_constructor_fails_closed();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

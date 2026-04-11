@@ -710,6 +710,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
           bindConstructorPatternVars(*ctor, scrutinee, location);
           auto guardCond = generateExpression(arm.guard->value);
           if (!guardCond) {
+            ++errorCount_;
             emitError(location) << "failed to generate match guard expression";
             return nullptr;
           }
@@ -729,6 +730,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       // No guard: tag check is sufficient
       return generateTagMatch(tagCond);
     }
+    ++errorCount_;
     emitError(location) << "unknown constructor pattern '" << ctorName << "' in match arm";
     return nullptr;
   }
@@ -764,6 +766,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
         bindStructPatternFields(*structPatPtr);
         auto guardCond = generateExpression(arm.guard->value);
         if (!guardCond) {
+          ++errorCount_;
           emitError(location) << "failed to generate match guard expression";
           return nullptr;
         }
@@ -811,6 +814,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   }
 
   // For other pattern types, emit error
+  ++errorCount_;
   emitError(location) << "unhandled pattern kind in match arm";
   return nullptr;
 }

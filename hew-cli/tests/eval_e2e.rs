@@ -1201,3 +1201,208 @@ fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
         "WASM pre-failure stdout was discarded; got stdout: {stdout:?}"
     );
 }
+
+// ── JSON run contract ─────────────────────────────────────────────────────────
+//
+// `hew eval --json` must emit a single JSON object on stdout (exit 0) whose
+// `status` field is one of "ok", "compile_error", or "runtime_failure".
+//
+// Contract invariants (all three outcomes):
+//   - Exactly one JSON object on stdout; nothing else on stdout.
+//   - Process exits 0 regardless of outcome.
+//   - `status`      distinguishes the three outcome categories.
+//   - `stdout`      contains program output (may be empty).
+//   - `exit_code`   is the child exit code (0 for ok/compile_error).
+//   - `diagnostics` is non-empty exactly when status == "compile_error".
+
+#[test]
+fn eval_json_ok_inline_expression() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "ok", "unexpected status: {v}");
+    assert_eq!(v["stdout"], "3\n", "unexpected stdout: {v}");
+    assert_eq!(v["exit_code"], 0, "unexpected exit_code: {v}");
+    assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
+}
+
+#[test]
+fn eval_json_runtime_failure() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", r#"panic("deliberate")"#])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    // --json must exit 0 even on runtime failure.
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert_eq!(
+        v["exit_code"], 101,
+        "expected child exit code 101 (Hew panic): {v}"
+    );
+    assert_eq!(
+        v["diagnostics"], "",
+        "diagnostics must be empty on runtime_failure: {v}"
+    );
+}
+
+#[test]
+fn eval_json_runtime_failure_preserves_stdout() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("partial.hew");
+    std::fs::write(
+        &path,
+        "fn do_it() {\n    print(\"before-fail\\n\");\n    panic(\"deliberate\");\n}\ndo_it()\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected exit 0 with --json");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert!(
+        v["stdout"].as_str().unwrap_or("").contains("before-fail"),
+        "pre-failure stdout was not preserved in JSON: {v}"
+    );
+}
+
+#[test]
+fn eval_json_compile_error() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "this_does_not_exist_at_all()"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    // --json must exit 0 even on compile error.
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json on compile error, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "compile_error", "unexpected status: {v}");
+    assert_eq!(v["exit_code"], 0, "unexpected exit_code: {v}");
+    assert_eq!(
+        v["stdout"], "",
+        "stdout must be empty on compile error: {v}"
+    );
+    assert!(
+        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
+        "diagnostics must be non-empty on compile_error: {v}"
+    );
+}
+
+#[test]
+fn eval_json_compile_error_contains_diagnostic_text() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "this_does_not_exist_at_all()"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    let diagnostics = v["diagnostics"].as_str().unwrap_or("");
+    // The diagnostic must mention the unknown name so tooling can surface it.
+    assert!(
+        diagnostics.contains("this_does_not_exist_at_all")
+            || diagnostics.contains("error")
+            || diagnostics.contains("not found"),
+        "diagnostics text appears empty or unhelpful: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn eval_json_requires_non_interactive() {
+    // --json without -f and without an expression (interactive mode) is rejected.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure for --json in interactive mode"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--json"),
+        "expected --json in error message: {stderr}"
+    );
+}
+
+#[test]
+fn eval_json_file_ok() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("json_ok.hew");
+    std::fs::write(&path, "42\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected exit 0 with --json");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "ok", "unexpected status: {v}");
+    assert_eq!(v["stdout"], "42\n", "unexpected stdout: {v}");
+}

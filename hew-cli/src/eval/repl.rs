@@ -706,17 +706,22 @@ impl ReplSession {
             .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
         let before = self.session.counts();
 
-        self.eval_source_file_cli(&source, path, path)
-            .map_err(|error| match error {
-                CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
-                CliEvalError::Message(message) => LoadFileError::Message(message),
-                CliEvalError::RuntimeFailure { stdout, exit_code } => {
-                    if !stdout.is_empty() {
-                        print!("{stdout}");
+        let output =
+            self.eval_source_file_cli(&source, path, path)
+                .map_err(|error| match error {
+                    CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
+                    CliEvalError::Message(message) => LoadFileError::Message(message),
+                    CliEvalError::RuntimeFailure { stdout, exit_code } => {
+                        if !stdout.is_empty() {
+                            print!("{stdout}");
+                        }
+                        LoadFileError::Message(format!("program exited with status {exit_code}"))
                     }
-                    LoadFileError::Message(format!("program exited with status {exit_code}"))
-                }
-            })?;
+                })?;
+
+        if !output.is_empty() {
+            print!("{output}");
+        }
 
         let added = session_count_delta(before, self.session.counts());
         Ok(format!("Loaded {path} ({})", describe_load_result(added)))
@@ -886,8 +891,9 @@ impl ReplSession {
         source: &str,
         input_name: &str,
         source_label: &str,
-    ) -> Result<(), CliEvalError> {
+    ) -> Result<String, CliEvalError> {
         let mut buffer = String::new();
+        let mut collected = String::new();
 
         for line in source.lines() {
             let trimmed = line.trim();
@@ -914,21 +920,17 @@ impl ReplSession {
             }
 
             let output = self.eval_file_cli(input, input_name, source_label)?;
-            if !output.is_empty() {
-                print!("{output}");
-            }
+            collected.push_str(&output);
             buffer.clear();
         }
 
         let input = buffer.trim();
         if !input.is_empty() {
             let output = self.eval_file_cli(input, input_name, source_label)?;
-            if !output.is_empty() {
-                print!("{output}");
-            }
+            collected.push_str(&output);
         }
 
-        Ok(())
+        Ok(collected)
     }
 }
 
@@ -1205,7 +1207,11 @@ pub fn eval_one(
 /// # Errors
 ///
 /// Returns an error string if evaluation fails.
-pub fn eval_file(path: &str, timeout: Duration, target: Option<&str>) -> Result<(), CliEvalError> {
+pub fn eval_file(
+    path: &str,
+    timeout: Duration,
+    target: Option<&str>,
+) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
         std::io::stdin()
@@ -1223,9 +1229,7 @@ pub fn eval_file(path: &str, timeout: Duration, target: Option<&str>) -> Result<
     } else {
         ReplSession::for_path_with_target(path, timeout, target)
     };
-    session.eval_source_file_cli(&source, &input_name, &input_name)?;
-
-    Ok(())
+    session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
 fn help_text() -> &'static str {

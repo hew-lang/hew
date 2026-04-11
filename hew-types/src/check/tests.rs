@@ -10007,6 +10007,88 @@ mod wasm_rejects {
         );
     }
 
+    #[test]
+    fn wasm_multi_arm_literal_timed_select_is_not_warning() {
+        let output = check_wasm(
+            r"
+            actor Responder {
+                let value: int;
+                receive fn get() -> int {
+                    value
+                }
+            }
+
+            fn main() {
+                let a = spawn Responder(value: 1);
+                let b = spawn Responder(value: 2);
+                let result = select {
+                    x from a.get() => x,
+                    y from b.get() => y,
+                    after 1ms => -1,
+                };
+                println(result);
+            }
+        ",
+        );
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::PlatformLimitation),
+            "literal timed select should no longer warn on WASM; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
+            "literal timed select should not error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_computed_timed_select_still_warns() {
+        let output = check_wasm(
+            r"
+            actor Responder {
+                let value: int;
+                receive fn get() -> int {
+                    value
+                }
+            }
+
+            fn main() {
+                let a = spawn Responder(value: 1);
+                let b = spawn Responder(value: 2);
+                let timeout = 1ms;
+                let result = select {
+                    x from a.get() => x,
+                    y from b.get() => y,
+                    after timeout => -1,
+                };
+                println(result);
+            }
+        ",
+        );
+        assert!(
+            output.warnings.iter().any(
+                |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
+            ),
+            "computed timed select should remain a WASM warning; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
+            "computed timed select should not error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
     // ── Wave 14: Ty::Error cascade-suppression fixes ─────────────────────────
     //
     // These tests verify that independent arg diagnostics are NOT suppressed

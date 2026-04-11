@@ -233,10 +233,9 @@ pub mod wasm_stubs {
     //!   WASM-TODO: integrate with host timer API (e.g. `setTimeout` / WASI
     //!   `clock_nanosleep`) once the WASM runtime has timer-backed rescheduling.
     //!
-    //! - **Clock**: `hew_now_ms` returns 0 until a real WASI clock shim is
-    //!   wired up. Timeout comparisons against 0 expire immediately (fail-closed:
-    //!   timeouts fire early rather than silently hanging).
-    //!   WASM-TODO: replace with `wasi::clock_time_get(CLOCK_MONOTONIC)`.
+    //! - **Clock**: `hew_now_ms` mirrors the native runtime's monotonic
+    //!   process-relative clock so timeout comparisons stay consistent on
+    //!   `wasm32-wasip1`.
     //!
     //! - **Channels**: MPSC channels require OS threads and are unsupported on
     //!   the single-threaded WASM cooperative scheduler. All `hew_channel_*`
@@ -269,19 +268,27 @@ pub mod wasm_stubs {
 
     /// WASM shim: monotonic clock in milliseconds.
     ///
-    /// Returns 0 until `wasi::clock_time_get(CLOCK_MONOTONIC)` is wired up.
-    /// Returning 0 is intentionally fail-closed: any deadline computed as
-    /// `now + delta` will be `delta` milliseconds from the epoch, so timeout
-    /// checks against the real wall clock expire immediately rather than
-    /// hanging indefinitely.
+    /// Returns monotonic milliseconds since the first call. The `deterministic`
+    /// simulation-time module is unavailable on `wasm32`; simulated time is not
+    /// supported in the WASM cooperative scheduler.
     ///
     /// # Safety
     ///
     /// No preconditions.
     #[no_mangle]
     pub unsafe extern "C" fn hew_now_ms() -> u64 {
-        // WASM-TODO: replace with wasi::clock_time_get(CLOCK_MONOTONIC) / 1_000_000
-        0
+        use std::sync::OnceLock;
+        use std::time::Instant;
+
+        static EPOCH: OnceLock<Instant> = OnceLock::new();
+        let epoch = EPOCH.get_or_init(Instant::now);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "monotonic ms since process start won't exceed u64"
+        )]
+        {
+            epoch.elapsed().as_millis() as u64
+        }
     }
 
     // ── Channels (unsupported on wasm32) ─────────────────────────────────────

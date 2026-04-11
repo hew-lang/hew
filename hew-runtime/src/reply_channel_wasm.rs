@@ -13,14 +13,14 @@
 //! the first channel becomes ready.  This mirrors the native busy-poll
 //! approach but uses cooperative yields instead of `thread::sleep`.
 //!
-//! Finite-timeout select (`timeout_ms >= 0`) requires a monotonic wall
-//! clock.  That path is currently kept fail-closed:
-//! `// WASM-TODO: non-zero timeout requires WASI clock_time_get support`.
+//! Finite-timeout select (`timeout_ms >= 0`) uses the same monotonic
+//! deadline-loop pattern as single-arm timed ask on `wasm32-wasip1`.
 
 use std::ffi::c_void;
 use std::ptr;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
@@ -264,13 +264,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut WasmReplyChannel) -> *mut c_voi
 /// # Timeout behaviour
 ///
 /// `timeout_ms == -1` means "wait indefinitely" (until a winner replies or
-/// the run queue is empty).
-///
-/// # WASM-TODO: non-zero timeout requires WASI `clock_time_get` support.
-/// Until a monotonic clock is available in the WASM sandbox, passing
-/// `timeout_ms >= 0` returns -1 immediately without driving the scheduler.
-/// Programs that need timed-select on WASM must restructure to use the
-/// infinite-wait form and manage cancellation in actor logic.
+/// the run queue is empty). Finite timeouts use a monotonic deadline loop.
 ///
 /// # Safety
 ///
@@ -287,13 +281,10 @@ pub unsafe extern "C" fn hew_select_first(
     if channels.is_null() || count <= 0 {
         return -1;
     }
-    // WASM-TODO: non-zero timeout requires WASI clock_time_get support.
-    // Return -1 immediately for finite timeouts rather than silently treating
-    // them as infinite waits, which would be semantically incorrect.
-    if timeout_ms >= 0 {
-        return -1;
-    }
     let n = count as usize;
+    let deadline = (timeout_ms >= 0).then(|| {
+        Instant::now() + Duration::from_millis(u64::try_from(timeout_ms.max(0)).unwrap_or(0))
+    });
 
     // SAFETY: Single-threaded on WASM; hew_wasm_sched_tick is re-entrant-safe.
     unsafe {
@@ -308,8 +299,14 @@ pub unsafe extern "C" fn hew_select_first(
                     return i as i32;
                 }
             }
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                return -1;
+            }
             // Drive one activation to make progress toward a reply.
             let remaining = crate::scheduler_wasm::hew_wasm_sched_tick(1);
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                return -1;
+            }
             if remaining == 0 {
                 // Run queue exhausted; do a final scan.
                 for i in 0..n {
@@ -484,9 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn select_first_finite_timeout_returns_minus_one_without_running_scheduler() {
-        // Finite timeouts are not supported on WASM (no WASI clock).
-        // WASM-TODO: non-zero timeout requires WASI clock_time_get support.
+    fn select_first_finite_timeout_ready_channel_returns_zero() {
         let ch = hew_reply_channel_new();
         let value = 7_i32;
         // SAFETY: ch is valid; retain so it won't be freed by hew_reply.
@@ -508,12 +503,35 @@ mod tests {
         #[expect(clippy::cast_possible_wrap, reason = "test array length fits in i32")]
         // SAFETY: ch_arr contains a live reply channel owned by this test.
         let result = unsafe { hew_select_first(ch_arr.as_mut_ptr(), ch_arr.len() as i32, 10) };
-        assert_eq!(result, -1, "finite timeout must fail-closed on WASM");
-        // Clean up the value that was deposited on the channel.
-        // SAFETY: ch is still live; reply_take + free are balanced.
+        assert_eq!(result, 0, "ready reply must win before the finite timeout");
+        // SAFETY: ch is valid; reply_take consumes the reply written above, and
+        // hew_reply_channel_free releases the channel after the reply is taken.
         unsafe {
-            let _ = reply_take(ch);
+            let result = reply_take(ch);
+            assert!(!result.is_null());
+            libc::free(result);
             hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn select_first_zero_timeout_without_ready_channels_returns_minus_one() {
+        let ch0 = hew_reply_channel_new();
+        let ch1 = hew_reply_channel_new();
+        let mut ch_arr = [ch0, ch1];
+        // SAFETY: channels are valid and no reply is ready before the zero-ms deadline.
+        let result = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 2, 0) };
+        assert_eq!(
+            result, -1,
+            "zero-ms timeout must fire before the scheduler ticks"
+        );
+        // SAFETY: ch0 and ch1 are valid channels created above; cancel + free
+        // is the required teardown sequence when no reply was sent.
+        unsafe {
+            hew_reply_channel_cancel(ch0);
+            hew_reply_channel_free(ch0);
+            hew_reply_channel_cancel(ch1);
+            hew_reply_channel_free(ch1);
         }
     }
 

@@ -229,7 +229,9 @@ impl WasmUnsupportedFeature {
             }
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
-            Self::Select => "timed multi-arm selects require WASI clock_time_get (WASM-TODO); use a no-timeout select or single-arm timed ask",
+            Self::Select => {
+                "computed select timeouts are not supported on WASM32; use a duration literal such as `after 100ms`"
+            }
             Self::Channels => {
                 "MPSC channels require OS mutexes/condvars not available on wasm32; \
                  use the actor ask pattern instead"

@@ -1414,47 +1414,35 @@ fn eval_json_file_ok() {
 // by earlier successful chunks must not be dropped.
 //
 // This is a regression guard for the buffered-accumulation path introduced in
-// eval_source_file_cli: the `?` short-circuit on RuntimeFailure used to silently
-// drop `collected` from prior chunks.  The fix prepends `collected` into the
-// RuntimeFailure stdout before propagating.
+// `eval_source_file_cli`: the `?` short-circuit on RuntimeFailure used to
+// silently drop `collected` from prior chunks.  The fix prepends `collected`
+// into the RuntimeFailure stdout before propagating.
 //
-// Coverage:
-//   - non-JSON `hew eval -f`: exit code propagated, pre-failure stdout visible
-//   - JSON `hew eval --json -f`: status=="runtime_failure", stdout contains
-//     both prior-chunk output and the failing-chunk's pre-panic output
+// File shape that actually exercises the prepend path:
+//   chunk 1 (bare expression): print("prior-chunk\n")   ← emits stdout, succeeds
+//   chunk 2 (bare expression): panic("boom")            ← fails, exit 101
 //
-// `:load` coverage: load_file calls eval_source_file_cli and then print!s the
-// returned Ok(String), or on RuntimeFailure it forwards the stdout field.
-// The same fix covers that path; we rely on the file eval tests below as
-// sufficient proxy rather than duplicating an interactive-REPL harness.
+// Chunk 1 runs in its own compiled binary and writes to stdout.  That output
+// is captured into `collected`.  When chunk 2's binary panics, the fix prepends
+// `collected` into the RuntimeFailure.stdout before re-raising, so the caller
+// (non-JSON print path, JSON stdout field) sees "prior-chunk\n".
+//
+// Without the fix the `?` would propagate RuntimeFailure { stdout: "", … }
+// and "prior-chunk\n" would be silently dropped — the tests would FAIL.
+//
+// `:load` coverage: `load_file` delegates directly to `eval_source_file_cli`
+// and forwards the RuntimeFailure stdout field unchanged.  The file-eval tests
+// below are a sufficient proxy; no separate interactive-REPL harness is needed.
 
-/// A two-chunk .hew file where chunk 1 prints and chunk 2 panics.
+/// Write a two-chunk .hew file:
+///   chunk 1 — bare `print("prior-chunk\n")` (complete expression, emits stdout)
+///   chunk 2 — bare `panic("boom")`           (complete expression, exits 101)
 ///
-/// The two chunks must be separated by a complete statement boundary so the
-/// chunk-splitter in `eval_source_file_cli` treats them as independent evals.
+/// The blank line between them ensures the chunk-splitter in
+/// `eval_source_file_cli` finishes chunk 1 before starting chunk 2.
 fn write_cross_chunk_failure_file(dir: &std::path::Path) -> std::path::PathBuf {
-    // Chunk 1: a complete fn definition (a top-level item — does not produce
-    //          output itself but is recorded in session state).
-    // Chunk 2: a bare expression that calls a helper printing first, then panics.
-    // We use two separate fn definitions so each is a self-contained chunk, then
-    // call the second one as a bare expression (third chunk).
     let path = dir.join("cross_chunk_failure.hew");
-    std::fs::write(
-        &path,
-        "\
-fn early() {
-    print(\"chunk-one-output\\n\");
-}
-
-fn late() {
-    early();
-    panic(\"chunk-two-panic\");
-}
-
-late()
-",
-    )
-    .unwrap();
+    std::fs::write(&path, "print(\"prior-chunk\\n\")\n\npanic(\"boom\")\n").unwrap();
     path
 }
 
@@ -1484,8 +1472,8 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("chunk-one-output"),
-        "pre-failure stdout from earlier chunk was dropped; got stdout: {stdout:?}"
+        stdout.contains("prior-chunk"),
+        "stdout from earlier chunk was dropped; got: {stdout:?}"
     );
 }
 
@@ -1513,7 +1501,7 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     assert_eq!(v["exit_code"], 101, "expected child exit code 101: {v}");
     let captured = v["stdout"].as_str().unwrap_or("");
     assert!(
-        captured.contains("chunk-one-output"),
-        "pre-failure stdout from earlier chunk was absent in JSON stdout: {v}"
+        captured.contains("prior-chunk"),
+        "stdout from earlier chunk was absent in JSON contract: {v}"
     );
 }

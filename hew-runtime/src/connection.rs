@@ -285,6 +285,18 @@ impl Drop for ConnectionActor {
     }
 }
 
+struct ConnectionInstallPublication {
+    publication_token: u64,
+    publication_sync: Arc<Mutex<()>>,
+    publication_removed: Arc<AtomicBool>,
+}
+
+enum ConnectionInstallError {
+    MutexPoisoned,
+    Shutdown,
+    Duplicate,
+}
+
 // ── Send wrappers for raw pointers ─────────────────────────────────────
 
 /// Wrapper to send a `*mut HewTransport` across threads.
@@ -752,6 +764,44 @@ unsafe fn close_transport_conn(transport: *mut HewTransport, conn_id: c_int) {
             unsafe { close_fn(t.r#impl, conn_id) };
         }
     }
+}
+
+fn install_connection_actor(
+    mgr: &HewConnMgr,
+    actor: ConnectionActor,
+) -> Result<ConnectionInstallPublication, ConnectionInstallError> {
+    let conn_id = actor.conn_id;
+    let mut actor = Some(actor);
+    let install = match mgr.connections.lock() {
+        Ok(mut conns) => {
+            if mgr.reconnect_shutdown.load(Ordering::Acquire) {
+                Err(ConnectionInstallError::Shutdown)
+            } else if conns.iter().any(|c| c.conn_id == conn_id) {
+                Err(ConnectionInstallError::Duplicate)
+            } else {
+                let actor_ref = actor
+                    .as_ref()
+                    .expect("actor should remain available until install succeeds");
+                let publication = ConnectionInstallPublication {
+                    publication_token: actor_ref.publication_token,
+                    publication_sync: Arc::clone(&actor_ref.publication_sync),
+                    publication_removed: Arc::clone(&actor_ref.publication_removed),
+                };
+                conns.push(
+                    actor
+                        .take()
+                        .expect("actor should be consumed exactly once during install"),
+                );
+                Ok(publication)
+            }
+        }
+        Err(_) => Err(ConnectionInstallError::MutexPoisoned),
+    };
+    if install.is_err() {
+        // SAFETY: the transport handle belongs to this uninstalled actor.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+    }
+    install
 }
 
 unsafe fn encode_envelope(
@@ -1274,6 +1324,13 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
+    if mgr.reconnect_shutdown.load(Ordering::Acquire) {
+        // SAFETY: conn_id came from the transport and is not yet tracked by the manager.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error("hew_connmgr_add: manager is shutting down");
+        return -1;
+    }
+
     {
         let Ok(conns) = mgr.connections.lock() else {
             // Policy: per-connection-manager state (C-ABI) — poisoned mutex
@@ -1434,25 +1491,31 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     }
 
-    let Ok(mut conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
-        return -1;
+    let ConnectionInstallPublication {
+        publication_token,
+        publication_sync,
+        publication_removed,
+    } = match install_connection_actor(mgr, actor) {
+        Ok(publication) => publication,
+        Err(ConnectionInstallError::MutexPoisoned) => {
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
+            return -1;
+        }
+        Err(ConnectionInstallError::Shutdown) => {
+            set_last_error(format!(
+                "hew_connmgr_add: manager shutdown won install race for conn {conn_id}"
+            ));
+            return -1;
+        }
+        Err(ConnectionInstallError::Duplicate) => {
+            set_last_error(format!(
+                "hew_connmgr_add: connection {conn_id} became duplicate during install"
+            ));
+            return -1;
+        }
     };
-    if conns.iter().any(|c| c.conn_id == conn_id) {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: connection {conn_id} became duplicate during install"
-        ));
-        return -1;
-    }
-    let publication_token = actor.publication_token;
-    let publication_sync = Arc::clone(&actor.publication_sync);
-    let publication_removed = Arc::clone(&actor.publication_removed);
-    conns.push(actor);
-    drop(conns);
 
     publish_connection_established(
         mgr,
@@ -2095,6 +2158,84 @@ mod tests {
             drop(Box::from_raw(transport_ptr));
             drop(Box::from_raw(
                 close_impl.cast::<std::sync::mpsc::Sender<()>>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    fn install_connection_actor_shutdown_releases_lock_before_reader_wake() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let (lock_result_tx, lock_result_rx) = std::sync::mpsc::channel::<(c_int, bool)>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager in this test.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        // SAFETY: mgr points at a live manager until explicit teardown below.
+        unsafe {
+            (&*mgr).reconnect_shutdown.store(true, Ordering::Release);
+        }
+
+        let mut actor = ConnectionActor::new(52);
+        let mgr_send = SendConnMgr(mgr);
+        actor.reader_handle = Some(std::thread::spawn(move || {
+            let mgr = mgr_send;
+            let conn_id = close_rx.recv().expect("reader should observe close");
+            // SAFETY: mgr remains live until install_connection_actor returns and teardown runs.
+            let could_lock = unsafe { (&*mgr.0).connections.try_lock().is_ok() };
+            lock_result_tx
+                .send((conn_id, could_lock))
+                .expect("reader should report lock availability");
+        }));
+
+        // SAFETY: mgr points at a live manager under test.
+        let install = unsafe { install_connection_actor(&*mgr, actor) };
+        assert!(matches!(install, Err(ConnectionInstallError::Shutdown)));
+        assert_eq!(
+            lock_result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("reader should unblock and finish"),
+            (52, true),
+            "shutdown rejection should close transport after releasing the connections lock"
+        );
+        assert_eq!(unsafe { hew_connmgr_count(mgr) }, 0);
+
+        // SAFETY: test-owned pointers remain valid until this cleanup completes.
+        unsafe {
+            hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
             ));
         }
         drop(ops);

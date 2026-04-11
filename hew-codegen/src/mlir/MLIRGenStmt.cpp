@@ -1458,7 +1458,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         }
       }
       ++errorCount_;
-      emitError(location) << "field '" << fieldName << "' not found for assignment";
+      emitError(location)
+          << "checker invariant violated: field assignment target is missing field '" << fieldName
+          << "'";
       return;
     }
     // Value struct field assignment: load struct from mutable var, insertvalue, store back.
@@ -1471,9 +1473,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto varSlot = getMutableVarSlot(intern(objIdent->name));
     if (!varSlot) {
       ++errorCount_;
-      emitError(location) << "value struct field assignment root '" << objIdent->name
-                          << "' has no mutable storage slot; checker should reject immutable "
-                             "field-assignment roots";
+      emitError(location) << "checker invariant violated: immutable field assignment reached "
+                             "MLIRGen for '"
+                          << objIdent->name << "'";
       return;
     }
 
@@ -1481,7 +1483,8 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(operandType);
     if (!structType || !structType.isIdentified()) {
       ++errorCount_;
-      emitError(location) << "field assignment on non-struct value type";
+      emitError(location)
+          << "checker invariant violated: non-struct value field assignment reached MLIRGen";
       return;
     }
     auto stIt = structTypes.find(structType.getName().str());
@@ -1500,8 +1503,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     }
     if (!targetField) {
       ++errorCount_;
-      emitError(location) << "field '" << fieldName << "' not found on struct '"
-                          << structType.getName() << "'";
+      emitError(location)
+          << "checker invariant violated: field assignment target is missing field '" << fieldName
+          << "' on struct '" << structType.getName() << "'";
       return;
     }
 

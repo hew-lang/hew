@@ -149,6 +149,22 @@ fn variant_def_references_tracked_inference_var(
     }
 }
 
+fn variant_def_contains_error_type(variant: &VariantDef) -> bool {
+    match variant {
+        VariantDef::Unit => false,
+        VariantDef::Tuple(fields) => fields.iter().any(ty_contains_error),
+        VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| ty_contains_error(ty)),
+    }
+}
+
+fn type_def_shape_contains_error_type(type_def: &TypeDef) -> bool {
+    type_def.fields.values().any(ty_contains_error)
+        || type_def
+            .variants
+            .values()
+            .any(variant_def_contains_error_type)
+}
+
 fn type_def_shape_references_tracked_inference_var(
     type_def: &TypeDef,
     tracked_vars: &HashSet<TypeVar>,
@@ -224,11 +240,14 @@ impl Checker {
         self.validate_expr_output_contract(expr_types, &covered_inference_vars);
 
         type_defs.retain(|_, type_def| {
-            if type_def_shape_references_tracked_inference_var(type_def, &covered_inference_vars) {
+            if type_def_shape_references_tracked_inference_var(type_def, &covered_inference_vars)
+                || type_def_shape_contains_error_type(type_def)
+            {
                 return false;
             }
             type_def.methods.retain(|_, sig| {
                 !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
+                    && !signature_contains_error_type(&sig.params, &sig.return_type)
             });
             true
         });

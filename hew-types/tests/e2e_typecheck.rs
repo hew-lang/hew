@@ -3840,3 +3840,141 @@ fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
         output.errors
     );
 }
+
+// ── type_defs output-contract regressions ────────────────────────────────────
+
+#[test]
+fn type_def_with_error_field_is_pruned_from_output() {
+    let output = typecheck_inline(
+        r"
+        type Broken {
+            value: [int];
+            ok: int;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
+        "expected slice annotation to produce Ty::Error, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Broken"),
+        "type_defs must prune type shapes containing Ty::Error fields: {:#?}",
+        output.type_defs
+    );
+}
+
+#[test]
+fn enum_with_error_variant_payload_is_pruned_from_output() {
+    let output = typecheck_inline(
+        r"
+        enum Broken {
+            Bad([int]);
+            Good(int);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
+        "expected slice annotation to produce Ty::Error, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Broken"),
+        "type_defs must prune enum variants containing Ty::Error payloads: {:#?}",
+        output.type_defs
+    );
+}
+
+#[test]
+fn type_def_method_with_error_param_is_pruned_from_output() {
+    let output = typecheck_inline(
+        r"
+        type Widget {
+            value: int;
+        }
+
+        impl Widget {
+            fn good(w: Widget) -> int {
+                w.value
+            }
+
+            fn broken(w: Widget, bad: [int]) -> int {
+                w.value
+            }
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
+        "expected slice annotation to produce Ty::Error, got: {:#?}",
+        output.errors
+    );
+    let widget = output
+        .type_defs
+        .get("Widget")
+        .expect("type_defs should retain Widget when only a method signature is errored");
+    assert!(
+        widget.methods.contains_key("good"),
+        "clean methods must survive output-contract pruning: {:#?}",
+        widget.methods
+    );
+    assert!(
+        !widget.methods.contains_key("broken"),
+        "methods with Ty::Error params must be pruned from type_defs: {:#?}",
+        widget.methods
+    );
+}
+
+#[test]
+fn type_def_method_with_error_return_is_pruned_from_output() {
+    let output = typecheck_inline(
+        r"
+        type Widget {
+            value: int;
+        }
+
+        impl Widget {
+            fn good(w: Widget) -> int {
+                w.value
+            }
+
+            fn broken(w: Widget) -> [int] {
+                w.value
+            }
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
+        "expected slice annotation to produce Ty::Error, got: {:#?}",
+        output.errors
+    );
+    let widget = output
+        .type_defs
+        .get("Widget")
+        .expect("type_defs should retain Widget when only a method signature is errored");
+    assert!(
+        widget.methods.contains_key("good"),
+        "clean methods must survive output-contract pruning: {:#?}",
+        widget.methods
+    );
+    assert!(
+        !widget.methods.contains_key("broken"),
+        "methods with Ty::Error returns must be pruned from type_defs: {:#?}",
+        widget.methods
+    );
+}

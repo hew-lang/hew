@@ -2661,20 +2661,80 @@ fn find_incoming_calls(
                 });
             }
             Item::Actor(a) => {
-                // Attribute calls to the specific receive fn or method when identifiable.
-                for recv in &a.receive_fns {
-                    let fn_calls: Vec<_> = calls
+                // Walk each named body independently for precise attribution.
+                // init body (no dedicated name span — fall back to item span).
+                if let Some(init) = &a.init {
+                    let mut body_calls = Vec::new();
+                    collect_calls_in_block(&init.body, &mut body_calls);
+                    let fn_calls: Vec<_> = body_calls
                         .iter()
-                        .filter(|c| {
-                            c.name == target_name
-                                && !recv.span.is_empty()
-                                && recv.span.contains(&c.span.start)
-                        })
+                        .filter(|c| c.name == target_name)
+                        .collect();
+                    if !fn_calls.is_empty() {
+                        let range = span_to_range(source, lo, item_span);
+                        result.push(CallHierarchyIncomingCall {
+                            from: CallHierarchyItem {
+                                name: format!("{}.init", a.name),
+                                kind: SymbolKind::METHOD,
+                                tags: None,
+                                detail: None,
+                                uri: uri.clone(),
+                                range,
+                                selection_range: range,
+                                data: None,
+                            },
+                            from_ranges: fn_calls
+                                .iter()
+                                .map(|c| span_to_range(source, lo, &c.span))
+                                .collect(),
+                        });
+                    }
+                }
+                // terminate body.
+                if let Some(term) = &a.terminate {
+                    let mut body_calls = Vec::new();
+                    collect_calls_in_block(&term.body, &mut body_calls);
+                    let fn_calls: Vec<_> = body_calls
+                        .iter()
+                        .filter(|c| c.name == target_name)
+                        .collect();
+                    if !fn_calls.is_empty() {
+                        let range = span_to_range(source, lo, item_span);
+                        result.push(CallHierarchyIncomingCall {
+                            from: CallHierarchyItem {
+                                name: format!("{}.terminate", a.name),
+                                kind: SymbolKind::METHOD,
+                                tags: None,
+                                detail: None,
+                                uri: uri.clone(),
+                                range,
+                                selection_range: range,
+                                data: None,
+                            },
+                            from_ranges: fn_calls
+                                .iter()
+                                .map(|c| span_to_range(source, lo, &c.span))
+                                .collect(),
+                        });
+                    }
+                }
+                // Receive functions.
+                for recv in &a.receive_fns {
+                    let mut body_calls = Vec::new();
+                    collect_calls_in_block(&recv.body, &mut body_calls);
+                    let fn_calls: Vec<_> = body_calls
+                        .iter()
+                        .filter(|c| c.name == target_name)
                         .collect();
                     if fn_calls.is_empty() {
                         continue;
                     }
-                    let range = span_to_range(source, lo, &recv.span);
+                    let fn_span = if recv.span.is_empty() {
+                        item_span
+                    } else {
+                        &recv.span
+                    };
+                    let range = span_to_range(source, lo, fn_span);
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
                             name: recv.name.clone(),
@@ -2692,10 +2752,11 @@ fn find_incoming_calls(
                             .collect(),
                     });
                 }
+                // Actor methods.
                 for method in &a.methods {
-                    let mut method_calls = Vec::new();
-                    collect_calls_in_block(&method.body, &mut method_calls);
-                    let fn_calls: Vec<_> = method_calls
+                    let mut body_calls = Vec::new();
+                    collect_calls_in_block(&method.body, &mut body_calls);
+                    let fn_calls: Vec<_> = body_calls
                         .iter()
                         .filter(|c| c.name == target_name)
                         .collect();

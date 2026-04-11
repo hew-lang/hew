@@ -435,12 +435,28 @@ fn collect_import_binding_refs_in_item(item: &Item, name: &str, spans: &mut Vec<
         Item::Const(c) => {
             collect_import_binding_refs_in_expr(&c.value.0, &c.value.1, name, false, spans);
         }
-        Item::Import(_)
-        | Item::ExternBlock(_)
-        | Item::Wire(_)
-        | Item::TypeAlias(_)
-        | Item::Supervisor(_)
-        | Item::Machine(_) => {}
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    collect_import_binding_refs_in_expr(&arg.0, &arg.1, name, false, spans);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    collect_import_binding_refs_in_expr(&guard.0, &guard.1, name, false, spans);
+                }
+                collect_import_binding_refs_in_expr(
+                    &transition.body.0,
+                    &transition.body.1,
+                    name,
+                    false,
+                    spans,
+                );
+            }
+        }
+        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 
@@ -891,12 +907,22 @@ fn collect_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
         Item::Const(c) => {
             collect_refs_in_expr(&c.value.0, &c.value.1, name, spans);
         }
-        Item::Import(_)
-        | Item::ExternBlock(_)
-        | Item::Wire(_)
-        | Item::TypeAlias(_)
-        | Item::Supervisor(_)
-        | Item::Machine(_) => {}
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    collect_refs_in_expr(&arg.0, &arg.1, name, spans);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    collect_refs_in_expr(&guard.0, &guard.1, name, spans);
+                }
+                collect_refs_in_expr(&transition.body.0, &transition.body.1, name, spans);
+            }
+        }
+        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 

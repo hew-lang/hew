@@ -228,6 +228,10 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 }
             }
             Item::Trait(t) => {
+                // TODO: params are pushed for every method in the trait; without per-method
+                // body spans we cannot determine which method contains the cursor, so params
+                // from sibling methods leak into completions. The same over-approximation
+                // exists for Item::Actor and Item::Impl above.
                 for trait_item in &t.items {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {

@@ -200,6 +200,14 @@ pub fn code_actions(source: &str, diagnostics_json: &str) -> String {
 
 // ── Internal helpers ─────────────────────────────────────────────────────
 
+/// A secondary span attached to a diagnostic (e.g. "defined here").
+#[derive(Serialize)]
+struct WasmNote {
+    start_offset: usize,
+    end_offset: usize,
+    message: String,
+}
+
 /// Diagnostic reported by the WASM analysis pipeline.
 #[derive(Serialize)]
 struct WasmDiagnostic {
@@ -208,7 +216,7 @@ struct WasmDiagnostic {
     start_offset: usize,
     end_offset: usize,
     kind: String,
-    notes: Vec<(usize, usize, String)>,
+    notes: Vec<WasmNote>,
     suggestions: Vec<String>,
 }
 
@@ -279,7 +287,11 @@ fn run_analysis(source: &str) -> AnalysisResult {
                 notes: err
                     .notes
                     .iter()
-                    .map(|(span, msg)| (span.start, span.end, msg.clone()))
+                    .map(|(span, msg)| WasmNote {
+                        start_offset: span.start,
+                        end_offset: span.end,
+                        message: msg.clone(),
+                    })
                     .collect(),
                 suggestions: err.suggestions.clone(),
             });

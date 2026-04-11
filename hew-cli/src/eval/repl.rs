@@ -115,6 +115,10 @@ pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
     }
 }
 
+fn normalize_captured_output(output: &str) -> String {
+    output.replace("\r\n", "\n")
+}
+
 impl Default for ReplSession {
     fn default() -> Self {
         Self::new()
@@ -448,12 +452,19 @@ impl ReplSession {
                 errors: vec![error],
             },
             Err(CompiledEvalError::RuntimeFailure {
-                stdout, exit_code, ..
-            }) => EvalResult {
-                output: stdout,
-                had_errors: true,
-                errors: vec![format!("program exited with status {exit_code}")],
-            },
+                stdout,
+                stderr,
+                exit_code,
+            }) => {
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+                EvalResult {
+                    output: stdout,
+                    had_errors: true,
+                    errors: vec![format!("program exited with status {exit_code}")],
+                }
+            }
         }
     }
 
@@ -1084,16 +1095,15 @@ fn run_inprocess_compiled(
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
-            // Normalize Windows \r\n line endings to \n for consistent output.
-            Ok(stdout.replace("\r\n", "\n"))
+            Ok(normalize_captured_output(&stdout))
         }
         Ok(crate::process::BinaryRunOutcome::Failed {
             stdout,
             stderr,
             exit_code,
         }) => Err(CompiledEvalError::RuntimeFailure {
-            stdout: stdout.replace("\r\n", "\n"),
-            stderr,
+            stdout: normalize_captured_output(&stdout),
+            stderr: normalize_captured_output(&stderr),
             exit_code,
         }),
         Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
@@ -1375,6 +1385,45 @@ fn pluralize_session_entry(count: usize, singular: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
+        use std::fs::File;
+        use std::io::Write;
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        // SAFETY: We temporarily redirect the process stderr fd to a pipe,
+        // restore it before returning, and only use valid file descriptors
+        // created by `pipe`/`dup`.
+        unsafe {
+            let mut pipe_fds = [0; 2];
+            assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0, "pipe failed");
+
+            let stderr_fd = std::io::stderr().as_raw_fd();
+            let saved_stderr = libc::dup(stderr_fd);
+            assert!(saved_stderr >= 0, "dup failed");
+            assert_eq!(libc::dup2(pipe_fds[1], stderr_fd), stderr_fd, "dup2 failed");
+            libc::close(pipe_fds[1]);
+
+            let result = f();
+
+            std::io::stderr().flush().expect("flush stderr");
+            assert_eq!(
+                libc::dup2(saved_stderr, stderr_fd),
+                stderr_fd,
+                "restore dup2 failed"
+            );
+            libc::close(saved_stderr);
+
+            let mut reader = File::from_raw_fd(pipe_fds[0]);
+            let mut captured = String::new();
+            reader
+                .read_to_string(&mut captured)
+                .expect("read captured stderr");
+
+            (result, captured)
+        }
+    }
+
     /// Verifies the in-process codegen pipeline is available by compiling a
     /// trivial program.  Returns false (and prints a skip message) when the
     /// embedded `hew-codegen` backend or `libhew_runtime.a` aren't built yet.
@@ -1535,6 +1584,37 @@ mod tests {
         let result = session.eval("spin_forever()");
         assert!(result.had_errors);
         assert!(result.errors[0].contains("evaluation timed out after 100ms"));
+    }
+
+    #[test]
+    fn native_runtime_failure_normalizes_captured_stderr() {
+        assert_eq!(
+            normalize_captured_output("line1\r\nline2\r\n"),
+            "line1\nline2\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn eval_runtime_failure_still_surfaces_stderr() {
+        if !require_toolchain() {
+            return;
+        }
+
+        let mut session = ReplSession::new();
+        let (result, stderr) = capture_stderr(|| session.eval(r#"panic("eval stderr")"#));
+
+        assert!(result.had_errors);
+        assert_eq!(result.output, "");
+        assert!(
+            result.errors[0].contains("program exited with status 101"),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+        assert!(
+            stderr.contains("eval stderr"),
+            "expected runtime stderr to remain visible, got: {stderr:?}"
+        );
     }
 
     #[test]

@@ -653,6 +653,21 @@ install: install-check
 		install -m 644 $(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
+	@# Native per-triple lib subtree — mirrors assemble-release and gives
+	@# find_hew_lib() its preferred lib/<triple>/libhew.a probe path.
+	@for triple in $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES); do \
+		[ -n "$$triple" ] || continue; \
+		lib_path=""; \
+		if [ -f target/$$triple/release/libhew.a ]; then \
+			lib_path="target/$$triple/release/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_DIR)/libhew.a ]; then \
+			lib_path="$(RELEASE_DIR)/libhew.a"; \
+		else \
+			continue; \
+		fi; \
+		install -d $(DESTDIR)$(PREFIX)/lib/$$triple; \
+		install -m 644 $$lib_path $(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a; \
+	done
 	cp -r std/. $(DESTDIR)$(PREFIX)/std/
 	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/
 	install -m 644 completions/hew.zsh               $(DESTDIR)$(PREFIX)/completions/

@@ -37,6 +37,26 @@ impl Checker {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.freshen_inner(t, mapping)).collect()),
             Ty::Array(inner, n) => Ty::Array(Box::new(self.freshen_inner(inner, mapping)), *n),
             Ty::Slice(inner) => Ty::Slice(Box::new(self.freshen_inner(inner, mapping))),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(self.freshen_inner(pointee, mapping)),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| crate::ty::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| self.freshen_inner(arg, mapping))
+                            .collect(),
+                    })
+                    .collect(),
+            },
             Ty::Function { params, ret } => Ty::Function {
                 params: params
                     .iter()

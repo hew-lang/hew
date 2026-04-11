@@ -43,6 +43,57 @@ fn test_type_checker_creation() {
 }
 
 #[test]
+fn freshen_inner_recurses_into_pointer_pointee_vars() {
+    let checker = Checker::new(ModuleRegistry::new(vec![]));
+    let original = TypeVar::fresh();
+    let ty = Ty::Pointer {
+        is_mutable: false,
+        pointee: Box::new(Ty::Var(original)),
+    };
+    let mut mapping = HashMap::new();
+
+    let freshened = checker.freshen_inner(&ty, &mut mapping);
+
+    let Ty::Pointer { pointee, .. } = freshened else {
+        panic!("expected pointer type");
+    };
+    let Ty::Var(fresh) = *pointee else {
+        panic!("expected freshened pointee var");
+    };
+
+    assert_ne!(fresh, original);
+    assert_eq!(mapping.get(&original.0), Some(&Ty::Var(fresh)));
+}
+
+#[test]
+fn freshen_inner_recurses_into_trait_object_bound_args() {
+    let checker = Checker::new(ModuleRegistry::new(vec![]));
+    let original = TypeVar::fresh();
+    let ty = Ty::TraitObject {
+        traits: vec![crate::ty::TraitObjectBound {
+            trait_name: "Iterator".to_string(),
+            args: vec![Ty::Var(original)],
+        }],
+    };
+    let mut mapping = HashMap::new();
+
+    let freshened = checker.freshen_inner(&ty, &mut mapping);
+
+    let Ty::TraitObject { traits } = freshened else {
+        panic!("expected trait object type");
+    };
+    let [bound] = traits.as_slice() else {
+        panic!("expected one trait bound");
+    };
+    let [Ty::Var(fresh)] = bound.args.as_slice() else {
+        panic!("expected freshened trait-object arg var");
+    };
+
+    assert_ne!(*fresh, original);
+    assert_eq!(mapping.get(&original.0), Some(&Ty::Var(*fresh)));
+}
+
+#[test]
 fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(

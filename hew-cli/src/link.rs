@@ -99,6 +99,18 @@ pub fn link_executable(
         }
     }
 
+    // ── Linux cross-arch sysroot (probe, non-fatal) ───────────────────
+    // On Debian/Ubuntu multiarch hosts, cross-arch libs live under
+    // /usr/<arch-tuple>/.  Passing --sysroot directs clang/lld there so the
+    // target arch's libc, libpthread, etc. resolve correctly without a full
+    // cross-toolchain installation.  If the sysroot is absent the link still
+    // proceeds — it succeeds when the system linker finds the target libs via
+    // other search paths (e.g. multiarch symlinks in /usr/lib/).
+    #[cfg(target_os = "linux")]
+    if let Some(sysroot) = find_linux_cross_sysroot(target) {
+        cmd.arg("--sysroot").arg(sysroot);
+    }
+
     // ── Windows CRT linkage fixup (target-driven) ─────────────────────
     // Clang defaults to the static CRT (libcmt) but the Rust-compiled runtime
     // uses the DLL CRT (msvcrt).  Override so the CRT linkage matches.
@@ -209,6 +221,49 @@ fn find_darwin_sdk() -> Option<String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        None
+    }
+}
+
+/// Probe for a Debian/Ubuntu multiarch sysroot for Linux cross-arch linking.
+///
+/// Returns `None` when:
+/// - the target arch is the same as the host arch (no sysroot needed), or
+/// - the arch has no known Debian multiarch tuple, or
+/// - the sysroot directory does not exist on this host.
+///
+/// Sysroot paths follow the Debian/Ubuntu multiarch convention:
+/// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an x86_64 host
+/// - `/usr/x86_64-linux-gnu` — x86_64 cross-libs on an aarch64 host
+///
+/// The sysroot is non-fatal: the link proceeds even when absent and succeeds
+/// when the system linker already finds the target libs via other paths.
+#[cfg(target_os = "linux")]
+fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
+    use crate::target::{TargetArch, TargetOs};
+
+    if target.os() != TargetOs::Linux {
+        return None;
+    }
+
+    let arch_tuple = match target.arch() {
+        TargetArch::Aarch64 => "aarch64-linux-gnu",
+        TargetArch::X86_64 => "x86_64-linux-gnu",
+        TargetArch::Wasm32 => return None,
+    };
+
+    // Skip when the target arch matches the host — the default lib search path
+    // is already correct, and an unnecessary --sysroot can confuse clang.
+    let is_host_arch = cfg!(target_arch = "aarch64") && arch_tuple == "aarch64-linux-gnu"
+        || cfg!(target_arch = "x86_64") && arch_tuple == "x86_64-linux-gnu";
+    if is_host_arch {
+        return None;
+    }
+
+    let path = std::path::PathBuf::from(format!("/usr/{arch_tuple}"));
+    if path.is_dir() {
+        Some(path)
+    } else {
         None
     }
 }

@@ -419,17 +419,14 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         // SAFETY: All task pointers in the list are valid.
         let t = unsafe { &mut *cur };
 
-        let detach_cancelled_running = s.cancelled.load(Ordering::Acquire)
-            && t.load_state() == HewTaskState::Running
-            && t.thread_handle
-                .as_ref()
-                .is_some_and(|handle| !handle.is_finished());
+        let detach_cancelled_running =
+            s.cancelled.load(Ordering::Acquire) && t.load_state() == HewTaskState::Running;
 
         // Join the thread if it was spawned.
         if let Some(handle) = t.thread_handle.take() {
             if detach_cancelled_running {
-                t.detached_on_cancel = true;
                 drop(handle);
+                t.detached_on_cancel = t.load_state() != HewTaskState::Done;
             } else {
                 let _ = handle.join();
             }

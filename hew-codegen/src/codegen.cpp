@@ -5507,7 +5507,8 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
     if (!target)
       throw std::runtime_error("cannot find target for triple '" + triple.str() + "': " + error);
     llvm::TargetOptions tOpts;
-    auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
+    std::unique_ptr<llvm::TargetMachine> tm(
+        target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_));
     if (!tm)
       throw std::runtime_error("cannot create target machine for triple '" + triple.str() + "'");
     auto dl = tm->createDataLayout().getStringRepresentation();

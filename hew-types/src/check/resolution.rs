@@ -394,9 +394,13 @@ impl Checker {
                 }
                 Item::ExternBlock(eb) => {
                     for function in &eb.functions {
-                        if self.fn_sig_inference_holes.get(&function.name).is_some_and(
-                            |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                        ) {
+                        if lookup_scoped_item(
+                            &self.fn_sig_inference_holes,
+                            module_name,
+                            &function.name,
+                        )
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                        {
                             let error_span = first_infer_span_in_extern_fn(function)
                                 .unwrap_or_else(|| span.clone());
                             self.errors.push(TypeError::inference_failed(

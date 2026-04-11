@@ -86,6 +86,7 @@ mlir::Value MLIRGen::emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value l
     return isUnsigned ? (mlir::Value)mlir::arith::ShRUIOp::create(builder, location, lhs, rhs)
                       : (mlir::Value)mlir::arith::ShRSIOp::create(builder, location, lhs, rhs);
   default:
+    ++errorCount_;
     emitError(location, "unsupported compound assignment operator");
     return nullptr;
   }
@@ -573,9 +574,11 @@ void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
         }
       }
     } else {
+      ++errorCount_;
       emitError(location) << "unknown struct type '" << structPat->name << "' in let pattern";
     }
   } else {
+    ++errorCount_;
     emitError(location) << "unsupported sub-pattern in let destructuring";
   }
 }
@@ -841,7 +844,14 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     }
   } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
     bindLetSubPattern(pattern, value, location);
+  } else if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
+    // Wildcard let: `let _ = expr` — discard the value but route droppable
+    // heap temporaries through materializeTemporary so they are freed at scope
+    // exit.  Mirrors the expression-statement discard path in generateExprStmt.
+    // stmt.value is guaranteed non-null here (we returned early above if !value).
+    materializeTemporary(value, stmt.value->value);
   } else {
+    ++errorCount_;
     emitError(location) << "only simple identifier patterns supported for let";
   }
 }
@@ -881,6 +891,7 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   }
 
   if (!varType) {
+    ++errorCount_;
     emitError(location) << "cannot determine type for var declaration";
     return;
   }
@@ -1446,17 +1457,20 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
           }
         }
       }
+      ++errorCount_;
       emitError(location) << "field '" << fieldName << "' not found for assignment";
       return;
     }
     // Value struct field assignment: load struct from mutable var, insertvalue, store back.
     auto *objIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
     if (!objIdent) {
+      ++errorCount_;
       emitError(location) << "value struct field assignment requires a variable target";
       return;
     }
     auto varSlot = getMutableVarSlot(intern(objIdent->name));
     if (!varSlot) {
+      ++errorCount_;
       emitError(location) << "cannot assign field on immutable variable '" << objIdent->name << "'";
       return;
     }
@@ -1464,11 +1478,13 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto fieldName = fa->field;
     auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(operandType);
     if (!structType || !structType.isIdentified()) {
+      ++errorCount_;
       emitError(location) << "field assignment on non-struct value type";
       return;
     }
     auto stIt = structTypes.find(structType.getName().str());
     if (stIt == structTypes.end()) {
+      ++errorCount_;
       emitError(location) << "unknown struct type '" << structType.getName() << "'";
       return;
     }
@@ -1481,6 +1497,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       }
     }
     if (!targetField) {
+      ++errorCount_;
       emitError(location) << "field '" << fieldName << "' not found on struct '"
                           << structType.getName() << "'";
       return;
@@ -1546,11 +1563,13 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     if (auto hewArrayType = mlir::dyn_cast<hew::HewArrayType>(collectionVal.getType())) {
       auto *ie = std::get_if<ast::ExprIdentifier>(&idx->object->value.kind);
       if (!ie) {
+        ++errorCount_;
         emitError(location) << "array indexed assignment requires a variable target";
         return;
       }
       auto varSlot = getMutableVarSlot(intern(ie->name));
       if (!varSlot) {
+        ++errorCount_;
         emitError(location) << "cannot assign index on immutable variable '" << ie->name << "'";
         return;
       }
@@ -1584,6 +1603,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       return;
     }
 
+    ++errorCount_;
     emitError(location) << "unsupported indexed assignment target";
     return;
   }
@@ -2585,17 +2605,20 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   // The iterable must be a method call on an actor: actor.method(args)
   auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.iterable.value.kind);
   if (!mc) {
+    ++errorCount_;
     emitError(location) << "for await requires an actor method call as iterable";
     return;
   }
 
   // Resolve the receiver as an actor variable
   if (!mc->receiver) {
+    ++errorCount_;
     emitError(location) << "for await: receiver must be an actor variable";
     return;
   }
   auto *recvIdent = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind);
   if (!recvIdent) {
+    ++errorCount_;
     emitError(location) << "for await: receiver must be an actor variable";
     return;
   }
@@ -2604,6 +2627,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
 
   auto avIt = actorVarTypes.find(receiverName);
   if (avIt == actorVarTypes.end()) {
+    ++errorCount_;
     emitError(location) << "for await: '" << receiverName << "' is not a known actor variable";
     return;
   }
@@ -2611,6 +2635,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
 
   auto arIt = actorRegistry.find(actorTypeName);
   if (arIt == actorRegistry.end()) {
+    ++errorCount_;
     emitError(location) << "for await: unknown actor type '" << actorTypeName << "'";
     return;
   }
@@ -2627,6 +2652,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     }
   }
   if (initIdx < 0 || !initInfo || !initInfo->returnType) {
+    ++errorCount_;
     emitError(location) << "for await: '" << methodName << "' is not a generator receive fn on '"
                         << actorTypeName << "'";
     return;
@@ -2642,6 +2668,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     }
   }
   if (nextIdx < 0) {
+    ++errorCount_;
     emitError(location) << "for await: missing __next handler for '" << methodName << "' on '"
                         << actorTypeName << "'";
     return;
@@ -2651,6 +2678,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   auto wrapperType = *initInfo->returnType;
   auto wrapperStructType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(wrapperType);
   if (!wrapperStructType || wrapperStructType.getBody().size() != 2) {
+    ++errorCount_;
     emitError(location) << "for await: unexpected wrapper type";
     return;
   }
@@ -2921,6 +2949,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   auto nextFuncOp = module.lookupSymbol<mlir::func::FuncOp>(nextName);
   auto doneFuncOp = module.lookupSymbol<mlir::func::FuncOp>(doneName);
   if (!nextFuncOp || !doneFuncOp) {
+    ++errorCount_;
     emitError(location) << "generator functions not found for " << genFuncName;
     return;
   }
@@ -3255,6 +3284,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
       } else {
         elemType = typedVecElemType;
         if (!elemType) {
+          ++errorCount_;
           emitError(location) << "unsupported for-loop Vec element type for iterable '" << collType
                               << "'";
           return;
@@ -3681,6 +3711,7 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
   auto location = currentLoc;
 
   if (loopActiveStack.empty()) {
+    ++errorCount_;
     emitError(location) << "break used outside of a loop";
     return;
   }
@@ -3713,6 +3744,7 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
     if (it != labeledActiveFlags.end()) {
       targetActive = it->second;
     } else {
+      ++errorCount_;
       emitError(location) << "unknown loop label '" << labelStr << "'";
       return;
     }
@@ -3775,6 +3807,7 @@ void MLIRGen::generateContinueStmt(const ast::StmtContinue &stmt) {
   auto location = currentLoc;
 
   if (loopContinueStack.empty()) {
+    ++errorCount_;
     emitError(location) << "continue used outside of a loop";
     return;
   }
@@ -3788,6 +3821,7 @@ void MLIRGen::generateContinueStmt(const ast::StmtContinue &stmt) {
     if (cit != labeledContinueFlags.end()) {
       targetContinue = cit->second;
     } else {
+      ++errorCount_;
       emitError(location) << "unknown loop label '" << labelStr << "'";
       return;
     }

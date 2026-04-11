@@ -64,18 +64,6 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         .as_ref()
         .map(|_| args.target.as_deref().unwrap_or("wasm32-wasi"));
 
-    // Interactive REPL with a WASI target is deliberately out of scope for
-    // this bounded lane: each WASI execution is compile-per-input but session
-    // state persistence across a live REPL loop is not tested or validated.
-    if target_spec.is_some() && args.file.is_none() && args.expr.is_empty() {
-        eprintln!(
-            "Error: interactive REPL is not supported for --target {}. \
-             Provide an inline expression or use -f <file>.",
-            args.target.as_deref().unwrap_or("wasm32-wasi")
-        );
-        std::process::exit(1);
-    }
-
     // Check for `-f <file>` flag first.
     if let Some(ref file) = args.file {
         let path = file.display().to_string();
@@ -86,7 +74,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     }
 
     if args.expr.is_empty() {
-        // Interactive REPL (native path only — WASI case is rejected above).
+        // Interactive REPL.
         if let Err(e) = repl::run_interactive(timeout, target) {
             eprintln!("Error: {e}");
             std::process::exit(1);

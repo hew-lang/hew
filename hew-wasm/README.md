@@ -39,15 +39,17 @@ the downstream browser app:
 
 ```sh
 make playground-manifest-check  # cheap manifest freshness check
-make playground-check           # manifest freshness + curated analyze/WASI smoke + build hew-wasm
+make playground-check           # manifest freshness + curated analyze smoke + build hew-wasm
+make playground-wasi-check      # focused manifest-driven WASI runtime preflight
 ```
 
 `examples/playground/manifest.json` is the curated source of truth for the
 downstream browser catalog. Use `make playground-manifest-check` when you only
-need to confirm that manifest is current, or `make playground-check` when you
-also want the curated `analyze()` smoke over every manifest entry, the focused
-WASI runtime preflight driven by the same manifest capability truth, plus the
-repo-local `hew-wasm` build that backs browser-side analysis.
+need to confirm that manifest is current, `make playground-check` when you also
+want the curated `analyze()` smoke over every manifest entry plus the repo-local
+`hew-wasm` build that backs browser-side analysis, or
+`make playground-wasi-check` in codegen-capable environments when you want the
+same manifest capability truth proven against the real WASI runtime path.
 
 Each manifest entry carries a `capabilities` object:
 
@@ -70,10 +72,10 @@ for the full per-entry table and the rationale behind each disposition.
 
 The `cargo test -p hew-wasm --lib curated_playground_manifest_smoke` step
 verifies that every manifest entry carries well-formed capability metadata in
-addition to running the `analyze()` smoke. `make playground-check` also runs
+addition to running the `analyze()` smoke. `make playground-wasi-check` runs
 the focused `hew-cli/tests/wasi_run_e2e.rs` curated-manifest preflight so
-`capabilities.wasi` is proven against the real WASI runtime path rather than
-against `hew-wasm` alone.
+`capabilities.wasi` is proven against the real WASI runtime path in
+codegen-capable environments rather than against `hew-wasm` alone.
 
 CI protects this surface with the dedicated `playground-wasm-build` lane. That
 lane intentionally stays repo-local and runs only:
@@ -83,10 +85,10 @@ cargo test -p hew-wasm --lib
 make playground-check
 ```
 
-It covers manifest drift, curated analysis-only smoke, focused WASI runtime
-proof for the curated runnable/unsupported split, and `hew-wasm` build
+It covers manifest drift, curated analysis-only smoke, and `hew-wasm` build
 breakage for browser tooling, but it does not build downstream browser apps or
-claim browser execution exists.
+claim browser execution exists. The focused WASI proof remains available via
+`make playground-wasi-check` where embedded codegen is present.
 
 ## Part of the Hew compiler
 

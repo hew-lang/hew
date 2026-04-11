@@ -111,9 +111,9 @@ jobs:
           wait-for-processing: true
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Browser/playground smoke — the only CI lane that owns repo-local browser
-  # tooling coverage. It checks manifest drift and hew-wasm build breakage only;
-  # no downstream app build or browser/runtime execution is implied here.
+  # Browser/playground smoke — repo-local browser tooling coverage only.
+  # It checks manifest drift and hew-wasm build breakage; the curated WASI
+  # runtime proof runs in the heavier codegen-capable build-and-test lane.
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
@@ -136,14 +136,6 @@ jobs:
           restore-keys: playground-wasm-${{ runner.os }}-
 
       - uses: taiki-e/install-action@wasm-pack
-
-      - name: Install WASI target
-        run: rustup target add wasm32-wasip1
-
-      - name: Install wasmtime
-        run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
       - name: Run hew-wasm library smoke tests
         run: cargo test -p hew-wasm --lib
@@ -267,6 +259,10 @@ jobs:
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Run curated playground WASI runtime preflight
+        if: env.RUN_CODE_PATH == 'true'
+        run: make playground-wasi-check
 
       - name: Run WASM runtime actual-target libtests
         if: env.RUN_CODE_PATH == 'true'

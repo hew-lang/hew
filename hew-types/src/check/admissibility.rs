@@ -170,7 +170,22 @@ impl Checker {
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
         call_type_args.retain(|_, args| args.iter().all(|ty| !ty.has_inference_var()));
+        // Prune method_call_receiver_kinds entries whose dispatch span has no
+        // surviving expr_type, resolves to Ty::Error, or still carries an
+        // unresolved inference variable.  validate_expr_output_contract already
+        // removed leaked-inference-var spans from expr_types, so the
+        // has_inference_var check here acts as a belt-and-suspenders guard.
+        self.validate_method_call_receiver_kinds_output_contract(expr_types);
         self.validate_assign_target_output_contract();
+    }
+
+    fn validate_method_call_receiver_kinds_output_contract(
+        &mut self,
+        expr_types: &HashMap<SpanKey, Ty>,
+    ) {
+        self.method_call_receiver_kinds.retain(|span, _| {
+            matches!(expr_types.get(span), Some(ty) if !ty.contains_error() && !ty.has_inference_var())
+        });
     }
 
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
@@ -737,6 +752,123 @@ mod tests {
         assert!(
             !fn_sigs.contains_key("error_return_fn"),
             "signature with Ty::Error as return type must be pruned"
+        );
+    }
+
+    /// Output-contract guard: `method_call_receiver_kinds` entries whose
+    /// dispatch span yields `Ty::Error` in `expr_types` must be pruned so
+    /// codegen never attempts to dispatch on a failed call.
+    #[test]
+    fn validate_checker_output_contract_prunes_receiver_kinds_with_error_expr_type() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let span_good = SpanKey { start: 10, end: 20 };
+        let span_error = SpanKey { start: 20, end: 30 };
+
+        checker.method_call_receiver_kinds.insert(
+            span_good.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Widget".to_string(),
+            },
+        );
+        checker.method_call_receiver_kinds.insert(
+            span_error.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Broken".to_string(),
+            },
+        );
+
+        let mut expr_types = HashMap::from([
+            (span_good.clone(), Ty::I32),
+            (span_error.clone(), Ty::Error),
+        ]);
+        let mut type_defs = HashMap::new();
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&span_good),
+            "entry with valid expr_type must survive"
+        );
+        assert!(
+            !checker.method_call_receiver_kinds.contains_key(&span_error),
+            "entry with Ty::Error expr_type must be pruned"
+        );
+    }
+
+    /// Output-contract guard: `method_call_receiver_kinds` entries with no
+    /// matching `expr_types` entry (orphaned spans, including those evicted by
+    /// the inference-var pruning pass) must be removed.
+    #[test]
+    fn validate_checker_output_contract_prunes_orphaned_and_infer_receiver_kinds() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+        let span_good = SpanKey { start: 10, end: 20 };
+        let span_orphan = SpanKey { start: 30, end: 40 };
+        let span_infer = SpanKey { start: 50, end: 60 };
+
+        checker.method_call_receiver_kinds.insert(
+            span_good.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Widget".to_string(),
+            },
+        );
+        checker.method_call_receiver_kinds.insert(
+            span_orphan.clone(),
+            MethodCallReceiverKind::TraitObject {
+                trait_name: "Displayable".to_string(),
+            },
+        );
+        checker.method_call_receiver_kinds.insert(
+            span_infer.clone(),
+            MethodCallReceiverKind::NamedTypeInstance {
+                type_name: "Container".to_string(),
+            },
+        );
+
+        // span_orphan has no entry in expr_types at all.
+        // span_infer has an entry whose type still carries an unresolved var:
+        // validate_expr_output_contract will evict it, leaving no entry for
+        // the validator to find — so the receiver kind is pruned too.
+        let mut expr_types = HashMap::from([
+            (span_good.clone(), Ty::String),
+            (
+                span_infer.clone(),
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![Ty::Var(TypeVar::fresh())],
+                },
+            ),
+        ]);
+        let mut type_defs = HashMap::new();
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            checker.method_call_receiver_kinds.contains_key(&span_good),
+            "entry with clean expr_type must survive"
+        );
+        assert!(
+            !checker
+                .method_call_receiver_kinds
+                .contains_key(&span_orphan),
+            "orphaned entry (no expr_types entry) must be pruned"
+        );
+        assert!(
+            !checker.method_call_receiver_kinds.contains_key(&span_infer),
+            "entry whose expr_types span was evicted by inference-var pruning must be pruned"
         );
     }
 }

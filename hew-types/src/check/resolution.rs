@@ -466,7 +466,19 @@ impl Checker {
                         }
                     }
                 }
-                _ => {}
+                // JUSTIFIED: these item kinds do not populate `fn_sig_inference_holes`
+                // or `type_def_inference_holes` during registration, so there are no
+                // unresolved holes to report here:
+                //   • Import     – names are resolved before the type-checking pass.
+                //   • Const      – expression-level holes are caught by
+                //                  `report_unresolved_inference_holes`; consts carry no
+                //                  separately-tracked signature holes.
+                //   • Supervisor – supervisor declarations carry no typed parameters.
+                //
+                // This arm is intentionally exhaustive so that any future `Item` variant
+                // added to the parser triggers a compile error here, forcing the author
+                // to decide whether hole-reporting is needed.
+                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) => {}
             }
         }
 

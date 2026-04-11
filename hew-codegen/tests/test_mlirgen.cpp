@@ -1335,6 +1335,54 @@ static bool desugarWireEnumToTypeDecl(hew::ast::Program &program, const std::str
   return {};
 }
 
+static bool desugarWireStructToTypeDecl(hew::ast::Program &program, const std::string &structName) {
+  const hew::ast::Span span{0, 0};
+  for (auto &item : program.items) {
+    auto *wireDecl = std::get_if<hew::ast::WireDecl>(&item.value.kind);
+    if (!wireDecl || wireDecl->kind != hew::ast::WireDeclKind::Struct || wireDecl->name != structName)
+      continue;
+
+    hew::ast::TypeDecl typeDecl;
+    typeDecl.visibility = wireDecl->visibility;
+    typeDecl.kind = hew::ast::TypeDeclKind::Struct;
+    typeDecl.name = wireDecl->name;
+    typeDecl.body.reserve(wireDecl->fields.size());
+    for (const auto &field : wireDecl->fields) {
+      hew::ast::TypeBodyItemField bodyField;
+      bodyField.name = field.name;
+      hew::ast::TypeExpr typeExpr;
+      typeExpr.kind = hew::ast::TypeNamed{field.ty, std::nullopt};
+      bodyField.ty = {std::move(typeExpr), span};
+      typeDecl.body.push_back(hew::ast::TypeBodyItem{std::move(bodyField)});
+    }
+
+    hew::ast::WireMetadata metadata;
+    metadata.field_meta.reserve(wireDecl->fields.size());
+    for (const auto &field : wireDecl->fields) {
+      hew::ast::WireFieldMeta fieldMeta;
+      fieldMeta.field_name = field.name;
+      fieldMeta.field_number = field.field_number;
+      fieldMeta.is_optional = field.is_optional;
+      fieldMeta.is_deprecated = field.is_deprecated;
+      fieldMeta.is_repeated = field.is_repeated;
+      fieldMeta.json_name = field.json_name;
+      fieldMeta.yaml_name = field.yaml_name;
+      fieldMeta.since = field.since;
+      metadata.field_meta.push_back(std::move(fieldMeta));
+    }
+    metadata.json_case = wireDecl->json_case;
+    metadata.yaml_case = wireDecl->yaml_case;
+    metadata.version = wireDecl->version;
+    metadata.min_version = wireDecl->min_version;
+    typeDecl.wire = std::move(metadata);
+
+    item.value.kind = std::move(typeDecl);
+    return true;
+  }
+
+  return false;
+}
+
 // ============================================================================
 // Test: Simple add function
 // ============================================================================
@@ -6378,6 +6426,94 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: TypeDecl-based wire struct rejects missing field metadata
+// ============================================================================
+static void test_wire_struct_typedecl_missing_field_metadata_rejects() {
+  TEST(wire_struct_typedecl_missing_field_metadata_rejects);
+
+  using namespace hew::ast;
+
+  uint64_t nextSpan = 930000000000ULL;
+  auto mkSpan = [&]() -> Span {
+    auto start = nextSpan;
+    nextSpan += 8;
+    return {start, start + 1};
+  };
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr typeExpr;
+    typeExpr.kind = TypeNamed{name.str(), std::nullopt};
+    auto span = mkSpan();
+    return {std::move(typeExpr), span};
+  };
+  auto mkIntExpr = [&](int64_t value) -> std::unique_ptr<Spanned<Expr>> {
+    Expr expr;
+    auto span = mkSpan();
+    expr.kind = ExprLiteral{LitInteger{value}};
+    expr.span = span;
+    return std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(expr), span});
+  };
+
+  WireDecl packetDecl;
+  packetDecl.kind = WireDeclKind::Struct;
+  packetDecl.name = "Packet";
+  packetDecl.fields.push_back(
+      WireFieldDecl{"id", "int", 1, false, false, false, false, std::nullopt, std::nullopt, std::nullopt});
+  packetDecl.fields.push_back(WireFieldDecl{
+      "count", "int", 2, false, false, false, false, std::nullopt, std::nullopt, std::nullopt});
+
+  FnDecl mainFn;
+  mainFn.name = "main";
+  mainFn.return_type = mkType("int");
+  mainFn.body.trailing_expr = mkIntExpr(0);
+
+  Program program;
+  Item packetItem;
+  packetItem.kind = std::move(packetDecl);
+  program.items.push_back({std::move(packetItem), mkSpan()});
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+  program.items.push_back({std::move(mainItem), mkSpan()});
+
+  if (!desugarWireStructToTypeDecl(program, "Packet")) {
+    FAIL("failed to desugar wire struct into TypeDecl");
+    return;
+  }
+
+  auto *typeDecl = std::get_if<hew::ast::TypeDecl>(&program.items.front().value.kind);
+  if (!typeDecl || !typeDecl->wire.has_value() || typeDecl->wire->field_meta.size() != 2) {
+    FAIL("failed to build TypeDecl wire metadata for Packet");
+    return;
+  }
+  typeDecl->wire->field_meta.pop_back();
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when TypeDecl wire metadata drops a body field");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("wire metadata for type 'Packet' is missing body field 'count'") ==
+      std::string::npos) {
+    FAIL("expected missing wire field metadata diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for missing wire field metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: Mixed-payload wire enum match extracts payloads from per-variant slots
 // ============================================================================
 static void test_wire_enum_mixed_payload_match_positions() {
@@ -9299,6 +9435,7 @@ int main() {
   test_wire_bytes_use_base64_serial_helpers();
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_typedecl_preserves_variants();
+  test_wire_struct_typedecl_missing_field_metadata_rejects();
   test_wire_enum_mixed_payload_match_positions();
   test_wire_enum_unit_serial_helpers_and_dispatch();
   test_unresolved_generic_substitution_type_fails();

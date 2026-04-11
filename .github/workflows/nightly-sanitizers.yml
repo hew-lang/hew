@@ -103,6 +103,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install llvm-symbolizer (${{ env.LLVM_VERSION }})
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }}
+
       - uses: dtolnay/rust-toolchain@nightly
 
       - uses: actions/cache@v4
@@ -119,6 +129,7 @@ jobs:
           CARGO_TARGET_DIR: target/sanitizer-runtime-asan
           RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
           ASAN_OPTIONS: detect_leaks=1
+          ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
           # Nightly Rust supports ASan for this target; UBSan coverage is provided
           # by the C++ sanitizer job above.

@@ -180,6 +180,12 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
     entry.kind = std::move(data);
     return entry;
   }
+  if (kind == "handle_instance") {
+    ast::MethodCallReceiverKindHandleInstance data;
+    data.type_name = getString(mapReq(obj, "type_name"));
+    entry.kind = std::move(data);
+    return entry;
+  }
   if (kind == "trait_object") {
     ast::MethodCallReceiverKindTraitObject data;
     data.trait_name = getString(mapReq(obj, "trait_name"));
@@ -1377,6 +1383,7 @@ mod tests {
         assert!(src.contains("entry.start"));
         assert!(src.contains("entry.end"));
         assert!(src.contains("named_type_instance"));
+        assert!(src.contains("handle_instance"));
         assert!(src.contains("trait_object"));
         assert!(src.contains("type_name"));
         assert!(src.contains("trait_name"));

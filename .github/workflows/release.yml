@@ -63,6 +63,9 @@ jobs:
           - target: darwin-aarch64
             os: macos-14
             rust_target: aarch64-apple-darwin
+          - target: darwin-x86_64
+            os: macos-13
+            rust_target: x86_64-apple-darwin
           - target: windows-x86_64
             os: windows-2022
             rust_target: x86_64-pc-windows-msvc

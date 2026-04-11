@@ -4126,21 +4126,28 @@ mod tests {
     /// `free_actor_resources_wasm`.  This test constructs an actor with a live
     /// arena (mirroring what `spawn_actor_internal` on WASM does) and verifies:
     ///
-    /// 1. `hew_arena_free_all` was called exactly once (via `crate::arena::ARENAS_FREED`
-    ///    counter) — the test fails if that branch is accidentally removed.
+    /// 1. `hew_arena_free_all` was called with **this specific arena's address**
+    ///    (via `crate::arena::LAST_FREED_ARENA_ADDR`, a thread-local).  The
+    ///    assertion fails if the non-null arena branch is accidentally removed.
     /// 2. `actor_free_wasm_impl` returns 0 (success).
     /// 3. The actor is removed from the live-actor set.
+    ///
+    /// ## Why this is order-independent under parallel test execution
+    ///
+    /// `LAST_FREED_ARENA_ADDR` is a **thread-local**, not a global counter.
+    /// Tests on other threads update their own copy; only the thread executing
+    /// this test touches the local that this test reads.  `actor_free_wasm_impl`
+    /// is synchronous, so nothing on this thread can overwrite the value between
+    /// the call and the assertion.
     #[test]
     fn wasm_free_with_arena_releases_arena_on_teardown() {
         let _guard = crate::runtime_test_guard();
 
-        // Snapshot the counter before the free so the assertion is robust against
-        // other tests that may have already called hew_arena_free_all.
-        let freed_before = crate::arena::ARENAS_FREED.load(std::sync::atomic::Ordering::Relaxed);
-
         // Allocate a real arena exactly as spawn_actor_internal (WASM) does.
         let arena = crate::arena::hew_arena_new();
         assert!(!arena.is_null(), "arena allocation must succeed");
+        // Capture the address before transferring ownership to the actor struct.
+        let arena_addr = arena as usize;
 
         let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
         let actor = Box::into_raw(Box::new(HewActor {
@@ -4178,13 +4185,13 @@ mod tests {
         // state / init_state are null (libc::free(null) is a no-op), mailbox is null.
         let rc = unsafe { actor_free_wasm_impl(actor) };
 
-        // Primary assertion: hew_arena_free_all must have been called once for this
-        // actor's arena.  This fails if the non-null arena branch is removed.
-        let freed_after = crate::arena::ARENAS_FREED.load(std::sync::atomic::Ordering::Relaxed);
+        // Primary assertion: hew_arena_free_all must have been called with exactly
+        // this actor's arena address.  LAST_FREED_ARENA_ADDR is thread-local so
+        // parallel tests on other threads cannot interfere.
+        let last_freed = crate::arena::LAST_FREED_ARENA_ADDR.with(std::cell::Cell::get);
         assert_eq!(
-            freed_after - freed_before,
-            1,
-            "free_actor_resources_wasm must call hew_arena_free_all exactly once for the actor's arena"
+            last_freed, arena_addr,
+            "free_actor_resources_wasm must call hew_arena_free_all with the actor's own arena"
         );
 
         assert_eq!(rc, 0, "WASM free with non-null arena must succeed");

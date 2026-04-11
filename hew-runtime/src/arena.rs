@@ -326,12 +326,14 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
     }
 }
 
-/// Number of `hew_arena_free_all` calls that executed the non-null free branch.
-///
-/// Incremented only in test builds so that tests can assert the teardown path
-/// actually ran without relying on memory-error detectors.
+// Address of the arena most recently freed by `hew_arena_free_all` on this thread.
+// Thread-local so parallel tests on other threads cannot interfere with the
+// snapshot/assert window.  Storing usize avoids holding a dangling typed pointer.
 #[cfg(test)]
-pub static ARENAS_FREED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    pub static LAST_FREED_ARENA_ADDR: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
 
 /// Free all memory and destroy the arena.
 ///
@@ -343,7 +345,7 @@ pub static ARENAS_FREED: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     if !arena.is_null() {
         #[cfg(test)]
-        ARENAS_FREED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LAST_FREED_ARENA_ADDR.with(|c| c.set(arena as usize));
         // SAFETY: caller guarantees arena is valid
         let arena = unsafe { Box::from_raw(arena) };
         arena.free_all();

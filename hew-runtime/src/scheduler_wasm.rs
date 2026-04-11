@@ -1039,6 +1039,11 @@ mod tests {
         // SAFETY: Single-threaded test environment. Use raw pointer
         // writes to avoid creating references to mutable statics.
         unsafe {
+            // Drop the old value before writing None: ptr::write skips the
+            // destructor, so without drop_in_place the VecDeque backing buffer
+            // leaks whenever reset_globals is called with a non-empty queue
+            // (e.g. when a test skips hew_sched_shutdown).
+            ptr::drop_in_place(ptr::addr_of_mut!(RUN_QUEUE));
             ptr::addr_of_mut!(RUN_QUEUE).write(None);
             ptr::addr_of_mut!(INITIALIZED).write(false);
             ptr::addr_of_mut!(ACTIVATING).write(false);

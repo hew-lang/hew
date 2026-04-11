@@ -1,0 +1,36 @@
+# LSAN suppressions for hew-runtime sanitizer runs.
+#
+# Format: leak:<substring-of-mangled-symbol-or-source-path>
+# LSAN matches each suppression as a substring against every frame in the
+# allocation's stack trace.
+#
+# Reference: https://llvm.org/docs/HowToBuildWithAddressSanitizer.html
+
+# ── Tokio multi-thread runtime worker threads ─────────────────────────────
+# tokio::runtime::Builder::new_multi_thread / shutdown_background: worker
+# threads park themselves on a parker/condvar and hold a small thread-local
+# context.  shutdown_background() signals workers to stop and returns without
+# joining — the threads release their thread-locals when they exit, which
+# happens asynchronously relative to LSan's atexit check.  These are NOT
+# real leaks; the memory is freed on thread exit.
+leak:tokio::runtime::task::raw
+leak:tokio::runtime::scheduler::multi_thread
+leak:tokio::runtime::worker
+leak:tokio::park::thread
+
+# ── quinn / rustls TLS session ticket keys ────────────────────────────────
+# rustls retains a small session-ticket key schedule per ServerConfig.
+# The allocation is made once at server config construction time and lives
+# as long as the config, which is freed by quic_destroy.  If LSan fires
+# before the background shutdown thread drops the config, it may report
+# this as a leak.  Suppressed as intentional / transient.
+leak:rustls::server::handy
+leak:rustls::ticket
+
+# ── quinn endpoint internals ──────────────────────────────────────────────
+# quinn's Endpoint holds an Arc<quinn_proto::Endpoint> with crypto state.
+# endpoint.close() is called synchronously in quic_destroy; any background
+# I/O tasks that hold the Arc drain after shutdown_background returns.
+# Suppress transient references that may outlive the LSan check window.
+leak:quinn::endpoint
+leak:quinn_proto::endpoint

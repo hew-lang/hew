@@ -636,12 +636,28 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     if let Ok(mut guard) = qt.incoming_rx.lock() {
         *guard = None;
     }
-    // Intentionally leak the tokio runtime to avoid "cannot drop runtime
-    // in async context" panics from worker threads still winding down.
-    // The process is shutting down and the OS will reclaim resources.
-    let rt = qt.rt.clone();
+    // Extract the Arc<Runtime> before dropping the Box<QuicTransport>.
+    // We need an owned Runtime to call shutdown_background(), which avoids
+    // both the "cannot drop runtime in async context" panic and the leak
+    // that std::mem::forget caused.
+    let rt_arc = qt.rt.clone();
     drop(qt);
-    std::mem::forget(rt);
+
+    // Arc::try_unwrap succeeds here because:
+    //   - `qt.rt` (the other clone) was just dropped above,
+    //   - no other Arc<Runtime> copies are created by QuicTransport.
+    // shutdown_background() signals workers to stop and returns without
+    // blocking, so it is safe to call even from within an async context.
+    match Arc::try_unwrap(rt_arc) {
+        Ok(rt) => rt.shutdown_background(),
+        Err(_arc) => {
+            // JUSTIFIED: A second strong reference to the runtime should
+            // not exist after dropping QuicTransport; if one somehow does
+            // (e.g. a test holds a clone for inspection), silently forget
+            // rather than shutting down a runtime we do not fully own.
+            // DROP-TODO: investigate if this path is ever reached.
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

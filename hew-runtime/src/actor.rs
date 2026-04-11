@@ -326,7 +326,9 @@ pub struct HewActor {
     /// so `hew_arena_malloc` routes through it. Reset after each activation.
     #[cfg(not(target_arch = "wasm32"))]
     pub arena: *mut crate::arena::ActorArena,
-    /// WASM stub: arena is not used on WASM (allocations go through libc directly).
+    /// Per-actor arena bump allocator on WASM.  Allocated during spawn via
+    /// `hew_arena_new()`, installed as the current arena during each activation,
+    /// reset after each dispatch cycle, and freed during actor teardown.
     #[cfg(target_arch = "wasm32")]
     pub arena: *mut c_void,
 }
@@ -573,7 +575,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     drop(unsafe { Box::from_raw(actor) });
 }
 
-/// Free an actor's resources (WASM version — no arena cleanup).
+/// Free an actor's resources (WASM version — delegates to `free_actor_resources_wasm`).
 ///
 /// # Safety
 ///
@@ -592,7 +594,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(any(target_arch = "wasm32", test))]
-unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
+pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -600,6 +602,11 @@ unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     unsafe {
         libc::free(a.state);
         libc::free(a.init_state);
+    }
+
+    if !a.arena.is_null() {
+        // SAFETY: Arena was created by hew_arena_new during spawn.
+        unsafe { crate::arena::hew_arena_free_all(a.arena.cast::<crate::arena::ActorArena>()) };
     }
 
     if !a.mailbox.is_null() {
@@ -913,6 +920,23 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
+    // Allocate the per-actor arena bump allocator.  Mirror the native path:
+    // if allocation fails, free all resources already owned and return null.
+    let arena = crate::arena::hew_arena_new();
+    if arena.is_null() {
+        // SAFETY: state / init_state were malloc'd above; mailbox was
+        // allocated by the caller.
+        unsafe {
+            libc::free(config.state);
+            libc::free(init_state);
+            let mb = config.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+            if !mb.is_null() {
+                crate::mailbox_wasm::hew_mailbox_free(mb);
+            }
+        }
+        return ptr::null_mut();
+    }
+
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
@@ -940,7 +964,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
-        arena: ptr::null_mut(),
+        arena: arena.cast::<c_void>(),
     });
 
     let raw = Box::into_raw(actor);

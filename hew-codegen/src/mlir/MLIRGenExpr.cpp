@@ -4475,6 +4475,8 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         return rtCall("hew_http_respond_stream", ptrType, argVals);
       if (method == "free") {
         rtCall("hew_http_request_free", {}, argVals);
+        if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          unregisterDroppable(ident->name);
         return nullptr;
       }
     }
@@ -4512,6 +4514,8 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
                                            argVals[0], argVals[1], argVals[2]);
       if (method == "free") {
         hew::RegexFreeOp::create(builder, location, argVals[0]);
+        if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          unregisterDroppable(ident->name);
         return nullptr;
       }
     }
@@ -4857,6 +4861,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     }
 
     auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
+    // For consuming methods (free): unregister the receiver from the drop scope
+    // so that the scope-exit impl Drop does not double-free the same handle.
+    if (methodName == "free") {
+      if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+        unregisterDroppable(ident->name);
+    }
     if (callOp.getNumResults() > 0)
       return callOp.getResult(0);
     return nullptr;

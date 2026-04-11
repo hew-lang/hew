@@ -6729,25 +6729,60 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
         auto guardSlot = createHoistedAlloca(ptrType, ptrType);
 
         // Retroactively insert the handle-value store at the definition site
-        // so it dominates both the .free() call site and the scope-exit drop.
-        // Only do this when the defining op is directly inside the function
-        // body (not inside a nested SCF region) to keep dominance sound.
-        auto *defOp = receiverVal.getDefiningOp();
-        if (defOp && currentFunction && defOp->getParentRegion() == &currentFunction.getBody()) {
+        // so the guard slot is populated before any branch can observe it.
+        //
+        // Two shapes are handled:
+        //   1. Ordinary op result (including ops inside nested SCF regions):
+        //      insert the store immediately after the defining op, inside
+        //      its own block.  The store is conditional on the branch being
+        //      entered, which is the correct behaviour — if the branch is
+        //      not taken the handle was never allocated so the null-initialized
+        //      slot correctly causes the scope-exit drop to be skipped.
+        //   2. Block argument (function / SCF block parameter):  insert the
+        //      store at the start of the block that owns the argument.  For
+        //      function parameters the argument is always live, so the store
+        //      fires unconditionally at function entry.
+        //
+        // Previously only case (1) was handled, and only when defOp was
+        // directly inside the function body.  Handles defined inside nested
+        // SCF regions (if branches, match arms) were left with a null guard
+        // slot, causing the scope-exit drop to be silently skipped even when
+        // .free() was never called — a guaranteed leak under ASAN/LSAN.
+        //
+        // Coercion unwrapping: receiverVal may have passed through one or
+        // more hew.bitcast ops that were inserted at the call site (e.g. when
+        // the .free() implementation expects an LLVMPointerType but the handle
+        // is a HandleType).  Those bitcasts are defined at the .free() call
+        // site, not at the handle's allocation site, so using them as the
+        // anchor for the retroactive store would insert the store at the wrong
+        // level (inside the .free() branch rather than at the definition site).
+        // Strip them to recover the allocation-site SSA value.
+        mlir::Value originVal = receiverVal;
+        while (auto *op = originVal.getDefiningOp()) {
+          if (op->getName().getStringRef() == "hew.bitcast" && op->getNumOperands() == 1)
+            originVal = op->getOperand(0);
+          else
+            break;
+        }
+
+        auto *defOp = originVal.getDefiningOp();
+        if (defOp) {
           auto savedIP = builder.saveInsertionPoint();
           builder.setInsertionPointAfter(defOp);
-          mlir::Value handlePtr = receiverVal;
+          mlir::Value handlePtr = originVal;
+          if (!mlir::isa<mlir::LLVM::LLVMPointerType>(handlePtr.getType()))
+            handlePtr = hew::BitcastOp::create(builder, loc, ptrType, handlePtr);
+          mlir::memref::StoreOp::create(builder, loc, handlePtr, guardSlot);
+          builder.restoreInsertionPoint(savedIP);
+        } else if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(originVal)) {
+          auto savedIP = builder.saveInsertionPoint();
+          builder.setInsertionPointToStart(blockArg.getOwner());
+          mlir::Value handlePtr = originVal;
           if (!mlir::isa<mlir::LLVM::LLVMPointerType>(handlePtr.getType()))
             handlePtr = hew::BitcastOp::create(builder, loc, ptrType, handlePtr);
           mlir::memref::StoreOp::create(builder, loc, handlePtr, guardSlot);
           builder.restoreInsertionPoint(savedIP);
         }
-        // When defOp is inside a nested SCF region or is a block argument,
-        // the guard slot stays null-initialized.  In that case .free() inside
-        // a branch correctly nulls the slot, but if the branch is not taken
-        // the slot stays null and the scope-exit drop is skipped (a leak).
-        // This edge case is documented; the common case (handle defined
-        // directly in the function body) is handled correctly above.
 
         // At the .free() call site: null out the guard slot.
         auto nullVal = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);

@@ -9491,6 +9491,133 @@ static void test_match_arm_unknown_constructor_fails_closed() {
 }
 
 // ============================================================================
+// ============================================================================
+// Helper: verify that a guard slot used for a user-drop has a non-null store
+// that lives inside a nested SCF if region.  This proves that
+// nullOutDropSlot's retroactive store was inserted inside the nested region
+// (fixing the dominance/leak edge) rather than left null-initialized.
+// ============================================================================
+static bool hasDropGuardSlotPopulatedInNestedRegion(mlir::Operation *funcOp) {
+  bool found = false;
+  funcOp->walk([&](hew::DropOp drop) {
+    if (found || !drop.getIsUserDrop())
+      return;
+    // Unwrap any hew.bitcast ops between the drop and the underlying load.
+    mlir::Value dropVal = drop.getValue();
+    while (auto *defOp = dropVal.getDefiningOp()) {
+      if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() == 1)
+        dropVal = defOp->getOperand(0);
+      else
+        break;
+    }
+    auto load = dropVal.getDefiningOp<mlir::memref::LoadOp>();
+    if (!load)
+      return;
+    auto slot = load.getMemref();
+    if (!slot.getDefiningOp<mlir::memref::AllocaOp>())
+      return;
+    // Look for a non-null store to this slot inside a nested SCF if region.
+    funcOp->walk([&](mlir::memref::StoreOp store) {
+      if (found || store.getMemref() != slot)
+        return;
+      if (store.getValue().getDefiningOp<mlir::LLVM::ZeroOp>())
+        return;
+      if (isZeroLiteralValue(store.getValue()))
+        return;
+      auto *parentRegion = store->getParentRegion();
+      if (parentRegion && mlir::isa<mlir::scf::IfOp>(parentRegion->getParentOp()))
+        found = true;
+    });
+  });
+  return found;
+}
+
+// ============================================================================
+// Test: nullOutDropSlot guard slot is populated when handle defOp is inside a
+// nested SCF region (regression for the dominance/leak edge).
+//
+// Before the fix, nullOutDropSlot skipped the retroactive guard-slot store
+// when the handle-defining op lived inside a nested SCF if region.  The slot
+// stayed null-initialized, so the scope-exit drop was always skipped → LEAK.
+// After the fix, the store is inserted inside the nested region so the slot
+// holds the live handle value when .free() is NOT called.
+// ============================================================================
+static void test_json_nested_scope_free_guard_slot_populated() {
+  TEST(json_nested_scope_free_guard_slot_populated);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+import std::encoding::json;
+
+fn test(do_free: bool) -> i32 {
+    if true {
+        let val = json.parse("{\"n\": 1}");
+        let t = val.type_of();
+        if do_free {
+            val.free();
+        }
+        t
+    } else {
+        0
+    }
+}
+
+fn main() {
+    println(test(true));
+    println(test(false));
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for json nested-scope free guard test");
+    return;
+  }
+
+  auto testFn = lookupFuncBySuffix(module, "test");
+  if (!testFn) {
+    FAIL("test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The scope-exit drop for val must be present (null-guarded hew.drop).
+  auto dropWrapper = lookupFuncBySuffix(module, "json.ValueF4drop");
+  if (!dropWrapper) {
+    FAIL("expected a generated json.Value drop wrapper");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(testFn, dropWrapper.getName(), true) < 1) {
+    FAIL("expected scope-exit hew.drop for json.Value inside nested if block");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The explicit .free() must still emit exactly one hew_json_free call.
+  if (countCallsByCallee(testFn, "hew_json_free") != 1) {
+    FAIL("expected exactly one hew_json_free call for the explicit .free()");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The guard slot must have been populated with the live handle value inside
+  // the nested SCF if region (the retroactive store fix).  Without the fix,
+  // only the null-out store (from the .free() site) would be present.
+  if (!hasDropGuardSlotPopulatedInNestedRegion(testFn)) {
+    FAIL("guard slot for json.Value was not populated inside the nested SCF if "
+         "region — the scope-exit drop will always be skipped (ASAN leak)");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: `let _ = expr` wildcard let materializes droppable temporaries
 // (regression for the drop-leak fix: PatWildcard in generateLetStmt must call
 // materializeTemporary so heap-allocated returns are freed at scope exit)
@@ -9665,6 +9792,7 @@ int main() {
   test_prim_struct_static_serial_call_emits_demanded_wrapper();
   test_break_outside_loop_stmt_fails_closed();
   test_match_arm_unknown_constructor_fails_closed();
+  test_json_nested_scope_free_guard_slot_populated();
   test_wildcard_let_droppable_temporary_is_materialized();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);

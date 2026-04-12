@@ -107,20 +107,59 @@ target_link_libraries(test_msgpack_reader PRIVATE
 
 add_test(NAME msgpack_reader COMMAND test_msgpack_reader)
 
-# ── End-to-end example tests (compile + run .hew files) ─────────────────────
-# E2E tests use the hew CLI (Rust compiler driver) for full-pipeline compilation.
-if(NOT HEW_CLI)
-  message(STATUS "Skipping E2E tests — hew CLI not found")
-  return()
-endif()
-
-# Platform-specific executable suffix
+# Platform-specific executable suffix (needed by coro tests below and E2E tests)
 if(WIN32)
   set(HEW_EXE_SUFFIX ".exe")
   set(HEW_OBJ_SUFFIX ".obj")
 else()
   set(HEW_EXE_SUFFIX "")
   set(HEW_OBJ_SUFFIX ".o")
+endif()
+
+# ── Coroutine prototype tests ────────────────────────────────────────────────
+# Validates LLVM coroutine intrinsic integration (CoroSplit pass).
+# These compile raw .ll files with coroutine intrinsics and verify output.
+#
+# Must run before the HEW_CLI gate: these tests only need clang, not the Hew
+# compiler driver.
+#
+# The .ll files declare intrinsics matching upstream LLVM (void @llvm.coro.end).
+# Apple clang 21 uses the legacy i1-return convention for coro.end, so we must
+# use the same LLVM toolchain the project was configured against.
+find_program(HEW_CORO_CLANG
+  NAMES clang
+  PATHS "${LLVM_TOOLS_BINARY_DIR}"
+  NO_DEFAULT_PATH
+)
+if(NOT HEW_CORO_CLANG)
+  set(HEW_CORO_CLANG "${CMAKE_C_COMPILER}")
+endif()
+
+add_test(
+  NAME coro_generator
+  COMMAND ${CMAKE_COMMAND}
+    -DCLANG=${HEW_CORO_CLANG}
+    -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_generator.ll
+    -DEXPECTED=1\n2\n3\ndone\n
+    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_generator${HEW_EXE_SUFFIX}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
+)
+
+add_test(
+  NAME coro_fib_generator
+  COMMAND ${CMAKE_COMMAND}
+    -DCLANG=${HEW_CORO_CLANG}
+    -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_fib_generator.ll
+    -DEXPECTED=0\n1\n1\n2\n3\n5\n8\n13\n
+    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_fib_generator${HEW_EXE_SUFFIX}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
+)
+
+# ── End-to-end example tests (compile + run .hew files) ─────────────────────
+# E2E tests use the hew CLI (Rust compiler driver) for full-pipeline compilation.
+if(NOT HEW_CLI)
+  message(STATUS "Skipping E2E tests — hew CLI not found")
+  return()
 endif()
 
 find_program(HEW_DWARFDUMP NAMES llvm-dwarfdump dwarfdump)
@@ -813,27 +852,6 @@ foreach(HEW_FILE ${UX_HEWS})
   endif()
 endforeach()
 
-
-# ── Coroutine prototype tests ────────────────────────────────────────────────
-# Validates LLVM coroutine intrinsic integration (CoroSplit pass).
-# These compile raw .ll files with coroutine intrinsics and verify output.
-add_test(
-  NAME coro_generator
-  COMMAND ${CMAKE_COMMAND}
-    -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_generator.ll
-    -DEXPECTED=1\n2\n3\ndone\n
-    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_generator${HEW_EXE_SUFFIX}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
-)
-
-add_test(
-  NAME coro_fib_generator
-  COMMAND ${CMAKE_COMMAND}
-    -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_fib_generator.ll
-    -DEXPECTED=0\n1\n1\n2\n3\n5\n8\n13\n
-    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_fib_generator${HEW_EXE_SUFFIX}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
-)
 
 # ── WASM target tests ─────────────────────────────────────────────────────────
 # Mirror of native E2E tests compiled for wasm32-wasi and run with wasmtime.

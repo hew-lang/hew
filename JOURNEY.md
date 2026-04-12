@@ -1,5 +1,11 @@
 # Journey
 
+## 2026-04-12 — fix/llvm22-coro-end-return-contract
+
+- Grounded `coro_generator`/`coro_fib_generator` test failures to the test harness, not `transformCoroutineGenerators()`: `run_coro_test.cmake` searched for `clang-21` (absent) then fell back to PATH `clang`, which on macOS resolved to Apple clang 21.0.0. Apple clang retains the pre-LLVM-13 `i1`-return convention for `llvm.coro.end`; the `.ll` fixtures declare `declare void @llvm.coro.end(ptr, i1, token)` matching upstream LLVM 22, producing `invalid LLVM IR input: Intrinsic has incorrect return type! ptr @llvm.coro.end`.
+- Confirmed `codegen.cpp`'s `transformCoroutineGenerators()` is unaffected: it uses `llvm::Intrinsic::getOrInsertDeclaration` which always picks up the correct type from the installed LLVM headers and does not consume the (void) return value.
+- Fixed by resolving the project-configured clang from `LLVM_TOOLS_BINARY_DIR` (falling back to `CMAKE_C_COMPILER`) and passing it as `-DCLANG=` to `run_coro_test.cmake`. Moved coro tests above the `HEW_CLI`-gated E2E `return()` so they run even without the Hew compiler driver installed.
+
 ## feat/playground-verify — `hew playground verify`
 
 - **Decision: capture not print.** The existing `eval_file` writes directly to

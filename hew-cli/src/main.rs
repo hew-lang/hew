@@ -15,6 +15,7 @@
 //! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
 //! hew init [name]                  # Scaffold main.hew + README.md only (no hew.toml)
+//! hew playground verify            # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! ```
@@ -27,6 +28,7 @@ mod eval;
 mod link;
 mod machine;
 mod platform;
+mod playground;
 mod process;
 #[cfg(unix)]
 mod signal;
@@ -93,6 +95,7 @@ fn hew_main() {
         Some(Command::Machine(ref a)) => machine::cmd_machine(a),
         Some(Command::Fmt(ref a)) => cmd_fmt(a),
         Some(Command::Init(ref a)) => cmd_init(a),
+        Some(Command::Playground(ref a)) => playground::cmd_playground(a),
         Some(Command::Completions(ref a)) => cmd_completions(a),
         Some(Command::Version) => cmd_version(),
         None => {

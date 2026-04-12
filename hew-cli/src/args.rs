@@ -49,6 +49,8 @@ pub enum Command {
     Fmt(FmtArgs),
     /// Scaffold a source-only project with `main.hew` + `README.md` (no `hew.toml`).
     Init(InitArgs),
+    /// Curated playground example tools.
+    Playground(PlaygroundCommand),
     /// Print shell completion script.
     Completions(CompletionsArgs),
     /// Print version info.
@@ -486,4 +488,32 @@ pub enum ShellChoice {
 pub struct CompletionsArgs {
     /// Shell to generate completions for.
     pub shell: ShellChoice,
+}
+
+// ---------------------------------------------------------------------------
+// Playground
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct PlaygroundCommand {
+    #[command(subcommand)]
+    pub command: PlaygroundSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlaygroundSubcommand {
+    /// Compile and run each runnable playground example and verify its stdout
+    /// against the checked-in `.expected` file.
+    Verify(PlaygroundVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PlaygroundVerifyArgs {
+    /// Path to the playground manifest JSON.
+    /// Defaults to `examples/playground/manifest.json` (relative to cwd).
+    #[arg(long, value_name = "FILE")]
+    pub manifest: Option<std::path::PathBuf>,
+    /// Per-example execution timeout in seconds.
+    #[arg(long, default_value = "30")]
+    pub timeout: u64,
 }

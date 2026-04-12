@@ -1,5 +1,32 @@
 # Journey
 
+## feat/playground-verify — `hew playground verify`
+
+- **Decision: capture not print.** The existing `eval_file` writes directly to
+  stdout so the REPL gives users immediate feedback.  Playground verify needs to
+  compare that output against a file, so a new `eval_file_captured` / internal
+  `eval_source_file_captured` variant collects the output into a `String` instead
+  of printing it.  The printing path was deliberately left untouched — sharing the
+  same code path would have required either a callback or a flag, both of which
+  would have bloated a stable API that has no other consumer needing capture.
+
+- **Decision: `"runnable"` only, explicit skip for everything else.** Any wasi
+  capability value other than `"runnable"` is skipped, not failed.  This keeps
+  `"unsupported"` entries from silently becoming pass results if the capability
+  string changes in future manifest versions.  Skipped entries are counted
+  separately in the summary so regressions in manifest coverage are visible.
+
+- **Decision: browser capability is not examined.** `capabilities.browser` is
+  analysis-only metadata with no local runtime counterpart.  The struct field is
+  intentionally absent from `Capabilities` so a future maintainer cannot
+  accidentally treat it as a local execution gate.
+
+- **Scope boundary.** WASM-backed verification (compiling to `.wasm` and running
+  via wasmtime) is explicitly out of scope for this lane — the native path
+  exercises the same Hew semantics and avoids a wasmtime toolchain requirement
+  for CI.  Concurrency examples with `wasi: "runnable"` are attempted via the
+  native eval path; if they fail at runtime that surfaces as `FAIL`, not a skip.
+
 ## 2026-04-11 — test/wasm-diagnostic-notes-suggestions
 
 - Certification lane: verify that `WasmDiagnostic.notes` and `WasmDiagnostic.suggestions` (introduced by PR #967) are covered by serialization contract tests.

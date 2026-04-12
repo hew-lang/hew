@@ -1312,6 +1312,30 @@ pub fn eval_file(
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
+/// Evaluate a file in REPL context, returning its stdout as a `String`.
+///
+/// Used by `hew playground verify` to compare program output against a
+/// checked-in `.expected` file without mixing verification output with
+/// program output.  Unlike [`eval_file`] this does not accept `"-"` for
+/// stdin — playground entries are always on-disk files.
+///
+/// # Errors
+///
+/// Returns a [`CliEvalError`] if the file cannot be read, fails to compile,
+/// or exits with a non-zero status.
+pub fn eval_file_captured(
+    path: &str,
+    timeout: Duration,
+    target: Option<&str>,
+) -> Result<String, CliEvalError> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| CliEvalError::Message(format!("cannot read '{path}': {e}")))?;
+    let input_name = path.to_string();
+
+    let mut session = ReplSession::for_path_with_target(path, timeout, target);
+    session.eval_source_file_cli(&source, &input_name, &input_name)
+}
+
 fn help_text() -> &'static str {
     "\
 Commands:

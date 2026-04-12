@@ -1162,6 +1162,14 @@ add_wasm_file_test(struct_string_field_auto_drop e2e_drop_scope    struct_string
 add_wasm_file_test(struct_early_return_auto_drop e2e_drop_scope    struct_early_return_auto_drop)
 add_wasm_file_test(struct_field_extraction_no_double_free e2e_drop_scope struct_field_extraction_no_double_free)
 add_wasm_file_test(drop_nested_struct         e2e_drop_trait       drop_nested_struct)
+
+# Function parameter drops: callee-side cleanup + caller-side ownership transfer
+add_wasm_file_test(string_param_drop         e2e_param_drops      string_param_drop)
+add_wasm_file_test(returned_string_param     e2e_param_drops      returned_string_param)
+add_wasm_file_test(user_drop_param           e2e_param_drops      user_drop_param)
+add_wasm_file_test(returned_user_drop_param  e2e_param_drops      returned_user_drop_param)
+add_wasm_file_test(early_return_param        e2e_param_drops      early_return_param)
+
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
 add_wasm_file_test(large_vec                  e2e_memory           large_vec_lifecycle)

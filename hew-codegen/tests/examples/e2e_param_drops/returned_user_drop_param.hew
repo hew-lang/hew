@@ -1,0 +1,28 @@
+// Returned user-Drop struct parameter: callee returns the param unchanged —
+// the user's drop must NOT fire inside the callee.  The caller takes ownership
+// and fires the drop when its own scope exits.
+
+type Handle {
+    name: String;
+}
+
+impl Drop for Handle {
+    fn drop(h: Handle) {
+        print("drop ");
+        println(h.name);
+    }
+}
+
+fn passthrough(h: Handle) -> Handle {
+    h
+}
+
+fn main() -> int {
+    let h = Handle { name: "conn" };
+    let h2 = passthrough(h);
+    print("got ");
+    println(h2.name);
+    // h2 dropped here by caller
+    println("done");
+    return 0;
+}

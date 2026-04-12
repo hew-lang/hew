@@ -4657,9 +4657,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // of emitting an illegal func.return inside an scf.if.
   initReturnFlagAndSlot(resultTypes, location);
 
-  // NOTE: param drops are not yet registered here.  Adding them requires
-  // null-after-move tracking to avoid double-frees when a param is consumed
-  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+  // DROP-TODO: param drops for trait default methods.  generateFunction now
+  // handles this via pendingFunctionParamDrops + collectExcludeVarsFromBlock
+  // pre-scan.  This path lacks the pre-scan infrastructure; enabling it here
+  // requires the same return-exclusion setup first.
 
   mlir::Value bodyValue = generateBlock(*method.body, /*statementPosition=*/resultTypes.empty(),
                                         /*isFunctionBodyBlock=*/true);
@@ -5041,6 +5042,13 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
         for (const auto &arg : callE->args)
           collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
       }
+    } else if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
+      // When a struct field is directly returned, exclude the whole struct
+      // variable from drops.  This prevents the struct's Drop function (or
+      // __auto_field_drop) from freeing the returned field alias before the
+      // caller has a chance to use it.
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldAccess->object->value.kind))
+        out.insert({id->name, depth});
     }
   };
   // Determine whether the function body produces a value (non-void return).
@@ -5107,9 +5115,55 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   };
   scanReturns(fn.body);
 
-  // NOTE: param drops are not yet registered here.  Adding them requires
-  // null-after-move tracking to avoid double-frees when a param is consumed
-  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+  // Register param drops: use dropFuncForType (AST-based) to queue each param
+  // that carries ownership into pendingFunctionParamDrops.  generateBlock drains
+  // these into the body scope (depth 0) so the funcLevelDropExcludeVars pre-scan
+  // above already covers returned params and early-return paths correctly.
+  //
+  // Deliberately excluded:
+  //  • __auto_field_drop structs (structs without user Drop but with owned
+  //    fields): without alias-tracking we cannot tell whether an owned field is
+  //    aliased in the return value.  DROP-TODO: enable after alias-tracking lands.
+  //  • Handle types (Stream/Sink/Pair): these need closeAlloca RAII, not a
+  //    plain drop call.  DROP-TODO: closeAlloca RAII for handle params.
+  //  • Vec, HashMap, HashSet, Rc, bytes: these use borrow semantics at call
+  //    boundaries — the caller retains ownership and drops at scope exit.
+  //    Registering callee-side drops would cause double-frees whenever the
+  //    caller reuses the variable after the call (e.g. passing the same Vec
+  //    to multiple functions).  DROP-TODO: enable after move-checker lands.
+  //  • String: field aliases (e.g. `a.pre_release` passed to a fn) share the
+  //    heap buffer with the owning struct.  Callee-side drops would free that
+  //    buffer, and the owning struct's __auto_field_drop would free it again
+  //    → double-free.  DROP-TODO: enable after alias-tracking lands.
+  //  • Indirect enum drops (`__hew_drop_*`): these functions are RECURSIVE —
+  //    they free the entire subtree.  When a pattern match passes children to
+  //    recursive callee calls that drop them, the parent's param drop would
+  //    then drop them again → double-free.
+  //  • Self-referential drop functions: a user Drop's own parameter must not
+  //    be re-dropped — that would recurse into the Drop impl infinitely.
+  auto isBorrowSemanticsDrop = [](const std::string &df) {
+    return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+           df == "hew_rc_drop" || df == "hew_string_drop" ||
+           df.starts_with("__hew_drop_"); // indirect enum recursive drops
+  };
+  for (const auto &param : fn.params) {
+    if (handleVarTypes.count(param.name) || lookupTrackedStreamHandleInfo(param.name))
+      continue;
+    auto dropFunc = dropFuncForType(param.ty.value);
+    if (dropFunc.empty() || isBorrowSemanticsDrop(dropFunc))
+      continue;
+    // Skip if this function IS the drop function for the param's type.
+    // A user Drop implementation must not re-drop its own parameter — doing so
+    // would recurse into itself infinitely.
+    if (dropFunc == funcName)
+      continue;
+    bool isUserDrop = false;
+    if (auto *named = std::get_if<ast::TypeNamed>(&param.ty.value.kind)) {
+      auto typeName = resolveTypeAlias(named->name);
+      isUserDrop = userDropFuncs.count(typeName) > 0;
+    }
+    pendingFunctionParamDrops.push_back({param.name, dropFunc, isUserDrop});
+  }
 
   // If the pre-scan found return statements in nested scopes (if/for/while)
   // and the function returns an aggregate type that didn't get an eager
@@ -5350,9 +5404,9 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
       builder.restoreInsertionPoint(savedIP2);
     }
 
-    // NOTE: param drops are not yet registered here.  Adding them requires
-    // null-after-move tracking to avoid double-frees when a param is consumed
-    // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+    // DROP-TODO: param drops for generator functions.  Generators yield values
+    // across suspension points; param drop semantics require yield-site
+    // exclusion analysis (mirroring collectYieldExpr) before enabling.
 
     // Pre-scan the generator body for yield expressions and populate
     // funcLevelDropExcludeVars / funcLevelReturnVarNames before body
@@ -6119,6 +6173,14 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
   }
 }
 
+std::string MLIRGen::getRegisteredDropFunc(const std::string &varName) const {
+  for (const auto &scope : dropScopes)
+    for (const auto &entry : scope)
+      if (entry.varName == varName)
+        return entry.dropFuncName;
+  return "";
+}
+
 std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
   // NOTE: This operates on AST type annotations only.  Closure types are
   // detected by runtime type (hew::ClosureType) in MLIRGenStmt.cpp, not by
@@ -6797,11 +6859,17 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
 }
 
 void MLIRGen::nullOutDropSlotByAlloca(mlir::Value alloca, mlir::Location loc) {
-  // Zero the alloca so every DropEntry that shares this promotedSlot (both
-  // the inner-scope entry and the safety-net function-level duplicate) will
-  // load null at scope exit and skip the drop.  The slot type is always
-  // LLVMPointerType for HandleType temporaries, so createDefaultValue
-  // produces a LLVM null pointer.
+  // For user-Drop struct temporaries, the initFlag is the authoritative guard
+  // used by emitDropEntry.  Storing false into it signals "consumed" without
+  // touching the struct alloca (which would produce LLVM undef).
+  auto flagIt = tempSlotInitFlags.find(alloca);
+  if (flagIt != tempSlotInitFlags.end()) {
+    auto falseVal = createIntConstant(builder, loc, builder.getI1Type(), 0);
+    mlir::memref::StoreOp::create(builder, loc, falseVal, flagIt->second);
+    return;
+  }
+  // For pointer-typed slots (String, handle types), store null so the
+  // null-guard in emitDropEntry skips the drop.
   auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(alloca.getType());
   if (!memrefTy)
     return;

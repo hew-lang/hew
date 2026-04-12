@@ -255,8 +255,15 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     ~DropScopeGuard() { gen.popDropScope(); }
   } dropGuard(*this);
 
-  // NOTE: pendingFunctionParamDrops drain point — currently disabled until
-  // null-after-move tracking prevents double-frees from consumed params.
+  // Drain pending param drops into the body scope.  These were queued in
+  // generateFunction via dropFuncForType; draining here places params at
+  // relDepth 0 alongside body-local variables so the funcLevelDropExcludeVars
+  // pre-scan (already complete) correctly excludes returned/early-returned ones.
+  if (isFunctionBodyBlock && !pendingFunctionParamDrops.empty()) {
+    for (const auto &pd : pendingFunctionParamDrops)
+      registerDroppable(pd.name, pd.dropFunc, pd.isUserDrop);
+    pendingFunctionParamDrops.clear();
+  }
 
   // Only activate the return-guard path when generating the actual function
   // body block in a non-void function.  Inline sub-blocks (unsafe { … },

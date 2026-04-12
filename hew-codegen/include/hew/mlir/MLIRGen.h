@@ -962,6 +962,7 @@ private:
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
   void unregisterDroppable(const std::string &varName);
+  std::string getRegisteredDropFunc(const std::string &varName) const;
   /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
   /// bitcast, drop).  No-op if the variable is not found.
   void emitDropEntry(const DropEntry &entry);

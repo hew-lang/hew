@@ -2238,6 +2238,51 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       }
     }
 
+    // Transfer ownership: remove caller-side drop registrations for
+    // bare-identifier arguments passed to user-defined Hew functions, and null
+    // out temp allocas for anonymous (non-identifier) args.
+    //
+    // Exempted types (borrow semantics — caller retains ownership):
+    //   Vec, HashMap, HashSet, bytes, Rc — frequently reused after calls and
+    //     lack a move-checker to enforce single-use (DROP-TODO).
+    //   String — field aliases (e.g. `v.pre_release` passed as String arg)
+    //     share the heap buffer with the owning struct; callee-side drops would
+    //     free the buffer, then __auto_field_drop would free it again
+    //     → double-free (DROP-TODO: enable after alias-tracking lands).
+    //   __hew_drop_* (indirect enum drops) — these recursive drop functions
+    //     free entire subtrees; when pattern match arms pass children to
+    //     recursive callees, the parent param drop would re-free children.
+    //   __auto_field_drop — callee never receives this sentinel via
+    //     dropFuncForType (returns "" for structs without user Drop), so
+    //     unregistering it at call sites would create memory leaks.
+    //
+    // Stream/Sink args are handled by nullOutRaiiAlloca above; skip them here.
+    if (!callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
+      auto isBorrowSemanticsDropFunc = [](const std::string &df) {
+        return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+               df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
+               df.starts_with("__hew_drop_"); // indirect enum recursive drops
+      };
+      for (size_t i = 0; i < call.args.size(); ++i) {
+        const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+        if (auto *ident = std::get_if<ast::ExprIdentifier>(&argExpr.kind)) {
+          if (!lookupTrackedStreamHandleInfo(ident->name)) {
+            auto regDrop = getRegisteredDropFunc(ident->name);
+            if (!regDrop.empty() && !isBorrowSemanticsDropFunc(regDrop))
+              unregisterDroppable(ident->name);
+          }
+        } else if (i < materializedArgAllocas.size() && materializedArgAllocas[i]) {
+          // Non-identifier temp arg (struct literal, f-string, call result):
+          // null out the caller's temp alloca so the callee's param drop is the
+          // sole owner.  Only applies to types with callee-side drops (String,
+          // user-Drop structs) — exempt borrow-semantics types stay caller-owned.
+          auto info = inferDropFuncForTemporary(i < args.size() ? args[i] : mlir::Value{}, argExpr);
+          if (!info.dropFunc.empty() && !isBorrowSemanticsDropFunc(info.dropFunc))
+            nullOutDropSlotByAlloca(materializedArgAllocas[i], location);
+        }
+      }
+    }
+
     // Drop RC environments of temporary closure arguments after the call.
     // Variable-bound closures (identifiers, field accesses) are dropped by
     // popDropScope via their let-binding registration.  All other closure

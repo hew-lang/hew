@@ -1,0 +1,14 @@
+// Returned String parameter: the callee returns its param — the param must
+// NOT be dropped at scope exit (the caller takes ownership).
+
+fn identity(s: String) -> String {
+    s
+}
+
+fn main() -> int {
+    let msg = "ownership transfer";
+    let result = identity(msg);
+    println(result);
+    println("done");
+    return 0;
+}

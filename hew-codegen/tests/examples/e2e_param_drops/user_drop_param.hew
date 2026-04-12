@@ -1,0 +1,27 @@
+// User-Drop struct parameter: callee calls the user's drop at scope exit.
+// The Drop output is used as a correctness signal.
+
+type Widget {
+    label: String;
+}
+
+impl Drop for Widget {
+    fn drop(w: Widget) {
+        print("drop ");
+        println(w.label);
+    }
+}
+
+fn consume_widget(w: Widget) {
+    print("use ");
+    println(w.label);
+    // w is dropped here — user Drop fires
+}
+
+fn main() -> int {
+    let widget = Widget { label: "button" };
+    consume_widget(widget);
+    // widget was moved — no second drop
+    println("done");
+    return 0;
+}

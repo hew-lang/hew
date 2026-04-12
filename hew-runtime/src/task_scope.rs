@@ -449,24 +449,23 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         // SAFETY: All task pointers in the list are valid.
         let t = unsafe { &mut *cur };
 
-        let detach_cancelled_running =
-            s.cancelled.load(Ordering::Acquire) && t.load_state() == HewTaskState::Running;
+        let detach_cancelled_worker =
+            s.cancelled.load(Ordering::Acquire) && t.thread_handle.is_some();
 
-        if detach_cancelled_running {
-            let raced_to_done = t.load_state() == HewTaskState::Done;
-            if raced_to_done {
-                drop(t.thread_handle.take());
-            }
-            t.detached_on_cancel = !raced_to_done;
+        if detach_cancelled_worker {
+            t.detached_on_cancel = true;
         } else if let Some(handle) = t.thread_handle.take() {
             let _ = handle.join();
+            t.detached_on_cancel = false;
+        } else {
             t.detached_on_cancel = false;
         }
 
         // Wait on done signal only once there is no outstanding worker handle.
-        // Cancelled running tasks keep their join handle so destroy can hand
-        // ownership to a background reaper without blocking here.
-        if t.thread_handle.is_none() && t.load_state() == HewTaskState::Done {
+        // After cancellation, the join handle is the liveness authority: a task
+        // may have published `Done` and notified the condvar before its worker
+        // thread has actually exited.
+        if !t.detached_on_cancel && t.load_state() == HewTaskState::Done {
             if let Some(ref signal) = t.done_signal {
                 signal.wait_until_done();
             }
@@ -1014,6 +1013,103 @@ mod tests {
             ENV_DROPS.load(Ordering::SeqCst),
             2,
             "task cleanup never ran after the detached worker exited"
+        );
+    }
+
+    #[test]
+    fn scope_destroy_after_cancel_stays_bounded_when_worker_marked_done_but_not_exited() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static COMPLETED: AtomicBool = AtomicBool::new(false);
+        static RELEASE_EXIT: AtomicBool = AtomicBool::new(false);
+        static EXITED: AtomicBool = AtomicBool::new(false);
+        static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn done_then_linger(task: *mut HewTask) {
+            STARTED.store(true, Ordering::SeqCst);
+            // SAFETY: `task` remains owned by the worker until it exits.
+            unsafe { hew_task_complete_threaded(task) };
+            COMPLETED.store(true, Ordering::SeqCst);
+            while !RELEASE_EXIT.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            EXITED.store(true, Ordering::SeqCst);
+        }
+
+        unsafe extern "C" fn count_env_drop(_: *mut u8) {
+            ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        STARTED.store(false, Ordering::SeqCst);
+        COMPLETED.store(false, Ordering::SeqCst);
+        RELEASE_EXIT.store(false, Ordering::SeqCst);
+        EXITED.store(false, Ordering::SeqCst);
+        ENV_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, done_then_linger);
+
+            let started_deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < started_deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                STARTED.load(Ordering::SeqCst),
+                "worker thread never started"
+            );
+
+            let completed_deadline = Instant::now() + Duration::from_secs(1);
+            while !COMPLETED.load(Ordering::SeqCst) && Instant::now() < completed_deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                COMPLETED.load(Ordering::SeqCst),
+                "worker thread never published completion"
+            );
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+
+            hew_task_scope_cancel(scope);
+
+            let destroy_started = Instant::now();
+            hew_task_scope_destroy(scope);
+            assert!(
+                destroy_started.elapsed() < Duration::from_millis(250),
+                "destroy blocked on a cancelled worker tail after Done"
+            );
+        }
+
+        assert_eq!(
+            ENV_DROPS.load(Ordering::SeqCst),
+            0,
+            "destroy reclaimed the task before the worker actually exited"
+        );
+
+        RELEASE_EXIT.store(true, Ordering::SeqCst);
+
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !EXITED.load(Ordering::SeqCst) && Instant::now() < exit_deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(EXITED.load(Ordering::SeqCst), "worker tail never exited");
+
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while ENV_DROPS.load(Ordering::SeqCst) != 1 && Instant::now() < cleanup_deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            ENV_DROPS.load(Ordering::SeqCst),
+            1,
+            "task cleanup never ran after the done-but-live worker exited"
         );
     }
 

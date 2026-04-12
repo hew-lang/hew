@@ -11,7 +11,7 @@
 - Symptom: `hew_task_scope_destroy()` stayed bounded after cancelling a live running task, but `hew_task_scope_join_all()` marked that task `detached_on_cancel` and dropped its join handle, so destroy returned early forever and leaked the entire `HewTaskScope` task list.
 - Root cause: bounded cancellation had no ownership handoff. Once the running cancelled task was detached there was no remaining thread responsible for eventually joining the worker and reclaiming the scope, so every task-local allocation stayed live until process exit.
 - Decision: keep `hew_task_scope_join_all()` bounded by leaving cancelled-running worker handles attached to their tasks, then have `hew_task_scope_destroy()` move any remaining detached handles plus the boxed scope into a background reaper thread that joins those workers before calling the normal task/scope free path.
-- Follow-up after local review: when a cancelled worker races from `Running` to `Done` inside `join_all()`, the runtime must still take/drop its join handle immediately so the existing done-signal wait remains the synchronization barrier; otherwise destroy can free the scope before the worker finishes reading `done_signal`.
+- Follow-up after local review: a cancelled scope must treat any outstanding `JoinHandle` as the worker-liveness authority even if the task already published `Done`. The done signal is only a result-visibility fence; reclaiming on `Done` alone can either block destroy on a long worker tail or free scope/task/env state before the detached worker actually exits.
 
 ## 2026-04-11 — fix/astgen-u32-overflow-guards
 

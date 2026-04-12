@@ -1,0 +1,38 @@
+// Shadowed binding at a call site: outer `x` and inner `x` (inside an if
+// branch) share the same name.  Passing the inner `x` to a consuming function
+// must unregister ONLY the inner binding — the outer binding must remain alive
+// and be dropped exactly once at main's scope exit.
+//
+// Without the innermost-first fix, `unregisterDroppable("x")` would erase all
+// same-named scopes (both inner and outer), causing the outer Drop to be
+// silently skipped.
+
+type Tracked {
+    label: String;
+}
+
+impl Drop for Tracked {
+    fn drop(t: Tracked) {
+        print("drop ");
+        println(t.label);
+    }
+}
+
+fn consume(t: Tracked) {
+    print("consume ");
+    println(t.label);
+    // t is dropped here — user Drop fires for the inner binding
+}
+
+fn main() -> int {
+    let x = Tracked { label: "outer" };
+    if true {
+        let x = Tracked { label: "inner" };  // shadows outer x
+        consume(x);  // must transfer INNER x only; outer x must stay registered
+        // inner x was moved into consume — no second drop here
+    }
+    // outer x is still live after the if block
+    println(x.label);   // must print "outer"
+    // outer x dropped at scope exit — "drop outer"
+    return 0;
+}

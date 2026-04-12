@@ -1169,6 +1169,7 @@ add_wasm_file_test(returned_string_param     e2e_param_drops      returned_strin
 add_wasm_file_test(user_drop_param           e2e_param_drops      user_drop_param)
 add_wasm_file_test(returned_user_drop_param  e2e_param_drops      returned_user_drop_param)
 add_wasm_file_test(early_return_param        e2e_param_drops      early_return_param)
+add_wasm_file_test(shadowed_binding_drop     e2e_param_drops      shadowed_binding_drop)
 
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)

@@ -6166,16 +6166,25 @@ void MLIRGen::registerDroppable(const std::string &varName, const std::string &d
 }
 
 void MLIRGen::unregisterDroppable(const std::string &varName) {
-  for (auto &scope : dropScopes) {
-    scope.erase(std::remove_if(scope.begin(), scope.end(),
-                               [&](const DropEntry &e) { return e.varName == varName; }),
-                scope.end());
+  // Scan innermost scope first and stop after removing the first match so
+  // that a shadowing inner binding does not accidentally consume an outer
+  // binding with the same name.
+  for (auto it = dropScopes.rbegin(); it != dropScopes.rend(); ++it) {
+    auto &scope = *it;
+    auto pos = std::find_if(scope.begin(), scope.end(),
+                            [&](const DropEntry &e) { return e.varName == varName; });
+    if (pos != scope.end()) {
+      scope.erase(pos);
+      return;
+    }
   }
 }
 
 std::string MLIRGen::getRegisteredDropFunc(const std::string &varName) const {
-  for (const auto &scope : dropScopes)
-    for (const auto &entry : scope)
+  // Scan innermost scope first so shadowed bindings resolve to the current
+  // (innermost) binding rather than a same-named outer one.
+  for (auto it = dropScopes.rbegin(); it != dropScopes.rend(); ++it)
+    for (const auto &entry : *it)
       if (entry.varName == varName)
         return entry.dropFuncName;
   return "";

@@ -1,5 +1,12 @@
 # Journey
 
+## 2026-04-11 — test/wasm-diagnostic-notes-suggestions
+
+- Certification lane: verify that `WasmDiagnostic.notes` and `WasmDiagnostic.suggestions` (introduced by PR #967) are covered by serialization contract tests.
+- Gap confirmed: the struct fields existed at the base commit but no test asserted their presence or population in the JSON output.
+- Added three focused unit tests in `hew-wasm/src/lib.rs`: structural field presence (both parse-error and type-error paths), suggestions populated for a mutability error, notes populated (with correct named fields) for a duplicate definition.
+- All 19 `hew-wasm` tests pass.
+
 ## 2026-04-11 — fix/field-assign-codegen-invariant
 
 - Symptom: `MLIRGenStmt.cpp` still surfaced user-facing backend diagnostics for field-assignment states the checker already rejects (`missing field`, `non-struct value field assignment`, and immutable value-struct roots), so a corrupted or stale `assign_target_kinds` path looked like a frontend error instead of an internal invariant failure.

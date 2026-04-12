@@ -1,0 +1,27 @@
+// Reject test: early-return path returns a field of a callee-dropped param.
+// Same hazard as the trailing-expr case — either double-free or leak.
+
+type Config {
+    primary: String;
+    fallback: String;
+}
+
+impl Drop for Config {
+    fn drop(c: Config) {
+        println(c.primary);
+    }
+}
+
+fn pick_primary(c: Config, flag: bool) -> String {
+    if flag {
+        return c.primary;  // rejected: returning field of callee-dropped param
+    }
+    "default"
+}
+
+fn main() -> int {
+    let c = Config { primary: "prod", fallback: "dev" };
+    let val = pick_primary(c, true);
+    println(val);
+    return 0;
+}

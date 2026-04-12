@@ -491,6 +491,11 @@ add_e2e_reject_test(composite_typearg_reject      e2e_negative composite_typearg
 add_e2e_reject_test(composite_typearg_struct_init_reject e2e_negative composite_typearg_struct_init_reject "composite type arguments")
 add_e2e_reject_test(infer_nested_generic_reject   e2e_negative infer_nested_generic_reject   "composite type arguments")
 
+# Param-drop fail-closed reject tests: unsupported field-alias ownership shapes
+add_e2e_reject_test(field_access_call_arg         e2e_param_drops reject_field_access_call_arg         "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(return_field_of_param         e2e_param_drops reject_return_field_of_param         "returning a field of an owned parameter")
+add_e2e_reject_test(early_return_field_of_param   e2e_param_drops reject_early_return_field_of_param   "returning a field of an owned parameter")
+
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")

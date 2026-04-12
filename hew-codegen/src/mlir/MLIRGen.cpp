@@ -5042,13 +5042,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
         for (const auto &arg : callE->args)
           collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
       }
-    } else if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
-      // When a struct field is directly returned, exclude the whole struct
-      // variable from drops.  This prevents the struct's Drop function (or
-      // __auto_field_drop) from freeing the returned field alias before the
-      // caller has a chance to use it.
-      if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldAccess->object->value.kind))
-        out.insert({id->name, depth});
+    } else if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind)) {
+      // Field-access returns (e.g. `return obj.field`) are NOT excluded from
+      // drops.  Excluding the whole owner struct leaks sibling owned fields.
+      // Instead, returning a field of a callee-dropped param is rejected at
+      // compile time (see the post-param-drop scan in generateFunction).
     }
   };
   // Determine whether the function body produces a value (non-void return).
@@ -5163,6 +5161,78 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
       isUserDrop = userDropFuncs.count(typeName) > 0;
     }
     pendingFunctionParamDrops.push_back({param.name, dropFunc, isUserDrop});
+  }
+
+  // Fail-closed: reject returning a field of a callee-dropped parameter.
+  // Without full field-alias / partial-move tracking, returning `param.field`
+  // when `param` gets a callee-side drop would either double-free the field
+  // (if the param IS dropped) or leak sibling fields (if we skip the drop).
+  // Reject this shape at compile time until alias-tracking lands.
+  if (!pendingFunctionParamDrops.empty() && fnProducesValue) {
+    std::unordered_set<std::string> droppedParamNames;
+    for (const auto &pd : pendingFunctionParamDrops)
+      droppedParamNames.insert(pd.name);
+
+    // Check whether an expression is a field access on a callee-dropped param.
+    auto isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
+      auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind);
+      if (!fa)
+        return false;
+      auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
+      return id && droppedParamNames.count(id->name);
+    };
+
+    // Scan trailing expression
+    if (fn.body.trailing_expr && isFieldOfDroppedParam(fn.body.trailing_expr->value)) {
+      ++errorCount_;
+      emitError(location) << "returning a field of an owned parameter is not yet supported "
+                          << "(field-alias ownership tracking is required); "
+                          << "return the whole parameter or clone the field instead";
+      return nullptr;
+    }
+
+    // Scan explicit return statements (recursively)
+    std::function<bool(const ast::Block &)> scanForFieldReturn;
+    std::function<bool(const ast::StmtIf &)> scanForFieldReturnIf;
+    scanForFieldReturnIf = [&](const ast::StmtIf &ifStmt) -> bool {
+      if (scanForFieldReturn(ifStmt.then_block))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block && scanForFieldReturn(*ifStmt.else_block->block))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (scanForFieldReturnIf(*nested))
+              return true;
+        }
+      }
+      return false;
+    };
+    scanForFieldReturn = [&](const ast::Block &blk) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *ret = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
+          if (ret->value && isFieldOfDroppedParam(ret->value->value)) {
+            ++errorCount_;
+            emitError(location) << "returning a field of an owned parameter is not yet supported "
+                                << "(field-alias ownership tracking is required); "
+                                << "return the whole parameter or clone the field instead";
+            return true;
+          }
+        } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (scanForFieldReturnIf(*ifStmt))
+            return true;
+        } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          if (scanForFieldReturn(forStmt->body))
+            return true;
+        } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          if (scanForFieldReturn(whileStmt->body))
+            return true;
+        }
+      }
+      return false;
+    };
+    if (scanForFieldReturn(fn.body))
+      return nullptr;
   }
 
   // If the pre-scan found return statements in nested scopes (if/for/while)

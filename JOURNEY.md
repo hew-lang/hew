@@ -192,3 +192,13 @@ into the explicit results, and blending is no longer needed.
 - Key insight: `derefIndirectEnumScrutinee` is only semantically required for the constructor tag-test path. Wildcard and identifier need the raw value, not the dereffed payload. Moving deref inside the constructor branch prevented a double-deref regression.
 - Checker tests (9 cases) verify that Literal/Tuple/Or patterns are rejected and Wildcard/Identifier patterns produce no `InvalidOperation` error for both `if let` and `while let`.
 - Codegen tests (7 cases) verify that Wildcard and Identifier patterns lower correctly for stmt, expr, and while-let stmt forms; two fail-closed tests inject a `PatTuple` into a type-checked AST to confirm that `module == nullptr` and `errorCount_ > 0` after generation.
+
+## 2026-04-11 — fix/function-param-drop-alias-fail-closed
+
+- Goal: reject unsound field-alias patterns at compile time rather than attempting to support them. Without partial-move / field-alias tracking, passing `obj.field` to a consuming function or returning a field of an owned parameter causes double-frees (callee drops the field, then scope-exit drops the owning struct).
+- Removed the leak-prone `ExprFieldAccess` branch in `collectExcludeVars` that excluded the whole owning struct from scope-exit drops — this was an incomplete band-aid that traded double-frees for leaks.
+- Added a pre-scan in `mlirGenCallExpr` (before any call IR is emitted) that detects field-access args whose corresponding callee parameter would receive a callee-side owned drop. Uses `dropFuncForMLIRType` filtered by `isBorrowSemanticsDropFunc` to identify only user-Drop types (builtins are exempt via the existing borrow-semantics filter).
+- Added a post-`pendingFunctionParamDrops` scan in `generateFunction` that detects `ExprFieldAccess` on callee-dropped params in trailing expressions and explicit return statements (recursively scanning if/for/while/loop blocks).
+- Key insight: `emitError` + `return nullptr` from `mlirGenCallExpr` does not fail compilation if the call was void-returning — the caller just sees nullptr (normal for void). The pre-scan placement before arg evaluation ensures `return nullptr` exits before any IR is emitted, and `++errorCount_` ensures the `errorCount_ > 0` check at the end of `mlirGenModule` rejects the module.
+- Did NOT remove `maybeRegisterBorrowedFieldReturn` — it handles the orthogonal case of structs without user Drop but with owned fields (which don't get callee-side param drops).
+- Three regression tests: `reject_field_access_call_arg`, `reject_return_field_of_param`, `reject_early_return_field_of_param`.

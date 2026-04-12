@@ -1,0 +1,29 @@
+// Reject test: passing a field of a struct to a function that takes
+// ownership of a user-Drop type.  Without field-alias tracking, the
+// callee's param drop would free the field, and the caller's scope-exit
+// drop of the owning struct would free it again → double-free.
+
+type Inner {
+    value: String;
+}
+
+impl Drop for Inner {
+    fn drop(i: Inner) {
+        println(i.value);
+    }
+}
+
+type Outer {
+    inner: Inner;
+    tag: String;
+}
+
+fn consume(i: Inner) {
+    println(i.value);
+}
+
+fn main() -> int {
+    let obj = Outer { inner: Inner { value: "hello" }, tag: "t" };
+    consume(obj.inner);  // rejected: field-access arg to owned-drop param
+    return 0;
+}

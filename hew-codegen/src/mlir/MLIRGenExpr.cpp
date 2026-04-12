@@ -2073,6 +2073,36 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     callee = lookupImportedFunc("", calleeName);
   mlir::FunctionType calleeFuncType = callee ? callee.getFunctionType() : nullptr;
 
+  // Fail-closed pre-scan: reject passing a struct field to a function whose
+  // corresponding parameter would get a callee-side owned drop.  Without
+  // field-alias / partial-move tracking, the callee would drop the field
+  // value, then the caller's scope-exit drop of the owning struct would
+  // drop it again → double-free.  Check BEFORE emitting any call IR so
+  // that compilation genuinely fails.
+  if (callee && !callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
+    auto isBorrowSemanticsDropFuncPreScan = [](const std::string &df) {
+      return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+             df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
+             df.starts_with("__hew_drop_");
+    };
+    for (size_t i = 0; i < call.args.size(); ++i) {
+      const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+      if (std::holds_alternative<ast::ExprFieldAccess>(argExpr.kind)) {
+        if (calleeFuncType && i < calleeFuncType.getNumInputs()) {
+          auto paramType = calleeFuncType.getInput(i);
+          auto dropFunc = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);
+          if (!dropFunc.empty() && !isBorrowSemanticsDropFuncPreScan(dropFunc)) {
+            ++errorCount_;
+            emitError(location) << "passing a struct field to a function that takes ownership "
+                                << "is not yet supported (field-alias ownership tracking is "
+                                << "required); pass the whole struct or clone the field instead";
+            return nullptr;
+          }
+        }
+      }
+    }
+  }
+
   llvm::SmallVector<mlir::Value, 4> args;
   // Per-argument alloca from materializeTemporary (null if not materialized).
   // Used below to null out consumed temporaries after a consuming call.

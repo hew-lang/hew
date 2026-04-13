@@ -935,4 +935,110 @@ mod tests {
             "applying the edit must replace `fooo()` with `foo()`, preserving the call syntax"
         );
     }
+
+    /// End-to-end: `analyze()` → browser bridge → `code_actions()` for an
+    /// undefined *generic* function call.  The span covers `fooo<i64>()`;
+    /// after `trim_to_callee_name` trims at `<`, the edit must replace only
+    /// `fooo` so the type argument list `<i64>()` is preserved.
+    #[test]
+    fn analyze_undefined_generic_function_preserves_type_args() {
+        // `fooo<i64>()` calls an undefined function; `foo` is in scope with
+        // edit-distance 1 ≤ max_dist 1 and will be suggested.
+        let source = "fn foo() {} fn main() { fooo<i64>(); }";
+
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an UndefinedFunction diagnostic for `fooo<i64>()`; \
+                     got: {analyze_json}"
+                )
+            });
+
+        // The type checker spans the entire call expression including type args.
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        let call_text = &source[diag_start..diag_end];
+        assert!(
+            call_text.starts_with("fooo") && call_text.contains('<'),
+            "UndefinedFunction span must cover generic call expression (starts with \
+             `fooo` and contains `<`); got: {call_text:?}"
+        );
+
+        // `foo` must be present in suggestions.
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo<i64>()`; got: {suggestions:?}"
+        );
+
+        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) for undefined generic function; got: {actions_json}"
+        );
+
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+
+        let edit = &action["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested callee name"
+        );
+
+        // The edit span must cover only `fooo` — not `fooo<i64>` or `fooo<i64>()`.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the type-argument list"
+        );
+        // Confirmed: `<` is at edit_end, not inside the edit.
+        assert_eq!(
+            source.as_bytes().get(edit_end).copied(),
+            Some(b'<'),
+            "character immediately after edit must be `<` (start of type-arg list)"
+        );
+
+        // Applying the edit must yield `foo<i64>()` — type arguments intact.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo<i64>(); }",
+            "applying the edit must replace `fooo<i64>()` with `foo<i64>()`, \
+             preserving the type-argument list"
+        );
+    }
 }

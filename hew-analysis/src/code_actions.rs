@@ -138,14 +138,15 @@ fn extract_suggestion_name(suggestion: &str) -> String {
 }
 
 /// For an `UndefinedFunction` diagnostic whose span covers the full call
-/// expression (e.g. `fooo(args)`), return a span that covers only the callee
-/// name (`fooo`) by trimming at the first `(`.
+/// expression (e.g. `fooo(args)` or `fooo<T>(args)`), return a span that
+/// covers only the callee name by trimming at the first `<` (generic type
+/// arguments) or `(` (regular argument list), whichever comes first.
 ///
-/// Falls back to `span` unchanged when `(` is not present (e.g. bare method
-/// reference or malformed input).
+/// Falls back to `span` unchanged when neither delimiter is present (e.g.
+/// a bare function reference or malformed input).
 fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
     let region = source.get(span.start..span.end).unwrap_or("");
-    let name_len = region.find('(').unwrap_or(region.len());
+    let name_len = region.find(['(', '<']).unwrap_or(region.len());
     OffsetSpan {
         start: span.start,
         end: span.start + name_len,
@@ -289,6 +290,33 @@ mod tests {
         // Applying the edit must yield valid, call-preserving source.
         let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
         assert_eq!(corrected, "fn foo() {} fn main() { foo(); }");
+    }
+
+    #[test]
+    fn undefined_function_generic_call_trims_to_callee_only() {
+        // Generic call `fooo<i64>()`: span covers `fooo<i64>()` (bytes 24–35).
+        // The edit must replace only `fooo` (bytes 24–28), leaving `<i64>()`
+        // intact so the corrected source becomes `foo<i64>()`.
+        let source = "fn foo() {} fn main() { fooo<i64>(); }";
+        //                                       ^   ^    ^
+        //                                      24  28   35 = end of ')'
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo<i64>()`
+            35, // end of `fooo<i64>()` — past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `foo`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the callee, not `<i64>()`.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must preserve the type-argument list.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo<i64>(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────

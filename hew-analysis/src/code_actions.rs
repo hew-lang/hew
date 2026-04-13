@@ -138,24 +138,40 @@ fn extract_suggestion_name(suggestion: &str) -> String {
 }
 
 /// For an `UndefinedFunction` diagnostic whose span covers the full call
-/// expression (e.g. `fooo(args)`, `fooo<T>(args)`, or `fooo /*c*/ <T>()`),
-/// return a span that covers only the callee identifier token.
+/// expression, return a span covering only the callee path token.
 ///
-/// Scans forward from `span.start` through valid identifier bytes
-/// (`[A-Za-z0-9_]`) and stops at the first non-identifier byte (whitespace,
-/// `<`, `(`, comment start, etc.).  This correctly handles:
-/// - plain calls:            `fooo()`          → span covers `fooo`
-/// - generic calls:          `fooo<T>()`       → span covers `fooo`
-/// - trivia before type args: `fooo /*c*/ <T>()` → span covers `fooo`
+/// Walks identifier bytes (`[A-Za-z0-9_]`) and `::` path separators, stopping
+/// at the first byte that is neither part of an identifier nor a `::` prefix.
+/// This correctly handles all call forms:
+/// - plain calls:                 `fooo()`              → `fooo`
+/// - qualified paths:             `Vec::neww()`         → `Vec::neww`
+/// - generic calls:               `fooo<T>()`           → `fooo`
+/// - trivia before type args:     `fooo /*c*/ <T>()`    → `fooo`
+/// - qualified generic calls:     `Vec::neww<T>()`      → `Vec::neww`
 fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
-    let region = source.get(span.start..span.end).unwrap_or("");
-    let name_len = region
-        .bytes()
-        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-        .count();
+    let region = source.get(span.start..span.end).unwrap_or("").as_bytes();
+    let mut pos = 0;
+    loop {
+        // Walk one identifier segment.
+        while pos < region.len() && (region[pos].is_ascii_alphanumeric() || region[pos] == b'_') {
+            pos += 1;
+        }
+        // Continue through `::` only when the next byte after `::` is also a
+        // valid identifier start — this prevents walking into `::` trailing
+        // separators or `::=` and similar tokens.
+        if pos + 2 < region.len()
+            && region[pos] == b':'
+            && region[pos + 1] == b':'
+            && (region[pos + 2].is_ascii_alphanumeric() || region[pos + 2] == b'_')
+        {
+            pos += 2;
+            continue;
+        }
+        break;
+    }
     OffsetSpan {
         start: span.start,
-        end: span.start + name_len,
+        end: span.start + pos,
     }
 }
 
@@ -350,6 +366,34 @@ mod tests {
         // Applying the edit must preserve the comment and type-argument list.
         let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
         assert_eq!(corrected, "fn foo() {} fn main() { foo /*keep*/ <i64>(); }");
+    }
+
+    #[test]
+    fn undefined_function_qualified_path_replaces_full_callee_path() {
+        // `Vec::neww()`: the callee is the qualified path `Vec::neww`.
+        // Trimming at the first `::` separator would leave only `Vec`; replacing
+        // `Vec` with the suggestion `Vec::new` would produce `Vec::new::neww()`.
+        // The correct edit span must cover the entire path `Vec::neww` (bytes 20–29).
+        let source = "fn main() { let _ = Vec::neww(); }";
+        //                                   ^       ^
+        //                                  20      29 = start of '('
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `Vec::neww`",
+            20, // start of `Vec::neww()`
+            31, // end past ')'
+            vec!["Vec::new"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `Vec::new`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "Vec::new");
+        // Edit span must cover the full callee path, not just the first segment.
+        assert_eq!(edit.span, OffsetSpan { start: 20, end: 29 });
+        // Applying the edit must yield the corrected call.
+        let corrected = format!("{}{}{}", &source[..20], "Vec::new", &source[29..]);
+        assert_eq!(corrected, "fn main() { let _ = Vec::new(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────

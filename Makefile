@@ -449,6 +449,12 @@ asan:
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
 
 # Nightly codegen sanitizer lane: ASan+UBSan build plus leak-checking test env.
+# Darwin/Homebrew LLVM caveat: on macOS arm64 with Homebrew LLVM 22, the
+# mlir_dialect and translate unit tests may crash with
+# "AddressSanitizer: use-after-poison" inside mlir::BuiltinDialect::initialize()
+# before any Hew codegen path executes.  This is a known MLIR/Homebrew LLVM
+# interaction, not a Hew bug.  The authoritative sanitizer gate is the Linux CI
+# workflow (.github/workflows/nightly-sanitizers.yml, ubuntu-24.04 + apt LLVM 22).
 lsan:
 	cargo build -p hew-cli -p hew-runtime -p hew-serialize
 	cargo build -p hew-lib

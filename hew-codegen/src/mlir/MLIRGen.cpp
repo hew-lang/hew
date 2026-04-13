@@ -5211,6 +5211,15 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
           if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
             if (stmtIfValueYieldsFieldOfDroppedParam(*nested))
               return true;
+          // else if let: check both branches for value-position field access.
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockValueYieldsFieldOfDroppedParam(nestedIfLet->body))
+              return true;
+            if (nestedIfLet->else_body &&
+                blockValueYieldsFieldOfDroppedParam(*nestedIfLet->else_body))
+              return true;
+          }
         }
       }
       return false;
@@ -5329,23 +5338,42 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
           continue;
         }
         // Nested loops: only labeled breaks targeting our loop escape.
+        // If the inner loop REUSES the same label name (shadowing), breaks
+        // with that label inside target the inner loop — pass nullopt so
+        // they are no longer attributed to the outer loop.
         if (auto *innerLoop = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
-          if (blockBreakValueYieldsFieldOfDroppedParam(innerLoop->body, targetLabel, false))
+          const auto innerTarget =
+              (innerLoop->label && targetLabel && *innerLoop->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerLoop->body, innerTarget, false))
             return true;
           continue;
         }
         if (auto *innerWhile = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
-          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhile->body, targetLabel, false))
+          const auto innerTarget =
+              (innerWhile->label && targetLabel && *innerWhile->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhile->body, innerTarget, false))
             return true;
           continue;
         }
         if (auto *innerWhileLet = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
-          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhileLet->body, targetLabel, false))
+          const auto innerTarget =
+              (innerWhileLet->label && targetLabel && *innerWhileLet->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhileLet->body, innerTarget, false))
             return true;
           continue;
         }
         if (auto *innerFor = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
-          if (blockBreakValueYieldsFieldOfDroppedParam(innerFor->body, targetLabel, false))
+          const auto innerTarget =
+              (innerFor->label && targetLabel && *innerFor->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerFor->body, innerTarget, false))
             return true;
           continue;
         }
@@ -5361,6 +5389,12 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
           return isFieldOfDroppedParam(exprStmt->expr.value);
         if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind))
           return stmtIfValueYieldsFieldOfDroppedParam(*ifStmt);
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&last.kind)) {
+          if (blockValueYieldsFieldOfDroppedParam(ifLetStmt->body))
+            return true;
+          if (ifLetStmt->else_body && blockValueYieldsFieldOfDroppedParam(*ifLetStmt->else_body))
+            return true;
+        }
         if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
           for (const auto &arm : matchStmt->arms)
             if (arm.body && isFieldOfDroppedParam(arm.body->value))

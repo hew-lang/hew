@@ -1,0 +1,43 @@
+// Reject test: loop break with a shadowed label: the inner loop reuses the
+// same label name as the outer loop.
+//
+// SCOPE: Caught by type checker ("type mismatch") because loops currently
+// produce ().  The codegen guard (blockBreakValueYieldsFieldOfDroppedParam /
+// blockBreakYieldsFieldAccess) is defense-in-depth.
+//
+// LABEL-SHADOW FIX: break @outer w.name inside the inner @outer loop
+// targets the INNER loop, not the outer.  The fixed scanner passes
+// std::nullopt as targetLabel when recursing into an inner loop whose label
+// shadows the outer label, preventing false attribution of the inner break
+// to the outer value-producing loop.  Without the fix the scanner would have
+// incorrectly flagged the outer loop break value as a field-alias violation
+// even when the outer break is safe.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper) -> String {
+    unsafe {
+        @outer: loop {
+            @outer: loop {
+                break @outer w.name;  // targets inner @outer (shadow)
+            }
+            break @outer "safe";  // targets outer @outer
+        }
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w);
+    println(n);
+    return 0;
+}

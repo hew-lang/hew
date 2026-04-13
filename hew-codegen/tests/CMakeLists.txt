@@ -514,6 +514,17 @@ add_e2e_reject_test(unsafe_loop_break_call_arg     e2e_param_drops reject_unsafe
 add_e2e_reject_test(scope_while_break_call_arg     e2e_param_drops reject_scope_while_break_call_arg     "type mismatch")
 add_e2e_reject_test(unsafe_loop_break_return       e2e_param_drops reject_unsafe_loop_break_return       "type mismatch")
 add_e2e_reject_test(scope_while_break_return       e2e_param_drops reject_scope_while_break_return       "type mismatch")
+# Labeled-break shadowing: inner loop reuses outer label; type checker
+# intercepts first ("type mismatch").  The codegen scanner is fixed not to
+# false-attribute the inner break to the outer loop (defense-in-depth).
+add_e2e_reject_test(labeled_shadow_loop_break_return  e2e_param_drops reject_labeled_shadow_loop_break_return  "type mismatch")
+
+# If-let value-position guards: StmtIfLet as trailing last-statement and
+# else-if-let chains in StmtIf.  These are caught directly by the codegen
+# guard (field-alias error) — the type checker does not intercept here.
+add_e2e_reject_test(if_let_trailing_return_field      e2e_param_drops reject_if_let_trailing_return_field      "returning a field of an owned parameter")
+add_e2e_reject_test(else_if_let_trailing_return_field e2e_param_drops reject_else_if_let_trailing_return_field "returning a field of an owned parameter")
+add_e2e_reject_test(if_let_trailing_call_arg_field    e2e_param_drops reject_if_let_trailing_call_arg_field    "passing a struct field to a function that takes ownership")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

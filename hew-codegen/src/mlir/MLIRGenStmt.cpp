@@ -134,7 +134,12 @@ MLIRGen::LoopControl MLIRGen::pushLoopControl(const std::optional<std::string> &
     auto ait = labeledActiveFlags.find(*label);
     if (ait != labeledActiveFlags.end()) {
       lc.prevActiveFlag = ait->second;
-      lc.prevContinueFlag = labeledContinueFlags[*label];
+      // The two label maps must always be updated together; a missing continue
+      // entry here means a prior push left them out of sync — fail loudly.
+      auto cit = labeledContinueFlags.find(*label);
+      assert(cit != labeledContinueFlags.end() &&
+             "labeledActiveFlags and labeledContinueFlags are out of sync");
+      lc.prevContinueFlag = cit->second;
     }
     labeledActiveFlags[lc.labelName] = activeFlag;
     labeledContinueFlags[lc.labelName] = continueFlag;

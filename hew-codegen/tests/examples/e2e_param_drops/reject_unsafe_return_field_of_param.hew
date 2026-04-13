@@ -1,0 +1,25 @@
+// Reject test: returning an unsafe-wrapped field access of a callee-dropped
+// parameter.  The unsafe block doesn't change ownership semantics — the
+// same use-after-free / sibling-leak hazard applies.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper) -> String {
+    unsafe { w.name }  // rejected: unsafe-wrapped return of field of dropped param
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w);
+    println(n);
+    return 0;
+}

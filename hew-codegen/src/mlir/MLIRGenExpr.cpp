@@ -2118,6 +2118,16 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
             return true;
         return false;
       }
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+        if (unsafeE->block.trailing_expr)
+          return exprYieldsFieldAccess(unsafeE->block.trailing_expr->value);
+        return false;
+      }
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind)) {
+        if (scopeE->block.trailing_expr)
+          return exprYieldsFieldAccess(scopeE->block.trailing_expr->value);
+        return false;
+      }
       return false;
     };
     for (size_t i = 0; i < call.args.size(); ++i) {

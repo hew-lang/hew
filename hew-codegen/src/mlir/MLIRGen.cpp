@@ -5208,6 +5208,16 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
             return true;
         return false;
       }
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+        if (unsafeE->block.trailing_expr)
+          return isFieldOfDroppedParam(unsafeE->block.trailing_expr->value);
+        return false;
+      }
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind)) {
+        if (scopeE->block.trailing_expr)
+          return isFieldOfDroppedParam(scopeE->block.trailing_expr->value);
+        return false;
+      }
       return false;
     };
 

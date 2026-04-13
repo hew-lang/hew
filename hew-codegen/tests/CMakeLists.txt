@@ -495,6 +495,8 @@ add_e2e_reject_test(infer_nested_generic_reject   e2e_negative infer_nested_gene
 add_e2e_reject_test(field_access_call_arg         e2e_param_drops reject_field_access_call_arg         "passing a struct field to a function that takes ownership")
 add_e2e_reject_test(return_field_of_param         e2e_param_drops reject_return_field_of_param         "returning a field of an owned parameter")
 add_e2e_reject_test(early_return_field_of_param   e2e_param_drops reject_early_return_field_of_param   "returning a field of an owned parameter")
+add_e2e_reject_test(wrapped_field_access_call_arg  e2e_param_drops reject_wrapped_field_access_call_arg  "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(wrapped_return_field_of_param  e2e_param_drops reject_wrapped_return_field_of_param  "returning a field of an owned parameter")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

@@ -5173,17 +5173,84 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
     for (const auto &pd : pendingFunctionParamDrops)
       droppedParamNames.insert(pd.name);
 
-    // Check whether an expression is a field access on a callee-dropped param.
-    auto isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
-      auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind);
-      if (!fa)
+    // Recursively check whether an expression is (or wraps) a field access
+    // on a callee-dropped param.  Recurses through block/if/if-let/match
+    // wrappers so that wrapped aliases are fail-closed.
+    std::function<bool(const ast::Expr &)> isFieldOfDroppedParam;
+    isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
+      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
+        auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
+        return id && droppedParamNames.count(id->name);
+      }
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+        if (blockE->block.trailing_expr)
+          return isFieldOfDroppedParam(blockE->block.trailing_expr->value);
         return false;
-      auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
-      return id && droppedParamNames.count(id->name);
+      }
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && isFieldOfDroppedParam(ifE->then_block->value))
+          return true;
+        if (ifE->else_block && *ifE->else_block && isFieldOfDroppedParam((*ifE->else_block)->value))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (ifLet->body.trailing_expr && isFieldOfDroppedParam(ifLet->body.trailing_expr->value))
+          return true;
+        if (ifLet->else_body && ifLet->else_body->trailing_expr &&
+            isFieldOfDroppedParam(ifLet->else_body->trailing_expr->value))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && isFieldOfDroppedParam(arm.body->value))
+            return true;
+        return false;
+      }
+      return false;
     };
 
-    // Scan trailing expression
-    if (fn.body.trailing_expr && isFieldOfDroppedParam(fn.body.trailing_expr->value)) {
+    // Check the value-position of a block: trailing expr, or (when absent)
+    // the last statement's expression / StmtIf / StmtMatch value position.
+    // Mirrors collectExcludeVarsFromBlock's value-position logic.
+    std::function<bool(const ast::Block &)> blockValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsFieldOfDroppedParam;
+    stmtIfValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt) -> bool {
+      if (blockValueYieldsFieldOfDroppedParam(ifStmt.then_block))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block &&
+            blockValueYieldsFieldOfDroppedParam(*ifStmt.else_block->block))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfValueYieldsFieldOfDroppedParam(*nested))
+              return true;
+        }
+      }
+      return false;
+    };
+    blockValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk) -> bool {
+      if (blk.trailing_expr)
+        return isFieldOfDroppedParam(blk.trailing_expr->value);
+      if (!blk.stmts.empty()) {
+        const auto &last = blk.stmts.back()->value;
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+          return isFieldOfDroppedParam(exprStmt->expr.value);
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind))
+          return stmtIfValueYieldsFieldOfDroppedParam(*ifStmt);
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && isFieldOfDroppedParam(arm.body->value))
+              return true;
+        }
+      }
+      return false;
+    };
+
+    // Scan value-position of the function body (trailing expr or last stmt)
+    if (blockValueYieldsFieldOfDroppedParam(fn.body)) {
       ++errorCount_;
       emitError(location) << "returning a field of an owned parameter is not yet supported "
                           << "(field-alias ownership tracking is required); "

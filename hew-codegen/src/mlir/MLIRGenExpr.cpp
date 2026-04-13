@@ -2085,9 +2085,44 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
              df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
              df.starts_with("__hew_drop_");
     };
+    // Recursively check whether an expression yields a field access through
+    // wrapper expressions (block, if, if-let, match).  Fail-closed: if ANY
+    // branch yields a field access, we treat the whole expression as one.
+    std::function<bool(const ast::Expr &)> exprYieldsFieldAccess;
+    exprYieldsFieldAccess = [&exprYieldsFieldAccess](const ast::Expr &expr) -> bool {
+      if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind))
+        return true;
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+        if (blockE->block.trailing_expr)
+          return exprYieldsFieldAccess(blockE->block.trailing_expr->value);
+        return false;
+      }
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && exprYieldsFieldAccess(ifE->then_block->value))
+          return true;
+        if (ifE->else_block && *ifE->else_block && exprYieldsFieldAccess((*ifE->else_block)->value))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (ifLet->body.trailing_expr && exprYieldsFieldAccess(ifLet->body.trailing_expr->value))
+          return true;
+        if (ifLet->else_body && ifLet->else_body->trailing_expr &&
+            exprYieldsFieldAccess(ifLet->else_body->trailing_expr->value))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && exprYieldsFieldAccess(arm.body->value))
+            return true;
+        return false;
+      }
+      return false;
+    };
     for (size_t i = 0; i < call.args.size(); ++i) {
       const auto &argExpr = ast::callArgExpr(call.args[i]).value;
-      if (std::holds_alternative<ast::ExprFieldAccess>(argExpr.kind)) {
+      if (exprYieldsFieldAccess(argExpr)) {
         if (calleeFuncType && i < calleeFuncType.getNumInputs()) {
           auto paramType = calleeFuncType.getInput(i);
           auto dropFunc = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);

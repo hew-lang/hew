@@ -2557,7 +2557,11 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
 
     if (suffix == "_generic") {
       // hew_vec_pop_generic(v, out_ptr) -> i32 writes through an out pointer.
-      // Alloca a slot for the element, call pop_generic to fill it, then load.
+      // Returns 1 on success, 0 if empty (does NOT write in that case).
+      // We check the status before loading so we never read uninitialised
+      // memory from the alloca.  If the vec was empty we call hew_panic to
+      // enforce the Hew-language "pop on empty aborts" contract — that
+      // responsibility lives in codegen, NOT in the C ABI function.
       auto one = mlir::LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
                                                 rewriter.getI64IntegerAttr(1));
       auto alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
@@ -2565,10 +2569,34 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
       auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i32Type});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_pop_generic",
                           funcType);
-      mlir::func::CallOp::create(rewriter, loc, "hew_vec_pop_generic", mlir::TypeRange{i32Type},
-                                 mlir::ValueRange{adaptor.getVec(), alloca});
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, "hew_vec_pop_generic", mlir::TypeRange{i32Type},
+                                     mlir::ValueRange{adaptor.getVec(), alloca});
+
+      // status == 0 means empty → abort.
+      auto zeroI32 = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
+      auto isEmpty = mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::eq,
+                                                 call.getResult(0), zeroI32);
+      auto module = op->getParentOfType<mlir::ModuleOp>();
+      auto panicFuncType = rewriter.getFunctionType({}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+
+      auto ifOp =
+          mlir::scf::IfOp::create(rewriter, loc, resultType, isEmpty, /*withElseRegion=*/true);
+
+      // Then-branch (empty): panic, yield undef to satisfy SSA.
+      rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+      auto undefVal = mlir::LLVM::UndefOp::create(rewriter, loc, resultType);
+      mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{undefVal.getResult()});
+
+      // Else-branch (success): load the element from the alloca.
+      rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, alloca);
-      rewriter.replaceOp(op, loaded.getResult());
+      mlir::scf::YieldOp::create(rewriter, loc, mlir::ValueRange{loaded.getResult()});
+
+      rewriter.setInsertionPointAfter(ifOp);
+      rewriter.replaceOp(op, ifOp.getResult(0));
       return mlir::success();
     }
 

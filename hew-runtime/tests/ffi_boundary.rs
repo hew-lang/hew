@@ -2115,38 +2115,10 @@ mod generic_vec_tests {
             let ok = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(ok, 1);
             assert_eq!(out.assume_init(), p);
+            // pop on empty returns 0 (C ABI contract: does not abort)
+            let empty = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
+            assert_eq!(empty, 0);
             hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn pop_generic_empty_aborts() {
-        // Catches: silent return-0 path that left the caller's alloca uninitialised
-        // (pre-fix UB). hew_vec_pop_generic now calls abort_pop_empty on empty,
-        // matching every other hew_vec_pop_* variant.
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::_helper_pop_generic_empty",
-                "--include-ignored",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "pop on empty vec must terminate abnormally"
-        );
-    }
-
-    #[test]
-    #[ignore = "subprocess helper for pop_generic_empty_aborts death test"]
-    fn _helper_pop_generic_empty() {
-        unsafe {
-            let v = hew_vec_new_generic(core::mem::size_of::<Point>() as i64, 0);
-            let mut out = core::mem::MaybeUninit::<Point>::uninit();
-            // Must abort — vec is empty.
-            hew_vec_pop_generic(v, out.as_mut_ptr().cast());
         }
     }
 }

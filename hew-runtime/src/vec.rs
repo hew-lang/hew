@@ -1299,9 +1299,14 @@ pub unsafe extern "C" fn hew_vec_set_generic(
     }
 }
 
-/// Pop the last element, copying it into `out`. Aborts if empty, matching
-/// every other `hew_vec_pop_*` variant. The i32 return is always 1; callers
-/// may ignore it.
+/// Pop the last element, copying it into `out`. Returns 1 on success, 0 if
+/// the vec is empty (does not write to `out` in that case).
+///
+/// Unlike the typed `hew_vec_pop_*` variants (which abort on empty), this
+/// function uses a return code so callers can distinguish success from empty
+/// and avoid loading uninitialised memory from the out-pointer. The
+/// Hew-language pop semantics (abort on empty) are enforced by the codegen
+/// layer, not by this C ABI entry point.
 ///
 /// # Safety
 ///
@@ -1312,7 +1317,7 @@ pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi
     // SAFETY: caller guarantees `v` and `out` are valid.
     unsafe {
         if (*v).len == 0 {
-            abort_pop_empty();
+            return 0;
         }
         (*v).len -= 1;
         let elem_size = (*v).elem_size;
@@ -1514,8 +1519,7 @@ mod tests {
     #[test]
     fn test_vec_pop_generic() {
         // Regression: hew_vec_pop_generic must write through out-ptr and decrement
-        // len, not return 0 on a non-empty vec (pre-fix: empty path returned 0
-        // without writing, causing UB in the caller's unconditional load).
+        // len on success (returns 1), and return 0 without writing on empty.
         // SAFETY: FFI calls use a valid vec pointer and a live stack buffer.
         unsafe {
             // Two-field struct equivalent: elem_size = 16 (two i64 fields).
@@ -1535,7 +1539,7 @@ mod tests {
 
             assert_eq!(hew_vec_len(v), 2);
 
-            // Pop the last element.
+            // Pop the last element — returns 1, fills out buffer.
             let mut out: [u8; 16] = [0u8; 16];
             let rc = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(rc, 1, "pop should return 1 (success) on non-empty vec");
@@ -1544,6 +1548,16 @@ mod tests {
             let f1 = out.as_ptr().cast::<i64>().add(1).read();
             assert_eq!(f0, 30, "popped first field");
             assert_eq!(f1, 40, "popped second field");
+
+            // Pop the second element.
+            let rc2 = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
+            assert_eq!(rc2, 1, "second pop should return 1");
+            assert_eq!(hew_vec_len(v), 0, "len should be 0 after two pops");
+
+            // Pop on empty — returns 0, does not write.
+            let rc3 = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
+            assert_eq!(rc3, 0, "pop on empty must return 0");
+            assert_eq!(hew_vec_len(v), 0, "len stays 0");
 
             hew_vec_free(v);
         }

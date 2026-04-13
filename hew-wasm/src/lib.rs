@@ -663,35 +663,39 @@ mod tests {
     /// carry `suggestions`), converts the span shape (`start_offset`/`end_offset`
     /// → `span: {start, end}`), then calls `code_actions()`.  This test
     /// exercises that full path to prove suggestions produced by the type checker
-    /// survive in a form that yields real code actions.
+    /// survive in a form that yields real code actions with exact span fidelity.
     #[test]
     fn analyze_suggestions_flow_through_to_code_actions() {
-        // `fooo` is undefined; `foo` (edit-distance 1 ≤ max_dist 1) should be
-        // surfaced as a suggestion by the type checker.
-        let source = "fn foo() {} fn main() { fooo(); }";
+        // `fooo` is an undefined *variable* reference (not a call) so the
+        // diagnostic span covers exactly the identifier, not trailing parens.
+        // `foo` in scope has edit-distance 1 ≤ max_dist 1 and will be suggested.
+        let source = "fn main() { let foo = 1; let _y = fooo; }";
         let analyze_json = analyze(source);
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
 
         let undef_diag = diags
             .iter()
-            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .find(|d| d["kind"].as_str() == Some("UndefinedVariable"))
             .unwrap_or_else(|| {
-                panic!("expected an UndefinedFunction diagnostic for `fooo`; got: {analyze_json}")
+                panic!("expected an UndefinedVariable diagnostic for `fooo`; got: {analyze_json}")
             });
 
-        // Suggestions must arrive as non-empty raw-name strings from find_similar.
+        // The diagnostic span must cover exactly the undefined identifier.
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            &source[diag_start..diag_end],
+            "fooo",
+            "diagnostic span must cover exactly the undefined identifier `fooo`"
+        );
+
+        // The suggestion `foo` must be present (raw name, not backtick-wrapped).
         let suggestions = undef_diag["suggestions"].as_array().unwrap();
         assert!(
-            !suggestions.is_empty(),
-            "expected suggestion(s) for `fooo` (similar to `foo`); got: {analyze_json}"
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo`; got: {suggestions:?}"
         );
-        for s in suggestions {
-            assert!(
-                s.as_str().is_some_and(|t| !t.is_empty()),
-                "each suggestion must be a non-empty string: {s}"
-            );
-        }
 
         // Reconstruct the DiagnosticInfo-format JSON that the browser bridge
         // assembles: convert start_offset/end_offset → span.{start,end}.
@@ -714,29 +718,68 @@ mod tests {
             !actions_arr.is_empty(),
             "expected code action(s) from analyze() suggestions; got: {actions_json}"
         );
-        for action in actions_arr {
-            assert!(
-                action["title"].as_str().is_some_and(|t| !t.is_empty()),
-                "code action missing non-empty title: {action}"
-            );
-            assert!(
-                !action["edits"].as_array().unwrap_or(&vec![]).is_empty(),
-                "code action missing edits array: {action}"
-            );
-        }
+
+        // The first action must be "Replace with `foo`" and its edit must cover
+        // the exact original diagnostic span with `foo` as the replacement text.
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+        let edits = action["edits"].as_array().unwrap();
+        assert!(!edits.is_empty(), "action must carry at least one edit");
+
+        let edit = &edits[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            edit_start, diag_start,
+            "edit span start must equal diagnostic start_offset"
+        );
+        assert_eq!(
+            edit_end, diag_end,
+            "edit span end must equal diagnostic end_offset"
+        );
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested name"
+        );
+
+        // Apply the edit and verify the corrected source replaces `fooo` with `foo`.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn main() { let foo = 1; let _y = foo; }",
+            "applying the edit must replace `fooo` with `foo` exactly"
+        );
     }
 
-    /// Notes emitted by `analyze()` carry byte-offset spans valid for use as
-    /// secondary highlight regions in the browser editor.
+    /// Notes emitted by `analyze()` point at the intended previous-definition region.
     ///
     /// The browser uses `start_offset`/`end_offset` from `WasmNote` to render
-    /// secondary squiggles or "defined here" pointers.  This test verifies the
-    /// offsets are within source bounds and form a non-zero-width span.
+    /// secondary highlights.  This test verifies the offsets identify the first
+    /// `foo` definition in source and carry the canonical "previous definition here"
+    /// message.
     #[test]
     fn analyze_notes_carry_display_ready_spans() {
-        // Duplicate `foo` — DuplicateDefinition attaches a note pointing at the
-        // first definition that the browser can highlight as a secondary span.
+        // Two `foo` definitions.  The DuplicateDefinition error fires on the second;
+        // its note must point back into the *first* `fn foo() {}` and must not
+        // reach into the second definition.
         let source = "fn foo() {} fn foo() {}";
+        //            ^^^^^^^^^^^  ← first definition
+        //                         ^^^^^^^^^^^  ← second definition triggers the error
+
+        // The second `fn foo` starts at this byte offset; the note must end here
+        // or earlier so it points only at the first definition.
+        let second_def_start = source.rfind("fn foo").expect("second definition not found");
+
         let analyze_json = analyze(source);
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
@@ -748,27 +791,51 @@ mod tests {
                 panic!("expected a diagnostic with notes for duplicate fn foo; got: {analyze_json}")
             });
 
-        for note in diag_with_notes["notes"].as_array().unwrap() {
-            let start = note["start_offset"]
-                .as_u64()
-                .unwrap_or_else(|| panic!("note missing `start_offset`: {note}"));
-            let end = note["end_offset"]
-                .as_u64()
-                .unwrap_or_else(|| panic!("note missing `end_offset`: {note}"));
+        let notes = diag_with_notes["notes"].as_array().unwrap();
+        assert_eq!(
+            notes.len(),
+            1,
+            "DuplicateDefinition must carry exactly one note; got: {analyze_json}"
+        );
 
-            assert!(
-                end <= source.len() as u64,
-                "note end_offset {end} exceeds source length {}; note: {note}",
-                source.len()
-            );
-            assert!(
-                start < end,
-                "note span must be non-zero width (start={start}, end={end}): {note}"
-            );
-            assert!(
-                note["message"].as_str().is_some_and(|s| !s.is_empty()),
-                "note must carry a non-empty display message: {note}"
-            );
-        }
+        let note = &notes[0];
+        let start = usize::try_from(
+            note["start_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `start_offset`: {note}")),
+        )
+        .expect("start_offset fits usize");
+        let end = usize::try_from(
+            note["end_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `end_offset`: {note}")),
+        )
+        .expect("end_offset fits usize");
+
+        // Note span must not reach into the second definition.
+        assert!(
+            end <= second_def_start,
+            "note end={end} must not reach into the second definition \
+             (second `fn foo` starts at {second_def_start})"
+        );
+        assert!(
+            start < end,
+            "note span must be non-zero width (start={start}, end={end})"
+        );
+
+        // The sliced text must contain the duplicated name, confirming the note
+        // points at the right region.
+        let sliced = &source[start..end];
+        assert!(
+            sliced.contains("foo"),
+            "note span must cover text containing the first `foo` definition; sliced: {sliced:?}"
+        );
+
+        // The message must be exactly the canonical "previous definition here" label.
+        assert_eq!(
+            note["message"].as_str().unwrap_or(""),
+            "previous definition here",
+            "note must carry the canonical 'previous definition here' message"
+        );
     }
 }

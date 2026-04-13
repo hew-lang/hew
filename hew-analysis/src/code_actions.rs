@@ -138,15 +138,21 @@ fn extract_suggestion_name(suggestion: &str) -> String {
 }
 
 /// For an `UndefinedFunction` diagnostic whose span covers the full call
-/// expression (e.g. `fooo(args)` or `fooo<T>(args)`), return a span that
-/// covers only the callee name by trimming at the first `<` (generic type
-/// arguments) or `(` (regular argument list), whichever comes first.
+/// expression (e.g. `fooo(args)`, `fooo<T>(args)`, or `fooo /*c*/ <T>()`),
+/// return a span that covers only the callee identifier token.
 ///
-/// Falls back to `span` unchanged when neither delimiter is present (e.g.
-/// a bare function reference or malformed input).
+/// Scans forward from `span.start` through valid identifier bytes
+/// (`[A-Za-z0-9_]`) and stops at the first non-identifier byte (whitespace,
+/// `<`, `(`, comment start, etc.).  This correctly handles:
+/// - plain calls:            `fooo()`          → span covers `fooo`
+/// - generic calls:          `fooo<T>()`       → span covers `fooo`
+/// - trivia before type args: `fooo /*c*/ <T>()` → span covers `fooo`
 fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
     let region = source.get(span.start..span.end).unwrap_or("");
-    let name_len = region.find(['(', '<']).unwrap_or(region.len());
+    let name_len = region
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        .count();
     OffsetSpan {
         start: span.start,
         end: span.start + name_len,
@@ -317,6 +323,33 @@ mod tests {
         // Applying the edit must preserve the type-argument list.
         let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
         assert_eq!(corrected, "fn foo() {} fn main() { foo<i64>(); }");
+    }
+
+    #[test]
+    fn undefined_function_trivia_between_callee_and_type_args() {
+        // `fooo /*keep*/ <i64>()`: interstitial comment between callee and `<`.
+        // Trimming at `<` would produce `fooo /*keep*/ ` as the edit span;
+        // trimming by identifier bytes must produce only `fooo` (bytes 24–28).
+        let source = "fn foo() {} fn main() { fooo /*keep*/ <i64>(); }";
+        //                                       ^   ^          ^
+        //                                      24  28         45 = end of ')'
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo /*keep*/ <i64>()`
+            45, // end past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the identifier token `fooo`, not the comment
+        // or type-argument list.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must preserve the comment and type-argument list.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo /*keep*/ <i64>(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────

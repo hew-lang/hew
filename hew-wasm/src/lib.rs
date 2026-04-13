@@ -1041,4 +1041,61 @@ mod tests {
              preserving the type-argument list"
         );
     }
+
+    /// Browser-bridge coverage for `UndefinedFunction` with interstitial trivia
+    /// between the callee and the type-argument list.
+    ///
+    /// A diagnostic spanning `fooo /*keep*/ <i64>()` must produce an edit that
+    /// covers only the identifier token `fooo`, leaving the comment and type args
+    /// untouched.  Tested via direct `code_actions()` call because producing
+    /// interstitial-comment generic calls through `analyze()` requires Hew
+    /// concrete syntax that may not preserve such trivia in the AST span.
+    #[test]
+    fn code_actions_preserves_trivia_between_callee_and_type_args() {
+        let source = "fn foo() {} fn main() { fooo /*keep*/ <i64>(); }";
+        //                                       ^   ^          ^
+        //                                      24  28         45 = end of ')'
+        let diag_info_json = serde_json::json!([{
+            "kind": "UndefinedFunction",
+            "message": "undefined function `fooo`",
+            "span": { "start": 24, "end": 45 },
+            "suggestions": ["foo"],
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected a code action for UndefinedFunction with trivia; got: {actions_json}"
+        );
+
+        let edit = &actions_arr[0]["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(new_text, "foo", "replacement must be the suggested name");
+
+        // The edit must cover only `fooo` — the identifier token, not the comment.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the interstitial comment"
+        );
+
+        // Applying the edit must preserve both the comment and the type-arg list.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo /*keep*/ <i64>(); }",
+            "applying the edit must replace only `fooo`, preserving `/*keep*/ <i64>()`"
+        );
+    }
 }

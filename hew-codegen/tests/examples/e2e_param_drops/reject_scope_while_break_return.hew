@@ -1,0 +1,33 @@
+// Reject test: returning from a scope block whose value comes from
+// a while-loop break expression yielding a field of a callee-dropped param.
+//
+// SCOPE: Caught by type checker ("type mismatch") because loops currently
+// produce ().  The codegen guard (blockBreakValueYieldsFieldOfDroppedParam)
+// is defense-in-depth for when typed break-values are implemented.
+// This test verifies the pattern is rejected at some layer.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper, flag: bool) -> String {
+    scope {
+        while flag {
+            break w.name;
+        }
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w, true);
+    println(n);
+    return 0;
+}

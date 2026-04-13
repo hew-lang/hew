@@ -10211,6 +10211,228 @@ fn main() -> int {
   PASS();
 }
 
+// ============================================================================
+// Test: StmtIfLet as last statement in a function body yielding a field of an
+//       owned (callee-dropped) parameter is rejected fail-closed.
+//       (regression: blockValueYieldsFieldOfDroppedParam must walk StmtIfLet
+//       last-statement, not only ExprIfLet in trailing_expr position)
+// ============================================================================
+static void test_param_drop_stmt_if_let_value_position_fails_closed() {
+  TEST(param_drop_stmt_if_let_value_position_fails_closed);
+
+  // Parse a valid program with a user-drop type and a function that takes
+  // an owned param of that type. The parsed program populates drop_funcs so
+  // `w` ends up in droppedParamNames during codegen.
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Wrapper {
+    name: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper) -> int {
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for stmt-if-let value-position fail-closed test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "extract_name");
+  if (!fn) {
+    FAIL("extract_name function not found in parsed program");
+    return;
+  }
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  // Helpers that parallel the builder lambdas used by other AST-construction tests.
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr e;
+    e.kind = ExprIdentifier{name.str()};
+    e.span = span;
+    return {std::move(e), span};
+  };
+  auto mkFieldAccessExpr = [&](llvm::StringRef obj, llvm::StringRef field) -> Spanned<Expr> {
+    Expr e;
+    e.kind = ExprFieldAccess{std::make_unique<Spanned<Expr>>(mkIdentExpr(obj)), field.str()};
+    e.span = span;
+    return {std::move(e), span};
+  };
+
+  // Build: StmtIfLet with wildcard pattern, scrutinee = w, body yields w.name.
+  // No trailing_expr — the StmtIfLet is the last statement of the function body.
+  Pattern pat;
+  pat.kind = PatWildcard{};
+
+  StmtIfLet ifLetStmt;
+  ifLetStmt.pattern = {std::move(pat), span};
+  ifLetStmt.expr = std::make_unique<Spanned<Expr>>(mkIdentExpr("w"));
+  ifLetStmt.body.trailing_expr = std::make_unique<Spanned<Expr>>(mkFieldAccessExpr("w", "name"));
+  ifLetStmt.else_body = std::nullopt;
+
+  Stmt stmtNode;
+  stmtNode.kind = std::move(ifLetStmt);
+  stmtNode.span = span;
+
+  // Replace the function body with just the StmtIfLet (no trailing_expr).
+  fn->body.stmts.clear();
+  fn->body.trailing_expr = nullptr;
+  fn->body.stmts.push_back(
+      std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmtNode), span}));
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    module.getOperation()->destroy();
+    FAIL("expected MLIR generation to reject StmtIfLet body that yields a field of an owned param");
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "returning a field of an owned parameter";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected 'returning a field of an owned parameter' diagnostic; got: " + stderrText)
+             .c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: A labeled inner loop that shadows the outer loop's label does NOT
+//       cause the outer loop's break-value scan to falsely attribute the inner
+//       break to the outer loop.
+//       (regression: blockBreakValueYieldsFieldOfDroppedParam must pass
+//       nullopt as targetLabel when descending into a same-name inner loop)
+// ============================================================================
+static void test_param_drop_shadow_label_inner_break_not_attributed() {
+  TEST(param_drop_shadow_label_inner_break_not_attributed);
+
+  // Parse a valid program with a user-drop type. We'll mutate the body to
+  // inject nested loops with the same label.
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Wrapper {
+    name: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper) -> int {
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for shadow-label regression test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "extract_name");
+  if (!fn) {
+    FAIL("extract_name function not found in parsed program");
+    return;
+  }
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  auto mkIdentExpr = [&](llvm::StringRef name) -> Spanned<Expr> {
+    Expr e;
+    e.kind = ExprIdentifier{name.str()};
+    e.span = span;
+    return {std::move(e), span};
+  };
+  auto mkFieldAccessExpr = [&](llvm::StringRef obj, llvm::StringRef field) -> Spanned<Expr> {
+    Expr e;
+    e.kind = ExprFieldAccess{std::make_unique<Spanned<Expr>>(mkIdentExpr(obj)), field.str()};
+    e.span = span;
+    return {std::move(e), span};
+  };
+  auto mkIntExpr = [&](int64_t val) -> Spanned<Expr> {
+    Expr e;
+    e.kind = ExprLiteral{LitInteger{val}};
+    e.span = span;
+    return {std::move(e), span};
+  };
+  auto mkStmt = [&](auto node) -> std::unique_ptr<Spanned<Stmt>> {
+    Stmt s;
+    s.kind = std::move(node);
+    s.span = span;
+    return std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(s), span});
+  };
+
+  // Build the inner loop (@outer: loop { break @outer w.name; })
+  // This break carries a field access but targets the *inner* @outer, not outer.
+  StmtBreak innerBreak;
+  innerBreak.label = "outer";
+  innerBreak.value = mkFieldAccessExpr("w", "name");
+
+  Block innerBody;
+  innerBody.stmts.push_back(mkStmt(std::move(innerBreak)));
+
+  StmtLoop innerLoop;
+  innerLoop.label = "outer"; // same label as outer — shadows it
+  innerLoop.body = std::move(innerBody);
+
+  // Build the outer loop's own break (@outer: break @outer 0) — safe value
+  StmtBreak outerBreak;
+  outerBreak.label = "outer";
+  outerBreak.value = mkIntExpr(0);
+
+  // Assemble the outer loop body: [inner loop stmt, outer break stmt]
+  Block outerBody;
+  outerBody.stmts.push_back(mkStmt(std::move(innerLoop)));
+  outerBody.stmts.push_back(mkStmt(std::move(outerBreak)));
+
+  StmtLoop outerLoop;
+  outerLoop.label = "outer";
+  outerLoop.body = std::move(outerBody);
+
+  // Replace the function body with just the outer loop (no trailing_expr).
+  fn->body.stmts.clear();
+  fn->body.trailing_expr = nullptr;
+  fn->body.stmts.push_back(mkStmt(std::move(outerLoop)));
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  // The outer loop's break value is safe (integer 0).
+  // The inner loop reuses the label "outer" and its break carries w.name, but
+  // that targets the inner loop, not the outer one.
+  // With the shadow fix, MLIRGen must NOT reject this function.
+  if (!module) {
+    FAIL(("expected MLIR generation to succeed (inner break should not be attributed to outer "
+          "loop); stderr: " +
+          stderrText)
+             .c_str());
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -10351,6 +10573,8 @@ int main() {
   test_whilelet_stmt_identifier_pattern_lowers();
   test_iflet_stmt_unsupported_pattern_fails_closed();
   test_whilelet_stmt_unsupported_pattern_fails_closed();
+  test_param_drop_stmt_if_let_value_position_fails_closed();
+  test_param_drop_shadow_label_inner_break_not_attributed();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

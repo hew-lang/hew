@@ -417,6 +417,10 @@ private:
     mlir::Value activeFlag;
     mlir::Value continueFlag;
     std::string labelName;
+    // Previous map entries saved when an inner loop shadows an outer label.
+    // Null Values indicate no prior entry existed.
+    mlir::Value prevActiveFlag;
+    mlir::Value prevContinueFlag;
   };
   LoopControl pushLoopControl(const std::optional<std::string> &label, mlir::Location location);
 
@@ -962,6 +966,7 @@ private:
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
   void unregisterDroppable(const std::string &varName);
+  std::string getRegisteredDropFunc(const std::string &varName) const;
   /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
   /// bitcast, drop).  No-op if the variable is not found.
   void emitDropEntry(const DropEntry &entry);

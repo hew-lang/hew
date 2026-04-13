@@ -126,9 +126,21 @@ MLIRGen::LoopControl MLIRGen::pushLoopControl(const std::optional<std::string> &
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
-  LoopControl lc{activeFlag, continueFlag, {}};
+  LoopControl lc{activeFlag, continueFlag, {}, nullptr, nullptr};
   if (label) {
     lc.labelName = *label;
+    // Save any existing entry so it can be restored when this label is popped
+    // (handles nested loops that shadow the same label name).
+    auto ait = labeledActiveFlags.find(*label);
+    if (ait != labeledActiveFlags.end()) {
+      lc.prevActiveFlag = ait->second;
+      // The two label maps must always be updated together; a missing continue
+      // entry here means a prior push left them out of sync — fail loudly.
+      auto cit = labeledContinueFlags.find(*label);
+      assert(cit != labeledContinueFlags.end() &&
+             "labeledActiveFlags and labeledContinueFlags are out of sync");
+      lc.prevContinueFlag = cit->second;
+    }
     labeledActiveFlags[lc.labelName] = activeFlag;
     labeledContinueFlags[lc.labelName] = continueFlag;
   }
@@ -144,8 +156,14 @@ void MLIRGen::popLoopControl(const LoopControl &lc, mlir::Operation *whileOp) {
   loopBreakValueStack.pop_back();
 
   if (!lc.labelName.empty()) {
-    labeledActiveFlags.erase(lc.labelName);
-    labeledContinueFlags.erase(lc.labelName);
+    if (lc.prevActiveFlag) {
+      // Restore the label entry that was shadowed by this inner loop.
+      labeledActiveFlags[lc.labelName] = lc.prevActiveFlag;
+      labeledContinueFlags[lc.labelName] = lc.prevContinueFlag;
+    } else {
+      labeledActiveFlags.erase(lc.labelName);
+      labeledContinueFlags.erase(lc.labelName);
+    }
   }
 
   builder.setInsertionPointAfter(whileOp);
@@ -255,8 +273,15 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     ~DropScopeGuard() { gen.popDropScope(); }
   } dropGuard(*this);
 
-  // NOTE: pendingFunctionParamDrops drain point — currently disabled until
-  // null-after-move tracking prevents double-frees from consumed params.
+  // Drain pending param drops into the body scope.  These were queued in
+  // generateFunction via dropFuncForType; draining here places params at
+  // relDepth 0 alongside body-local variables so the funcLevelDropExcludeVars
+  // pre-scan (already complete) correctly excludes returned/early-returned ones.
+  if (isFunctionBodyBlock && !pendingFunctionParamDrops.empty()) {
+    for (const auto &pd : pendingFunctionParamDrops)
+      registerDroppable(pd.name, pd.dropFunc, pd.isUserDrop);
+    pendingFunctionParamDrops.clear();
+  }
 
   // Only activate the return-guard path when generating the actual function
   // body block in a non-void function.  Inline sub-blocks (unsafe { … },

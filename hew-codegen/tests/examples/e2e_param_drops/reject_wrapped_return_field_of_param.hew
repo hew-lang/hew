@@ -1,0 +1,29 @@
+// Reject test: returning a wrapped field access of a callee-dropped param.
+// The field access is wrapped in an if-expression but still aliases
+// param.field → same use-after-free / sibling-leak hazard.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper, flag: bool) -> String {
+    if flag {
+        w.name
+    } else {
+        "default"
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w, true);
+    println(n);
+    return 0;
+}

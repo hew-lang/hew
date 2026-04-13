@@ -1,5 +1,5 @@
 processing: alpha
-processing: beta
-done
-freed: beta
 freed: alpha
+processing: beta
+freed: beta
+done

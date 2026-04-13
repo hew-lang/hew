@@ -1,0 +1,29 @@
+// Early-return path: a String param is returned on the early path and
+// consumed (dropped) on the fallthrough path.  Each path must fire the
+// correct cleanup exactly once.
+//
+// NOTE: Uses identifier args (not literals) to exercise the ownership-
+// transfer path cleanly: the caller unregisters its drop for the args and
+// the callee takes over, preventing double-frees in all branches.
+
+fn pick(flag: bool, a: String, b: String) -> String {
+    if flag {
+        return a;  // a returned, b dropped at scope exit
+    }
+    b  // b returned, a dropped at scope exit
+}
+
+fn main() -> int {
+    let a1 = "alpha";
+    let b1 = "beta";
+    let r1 = pick(true, a1, b1);
+    println(r1);
+
+    let a2 = "gamma";
+    let b2 = "delta";
+    let r2 = pick(false, a2, b2);
+    println(r2);
+
+    println("done");
+    return 0;
+}

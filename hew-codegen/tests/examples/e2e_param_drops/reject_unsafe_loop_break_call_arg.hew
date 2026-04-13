@@ -1,0 +1,32 @@
+// Reject test: unsafe-wrapped loop whose break value is a field access
+// passed as a call argument that takes ownership.
+//
+// SCOPE: Caught by type checker ("type mismatch") because loops currently
+// produce ().  The codegen guard (blockBreakYieldsFieldAccess) is
+// defense-in-depth for when typed break-values are implemented.
+// This test verifies the pattern is rejected at some layer.
+
+type Inner {
+    value: String;
+}
+
+impl Drop for Inner {
+    fn drop(i: Inner) {
+        println(i.value);
+    }
+}
+
+type Outer {
+    inner: Inner;
+    tag: String;
+}
+
+fn consume(i: Inner) {
+    println(i.value);
+}
+
+fn main() -> int {
+    let obj = Outer { inner: Inner { value: "hello" }, tag: "t" };
+    consume(unsafe { loop { break obj.inner; } });
+    return 0;
+}

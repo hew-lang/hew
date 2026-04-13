@@ -2073,6 +2073,302 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     callee = lookupImportedFunc("", calleeName);
   mlir::FunctionType calleeFuncType = callee ? callee.getFunctionType() : nullptr;
 
+  // Fail-closed pre-scan: reject passing a struct field to a function whose
+  // corresponding parameter would get a callee-side owned drop.  Without
+  // field-alias / partial-move tracking, the callee would drop the field
+  // value, then the caller's scope-exit drop of the owning struct would
+  // drop it again → double-free.  Check BEFORE emitting any call IR so
+  // that compilation genuinely fails.
+  if (callee && !callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
+    auto isBorrowSemanticsDropFuncPreScan = [](const std::string &df) {
+      return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+             df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
+             df.starts_with("__hew_drop_");
+    };
+    // Recursively check whether an expression yields a field access through
+    // wrapper expressions (block, if, if-let, match, unsafe, scope).
+    // Fail-closed: if ANY branch yields a field access, we treat the whole
+    // expression as one.
+    //
+    // blockYieldsFieldAccess checks the value-position of a Block: trailing
+    // expr first, then (when absent) the last statement's expression,
+    // StmtIf, StmtMatch, or loop-family (via break values).
+    // This mirrors collectExcludeVarsFromBlock.
+    //
+    // blockBreakYieldsFieldAccess scans a loop body for StmtBreak nodes
+    // whose break-value yields a field access, recursing through nested
+    // control flow (StmtIf/else-if chains, StmtIfLet, StmtMatch, StmtExpression
+    // wrappers, and nested loops for labeled breaks).
+    //
+    // SCOPE: defense-in-depth — the type checker currently rejects loop break
+    // values (loops produce ()) so the codegen guard doesn't fire today.
+    // This covers the case where typed break-values are implemented.
+    std::function<bool(const ast::Expr &)> exprYieldsFieldAccess;
+    std::function<bool(const ast::Block &)> blockYieldsFieldAccess;
+    std::function<bool(const ast::StmtIf &)> stmtIfYieldsFieldAccess;
+    std::function<bool(const ast::Block &, const std::optional<std::string> &, bool)>
+        blockBreakYieldsFieldAccess;
+    std::function<bool(const ast::Expr &, const std::optional<std::string> &, bool)>
+        exprBreakYieldsFieldAccess;
+    std::function<bool(const ast::StmtIf &, const std::optional<std::string> &, bool)>
+        stmtIfBreakYieldsFieldAccess;
+    stmtIfYieldsFieldAccess = [&](const ast::StmtIf &ifStmt) -> bool {
+      if (blockYieldsFieldAccess(ifStmt.then_block))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block && blockYieldsFieldAccess(*ifStmt.else_block->block))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfYieldsFieldAccess(*nested))
+              return true;
+          // else if let: check both branches for value-position field access.
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockYieldsFieldAccess(nestedIfLet->body))
+              return true;
+            if (nestedIfLet->else_body && blockYieldsFieldAccess(*nestedIfLet->else_body))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan a StmtIf (and else-if chains) inside a loop body for break-values.
+    stmtIfBreakYieldsFieldAccess = [&](const ast::StmtIf &ifStmt,
+                                       const std::optional<std::string> &targetLabel,
+                                       bool checkUnlabeled) -> bool {
+      if (blockBreakYieldsFieldAccess(ifStmt.then_block, targetLabel, checkUnlabeled))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block &&
+            blockBreakYieldsFieldAccess(*ifStmt.else_block->block, targetLabel, checkUnlabeled))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfBreakYieldsFieldAccess(*nested, targetLabel, checkUnlabeled))
+              return true;
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockBreakYieldsFieldAccess(nestedIfLet->body, targetLabel, checkUnlabeled))
+              return true;
+            if (nestedIfLet->else_body &&
+                blockBreakYieldsFieldAccess(*nestedIfLet->else_body, targetLabel, checkUnlabeled))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan an expression for break-values inside a loop body.
+    // Recurses into block-wrapping expression types to find StmtBreak nodes.
+    exprBreakYieldsFieldAccess = [&](const ast::Expr &expr,
+                                     const std::optional<std::string> &targetLabel,
+                                     bool checkUnlabeled) -> bool {
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockBreakYieldsFieldAccess(blockE->block, targetLabel, checkUnlabeled);
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockBreakYieldsFieldAccess(unsafeE->block, targetLabel, checkUnlabeled);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockBreakYieldsFieldAccess(scopeE->block, targetLabel, checkUnlabeled);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block &&
+            exprBreakYieldsFieldAccess(ifE->then_block->value, targetLabel, checkUnlabeled))
+          return true;
+        if (ifE->else_block && *ifE->else_block &&
+            exprBreakYieldsFieldAccess((*ifE->else_block)->value, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockBreakYieldsFieldAccess(ifLet->body, targetLabel, checkUnlabeled))
+          return true;
+        if (ifLet->else_body &&
+            blockBreakYieldsFieldAccess(*ifLet->else_body, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && exprBreakYieldsFieldAccess(arm.body->value, targetLabel, checkUnlabeled))
+            return true;
+        return false;
+      }
+      return false;
+    };
+    // Scan a loop body block for StmtBreak nodes whose break-value yields a
+    // field access.  targetLabel is the label of the value-producing loop (if
+    // any).  checkUnlabeled controls whether unlabeled breaks are checked —
+    // set to true for the direct body, false when recursing into nested loops
+    // (unlabeled breaks inside nested loops target those inner loops, not ours).
+    // Labeled breaks whose label matches targetLabel are always checked
+    // regardless of nesting depth.
+    blockBreakYieldsFieldAccess = [&](const ast::Block &blk,
+                                      const std::optional<std::string> &targetLabel,
+                                      bool checkUnlabeled) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
+          if (brk->value) {
+            bool targets_us = false;
+            if (!brk->label && checkUnlabeled)
+              targets_us = true;
+            if (brk->label && targetLabel && *brk->label == *targetLabel)
+              targets_us = true;
+            if (targets_us && exprYieldsFieldAccess(brk->value->value))
+              return true;
+          }
+          continue;
+        }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (stmtIfBreakYieldsFieldAccess(*ifStmt, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(ifLetStmt->body, targetLabel, checkUnlabeled))
+            return true;
+          if (ifLetStmt->else_body &&
+              blockBreakYieldsFieldAccess(*ifLetStmt->else_body, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // StmtMatch arm bodies are statement contexts inside a loop —
+        // scan them for breaks, not as result expressions.
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body &&
+                exprBreakYieldsFieldAccess(arm.body->value, targetLabel, checkUnlabeled))
+              return true;
+          continue;
+        }
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt->value.kind)) {
+          if (exprBreakYieldsFieldAccess(exprStmt->expr.value, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // Nested loops: only labeled breaks targeting our loop escape.
+        // If the inner loop REUSES the same label name (shadowing), breaks
+        // with that label inside target the inner loop — pass nullopt so
+        // they are no longer attributed to the outer loop.
+        if (auto *innerLoop = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerLoop->label && targetLabel && *innerLoop->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakYieldsFieldAccess(innerLoop->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhile = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerWhile->label && targetLabel && *innerWhile->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakYieldsFieldAccess(innerWhile->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhileLet = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerWhileLet->label && targetLabel && *innerWhileLet->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakYieldsFieldAccess(innerWhileLet->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerFor = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerFor->label && targetLabel && *innerFor->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakYieldsFieldAccess(innerFor->body, innerTarget, false))
+            return true;
+          continue;
+        }
+      }
+      return false;
+    };
+    blockYieldsFieldAccess = [&](const ast::Block &blk) -> bool {
+      if (blk.trailing_expr)
+        return exprYieldsFieldAccess(blk.trailing_expr->value);
+      if (!blk.stmts.empty()) {
+        const auto &last = blk.stmts.back()->value;
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+          return exprYieldsFieldAccess(exprStmt->expr.value);
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind))
+          return stmtIfYieldsFieldAccess(*ifStmt);
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&last.kind)) {
+          if (blockYieldsFieldAccess(ifLetStmt->body))
+            return true;
+          if (ifLetStmt->else_body && blockYieldsFieldAccess(*ifLetStmt->else_body))
+            return true;
+        }
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && exprYieldsFieldAccess(arm.body->value))
+              return true;
+        }
+        if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
+          return blockBreakYieldsFieldAccess(loopStmt->body, loopStmt->label, true);
+        if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
+          return blockBreakYieldsFieldAccess(whileStmt->body, whileStmt->label, true);
+        if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
+          return blockBreakYieldsFieldAccess(whileLetStmt->body, whileLetStmt->label, true);
+        if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
+          return blockBreakYieldsFieldAccess(forStmt->body, forStmt->label, true);
+      }
+      return false;
+    };
+    exprYieldsFieldAccess = [&](const ast::Expr &expr) -> bool {
+      if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind))
+        return true;
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockYieldsFieldAccess(blockE->block);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && exprYieldsFieldAccess(ifE->then_block->value))
+          return true;
+        if (ifE->else_block && *ifE->else_block && exprYieldsFieldAccess((*ifE->else_block)->value))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockYieldsFieldAccess(ifLet->body))
+          return true;
+        if (ifLet->else_body && blockYieldsFieldAccess(*ifLet->else_body))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && exprYieldsFieldAccess(arm.body->value))
+            return true;
+        return false;
+      }
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockYieldsFieldAccess(unsafeE->block);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockYieldsFieldAccess(scopeE->block);
+      return false;
+    };
+    for (size_t i = 0; i < call.args.size(); ++i) {
+      const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+      if (exprYieldsFieldAccess(argExpr)) {
+        if (calleeFuncType && i < calleeFuncType.getNumInputs()) {
+          auto paramType = calleeFuncType.getInput(i);
+          auto dropFunc = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);
+          if (!dropFunc.empty() && !isBorrowSemanticsDropFuncPreScan(dropFunc)) {
+            ++errorCount_;
+            emitError(location) << "passing a struct field to a function that takes ownership "
+                                << "is not yet supported (field-alias ownership tracking is "
+                                << "required); pass the whole struct or clone the field instead";
+            return nullptr;
+          }
+        }
+      }
+    }
+  }
+
   llvm::SmallVector<mlir::Value, 4> args;
   // Per-argument alloca from materializeTemporary (null if not materialized).
   // Used below to null out consumed temporaries after a consuming call.
@@ -2235,6 +2531,51 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         if (!id)
           continue;
         nullOutRaiiAlloca(id->name);
+      }
+    }
+
+    // Transfer ownership: remove caller-side drop registrations for
+    // bare-identifier arguments passed to user-defined Hew functions, and null
+    // out temp allocas for anonymous (non-identifier) args.
+    //
+    // Exempted types (borrow semantics — caller retains ownership):
+    //   Vec, HashMap, HashSet, bytes, Rc — frequently reused after calls and
+    //     lack a move-checker to enforce single-use (DROP-TODO).
+    //   String — field aliases (e.g. `v.pre_release` passed as String arg)
+    //     share the heap buffer with the owning struct; callee-side drops would
+    //     free the buffer, then __auto_field_drop would free it again
+    //     → double-free (DROP-TODO: enable after alias-tracking lands).
+    //   __hew_drop_* (indirect enum drops) — these recursive drop functions
+    //     free entire subtrees; when pattern match arms pass children to
+    //     recursive callees, the parent param drop would re-free children.
+    //   __auto_field_drop — callee never receives this sentinel via
+    //     dropFuncForType (returns "" for structs without user Drop), so
+    //     unregistering it at call sites would create memory leaks.
+    //
+    // Stream/Sink args are handled by nullOutRaiiAlloca above; skip them here.
+    if (!callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
+      auto isBorrowSemanticsDropFunc = [](const std::string &df) {
+        return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+               df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
+               df.starts_with("__hew_drop_"); // indirect enum recursive drops
+      };
+      for (size_t i = 0; i < call.args.size(); ++i) {
+        const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+        if (auto *ident = std::get_if<ast::ExprIdentifier>(&argExpr.kind)) {
+          if (!lookupTrackedStreamHandleInfo(ident->name)) {
+            auto regDrop = getRegisteredDropFunc(ident->name);
+            if (!regDrop.empty() && !isBorrowSemanticsDropFunc(regDrop))
+              unregisterDroppable(ident->name);
+          }
+        } else if (i < materializedArgAllocas.size() && materializedArgAllocas[i]) {
+          // Non-identifier temp arg (struct literal, f-string, call result):
+          // null out the caller's temp alloca so the callee's param drop is the
+          // sole owner.  Only applies to types with callee-side drops (String,
+          // user-Drop structs) — exempt borrow-semantics types stay caller-owned.
+          auto info = inferDropFuncForTemporary(i < args.size() ? args[i] : mlir::Value{}, argExpr);
+          if (!info.dropFunc.empty() && !isBorrowSemanticsDropFunc(info.dropFunc))
+            nullOutDropSlotByAlloca(materializedArgAllocas[i], location);
+        }
       }
     }
 

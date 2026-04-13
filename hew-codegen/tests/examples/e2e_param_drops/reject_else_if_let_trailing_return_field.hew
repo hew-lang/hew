@@ -1,0 +1,34 @@
+// Reject test: returning from an if / else if let chain (StmtIf whose
+// else_block->if_stmt is a StmtIfLet) where the else-if-let body yields a
+// field of a callee-dropped param.
+//
+// This exercises the else-if-let gap in stmtIfValueYieldsFieldOfDroppedParam
+// (MLIRGen.cpp) — previously only StmtIf chains were recursed, not StmtIfLet.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper, flag: bool, opt: Option<int>) -> String {
+    if flag {
+        "safe"
+    } else if let Some(_v) = opt {
+        w.name
+    } else {
+        w.extra
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w, false, Some(1));
+    println(n);
+    return 0;
+}

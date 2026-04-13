@@ -4657,9 +4657,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // of emitting an illegal func.return inside an scf.if.
   initReturnFlagAndSlot(resultTypes, location);
 
-  // NOTE: param drops are not yet registered here.  Adding them requires
-  // null-after-move tracking to avoid double-frees when a param is consumed
-  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+  // DROP-TODO: param drops for trait default methods.  generateFunction now
+  // handles this via pendingFunctionParamDrops + collectExcludeVarsFromBlock
+  // pre-scan.  This path lacks the pre-scan infrastructure; enabling it here
+  // requires the same return-exclusion setup first.
 
   mlir::Value bodyValue = generateBlock(*method.body, /*statementPosition=*/resultTypes.empty(),
                                         /*isFunctionBodyBlock=*/true);
@@ -5041,6 +5042,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
         for (const auto &arg : callE->args)
           collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
       }
+    } else if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind)) {
+      // Field-access returns (e.g. `return obj.field`) are NOT excluded from
+      // drops.  Excluding the whole owner struct leaks sibling owned fields.
+      // Instead, returning a field of a callee-dropped param is rejected at
+      // compile time (see the post-param-drop scan in generateFunction).
     }
   };
   // Determine whether the function body produces a value (non-void return).
@@ -5107,9 +5113,391 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   };
   scanReturns(fn.body);
 
-  // NOTE: param drops are not yet registered here.  Adding them requires
-  // null-after-move tracking to avoid double-frees when a param is consumed
-  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+  // Register param drops: use dropFuncForType (AST-based) to queue each param
+  // that carries ownership into pendingFunctionParamDrops.  generateBlock drains
+  // these into the body scope (depth 0) so the funcLevelDropExcludeVars pre-scan
+  // above already covers returned params and early-return paths correctly.
+  //
+  // Deliberately excluded:
+  //  • __auto_field_drop structs (structs without user Drop but with owned
+  //    fields): without alias-tracking we cannot tell whether an owned field is
+  //    aliased in the return value.  DROP-TODO: enable after alias-tracking lands.
+  //  • Handle types (Stream/Sink/Pair): these need closeAlloca RAII, not a
+  //    plain drop call.  DROP-TODO: closeAlloca RAII for handle params.
+  //  • Vec, HashMap, HashSet, Rc, bytes: these use borrow semantics at call
+  //    boundaries — the caller retains ownership and drops at scope exit.
+  //    Registering callee-side drops would cause double-frees whenever the
+  //    caller reuses the variable after the call (e.g. passing the same Vec
+  //    to multiple functions).  DROP-TODO: enable after move-checker lands.
+  //  • String: field aliases (e.g. `a.pre_release` passed to a fn) share the
+  //    heap buffer with the owning struct.  Callee-side drops would free that
+  //    buffer, and the owning struct's __auto_field_drop would free it again
+  //    → double-free.  DROP-TODO: enable after alias-tracking lands.
+  //  • Indirect enum drops (`__hew_drop_*`): these functions are RECURSIVE —
+  //    they free the entire subtree.  When a pattern match passes children to
+  //    recursive callee calls that drop them, the parent's param drop would
+  //    then drop them again → double-free.
+  //  • Self-referential drop functions: a user Drop's own parameter must not
+  //    be re-dropped — that would recurse into the Drop impl infinitely.
+  auto isBorrowSemanticsDrop = [](const std::string &df) {
+    return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
+           df == "hew_rc_drop" || df == "hew_string_drop" ||
+           df.starts_with("__hew_drop_"); // indirect enum recursive drops
+  };
+  for (const auto &param : fn.params) {
+    if (handleVarTypes.count(param.name) || lookupTrackedStreamHandleInfo(param.name))
+      continue;
+    auto dropFunc = dropFuncForType(param.ty.value);
+    if (dropFunc.empty() || isBorrowSemanticsDrop(dropFunc))
+      continue;
+    // Skip if this function IS the drop function for the param's type.
+    // A user Drop implementation must not re-drop its own parameter — doing so
+    // would recurse into itself infinitely.
+    if (dropFunc == funcName)
+      continue;
+    bool isUserDrop = false;
+    if (auto *named = std::get_if<ast::TypeNamed>(&param.ty.value.kind)) {
+      auto typeName = resolveTypeAlias(named->name);
+      isUserDrop = userDropFuncs.count(typeName) > 0;
+    }
+    pendingFunctionParamDrops.push_back({param.name, dropFunc, isUserDrop});
+  }
+
+  // Fail-closed: reject returning a field of a callee-dropped parameter.
+  // Without full field-alias / partial-move tracking, returning `param.field`
+  // when `param` gets a callee-side drop would either double-free the field
+  // (if the param IS dropped) or leak sibling fields (if we skip the drop).
+  // Reject this shape at compile time until alias-tracking lands.
+  if (!pendingFunctionParamDrops.empty() && fnProducesValue) {
+    std::unordered_set<std::string> droppedParamNames;
+    for (const auto &pd : pendingFunctionParamDrops)
+      droppedParamNames.insert(pd.name);
+
+    // Recursively check whether an expression is (or wraps) a field access
+    // on a callee-dropped param.  Recurses through block/if/if-let/match/
+    // unsafe/scope wrappers so that wrapped aliases are fail-closed.
+    //
+    // blockValueYieldsFieldOfDroppedParam checks the value-position of a
+    // Block: trailing expr first, then (when absent) the last statement's
+    // expression / StmtIf / StmtMatch / loop-family (via break values).
+    // This mirrors collectExcludeVarsFromBlock.
+    //
+    // blockBreakValueYieldsFieldOfDroppedParam scans a loop body for
+    // StmtBreak nodes whose break-value is a field of a dropped param,
+    // recursing through nested control flow (StmtIf/else-if chains,
+    // StmtIfLet, StmtMatch, StmtExpression wrappers, and nested loops for
+    // labeled breaks).
+    //
+    // SCOPE: defense-in-depth — the type checker currently rejects loop
+    // break values (loops produce ()) so the codegen guard doesn't fire
+    // today.  This covers the case where typed break-values are implemented.
+    std::function<bool(const ast::Expr &)> isFieldOfDroppedParam;
+    std::function<bool(const ast::Block &)> blockValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::Block &, const std::optional<std::string> &, bool)>
+        blockBreakValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::Expr &, const std::optional<std::string> &, bool)>
+        exprBreakValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::StmtIf &, const std::optional<std::string> &, bool)>
+        stmtIfBreakValueYieldsFieldOfDroppedParam;
+    stmtIfValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt) -> bool {
+      if (blockValueYieldsFieldOfDroppedParam(ifStmt.then_block))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block &&
+            blockValueYieldsFieldOfDroppedParam(*ifStmt.else_block->block))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfValueYieldsFieldOfDroppedParam(*nested))
+              return true;
+          // else if let: check both branches for value-position field access.
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockValueYieldsFieldOfDroppedParam(nestedIfLet->body))
+              return true;
+            if (nestedIfLet->else_body &&
+                blockValueYieldsFieldOfDroppedParam(*nestedIfLet->else_body))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan a StmtIf (and else-if chains) inside a loop body for break-values.
+    stmtIfBreakValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt,
+                                                    const std::optional<std::string> &targetLabel,
+                                                    bool checkUnlabeled) -> bool {
+      if (blockBreakValueYieldsFieldOfDroppedParam(ifStmt.then_block, targetLabel, checkUnlabeled))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block && blockBreakValueYieldsFieldOfDroppedParam(
+                                            *ifStmt.else_block->block, targetLabel, checkUnlabeled))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfBreakValueYieldsFieldOfDroppedParam(*nested, targetLabel, checkUnlabeled))
+              return true;
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockBreakValueYieldsFieldOfDroppedParam(nestedIfLet->body, targetLabel,
+                                                         checkUnlabeled))
+              return true;
+            if (nestedIfLet->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                              *nestedIfLet->else_body, targetLabel, checkUnlabeled))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan an expression for break-values inside a loop body.
+    exprBreakValueYieldsFieldOfDroppedParam = [&](const ast::Expr &expr,
+                                                  const std::optional<std::string> &targetLabel,
+                                                  bool checkUnlabeled) -> bool {
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(blockE->block, targetLabel, checkUnlabeled);
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(unsafeE->block, targetLabel,
+                                                        checkUnlabeled);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(scopeE->block, targetLabel, checkUnlabeled);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && exprBreakValueYieldsFieldOfDroppedParam(ifE->then_block->value,
+                                                                       targetLabel, checkUnlabeled))
+          return true;
+        if (ifE->else_block && *ifE->else_block &&
+            exprBreakValueYieldsFieldOfDroppedParam((*ifE->else_block)->value, targetLabel,
+                                                    checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockBreakValueYieldsFieldOfDroppedParam(ifLet->body, targetLabel, checkUnlabeled))
+          return true;
+        if (ifLet->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                    *ifLet->else_body, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body &&
+              exprBreakValueYieldsFieldOfDroppedParam(arm.body->value, targetLabel, checkUnlabeled))
+            return true;
+        return false;
+      }
+      return false;
+    };
+    // Scan a loop body block for StmtBreak nodes whose break-value is a field
+    // of a dropped param.  See blockBreakYieldsFieldAccess in MLIRGenExpr.cpp
+    // for detailed parameter semantics (targetLabel, checkUnlabeled).
+    blockBreakValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk,
+                                                   const std::optional<std::string> &targetLabel,
+                                                   bool checkUnlabeled) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
+          if (brk->value) {
+            bool targets_us = false;
+            if (!brk->label && checkUnlabeled)
+              targets_us = true;
+            if (brk->label && targetLabel && *brk->label == *targetLabel)
+              targets_us = true;
+            if (targets_us && isFieldOfDroppedParam(brk->value->value))
+              return true;
+          }
+          continue;
+        }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (stmtIfBreakValueYieldsFieldOfDroppedParam(*ifStmt, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(ifLetStmt->body, targetLabel,
+                                                       checkUnlabeled))
+            return true;
+          if (ifLetStmt->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                          *ifLetStmt->else_body, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // StmtMatch arm bodies are statement contexts inside a loop —
+        // scan them for breaks, not as result expressions.
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && exprBreakValueYieldsFieldOfDroppedParam(arm.body->value, targetLabel,
+                                                                    checkUnlabeled))
+              return true;
+          continue;
+        }
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt->value.kind)) {
+          if (exprBreakValueYieldsFieldOfDroppedParam(exprStmt->expr.value, targetLabel,
+                                                      checkUnlabeled))
+            return true;
+          continue;
+        }
+        // Nested loops: only labeled breaks targeting our loop escape.
+        // If the inner loop REUSES the same label name (shadowing), breaks
+        // with that label inside target the inner loop — pass nullopt so
+        // they are no longer attributed to the outer loop.
+        if (auto *innerLoop = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerLoop->label && targetLabel && *innerLoop->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerLoop->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhile = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerWhile->label && targetLabel && *innerWhile->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhile->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhileLet = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerWhileLet->label && targetLabel && *innerWhileLet->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhileLet->body, innerTarget, false))
+            return true;
+          continue;
+        }
+        if (auto *innerFor = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          const auto innerTarget =
+              (innerFor->label && targetLabel && *innerFor->label == *targetLabel)
+                  ? std::optional<std::string>{}
+                  : targetLabel;
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerFor->body, innerTarget, false))
+            return true;
+          continue;
+        }
+      }
+      return false;
+    };
+    blockValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk) -> bool {
+      if (blk.trailing_expr)
+        return isFieldOfDroppedParam(blk.trailing_expr->value);
+      if (!blk.stmts.empty()) {
+        const auto &last = blk.stmts.back()->value;
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+          return isFieldOfDroppedParam(exprStmt->expr.value);
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind))
+          return stmtIfValueYieldsFieldOfDroppedParam(*ifStmt);
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&last.kind)) {
+          if (blockValueYieldsFieldOfDroppedParam(ifLetStmt->body))
+            return true;
+          if (ifLetStmt->else_body && blockValueYieldsFieldOfDroppedParam(*ifLetStmt->else_body))
+            return true;
+        }
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && isFieldOfDroppedParam(arm.body->value))
+              return true;
+        }
+        if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(loopStmt->body, loopStmt->label, true);
+        if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(whileStmt->body, whileStmt->label, true);
+        if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(whileLetStmt->body, whileLetStmt->label,
+                                                          true);
+        if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(forStmt->body, forStmt->label, true);
+      }
+      return false;
+    };
+    isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
+      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
+        auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
+        return id && droppedParamNames.count(id->name);
+      }
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(blockE->block);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && isFieldOfDroppedParam(ifE->then_block->value))
+          return true;
+        if (ifE->else_block && *ifE->else_block && isFieldOfDroppedParam((*ifE->else_block)->value))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockValueYieldsFieldOfDroppedParam(ifLet->body))
+          return true;
+        if (ifLet->else_body && blockValueYieldsFieldOfDroppedParam(*ifLet->else_body))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && isFieldOfDroppedParam(arm.body->value))
+            return true;
+        return false;
+      }
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(unsafeE->block);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(scopeE->block);
+      return false;
+    };
+
+    // Scan value-position of the function body (trailing expr or last stmt)
+    if (blockValueYieldsFieldOfDroppedParam(fn.body)) {
+      ++errorCount_;
+      emitError(location) << "returning a field of an owned parameter is not yet supported "
+                          << "(field-alias ownership tracking is required); "
+                          << "return the whole parameter or clone the field instead";
+      return nullptr;
+    }
+
+    // Scan explicit return statements (recursively)
+    std::function<bool(const ast::Block &)> scanForFieldReturn;
+    std::function<bool(const ast::StmtIf &)> scanForFieldReturnIf;
+    scanForFieldReturnIf = [&](const ast::StmtIf &ifStmt) -> bool {
+      if (scanForFieldReturn(ifStmt.then_block))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block && scanForFieldReturn(*ifStmt.else_block->block))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (scanForFieldReturnIf(*nested))
+              return true;
+        }
+      }
+      return false;
+    };
+    scanForFieldReturn = [&](const ast::Block &blk) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *ret = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
+          if (ret->value && isFieldOfDroppedParam(ret->value->value)) {
+            ++errorCount_;
+            emitError(location) << "returning a field of an owned parameter is not yet supported "
+                                << "(field-alias ownership tracking is required); "
+                                << "return the whole parameter or clone the field instead";
+            return true;
+          }
+        } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (scanForFieldReturnIf(*ifStmt))
+            return true;
+        } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          if (scanForFieldReturn(forStmt->body))
+            return true;
+        } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          if (scanForFieldReturn(whileStmt->body))
+            return true;
+        }
+      }
+      return false;
+    };
+    if (scanForFieldReturn(fn.body))
+      return nullptr;
+  }
 
   // If the pre-scan found return statements in nested scopes (if/for/while)
   // and the function returns an aggregate type that didn't get an eager
@@ -5350,9 +5738,9 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
       builder.restoreInsertionPoint(savedIP2);
     }
 
-    // NOTE: param drops are not yet registered here.  Adding them requires
-    // null-after-move tracking to avoid double-frees when a param is consumed
-    // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+    // DROP-TODO: param drops for generator functions.  Generators yield values
+    // across suspension points; param drop semantics require yield-site
+    // exclusion analysis (mirroring collectYieldExpr) before enabling.
 
     // Pre-scan the generator body for yield expressions and populate
     // funcLevelDropExcludeVars / funcLevelReturnVarNames before body
@@ -6112,11 +6500,28 @@ void MLIRGen::registerDroppable(const std::string &varName, const std::string &d
 }
 
 void MLIRGen::unregisterDroppable(const std::string &varName) {
-  for (auto &scope : dropScopes) {
-    scope.erase(std::remove_if(scope.begin(), scope.end(),
-                               [&](const DropEntry &e) { return e.varName == varName; }),
-                scope.end());
+  // Scan innermost scope first and stop after removing the first match so
+  // that a shadowing inner binding does not accidentally consume an outer
+  // binding with the same name.
+  for (auto it = dropScopes.rbegin(); it != dropScopes.rend(); ++it) {
+    auto &scope = *it;
+    auto pos = std::find_if(scope.begin(), scope.end(),
+                            [&](const DropEntry &e) { return e.varName == varName; });
+    if (pos != scope.end()) {
+      scope.erase(pos);
+      return;
+    }
   }
+}
+
+std::string MLIRGen::getRegisteredDropFunc(const std::string &varName) const {
+  // Scan innermost scope first so shadowed bindings resolve to the current
+  // (innermost) binding rather than a same-named outer one.
+  for (auto it = dropScopes.rbegin(); it != dropScopes.rend(); ++it)
+    for (const auto &entry : *it)
+      if (entry.varName == varName)
+        return entry.dropFuncName;
+  return "";
 }
 
 std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
@@ -6797,11 +7202,17 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
 }
 
 void MLIRGen::nullOutDropSlotByAlloca(mlir::Value alloca, mlir::Location loc) {
-  // Zero the alloca so every DropEntry that shares this promotedSlot (both
-  // the inner-scope entry and the safety-net function-level duplicate) will
-  // load null at scope exit and skip the drop.  The slot type is always
-  // LLVMPointerType for HandleType temporaries, so createDefaultValue
-  // produces a LLVM null pointer.
+  // For user-Drop struct temporaries, the initFlag is the authoritative guard
+  // used by emitDropEntry.  Storing false into it signals "consumed" without
+  // touching the struct alloca (which would produce LLVM undef).
+  auto flagIt = tempSlotInitFlags.find(alloca);
+  if (flagIt != tempSlotInitFlags.end()) {
+    auto falseVal = createIntConstant(builder, loc, builder.getI1Type(), 0);
+    mlir::memref::StoreOp::create(builder, loc, falseVal, flagIt->second);
+    return;
+  }
+  // For pointer-typed slots (String, handle types), store null so the
+  // null-guard in emitDropEntry skips the drop.
   auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(alloca.getType());
   if (!memrefTy)
     return;

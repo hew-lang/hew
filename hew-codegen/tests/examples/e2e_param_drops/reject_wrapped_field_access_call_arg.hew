@@ -1,0 +1,29 @@
+// Reject test: passing a wrapped field access (via if-expression) to a
+// function that takes ownership.  The field access is hidden inside an
+// if/else wrapper but still aliases param.field → same double-free hazard.
+
+type Inner {
+    value: String;
+}
+
+impl Drop for Inner {
+    fn drop(i: Inner) {
+        println(i.value);
+    }
+}
+
+type Outer {
+    inner: Inner;
+    tag: String;
+}
+
+fn consume(i: Inner) {
+    println(i.value);
+}
+
+fn main() -> int {
+    let flag = true;
+    let obj = Outer { inner: Inner { value: "hello" }, tag: "t" };
+    consume(if flag { obj.inner } else { obj.inner });  // rejected: wrapped field-access arg
+    return 0;
+}

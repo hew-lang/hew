@@ -1,0 +1,32 @@
+// Reject test: returning from a trailing if-let statement (StmtIfLet as the
+// last statement, no trailing_expr) whose body yields a field of a callee-
+// dropped param.
+//
+// This exercises the StmtIfLet gap in blockValueYieldsFieldOfDroppedParam
+// (MLIRGen.cpp) — previously only StmtIf was handled there.
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper, opt: Option<int>) -> String {
+    if let Some(_v) = opt {
+        w.name
+    } else {
+        w.extra
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w, Some(1));
+    println(n);
+    return 0;
+}

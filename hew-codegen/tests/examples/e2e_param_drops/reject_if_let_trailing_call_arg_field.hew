@@ -1,0 +1,38 @@
+// Reject test: passing a scope-wrapped if-let statement (StmtIfLet as the
+// last statement of the scope block, no trailing_expr) to a function that
+// takes ownership of the yielded field.
+//
+// This exercises the StmtIfLet gap in blockYieldsFieldAccess (MLIRGenExpr.cpp)
+// — previously only StmtIf was handled in the last-statement check.
+
+type Inner {
+    value: String;
+}
+
+impl Drop for Inner {
+    fn drop(i: Inner) {
+        println(i.value);
+    }
+}
+
+type Outer {
+    inner: Inner;
+    tag: String;
+}
+
+fn consume(i: Inner) {
+    println(i.value);
+}
+
+fn main() -> int {
+    let opt: Option<int> = Some(1);
+    let obj = Outer { inner: Inner { value: "hello" }, tag: "t" };
+    consume(scope {
+        if let Some(_v) = opt {
+            obj.inner
+        } else {
+            obj.inner
+        }
+    });
+    return 0;
+}

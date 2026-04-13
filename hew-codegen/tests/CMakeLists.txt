@@ -530,6 +530,41 @@ add_e2e_reject_test(composite_typearg_reject      e2e_negative composite_typearg
 add_e2e_reject_test(composite_typearg_struct_init_reject e2e_negative composite_typearg_struct_init_reject "composite type arguments")
 add_e2e_reject_test(infer_nested_generic_reject   e2e_negative infer_nested_generic_reject   "composite type arguments")
 
+# Param-drop fail-closed reject tests: unsupported field-alias ownership shapes
+add_e2e_reject_test(field_access_call_arg         e2e_param_drops reject_field_access_call_arg         "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(return_field_of_param         e2e_param_drops reject_return_field_of_param         "returning a field of an owned parameter")
+add_e2e_reject_test(early_return_field_of_param   e2e_param_drops reject_early_return_field_of_param   "returning a field of an owned parameter")
+add_e2e_reject_test(wrapped_field_access_call_arg  e2e_param_drops reject_wrapped_field_access_call_arg  "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(wrapped_return_field_of_param  e2e_param_drops reject_wrapped_return_field_of_param  "returning a field of an owned parameter")
+add_e2e_reject_test(unsafe_field_access_call_arg   e2e_param_drops reject_unsafe_field_access_call_arg   "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(unsafe_return_field_of_param   e2e_param_drops reject_unsafe_return_field_of_param   "returning a field of an owned parameter")
+add_e2e_reject_test(scope_field_access_call_arg    e2e_param_drops reject_scope_field_access_call_arg    "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(scope_return_field_of_param    e2e_param_drops reject_scope_return_field_of_param    "returning a field of an owned parameter")
+add_e2e_reject_test(unsafe_nested_field_call_arg   e2e_param_drops reject_unsafe_nested_field_call_arg   "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(unsafe_nested_field_return     e2e_param_drops reject_unsafe_nested_field_return     "returning a field of an owned parameter")
+add_e2e_reject_test(scope_nested_field_call_arg    e2e_param_drops reject_scope_nested_field_call_arg    "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(scope_nested_field_return      e2e_param_drops reject_scope_nested_field_return      "returning a field of an owned parameter")
+# Loop-valued break tests: the type checker currently rejects these with
+# a type mismatch (loops produce ()) before the codegen guard fires.
+# The codegen break-value scanners are defense-in-depth for when typed
+# break-values are implemented.  These tests verify the pattern is
+# rejected at some layer (currently the type checker).
+add_e2e_reject_test(unsafe_loop_break_call_arg     e2e_param_drops reject_unsafe_loop_break_call_arg     "type mismatch")
+add_e2e_reject_test(scope_while_break_call_arg     e2e_param_drops reject_scope_while_break_call_arg     "type mismatch")
+add_e2e_reject_test(unsafe_loop_break_return       e2e_param_drops reject_unsafe_loop_break_return       "type mismatch")
+add_e2e_reject_test(scope_while_break_return       e2e_param_drops reject_scope_while_break_return       "type mismatch")
+# Labeled-break shadowing: inner loop reuses outer label; type checker
+# intercepts first ("type mismatch").  The codegen scanner is fixed not to
+# false-attribute the inner break to the outer loop (defense-in-depth).
+add_e2e_reject_test(labeled_shadow_loop_break_return  e2e_param_drops reject_labeled_shadow_loop_break_return  "type mismatch")
+
+# If-let value-position guards: StmtIfLet as trailing last-statement and
+# else-if-let chains in StmtIf.  These are caught directly by the codegen
+# guard (field-alias error) — the type checker does not intercept here.
+add_e2e_reject_test(if_let_trailing_return_field      e2e_param_drops reject_if_let_trailing_return_field      "returning a field of an owned parameter")
+add_e2e_reject_test(else_if_let_trailing_return_field e2e_param_drops reject_else_if_let_trailing_return_field "returning a field of an owned parameter")
+add_e2e_reject_test(if_let_trailing_call_arg_field    e2e_param_drops reject_if_let_trailing_call_arg_field    "passing a struct field to a function that takes ownership")
+
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")
@@ -1180,6 +1215,15 @@ add_wasm_file_test(struct_string_field_auto_drop e2e_drop_scope    struct_string
 add_wasm_file_test(struct_early_return_auto_drop e2e_drop_scope    struct_early_return_auto_drop)
 add_wasm_file_test(struct_field_extraction_no_double_free e2e_drop_scope struct_field_extraction_no_double_free)
 add_wasm_file_test(drop_nested_struct         e2e_drop_trait       drop_nested_struct)
+
+# Function parameter drops: callee-side cleanup + caller-side ownership transfer
+add_wasm_file_test(string_param_drop         e2e_param_drops      string_param_drop)
+add_wasm_file_test(returned_string_param     e2e_param_drops      returned_string_param)
+add_wasm_file_test(user_drop_param           e2e_param_drops      user_drop_param)
+add_wasm_file_test(returned_user_drop_param  e2e_param_drops      returned_user_drop_param)
+add_wasm_file_test(early_return_param        e2e_param_drops      early_return_param)
+add_wasm_file_test(shadowed_binding_drop     e2e_param_drops      shadowed_binding_drop)
+
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
 add_wasm_file_test(large_vec                  e2e_memory           large_vec_lifecycle)

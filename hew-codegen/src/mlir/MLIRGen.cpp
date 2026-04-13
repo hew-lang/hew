@@ -5174,56 +5174,14 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
       droppedParamNames.insert(pd.name);
 
     // Recursively check whether an expression is (or wraps) a field access
-    // on a callee-dropped param.  Recurses through block/if/if-let/match
-    // wrappers so that wrapped aliases are fail-closed.
+    // on a callee-dropped param.  Recurses through block/if/if-let/match/
+    // unsafe/scope wrappers so that wrapped aliases are fail-closed.
+    //
+    // blockValueYieldsFieldOfDroppedParam checks the value-position of a
+    // Block: trailing expr first, then (when absent) the last statement's
+    // expression / StmtIf / StmtMatch value position.  This mirrors
+    // collectExcludeVarsFromBlock.
     std::function<bool(const ast::Expr &)> isFieldOfDroppedParam;
-    isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
-      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
-        auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
-        return id && droppedParamNames.count(id->name);
-      }
-      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
-        if (blockE->block.trailing_expr)
-          return isFieldOfDroppedParam(blockE->block.trailing_expr->value);
-        return false;
-      }
-      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
-        if (ifE->then_block && isFieldOfDroppedParam(ifE->then_block->value))
-          return true;
-        if (ifE->else_block && *ifE->else_block && isFieldOfDroppedParam((*ifE->else_block)->value))
-          return true;
-        return false;
-      }
-      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
-        if (ifLet->body.trailing_expr && isFieldOfDroppedParam(ifLet->body.trailing_expr->value))
-          return true;
-        if (ifLet->else_body && ifLet->else_body->trailing_expr &&
-            isFieldOfDroppedParam(ifLet->else_body->trailing_expr->value))
-          return true;
-        return false;
-      }
-      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
-        for (const auto &arm : matchE->arms)
-          if (arm.body && isFieldOfDroppedParam(arm.body->value))
-            return true;
-        return false;
-      }
-      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
-        if (unsafeE->block.trailing_expr)
-          return isFieldOfDroppedParam(unsafeE->block.trailing_expr->value);
-        return false;
-      }
-      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind)) {
-        if (scopeE->block.trailing_expr)
-          return isFieldOfDroppedParam(scopeE->block.trailing_expr->value);
-        return false;
-      }
-      return false;
-    };
-
-    // Check the value-position of a block: trailing expr, or (when absent)
-    // the last statement's expression / StmtIf / StmtMatch value position.
-    // Mirrors collectExcludeVarsFromBlock's value-position logic.
     std::function<bool(const ast::Block &)> blockValueYieldsFieldOfDroppedParam;
     std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsFieldOfDroppedParam;
     stmtIfValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt) -> bool {
@@ -5256,6 +5214,39 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
               return true;
         }
       }
+      return false;
+    };
+    isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
+      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
+        auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
+        return id && droppedParamNames.count(id->name);
+      }
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(blockE->block);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && isFieldOfDroppedParam(ifE->then_block->value))
+          return true;
+        if (ifE->else_block && *ifE->else_block && isFieldOfDroppedParam((*ifE->else_block)->value))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockValueYieldsFieldOfDroppedParam(ifLet->body))
+          return true;
+        if (ifLet->else_body && blockValueYieldsFieldOfDroppedParam(*ifLet->else_body))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && isFieldOfDroppedParam(arm.body->value))
+            return true;
+        return false;
+      }
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(unsafeE->block);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockValueYieldsFieldOfDroppedParam(scopeE->block);
       return false;
     };
 

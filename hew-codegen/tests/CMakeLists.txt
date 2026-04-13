@@ -501,6 +501,10 @@ add_e2e_reject_test(unsafe_field_access_call_arg   e2e_param_drops reject_unsafe
 add_e2e_reject_test(unsafe_return_field_of_param   e2e_param_drops reject_unsafe_return_field_of_param   "returning a field of an owned parameter")
 add_e2e_reject_test(scope_field_access_call_arg    e2e_param_drops reject_scope_field_access_call_arg    "passing a struct field to a function that takes ownership")
 add_e2e_reject_test(scope_return_field_of_param    e2e_param_drops reject_scope_return_field_of_param    "returning a field of an owned parameter")
+add_e2e_reject_test(unsafe_nested_field_call_arg   e2e_param_drops reject_unsafe_nested_field_call_arg   "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(unsafe_nested_field_return     e2e_param_drops reject_unsafe_nested_field_return     "returning a field of an owned parameter")
+add_e2e_reject_test(scope_nested_field_call_arg    e2e_param_drops reject_scope_nested_field_call_arg    "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(scope_nested_field_return      e2e_param_drops reject_scope_nested_field_return      "returning a field of an owned parameter")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

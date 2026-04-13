@@ -1,0 +1,28 @@
+// Reject test: passing an unsafe-wrapped if-expression (no trailing_expr —
+// the if is the final statement's value) to a function that takes ownership.
+
+type Inner {
+    value: String;
+}
+
+impl Drop for Inner {
+    fn drop(i: Inner) {
+        println(i.value);
+    }
+}
+
+type Outer {
+    inner: Inner;
+    tag: String;
+}
+
+fn consume(i: Inner) {
+    println(i.value);
+}
+
+fn main() -> int {
+    let flag = true;
+    let obj = Outer { inner: Inner { value: "hello" }, tag: "t" };
+    consume(unsafe { if flag { obj.inner } else { obj.inner } });
+    return 0;
+}

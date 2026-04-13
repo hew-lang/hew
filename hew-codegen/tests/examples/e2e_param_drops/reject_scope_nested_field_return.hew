@@ -1,0 +1,30 @@
+// Reject test: returning from a scope block whose value comes from an
+// if-expression (no trailing_expr — the if is the final statement's value).
+
+type Wrapper {
+    name: String;
+    extra: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn extract_name(w: Wrapper, flag: bool) -> String {
+    scope {
+        if flag {
+            w.name
+        } else {
+            "default"
+        }
+    }
+}
+
+fn main() -> int {
+    let w = Wrapper { name: "hello", extra: "world" };
+    let n = extract_name(w, true);
+    println(n);
+    return 0;
+}

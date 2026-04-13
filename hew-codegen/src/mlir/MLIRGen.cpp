@@ -5184,11 +5184,22 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
     //
     // blockBreakValueYieldsFieldOfDroppedParam scans a loop body for
     // StmtBreak nodes whose break-value is a field of a dropped param,
-    // recursing through nested control flow.
+    // recursing through nested control flow (StmtIf/else-if chains,
+    // StmtIfLet, StmtMatch, StmtExpression wrappers, and nested loops for
+    // labeled breaks).
+    //
+    // SCOPE: defense-in-depth — the type checker currently rejects loop
+    // break values (loops produce ()) so the codegen guard doesn't fire
+    // today.  This covers the case where typed break-values are implemented.
     std::function<bool(const ast::Expr &)> isFieldOfDroppedParam;
     std::function<bool(const ast::Block &)> blockValueYieldsFieldOfDroppedParam;
     std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsFieldOfDroppedParam;
-    std::function<bool(const ast::Block &)> blockBreakValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::Block &, const std::optional<std::string> &, bool)>
+        blockBreakValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::Expr &, const std::optional<std::string> &, bool)>
+        exprBreakValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::StmtIf &, const std::optional<std::string> &, bool)>
+        stmtIfBreakValueYieldsFieldOfDroppedParam;
     stmtIfValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt) -> bool {
       if (blockValueYieldsFieldOfDroppedParam(ifStmt.then_block))
         return true;
@@ -5204,27 +5215,138 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
       }
       return false;
     };
-    blockBreakValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk) -> bool {
+    // Scan a StmtIf (and else-if chains) inside a loop body for break-values.
+    stmtIfBreakValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt,
+                                                    const std::optional<std::string> &targetLabel,
+                                                    bool checkUnlabeled) -> bool {
+      if (blockBreakValueYieldsFieldOfDroppedParam(ifStmt.then_block, targetLabel, checkUnlabeled))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block && blockBreakValueYieldsFieldOfDroppedParam(
+                                            *ifStmt.else_block->block, targetLabel, checkUnlabeled))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfBreakValueYieldsFieldOfDroppedParam(*nested, targetLabel, checkUnlabeled))
+              return true;
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockBreakValueYieldsFieldOfDroppedParam(nestedIfLet->body, targetLabel,
+                                                         checkUnlabeled))
+              return true;
+            if (nestedIfLet->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                              *nestedIfLet->else_body, targetLabel, checkUnlabeled))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan an expression for break-values inside a loop body.
+    exprBreakValueYieldsFieldOfDroppedParam = [&](const ast::Expr &expr,
+                                                  const std::optional<std::string> &targetLabel,
+                                                  bool checkUnlabeled) -> bool {
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(blockE->block, targetLabel, checkUnlabeled);
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(unsafeE->block, targetLabel,
+                                                        checkUnlabeled);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockBreakValueYieldsFieldOfDroppedParam(scopeE->block, targetLabel, checkUnlabeled);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block && exprBreakValueYieldsFieldOfDroppedParam(ifE->then_block->value,
+                                                                       targetLabel, checkUnlabeled))
+          return true;
+        if (ifE->else_block && *ifE->else_block &&
+            exprBreakValueYieldsFieldOfDroppedParam((*ifE->else_block)->value, targetLabel,
+                                                    checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockBreakValueYieldsFieldOfDroppedParam(ifLet->body, targetLabel, checkUnlabeled))
+          return true;
+        if (ifLet->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                    *ifLet->else_body, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body &&
+              exprBreakValueYieldsFieldOfDroppedParam(arm.body->value, targetLabel, checkUnlabeled))
+            return true;
+        return false;
+      }
+      return false;
+    };
+    // Scan a loop body block for StmtBreak nodes whose break-value is a field
+    // of a dropped param.  See blockBreakYieldsFieldAccess in MLIRGenExpr.cpp
+    // for detailed parameter semantics (targetLabel, checkUnlabeled).
+    blockBreakValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk,
+                                                   const std::optional<std::string> &targetLabel,
+                                                   bool checkUnlabeled) -> bool {
       for (const auto &stmt : blk.stmts) {
         if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
-          if (brk->value && isFieldOfDroppedParam(brk->value->value))
-            return true;
-          continue;
-        }
-        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
-          if (blockBreakValueYieldsFieldOfDroppedParam(ifStmt->then_block))
-            return true;
-          if (ifStmt->else_block) {
-            if (ifStmt->else_block->block &&
-                blockBreakValueYieldsFieldOfDroppedParam(*ifStmt->else_block->block))
+          if (brk->value) {
+            bool targets_us = false;
+            if (!brk->label && checkUnlabeled)
+              targets_us = true;
+            if (brk->label && targetLabel && *brk->label == *targetLabel)
+              targets_us = true;
+            if (targets_us && isFieldOfDroppedParam(brk->value->value))
               return true;
           }
           continue;
         }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (stmtIfBreakValueYieldsFieldOfDroppedParam(*ifStmt, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(ifLetStmt->body, targetLabel,
+                                                       checkUnlabeled))
+            return true;
+          if (ifLetStmt->else_body && blockBreakValueYieldsFieldOfDroppedParam(
+                                          *ifLetStmt->else_body, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // StmtMatch arm bodies are statement contexts inside a loop —
+        // scan them for breaks, not as result expressions.
         if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
           for (const auto &arm : matchStmt->arms)
-            if (arm.body && isFieldOfDroppedParam(arm.body->value))
+            if (arm.body && exprBreakValueYieldsFieldOfDroppedParam(arm.body->value, targetLabel,
+                                                                    checkUnlabeled))
               return true;
+          continue;
+        }
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt->value.kind)) {
+          if (exprBreakValueYieldsFieldOfDroppedParam(exprStmt->expr.value, targetLabel,
+                                                      checkUnlabeled))
+            return true;
+          continue;
+        }
+        // Nested loops: only labeled breaks targeting our loop escape.
+        if (auto *innerLoop = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerLoop->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhile = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhile->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhileLet = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerWhileLet->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerFor = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(innerFor->body, targetLabel, false))
+            return true;
           continue;
         }
       }
@@ -5245,13 +5367,14 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
               return true;
         }
         if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
-          return blockBreakValueYieldsFieldOfDroppedParam(loopStmt->body);
+          return blockBreakValueYieldsFieldOfDroppedParam(loopStmt->body, loopStmt->label, true);
         if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
-          return blockBreakValueYieldsFieldOfDroppedParam(whileStmt->body);
+          return blockBreakValueYieldsFieldOfDroppedParam(whileStmt->body, whileStmt->label, true);
         if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
-          return blockBreakValueYieldsFieldOfDroppedParam(whileLetStmt->body);
+          return blockBreakValueYieldsFieldOfDroppedParam(whileLetStmt->body, whileLetStmt->label,
+                                                          true);
         if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
-          return blockBreakValueYieldsFieldOfDroppedParam(forStmt->body);
+          return blockBreakValueYieldsFieldOfDroppedParam(forStmt->body, forStmt->label, true);
       }
       return false;
     };

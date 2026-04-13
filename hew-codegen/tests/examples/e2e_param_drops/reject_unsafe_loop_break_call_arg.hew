@@ -1,7 +1,10 @@
 // Reject test: unsafe-wrapped loop whose break value is a field access
 // passed as a call argument that takes ownership.
-// NOTE: Currently caught by type checker (loops produce ()) before codegen
-// guard fires.  Guard is defense-in-depth for typed break-values.
+//
+// SCOPE: Caught by type checker ("type mismatch") because loops currently
+// produce ().  The codegen guard (blockBreakYieldsFieldAccess) is
+// defense-in-depth for when typed break-values are implemented.
+// This test verifies the pattern is rejected at some layer.
 
 type Inner {
     value: String;

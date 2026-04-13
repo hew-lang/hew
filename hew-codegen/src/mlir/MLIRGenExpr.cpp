@@ -2097,11 +2097,21 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     //
     // blockBreakYieldsFieldAccess scans a loop body for StmtBreak nodes
     // whose break-value yields a field access, recursing through nested
-    // control flow.
+    // control flow (StmtIf/else-if chains, StmtIfLet, StmtMatch, StmtExpression
+    // wrappers, and nested loops for labeled breaks).
+    //
+    // SCOPE: defense-in-depth — the type checker currently rejects loop break
+    // values (loops produce ()) so the codegen guard doesn't fire today.
+    // This covers the case where typed break-values are implemented.
     std::function<bool(const ast::Expr &)> exprYieldsFieldAccess;
     std::function<bool(const ast::Block &)> blockYieldsFieldAccess;
     std::function<bool(const ast::StmtIf &)> stmtIfYieldsFieldAccess;
-    std::function<bool(const ast::Block &)> blockBreakYieldsFieldAccess;
+    std::function<bool(const ast::Block &, const std::optional<std::string> &, bool)>
+        blockBreakYieldsFieldAccess;
+    std::function<bool(const ast::Expr &, const std::optional<std::string> &, bool)>
+        exprBreakYieldsFieldAccess;
+    std::function<bool(const ast::StmtIf &, const std::optional<std::string> &, bool)>
+        stmtIfBreakYieldsFieldAccess;
     stmtIfYieldsFieldAccess = [&](const ast::StmtIf &ifStmt) -> bool {
       if (blockYieldsFieldAccess(ifStmt.then_block))
         return true;
@@ -2116,27 +2126,137 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       }
       return false;
     };
-    blockBreakYieldsFieldAccess = [&](const ast::Block &blk) -> bool {
+    // Scan a StmtIf (and else-if chains) inside a loop body for break-values.
+    stmtIfBreakYieldsFieldAccess = [&](const ast::StmtIf &ifStmt,
+                                       const std::optional<std::string> &targetLabel,
+                                       bool checkUnlabeled) -> bool {
+      if (blockBreakYieldsFieldAccess(ifStmt.then_block, targetLabel, checkUnlabeled))
+        return true;
+      if (ifStmt.else_block) {
+        if (ifStmt.else_block->block &&
+            blockBreakYieldsFieldAccess(*ifStmt.else_block->block, targetLabel, checkUnlabeled))
+          return true;
+        if (ifStmt.else_block->if_stmt) {
+          if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+            if (stmtIfBreakYieldsFieldAccess(*nested, targetLabel, checkUnlabeled))
+              return true;
+          if (auto *nestedIfLet =
+                  std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+            if (blockBreakYieldsFieldAccess(nestedIfLet->body, targetLabel, checkUnlabeled))
+              return true;
+            if (nestedIfLet->else_body &&
+                blockBreakYieldsFieldAccess(*nestedIfLet->else_body, targetLabel, checkUnlabeled))
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // Scan an expression for break-values inside a loop body.
+    // Recurses into block-wrapping expression types to find StmtBreak nodes.
+    exprBreakYieldsFieldAccess = [&](const ast::Expr &expr,
+                                     const std::optional<std::string> &targetLabel,
+                                     bool checkUnlabeled) -> bool {
+      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+        return blockBreakYieldsFieldAccess(blockE->block, targetLabel, checkUnlabeled);
+      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+        return blockBreakYieldsFieldAccess(unsafeE->block, targetLabel, checkUnlabeled);
+      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+        return blockBreakYieldsFieldAccess(scopeE->block, targetLabel, checkUnlabeled);
+      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block &&
+            exprBreakYieldsFieldAccess(ifE->then_block->value, targetLabel, checkUnlabeled))
+          return true;
+        if (ifE->else_block && *ifE->else_block &&
+            exprBreakYieldsFieldAccess((*ifE->else_block)->value, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        if (blockBreakYieldsFieldAccess(ifLet->body, targetLabel, checkUnlabeled))
+          return true;
+        if (ifLet->else_body &&
+            blockBreakYieldsFieldAccess(*ifLet->else_body, targetLabel, checkUnlabeled))
+          return true;
+        return false;
+      }
+      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms)
+          if (arm.body && exprBreakYieldsFieldAccess(arm.body->value, targetLabel, checkUnlabeled))
+            return true;
+        return false;
+      }
+      return false;
+    };
+    // Scan a loop body block for StmtBreak nodes whose break-value yields a
+    // field access.  targetLabel is the label of the value-producing loop (if
+    // any).  checkUnlabeled controls whether unlabeled breaks are checked —
+    // set to true for the direct body, false when recursing into nested loops
+    // (unlabeled breaks inside nested loops target those inner loops, not ours).
+    // Labeled breaks whose label matches targetLabel are always checked
+    // regardless of nesting depth.
+    blockBreakYieldsFieldAccess = [&](const ast::Block &blk,
+                                      const std::optional<std::string> &targetLabel,
+                                      bool checkUnlabeled) -> bool {
       for (const auto &stmt : blk.stmts) {
         if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
-          if (brk->value && exprYieldsFieldAccess(brk->value->value))
-            return true;
-          continue;
-        }
-        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
-          if (blockBreakYieldsFieldAccess(ifStmt->then_block))
-            return true;
-          if (ifStmt->else_block) {
-            if (ifStmt->else_block->block &&
-                blockBreakYieldsFieldAccess(*ifStmt->else_block->block))
+          if (brk->value) {
+            bool targets_us = false;
+            if (!brk->label && checkUnlabeled)
+              targets_us = true;
+            if (brk->label && targetLabel && *brk->label == *targetLabel)
+              targets_us = true;
+            if (targets_us && exprYieldsFieldAccess(brk->value->value))
               return true;
           }
           continue;
         }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (stmtIfBreakYieldsFieldAccess(*ifStmt, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(ifLetStmt->body, targetLabel, checkUnlabeled))
+            return true;
+          if (ifLetStmt->else_body &&
+              blockBreakYieldsFieldAccess(*ifLetStmt->else_body, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // StmtMatch arm bodies are statement contexts inside a loop —
+        // scan them for breaks, not as result expressions.
         if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
           for (const auto &arm : matchStmt->arms)
-            if (arm.body && exprYieldsFieldAccess(arm.body->value))
+            if (arm.body &&
+                exprBreakYieldsFieldAccess(arm.body->value, targetLabel, checkUnlabeled))
               return true;
+          continue;
+        }
+        if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt->value.kind)) {
+          if (exprBreakYieldsFieldAccess(exprStmt->expr.value, targetLabel, checkUnlabeled))
+            return true;
+          continue;
+        }
+        // Nested loops: only labeled breaks targeting our loop escape.
+        if (auto *innerLoop = std::get_if<ast::StmtLoop>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(innerLoop->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhile = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(innerWhile->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerWhileLet = std::get_if<ast::StmtWhileLet>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(innerWhileLet->body, targetLabel, false))
+            return true;
+          continue;
+        }
+        if (auto *innerFor = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(innerFor->body, targetLabel, false))
+            return true;
           continue;
         }
       }
@@ -2157,13 +2277,13 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
               return true;
         }
         if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
-          return blockBreakYieldsFieldAccess(loopStmt->body);
+          return blockBreakYieldsFieldAccess(loopStmt->body, loopStmt->label, true);
         if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
-          return blockBreakYieldsFieldAccess(whileStmt->body);
+          return blockBreakYieldsFieldAccess(whileStmt->body, whileStmt->label, true);
         if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
-          return blockBreakYieldsFieldAccess(whileLetStmt->body);
+          return blockBreakYieldsFieldAccess(whileLetStmt->body, whileLetStmt->label, true);
         if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
-          return blockBreakYieldsFieldAccess(forStmt->body);
+          return blockBreakYieldsFieldAccess(forStmt->body, forStmt->label, true);
       }
       return false;
     };

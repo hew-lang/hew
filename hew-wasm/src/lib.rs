@@ -838,4 +838,101 @@ mod tests {
             "note must carry the canonical 'previous definition here' message"
         );
     }
+
+    /// End-to-end: `analyze()` → browser bridge → `code_actions()` for an
+    /// undefined *function call*.  The type checker spans the whole call
+    /// expression (`fooo()`), but the code-action edit must replace only the
+    /// callee name (`fooo`) so the argument list and parentheses are preserved.
+    #[test]
+    fn analyze_undefined_function_action_preserves_call_parens() {
+        // `fooo()` calls an undefined function; `foo` is defined and has
+        // edit-distance 1 ≤ max_dist 1 so it will appear as a suggestion.
+        let source = "fn foo() {} fn main() { fooo(); }";
+        //                                    ^   ^
+        //                                   24  28 = start of '('
+
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .unwrap_or_else(|| {
+                panic!("expected an UndefinedFunction diagnostic for `fooo()`; got: {analyze_json}")
+            });
+
+        // Confirm the type checker spans the full call expression (known behaviour).
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            &source[diag_start..diag_end],
+            "fooo()",
+            "UndefinedFunction diagnostic span must cover the full call expression"
+        );
+
+        // `foo` must be present in suggestions.
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo()`; got: {suggestions:?}"
+        );
+
+        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) for UndefinedFunction; got: {actions_json}"
+        );
+
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+
+        let edit = &action["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested callee name"
+        );
+
+        // The edit span must cover only `fooo` (the callee), not the `()`.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the argument list"
+        );
+
+        // Applying the edit must yield `foo()` — parentheses intact.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo(); }",
+            "applying the edit must replace `fooo()` with `foo()`, preserving the call syntax"
+        );
+    }
 }

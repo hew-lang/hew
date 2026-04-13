@@ -21,12 +21,26 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
     for diag in diagnostics {
         let kind = diag.kind.as_deref();
         match kind {
-            // Suggestion-based rename: replace the erroneous identifier with a
-            // known-good alternative from the type checker's suggestions list.
-            Some(
-                "UndefinedVariable" | "UndefinedFunction" | "UndefinedType" | "UndefinedField"
-                | "UndefinedMethod",
-            ) => {
+            // UndefinedFunction: the type checker spans the entire call expression
+            // (e.g. `fooo()`).  Trim to the callee identifier only so the edit
+            // rewrites the name and leaves the argument list intact.
+            Some("UndefinedFunction") => {
+                let callee_span = trim_to_callee_name(source, diag.span);
+                for suggestion in &diag.suggestions {
+                    let name = extract_suggestion_name(suggestion);
+                    actions.push(CodeAction {
+                        title: format!("Replace with `{name}`"),
+                        edits: vec![RenameEdit {
+                            span: callee_span,
+                            new_text: name,
+                        }],
+                    });
+                }
+            }
+
+            // Suggestion-based rename for spans that already cover exactly the
+            // erroneous identifier (variable, type, field, method).
+            Some("UndefinedVariable" | "UndefinedType" | "UndefinedField" | "UndefinedMethod") => {
                 for suggestion in &diag.suggestions {
                     let name = extract_suggestion_name(suggestion);
                     actions.push(CodeAction {
@@ -121,6 +135,21 @@ fn extract_suggestion_name(suggestion: &str) -> String {
         }
     }
     suggestion.to_string()
+}
+
+/// For an `UndefinedFunction` diagnostic whose span covers the full call
+/// expression (e.g. `fooo(args)`), return a span that covers only the callee
+/// name (`fooo`) by trimming at the first `(`.
+///
+/// Falls back to `span` unchanged when `(` is not present (e.g. bare method
+/// reference or malformed input).
+fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
+    let region = source.get(span.start..span.end).unwrap_or("");
+    let name_len = region.find('(').unwrap_or(region.len());
+    OffsetSpan {
+        start: span.start,
+        end: span.start + name_len,
+    }
 }
 
 /// Search backwards from `diag_offset` for `keyword` (either `"let"` or
@@ -234,6 +263,32 @@ mod tests {
         assert_eq!(actions[0].title, "Replace with `food`");
         assert_eq!(actions[0].edits[0].new_text, "food");
         assert_eq!(actions[1].title, "Replace with `foobar`");
+    }
+
+    #[test]
+    fn undefined_function_action_trims_call_expr_to_callee() {
+        // The type checker spans the whole call expression `fooo()` (bytes 24–30).
+        // The edit must replace only `fooo` (bytes 24–28) so `()` is preserved.
+        let source = "fn foo() {} fn main() { fooo(); }";
+        //                                       ^   ^
+        //                                      24  28 = start of '('
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo()`
+            30, // end of `fooo()` — past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `foo`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the callee name, not the parentheses.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must yield valid, call-preserving source.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────

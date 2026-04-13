@@ -2092,11 +2092,16 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     //
     // blockYieldsFieldAccess checks the value-position of a Block: trailing
     // expr first, then (when absent) the last statement's expression,
-    // StmtIf, or StmtMatch value position.  This mirrors
-    // collectExcludeVarsFromBlock.
+    // StmtIf, StmtMatch, or loop-family (via break values).
+    // This mirrors collectExcludeVarsFromBlock.
+    //
+    // blockBreakYieldsFieldAccess scans a loop body for StmtBreak nodes
+    // whose break-value yields a field access, recursing through nested
+    // control flow.
     std::function<bool(const ast::Expr &)> exprYieldsFieldAccess;
     std::function<bool(const ast::Block &)> blockYieldsFieldAccess;
     std::function<bool(const ast::StmtIf &)> stmtIfYieldsFieldAccess;
+    std::function<bool(const ast::Block &)> blockBreakYieldsFieldAccess;
     stmtIfYieldsFieldAccess = [&](const ast::StmtIf &ifStmt) -> bool {
       if (blockYieldsFieldAccess(ifStmt.then_block))
         return true;
@@ -2107,6 +2112,32 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
             if (stmtIfYieldsFieldAccess(*nested))
               return true;
+        }
+      }
+      return false;
+    };
+    blockBreakYieldsFieldAccess = [&](const ast::Block &blk) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
+          if (brk->value && exprYieldsFieldAccess(brk->value->value))
+            return true;
+          continue;
+        }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (blockBreakYieldsFieldAccess(ifStmt->then_block))
+            return true;
+          if (ifStmt->else_block) {
+            if (ifStmt->else_block->block &&
+                blockBreakYieldsFieldAccess(*ifStmt->else_block->block))
+              return true;
+          }
+          continue;
+        }
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && exprYieldsFieldAccess(arm.body->value))
+              return true;
+          continue;
         }
       }
       return false;
@@ -2125,6 +2156,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
             if (arm.body && exprYieldsFieldAccess(arm.body->value))
               return true;
         }
+        if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
+          return blockBreakYieldsFieldAccess(loopStmt->body);
+        if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
+          return blockBreakYieldsFieldAccess(whileStmt->body);
+        if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
+          return blockBreakYieldsFieldAccess(whileLetStmt->body);
+        if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
+          return blockBreakYieldsFieldAccess(forStmt->body);
       }
       return false;
     };

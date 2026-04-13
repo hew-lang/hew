@@ -5179,11 +5179,16 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
     //
     // blockValueYieldsFieldOfDroppedParam checks the value-position of a
     // Block: trailing expr first, then (when absent) the last statement's
-    // expression / StmtIf / StmtMatch value position.  This mirrors
-    // collectExcludeVarsFromBlock.
+    // expression / StmtIf / StmtMatch / loop-family (via break values).
+    // This mirrors collectExcludeVarsFromBlock.
+    //
+    // blockBreakValueYieldsFieldOfDroppedParam scans a loop body for
+    // StmtBreak nodes whose break-value is a field of a dropped param,
+    // recursing through nested control flow.
     std::function<bool(const ast::Expr &)> isFieldOfDroppedParam;
     std::function<bool(const ast::Block &)> blockValueYieldsFieldOfDroppedParam;
     std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsFieldOfDroppedParam;
+    std::function<bool(const ast::Block &)> blockBreakValueYieldsFieldOfDroppedParam;
     stmtIfValueYieldsFieldOfDroppedParam = [&](const ast::StmtIf &ifStmt) -> bool {
       if (blockValueYieldsFieldOfDroppedParam(ifStmt.then_block))
         return true;
@@ -5195,6 +5200,32 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
           if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
             if (stmtIfValueYieldsFieldOfDroppedParam(*nested))
               return true;
+        }
+      }
+      return false;
+    };
+    blockBreakValueYieldsFieldOfDroppedParam = [&](const ast::Block &blk) -> bool {
+      for (const auto &stmt : blk.stmts) {
+        if (auto *brk = std::get_if<ast::StmtBreak>(&stmt->value.kind)) {
+          if (brk->value && isFieldOfDroppedParam(brk->value->value))
+            return true;
+          continue;
+        }
+        if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+          if (blockBreakValueYieldsFieldOfDroppedParam(ifStmt->then_block))
+            return true;
+          if (ifStmt->else_block) {
+            if (ifStmt->else_block->block &&
+                blockBreakValueYieldsFieldOfDroppedParam(*ifStmt->else_block->block))
+              return true;
+          }
+          continue;
+        }
+        if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+          for (const auto &arm : matchStmt->arms)
+            if (arm.body && isFieldOfDroppedParam(arm.body->value))
+              return true;
+          continue;
         }
       }
       return false;
@@ -5213,6 +5244,14 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
             if (arm.body && isFieldOfDroppedParam(arm.body->value))
               return true;
         }
+        if (auto *loopStmt = std::get_if<ast::StmtLoop>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(loopStmt->body);
+        if (auto *whileStmt = std::get_if<ast::StmtWhile>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(whileStmt->body);
+        if (auto *whileLetStmt = std::get_if<ast::StmtWhileLet>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(whileLetStmt->body);
+        if (auto *forStmt = std::get_if<ast::StmtFor>(&last.kind))
+          return blockBreakValueYieldsFieldOfDroppedParam(forStmt->body);
       }
       return false;
     };

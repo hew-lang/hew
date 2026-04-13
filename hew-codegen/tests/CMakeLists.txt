@@ -505,6 +505,14 @@ add_e2e_reject_test(unsafe_nested_field_call_arg   e2e_param_drops reject_unsafe
 add_e2e_reject_test(unsafe_nested_field_return     e2e_param_drops reject_unsafe_nested_field_return     "returning a field of an owned parameter")
 add_e2e_reject_test(scope_nested_field_call_arg    e2e_param_drops reject_scope_nested_field_call_arg    "passing a struct field to a function that takes ownership")
 add_e2e_reject_test(scope_nested_field_return      e2e_param_drops reject_scope_nested_field_return      "returning a field of an owned parameter")
+# Loop-valued break tests: the type checker currently rejects these with
+# a type mismatch (loops produce ()) before the codegen guard fires.
+# The codegen guard is defense-in-depth for when typed break-values
+# are implemented.  We test that the code is rejected either way.
+add_e2e_reject_test(unsafe_loop_break_call_arg     e2e_param_drops reject_unsafe_loop_break_call_arg     "type mismatch")
+add_e2e_reject_test(scope_while_break_call_arg     e2e_param_drops reject_scope_while_break_call_arg     "type mismatch")
+add_e2e_reject_test(unsafe_loop_break_return       e2e_param_drops reject_unsafe_loop_break_return       "type mismatch")
+add_e2e_reject_test(scope_while_break_return       e2e_param_drops reject_scope_while_break_return       "type mismatch")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

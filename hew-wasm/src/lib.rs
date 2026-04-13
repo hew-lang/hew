@@ -656,4 +656,119 @@ mod tests {
             }
         }
     }
+
+    /// Full `analyze()` → `code_actions()` round-trip through the browser-bridge seam.
+    ///
+    /// The browser playground calls `analyze()`, extracts diagnostics (which now
+    /// carry `suggestions`), converts the span shape (`start_offset`/`end_offset`
+    /// → `span: {start, end}`), then calls `code_actions()`.  This test
+    /// exercises that full path to prove suggestions produced by the type checker
+    /// survive in a form that yields real code actions.
+    #[test]
+    fn analyze_suggestions_flow_through_to_code_actions() {
+        // `fooo` is undefined; `foo` (edit-distance 1 ≤ max_dist 1) should be
+        // surfaced as a suggestion by the type checker.
+        let source = "fn foo() {} fn main() { fooo(); }";
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .unwrap_or_else(|| {
+                panic!("expected an UndefinedFunction diagnostic for `fooo`; got: {analyze_json}")
+            });
+
+        // Suggestions must arrive as non-empty raw-name strings from find_similar.
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            !suggestions.is_empty(),
+            "expected suggestion(s) for `fooo` (similar to `foo`); got: {analyze_json}"
+        );
+        for s in suggestions {
+            assert!(
+                s.as_str().is_some_and(|t| !t.is_empty()),
+                "each suggestion must be a non-empty string: {s}"
+            );
+        }
+
+        // Reconstruct the DiagnosticInfo-format JSON that the browser bridge
+        // assembles: convert start_offset/end_offset → span.{start,end}.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) from analyze() suggestions; got: {actions_json}"
+        );
+        for action in actions_arr {
+            assert!(
+                action["title"].as_str().is_some_and(|t| !t.is_empty()),
+                "code action missing non-empty title: {action}"
+            );
+            assert!(
+                !action["edits"].as_array().unwrap_or(&vec![]).is_empty(),
+                "code action missing edits array: {action}"
+            );
+        }
+    }
+
+    /// Notes emitted by `analyze()` carry byte-offset spans valid for use as
+    /// secondary highlight regions in the browser editor.
+    ///
+    /// The browser uses `start_offset`/`end_offset` from `WasmNote` to render
+    /// secondary squiggles or "defined here" pointers.  This test verifies the
+    /// offsets are within source bounds and form a non-zero-width span.
+    #[test]
+    fn analyze_notes_carry_display_ready_spans() {
+        // Duplicate `foo` — DuplicateDefinition attaches a note pointing at the
+        // first definition that the browser can highlight as a secondary span.
+        let source = "fn foo() {} fn foo() {}";
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let diag_with_notes = diags
+            .iter()
+            .find(|d| d["notes"].as_array().is_some_and(|a| !a.is_empty()))
+            .unwrap_or_else(|| {
+                panic!("expected a diagnostic with notes for duplicate fn foo; got: {analyze_json}")
+            });
+
+        for note in diag_with_notes["notes"].as_array().unwrap() {
+            let start = note["start_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `start_offset`: {note}"));
+            let end = note["end_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `end_offset`: {note}"));
+
+            assert!(
+                end <= source.len() as u64,
+                "note end_offset {end} exceeds source length {}; note: {note}",
+                source.len()
+            );
+            assert!(
+                start < end,
+                "note span must be non-zero width (start={start}, end={end}): {note}"
+            );
+            assert!(
+                note["message"].as_str().is_some_and(|s| !s.is_empty()),
+                "note must carry a non-empty display message: {note}"
+            );
+        }
+    }
 }

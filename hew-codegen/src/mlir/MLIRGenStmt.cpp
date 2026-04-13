@@ -126,9 +126,16 @@ MLIRGen::LoopControl MLIRGen::pushLoopControl(const std::optional<std::string> &
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
-  LoopControl lc{activeFlag, continueFlag, {}};
+  LoopControl lc{activeFlag, continueFlag, {}, nullptr, nullptr};
   if (label) {
     lc.labelName = *label;
+    // Save any existing entry so it can be restored when this label is popped
+    // (handles nested loops that shadow the same label name).
+    auto ait = labeledActiveFlags.find(*label);
+    if (ait != labeledActiveFlags.end()) {
+      lc.prevActiveFlag = ait->second;
+      lc.prevContinueFlag = labeledContinueFlags[*label];
+    }
     labeledActiveFlags[lc.labelName] = activeFlag;
     labeledContinueFlags[lc.labelName] = continueFlag;
   }
@@ -144,8 +151,14 @@ void MLIRGen::popLoopControl(const LoopControl &lc, mlir::Operation *whileOp) {
   loopBreakValueStack.pop_back();
 
   if (!lc.labelName.empty()) {
-    labeledActiveFlags.erase(lc.labelName);
-    labeledContinueFlags.erase(lc.labelName);
+    if (lc.prevActiveFlag) {
+      // Restore the label entry that was shadowed by this inner loop.
+      labeledActiveFlags[lc.labelName] = lc.prevActiveFlag;
+      labeledContinueFlags[lc.labelName] = lc.prevContinueFlag;
+    } else {
+      labeledActiveFlags.erase(lc.labelName);
+      labeledContinueFlags.erase(lc.labelName);
+    }
   }
 
   builder.setInsertionPointAfter(whileOp);

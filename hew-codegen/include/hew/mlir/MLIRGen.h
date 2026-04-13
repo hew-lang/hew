@@ -417,6 +417,10 @@ private:
     mlir::Value activeFlag;
     mlir::Value continueFlag;
     std::string labelName;
+    // Previous map entries saved when an inner loop shadows an outer label.
+    // Null Values indicate no prior entry existed.
+    mlir::Value prevActiveFlag;
+    mlir::Value prevContinueFlag;
   };
   LoopControl pushLoopControl(const std::optional<std::string> &label, mlir::Location location);
 

@@ -7711,6 +7711,91 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: lambda actor receive handler with owned param emits hew_string_drop
+// ============================================================================
+
+static void test_lambda_actor_receive_string_param_drop() {
+  TEST(lambda_actor_receive_string_param_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn main() {
+    let handler = spawn (msg: String) => {
+    };
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for lambda actor String receive param");
+    return;
+  }
+
+  auto recvFn = lookupFuncBySuffix(module, "__lambda_actor_0_receive");
+  if (!recvFn) {
+    FAIL("lambda actor receive function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(recvFn, "hew_string_drop", false) < 1) {
+    FAIL("expected lambda actor receive handler to drop owned String params");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: lambda actor receive body clears enclosing funcLevelDropExclude state
+// ============================================================================
+
+static void test_lambda_actor_receive_clears_enclosing_drop_excludes() {
+  TEST(lambda_actor_receive_clears_enclosing_drop_excludes);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn make_actor() -> String {
+    let kept = int_to_string(7);
+    let worker = spawn (kept: String) => {
+    };
+    kept
+}
+
+fn main() -> int {
+    let _ = make_actor();
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for lambda actor drop-exclude regression");
+    return;
+  }
+
+  auto recvFn = lookupFuncBySuffix(module, "__lambda_actor_0_receive");
+  if (!recvFn) {
+    FAIL("lambda actor receive function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(recvFn, "hew_string_drop", false) < 1) {
+    FAIL("lambda actor receive handler should not inherit enclosing function drop exclusions");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: imported json.Value metadata drives scope-exit auto-drop
 // ============================================================================
 
@@ -10828,6 +10913,8 @@ int main() {
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();
   test_actor_receive_regex_pattern_drop();
+  test_lambda_actor_receive_string_param_drop();
+  test_lambda_actor_receive_clears_enclosing_drop_excludes();
   test_imported_json_value_scope_drop_uses_metadata();
   test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers();
   test_handle_registry_uses_metadata_not_hardcoded_list();

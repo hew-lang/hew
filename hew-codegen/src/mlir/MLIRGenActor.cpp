@@ -1340,14 +1340,55 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     FunctionGenerationScope funcScope(*this, recvFuncOp);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     funcLevelDropScopeBase = dropScopes.size();
+    auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    auto prevFuncLevelReturnVarNames = std::move(funcLevelReturnVarNames);
+    auto prevFuncLevelEarlyReturnVarNames = std::move(funcLevelEarlyReturnVarNames);
+    auto prevFuncLevelDropExcludeValues = std::move(funcLevelDropExcludeValues);
+    auto prevFuncLevelDropExcludeResolvedNames = std::move(funcLevelDropExcludeResolvedNames);
+    auto prevFuncLevelEarlyReturnExcludeValues = std::move(funcLevelEarlyReturnExcludeValues);
+    auto prevFuncLevelEarlyReturnExcludeResolvedNames =
+        std::move(funcLevelEarlyReturnExcludeResolvedNames);
+    funcLevelDropExcludeVars.clear();
+    funcLevelReturnVarNames.clear();
+    funcLevelEarlyReturnVarNames.clear();
+    funcLevelDropExcludeValues.clear();
+    funcLevelDropExcludeResolvedNames.clear();
+    funcLevelEarlyReturnExcludeValues.clear();
+    funcLevelEarlyReturnExcludeResolvedNames.clear();
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
     declareVariable("self", selfPtr);
+    pushDropScope();
     {
       size_t pi = 0;
       for (const auto &param : expr.params) {
-        declareVariable(param.name, recvEntry->getArgument(pi + 1));
+        auto argVal = recvEntry->getArgument(pi + 1);
+        auto paramName = intern(param.name);
+        if (mutableVars.lookup(paramName))
+          declareMutableVariable(paramName, argVal.getType(), argVal);
+        else
+          declareVariable(paramName, argVal);
+
+        {
+          auto resolveAliasExpr = [this](llvm::StringRef name) {
+            return resolveTypeAliasExpr(name);
+          };
+          auto actorName = typeExprToActorName(param.ty->value, resolveAliasExpr);
+          if (!actorName.empty())
+            actorVarTypes[param.name] = actorName;
+        }
+
+        auto argType = argVal.getType();
+        if (auto dropFn = dropFuncForMLIRType(argType, /*includeStructTypes=*/true);
+            !dropFn.empty()) {
+          bool isUserDrop = false;
+          if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(argType);
+              structTy && structTy.isIdentified()) {
+            isUserDrop = userDropFuncs.find(structTy.getName().str()) != userDropFuncs.end();
+          }
+          registerDroppable(param.name, dropFn, isUserDrop);
+        }
         ++pi;
       }
     }
@@ -1371,9 +1412,19 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
       generateExpression(expr.body->value);
     }
 
+    popDropScope();
+
     if (!hasRealTerminator(builder.getInsertionBlock()))
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
+    funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+    funcLevelReturnVarNames = std::move(prevFuncLevelReturnVarNames);
+    funcLevelEarlyReturnVarNames = std::move(prevFuncLevelEarlyReturnVarNames);
+    funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+    funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+    funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+    funcLevelEarlyReturnExcludeResolvedNames =
+        std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   }
   std::string dispatchName = actorName + "_dispatch";

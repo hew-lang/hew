@@ -832,41 +832,71 @@ struct ActorSpawnConfig {
     coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
 }
 
-/// Shared implementation for all native actor spawn functions.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
+    let mb = mailbox.cast::<HewMailbox>();
+    if !mb.is_null() {
+        // SAFETY: `mb` came from the native mailbox constructors used by spawn.
+        unsafe { mailbox::hew_mailbox_free(mb) };
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
+    let mb = mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+    if !mb.is_null() {
+        // SAFETY: `mb` came from the WASM mailbox constructors used by spawn.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
+    }
+}
+
+/// Release spawn-owned inputs when actor construction fails before tracking.
 ///
 /// # Safety
 ///
-/// - `config.state` must be a deep-copied allocation (or null for zero-sized state).
-/// - `config.mailbox` must be a valid mailbox pointer (already configured).
-#[cfg(not(target_arch = "wasm32"))]
+/// - `config.state` and `init_state` must be allocations owned by the spawn path,
+///   or null.
+/// - `config.mailbox` must be a mailbox pointer transferred to the spawn path, or null.
+unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_void) {
+    // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
+    unsafe {
+        libc::free(config.state);
+        if !init_state.is_null() {
+            libc::free(init_state);
+        }
+        free_spawn_mailbox(config.mailbox);
+    }
+}
+
+fn next_spawn_actor_identity() -> (u64, u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
+        (actor_id, actor_id)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+        (serial, serial)
+    }
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
 )]
-unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
-    // SAFETY: Caller already deep-copied state; make a second copy for restart.
-    let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
-
-    // OOM on the restart-state copy: free resources the caller transferred
-    // ownership of and propagate the failure as null.
-    if !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
-        // SAFETY: config.state was malloc'd by the caller's deep_copy_state;
-        // config.mailbox was allocated by the caller via hew_mailbox_new*.
-        unsafe {
-            libc::free(config.state);
-            let mb = config.mailbox.cast::<HewMailbox>();
-            if !mb.is_null() {
-                mailbox::hew_mailbox_free(mb);
-            }
-        }
-        return ptr::null_mut();
-    }
-
-    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
-    let actor = Box::new(HewActor {
+fn build_spawned_actor(
+    config: ActorSpawnConfig,
+    actor_id: u64,
+    pid: u64,
+    init_state: *mut c_void,
+    arena: *mut crate::arena::ActorArena,
+) -> Box<HewActor> {
+    Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: actor_id,
-        pid: actor_id,
+        pid,
         state: config.state,
         state_size: config.state_size,
         dispatch: config.dispatch,
@@ -889,10 +919,15 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
-        arena: crate::arena::hew_arena_new(),
-    });
+        #[cfg(not(target_arch = "wasm32"))]
+        arena,
+        #[cfg(target_arch = "wasm32")]
+        arena: arena.cast::<c_void>(),
+    })
+}
 
-    let raw = Box::into_raw(actor);
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) {
     track_actor(raw);
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
@@ -900,6 +935,43 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         crate::profiler::actor_registry::register(raw);
     };
     crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn finalize_spawned_actor(raw: *mut HewActor, _actor_id: u64) {
+    track_actor(raw);
+}
+
+/// Shared implementation for all native actor spawn functions.
+///
+/// # Safety
+///
+/// - `config.state` must be a deep-copied allocation (or null for zero-sized state).
+/// - `config.mailbox` must be a valid mailbox pointer (already configured).
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
+    // SAFETY: Caller already deep-copied state; make a second copy for restart.
+    let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
+
+    // OOM on the restart-state copy: free resources the caller transferred
+    // ownership of and propagate the failure as null.
+    if !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
+        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
+        unsafe { cleanup_failed_spawn(&config, ptr::null_mut()) };
+        return ptr::null_mut();
+    }
+
+    let (actor_id, pid) = next_spawn_actor_identity();
+    let actor = build_spawned_actor(
+        config,
+        actor_id,
+        pid,
+        init_state,
+        crate::arena::hew_arena_new(),
+    );
+    let raw = Box::into_raw(actor);
+    // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
+    unsafe { finalize_spawned_actor(raw, actor_id) };
     raw
 }
 
@@ -909,10 +981,6 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
 ///
 /// Same requirements as [`spawn_actor_internal`] but for WASM targets.
 #[cfg(target_arch = "wasm32")]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
-)]
 unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // SAFETY: Caller already deep-copied state; make a second copy for restart.
     let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
@@ -920,15 +988,8 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // OOM on the restart-state copy: free resources the caller transferred
     // ownership of and propagate the failure as null.
     if !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
-        // SAFETY: config.state was malloc'd by the caller's deep_copy_state;
-        // config.mailbox was allocated by the caller via hew_mailbox_new*.
-        unsafe {
-            libc::free(config.state);
-            let mb = config.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-            if !mb.is_null() {
-                crate::mailbox_wasm::hew_mailbox_free(mb);
-            }
-        }
+        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
+        unsafe { cleanup_failed_spawn(&config, ptr::null_mut()) };
         return ptr::null_mut();
     }
 
@@ -936,51 +997,16 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // if allocation fails, free all resources already owned and return null.
     let arena = crate::arena::hew_arena_new();
     if arena.is_null() {
-        // SAFETY: state / init_state were malloc'd above; mailbox was
-        // allocated by the caller.
-        unsafe {
-            libc::free(config.state);
-            libc::free(init_state);
-            let mb = config.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-            if !mb.is_null() {
-                crate::mailbox_wasm::hew_mailbox_free(mb);
-            }
-        }
+        // SAFETY: `init_state` was created above and ownership has not been transferred.
+        unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     }
 
-    let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: serial,
-        pid: serial,
-        state: config.state,
-        state_size: config.state_size,
-        dispatch: config.dispatch,
-        mailbox: config.mailbox,
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(config.budget),
-        init_state,
-        init_state_size: config.state_size,
-        coalesce_key_fn: config.coalesce_key_fn,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: arena.cast::<c_void>(),
-    });
-
+    let (actor_id, pid) = next_spawn_actor_identity();
+    let actor = build_spawned_actor(config, actor_id, pid, init_state, arena);
     let raw = Box::into_raw(actor);
-    track_actor(raw);
+    // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
+    unsafe { finalize_spawned_actor(raw, actor_id) };
     raw
 }
 

@@ -240,6 +240,17 @@ static mut INITIALIZED: bool = false;
 /// Whether an actor is currently being activated (for `active_workers` metric).
 static mut ACTIVATING: bool = false;
 
+/// Current depth of cooperative-tick reentrant calls. Incremented on
+/// entry to [`hew_wasm_sched_tick`], decremented on exit. When this
+/// reaches [`MAX_COOPERATIVE_TICK_DEPTH`] the tick is skipped to prevent
+/// unbounded WASM stack growth (WASM has a fixed, non-growable stack).
+static mut COOPERATIVE_TICK_DEPTH: u32 = 0;
+
+/// Maximum allowed nesting depth for cooperative ticks. The WASM default
+/// stack is typically 64 KiB–1 MiB, and each activation frame is
+/// non-trivial, so we cap reentrancy at a conservative level.
+const MAX_COOPERATIVE_TICK_DEPTH: u32 = 16;
+
 /// Saved arena pointer during activation.
 static mut PREV_ARENA: *mut c_void = std::ptr::null_mut();
 
@@ -351,6 +362,7 @@ pub extern "C" fn hew_sched_shutdown() {
         // mid-activation abort or skipped shutdown cannot bleed into a
         // subsequent init → use cycle.
         ACTIVATING = false;
+        COOPERATIVE_TICK_DEPTH = 0;
         PREV_ARENA = std::ptr::null_mut();
         CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
         CURRENT_REPLY_CHANNEL_CONSUMED = false;
@@ -422,15 +434,26 @@ pub extern "C" fn hew_sched_run() {
 
 /// Submit an actor to the run queue.
 ///
+/// # Panics
+///
+/// Panics if the scheduler has not been initialized (aligning with the
+/// native scheduler's fail-closed posture). Previously this silently
+/// dropped the actor while still incrementing `TASKS_SPAWNED`, leaving
+/// metrics inconsistent and work silently lost.
+///
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor`.
 pub unsafe fn sched_enqueue(actor: *mut HewActor) {
     // SAFETY: Single-threaded on WASM; caller guarantees actor validity.
     unsafe {
-        TASKS_SPAWNED += 1;
-        if let Some(ref mut q) = RUN_QUEUE {
-            q.push_back(actor);
+        match RUN_QUEUE {
+            Some(ref mut q) => {
+                q.push_back(actor);
+                // Only count after the actor is actually on the queue.
+                TASKS_SPAWNED += 1;
+            }
+            None => panic!("sched_enqueue: scheduler not initialized (RUN_QUEUE is None)"),
         }
     }
 }
@@ -453,6 +476,11 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 /// which runs to completion, this returns control to the host after a
 /// bounded amount of work.
 ///
+/// Reentrant calls (e.g. from `hew_actor_cooperate` → `hew_wasm_sched_tick`)
+/// are bounded by [`MAX_COOPERATIVE_TICK_DEPTH`]. When the depth limit is
+/// reached the call returns immediately with the current queue length,
+/// preventing unbounded WASM stack growth.
+///
 /// # Safety
 ///
 /// The scheduler must have been initialized with [`hew_sched_init`].
@@ -461,11 +489,29 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
+        // Guard against unbounded reentrancy. When cooperate calls tick
+        // which activates an actor whose cooperate calls tick again, etc.,
+        // we must cap the depth to avoid WASM stack overflow.
+        if COOPERATIVE_TICK_DEPTH >= MAX_COOPERATIVE_TICK_DEPTH {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "run queue length will not exceed i32::MAX"
+            )]
+            return match RUN_QUEUE {
+                Some(ref q) => q.len() as i32,
+                None => 0,
+            };
+        }
+        COOPERATIVE_TICK_DEPTH += 1;
+
         for _ in 0..max_activations {
             if !step_one_actor() {
                 break;
             }
         }
+
+        COOPERATIVE_TICK_DEPTH -= 1;
 
         // Return remaining queue length.
         #[expect(
@@ -1111,6 +1157,7 @@ mod tests {
             ptr::addr_of_mut!(RUN_QUEUE).write(None);
             ptr::addr_of_mut!(INITIALIZED).write(false);
             ptr::addr_of_mut!(ACTIVATING).write(false);
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
             // Reset the canonical current-actor slot (CURRENT_ACTOR_WASM on
             // wasm32, thread-local on native) rather than the removed
             // scheduler-local CURRENT_ACTOR static.
@@ -1224,6 +1271,7 @@ mod tests {
         // references to mutable statics.
         unsafe {
             ptr::addr_of_mut!(ACTIVATING).write(true);
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(5);
             ptr::addr_of_mut!(PREV_ARENA).write(sentinel_ptr);
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(sentinel_ptr);
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(true);
@@ -1249,6 +1297,11 @@ mod tests {
             assert!(
                 !ptr::addr_of!(ACTIVATING).read(),
                 "ACTIVATING must be false after shutdown"
+            );
+            assert_eq!(
+                ptr::addr_of!(COOPERATIVE_TICK_DEPTH).read(),
+                0,
+                "COOPERATIVE_TICK_DEPTH must be zero after shutdown"
             );
             assert!(
                 ptr::addr_of!(PREV_ARENA).read().is_null(),
@@ -3490,6 +3543,159 @@ mod tests {
         );
 
         crate::actor::set_current_actor(prev);
+        hew_sched_shutdown();
+    }
+
+    // ── sched_enqueue fail-closed tests ─────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "scheduler not initialized")]
+    fn enqueue_panics_when_run_queue_is_none() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        // Do NOT call hew_sched_init — RUN_QUEUE stays None.
+
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // This must panic rather than silently dropping the actor.
+        // SAFETY: actor is valid; the test expects panic.
+        unsafe { sched_enqueue(actor_ptr) };
+    }
+
+    #[test]
+    fn enqueue_does_not_increment_tasks_spawned_on_failure() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        // RUN_QUEUE is None — sched_enqueue should panic.
+
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: actor is valid; we catch the expected panic.
+            unsafe { sched_enqueue(actor_ptr) };
+        }));
+        assert!(
+            result.is_err(),
+            "sched_enqueue must panic when RUN_QUEUE is None"
+        );
+
+        // TASKS_SPAWNED must not have been incremented.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                read_tasks_spawned(),
+                0,
+                "TASKS_SPAWNED must remain 0 when enqueue fails"
+            );
+        }
+    }
+
+    #[test]
+    fn enqueue_succeeds_when_scheduler_initialized() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                read_tasks_spawned(),
+                1,
+                "TASKS_SPAWNED must be 1 after successful enqueue"
+            );
+            assert_eq!(read_queue_len(), 1, "queue must contain the enqueued actor");
+        }
+
+        hew_sched_shutdown();
+    }
+
+    // ── Cooperative tick recursion bound tests ──────────────────────────
+
+    #[test]
+    fn tick_depth_is_bounded() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Simulate being at the maximum depth by directly writing the global.
+        // SAFETY: Single-threaded test; ptr::addr_of_mut! avoids references.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(MAX_COOPERATIVE_TICK_DEPTH);
+        }
+
+        // Enqueue an actor so the queue is non-empty.
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+
+        // hew_wasm_sched_tick must return early without running the actor.
+        // SAFETY: scheduler is initialized.
+        let remaining = unsafe { hew_wasm_sched_tick(10) };
+        assert_eq!(
+            remaining, 1,
+            "tick at max depth must return immediately with queue length"
+        );
+
+        // Queue must still contain the actor (it was not activated).
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                read_queue_len(),
+                1,
+                "actor must not have been activated at max depth"
+            );
+        }
+
+        // Reset depth so shutdown can drain properly.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
+        }
+
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn tick_depth_increments_and_decrements() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Verify depth starts at 0.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(COOPERATIVE_TICK_DEPTH).read(),
+                0,
+                "depth must start at 0"
+            );
+        }
+
+        // Call tick with empty queue — depth should be 0 after (incremented then
+        // decremented within the call).
+        // SAFETY: scheduler is initialized.
+        let _ = unsafe { hew_wasm_sched_tick(1) };
+
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(COOPERATIVE_TICK_DEPTH).read(),
+                0,
+                "depth must return to 0 after tick completes"
+            );
+        }
+
         hew_sched_shutdown();
     }
 }

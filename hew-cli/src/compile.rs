@@ -1,6 +1,7 @@
 //! Build command: parse, type-check, serialize to `MessagePack`, invoke the
 //! embedded MLIR/LLVM backend, and link the final executable.
 
+use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -117,6 +118,21 @@ fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOp
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompileFromSourceError {
+    DiagnosticsRendered,
+    Message(String),
+}
+
+impl fmt::Display for CompileFromSourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiagnosticsRendered => f.write_str("diagnostics already rendered"),
+            Self::Message(message) => message.fmt(f),
+        }
     }
 }
 
@@ -401,8 +417,9 @@ pub(crate) fn compile_from_source_checked(
     source_label: &str,
     output_path: &str,
     options: &CompileOptions,
-) -> Result<(), String> {
-    let target = TargetSpec::from_requested(options.target.as_deref())?;
+) -> Result<(), CompileFromSourceError> {
+    let target = TargetSpec::from_requested(options.target.as_deref())
+        .map_err(CompileFromSourceError::Message)?;
     let frontend_options = frontend_options(&target, options);
 
     let frontend =
@@ -411,13 +428,19 @@ pub(crate) fn compile_from_source_checked(
             Ok(frontend) => frontend,
             Err(failure) => {
                 render_frontend_diagnostics(&failure.diagnostics);
-                return Err(failure.message);
+                return Err(if failure.diagnostics.is_empty() {
+                    CompileFromSourceError::Message(failure.message)
+                } else {
+                    CompileFromSourceError::DiagnosticsRendered
+                });
             }
         };
     render_frontend_diagnostics(&frontend.diagnostics);
 
     if !target.can_link_with_host_tools() {
-        return Err(target.unsupported_native_link_error());
+        return Err(CompileFromSourceError::Message(
+            target.unsupported_native_link_error(),
+        ));
     }
 
     compile_and_link(
@@ -426,7 +449,8 @@ pub(crate) fn compile_from_source_checked(
         Some(output_path),
         &target,
         options,
-    )?;
+    )
+    .map_err(CompileFromSourceError::Message)?;
     Ok(())
 }
 

@@ -1433,6 +1433,15 @@ fn eval_json_compile_error_contains_diagnostic_text() {
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
     let diagnostics = v["diagnostics"].as_str().unwrap_or("");
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        parent_stderr.is_empty(),
+        "compile diagnostics leaked to parent stderr instead of JSON: {parent_stderr:?}"
+    );
+    assert!(
+        !diagnostics.contains("\u{1b}["),
+        "compile diagnostics in JSON must not contain ANSI escapes: {diagnostics:?}"
+    );
     // The diagnostic must mention the unknown name so tooling can surface it.
     assert!(
         diagnostics.contains("this_does_not_exist_at_all")

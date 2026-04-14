@@ -52,6 +52,11 @@ fn diag_println(s: &str) {
     });
 }
 
+/// Emit a plain diagnostic line through the capture-aware sink.
+pub(crate) fn emit_plain_diagnostic_line(s: &str) {
+    diag_println(s);
+}
+
 // ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
 const YELLOW: &str = "\x1b[1;33m";

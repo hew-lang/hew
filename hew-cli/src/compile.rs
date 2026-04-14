@@ -139,7 +139,9 @@ impl fmt::Display for CompileFromSourceError {
 fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
     for diagnostic in diagnostics {
         match &diagnostic.kind {
-            FrontendDiagnosticKind::Message(message) => eprintln!("{message}"),
+            FrontendDiagnosticKind::Message(message) => {
+                crate::diagnostic::emit_plain_diagnostic_line(message);
+            }
             FrontendDiagnosticKind::Parse(error) => {
                 let suggestions: Vec<String> = error.hint.iter().cloned().collect();
                 if let (Some(source), Some(filename)) =
@@ -168,7 +170,10 @@ fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                         hew_parser::Severity::Warning => "warning",
                         hew_parser::Severity::Error => "error",
                     };
-                    eprintln!("{level}: {}", error.message);
+                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "{level}: {}",
+                        error.message
+                    ));
                 }
             }
             FrontendDiagnosticKind::Type(error) => {
@@ -202,7 +207,10 @@ fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                         hew_types::error::Severity::Warning => "warning",
                         hew_types::error::Severity::Error => "error",
                     };
-                    eprintln!("{level}: {}", error.message);
+                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "{level}: {}",
+                        error.message
+                    ));
                 }
             }
             FrontendDiagnosticKind::InferredType { error, fatal } => {
@@ -258,26 +266,26 @@ fn render_inferred_type_serialization_diagnostic(
                 );
             }
         } else if let Some(filename) = filename {
-            eprintln!(
+            crate::diagnostic::emit_plain_diagnostic_line(&format!(
                 "{}: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
                 if fatal { "error" } else { "warning" },
                 filename,
                 span.start,
                 span.end
-            );
+            ));
         } else {
-            eprintln!(
+            crate::diagnostic::emit_plain_diagnostic_line(&format!(
                 "{}: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
                 if fatal { "error" } else { "warning" },
                 span.start,
                 span.end
-            );
+            ));
         }
     } else {
-        eprintln!(
+        crate::diagnostic::emit_plain_diagnostic_line(&format!(
             "{}: cannot serialize inferred type for code generation: {error}",
             if fatal { "error" } else { "warning" }
-        );
+        ));
     }
 }
 

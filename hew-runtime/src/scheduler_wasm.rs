@@ -467,14 +467,14 @@ unsafe fn drain_expired_sleepers(now_ms: u64) -> u32 {
 ///
 /// Must be called from the single-threaded WASM cooperative scheduler
 /// context (same thread that owns `SLEEP_QUEUE`).
-pub(crate) unsafe fn cancel_actor_sleep_queue_entry(actor: *mut HewActor) {
+pub(crate) unsafe fn cancel_actor_sleep_queue_entry(actor: *mut crate::actor::HewActor) {
     #[expect(
         static_mut_refs,
         reason = "single-threaded cooperative scheduler; no concurrent mutation"
     )]
     // SAFETY: single-threaded; caller upholds cooperative-scheduler invariant.
     unsafe {
-        SLEEP_QUEUE.retain(|&(_, a)| !std::ptr::eq(a, actor));
+        SLEEP_QUEUE.retain(|&(_, a)| !std::ptr::eq(a.cast::<crate::actor::HewActor>(), actor));
     }
 }
 
@@ -4591,7 +4591,7 @@ mod tests {
 
         // Simulate what cleanup_all_actors does before freeing: cancel the entry.
         // SAFETY: Single-threaded; actor is still valid here.
-        unsafe { cancel_actor_sleep_queue_entry(a_ptr) };
+        unsafe { cancel_actor_sleep_queue_entry(a_ptr.cast::<crate::actor::HewActor>()) };
 
         assert_eq!(
             hew_wasm_sleeping_count(),

@@ -5,6 +5,9 @@ use super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 )]
 use super::*;
 
+type DangerousRcBinding = (String, String);
+type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
+
 impl Checker {
     /// Synthesize: infer the type of an expression (bottom-up).
     pub(super) fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
@@ -1779,13 +1782,13 @@ impl Checker {
         // identity patterns (`fn id<T>(x: T) -> T { x }`) which are safe for
         // non-Rc types.  Call-site / monomorphisation-time checking is deferred
         // to a future slice.
-        let dangerous_params: Vec<(&str, &str)> = fd
+        let dangerous_params: DangerousRcScope = fd
             .params
             .iter()
             .filter_map(|p| {
                 let ty = self.resolve_type_expr(&p.ty);
                 if matches!(ty, Ty::Named { ref name, .. } if name == "Rc") {
-                    return Some((p.name.as_str(), "Rc"));
+                    return Some((p.name.clone(), Some((p.name.clone(), "Rc".to_string()))));
                 }
                 None
             })
@@ -1793,106 +1796,30 @@ impl Checker {
         if dangerous_params.is_empty() {
             return;
         }
-
-        let param_names: Vec<&str> = dangerous_params.iter().map(|(n, _)| *n).collect();
-        let param_tags: HashMap<&str, &str> = dangerous_params.iter().copied().collect();
-
-        // Collect locals tainted by storing a dangerous param via method
-        // calls (v.push(r)), direct aliasing (let v = r), or aggregate
-        // wrapping (let v = Some(r)).  Taint propagates forward so that
-        // `let a = r; v.push(a);` taints both `a` and `v`.
-        let mut tainted: HashMap<String, (String, String)> = HashMap::new();
-        Self::collect_tainted_locals(&fd.body.stmts, &param_names, &param_tags, &mut tainted);
-
-        // Build extended name/tag sets including tainted locals so the
-        // return-position checker also flags `return v` when v is tainted.
-        let tainted_tag_storage: Vec<(String, String)> = tainted
-            .iter()
-            .map(|(local, (source, tag))| (local.clone(), format!("tainted:{source}:{tag}")))
-            .collect();
-        let mut all_names: Vec<&str> = param_names.clone();
-        let mut all_tags: HashMap<&str, &str> = param_tags.clone();
-        for (name, tag) in &tainted_tag_storage {
-            all_names.push(name.as_str());
-            all_tags.insert(name.as_str(), tag.as_str());
-        }
-
-        // Check trailing expression (implicit return).
-        if let Some(trailing) = &fd.body.trailing_expr {
-            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, &all_names, &all_tags);
-        }
-
-        // Scan statements for explicit `return <ident>` / `break <ident>`.
-        self.scan_stmts_for_rc_param_return(&fd.body.stmts, &all_names, &all_tags);
+        let mut scopes = vec![dangerous_params];
+        self.scan_block_for_rc_param_return(&fd.body, &mut scopes);
     }
 
-    /// If `expr` is a bare identifier matching one of `rc_params` (or a block
-    /// expression whose trailing expression is), emit a fail-closed error.
-    ///
-    /// `param_tags` maps param name → tag string (`"Rc"` for explicit Rc params,
-    /// or `"tainted:<source>:<tag>"` for locals tainted by storing an Rc param).
+    /// If `expr` is a bare identifier matching one of the visible dangerous Rc
+    /// bindings (or a block expression whose trailing expression is), emit a
+    /// fail-closed error.
     pub(super) fn check_expr_is_rc_param_return(
         &mut self,
         expr: &Expr,
         span: &Span,
-        rc_params: &[&str],
-        param_tags: &HashMap<&str, &str>,
+        scopes: &[DangerousRcScope],
     ) {
         match expr {
-            Expr::Identifier(name) if rc_params.contains(&name.as_str()) => {
-                let tag = param_tags.get(name.as_str()).copied().unwrap_or("Rc");
-                let (message, note, suggestion) = if let Some(rest) = tag.strip_prefix("tainted:") {
-                    // Tainted local: tag = "tainted:<source_param>:Rc"
-                    let (source_param, _source_tag) = rest.split_once(':').unwrap_or((rest, "Rc"));
-                    (
-                        format!(
-                            "returning local `{name}` which contains borrowed parameter \
-                             `{source_param}` — the parameter was stored without cloning, \
-                             causing a double-free when both the caller's local and the \
-                             return value are dropped"
-                        ),
-                        format!(
-                            "parameter `{source_param}` is borrowed under call-boundary \
-                             ownership; storing it in `{name}` does not transfer ownership"
-                        ),
-                        format!("clone the parameter before storing: `{source_param}.clone()`"),
-                    )
-                } else {
-                    (
-                        format!(
-                            "returning Rc parameter `{name}` transfers a borrowed reference \
-                             without incrementing the refcount — this will cause a double-free \
-                             when both the caller's local and the return value are dropped"
-                        ),
-                        "function parameters are borrowed under call-boundary ownership; \
-                         the caller retains ownership and drops at scope exit"
-                            .to_string(),
-                        format!(
-                            "use `{name}.clone()` to create an owned copy with an incremented refcount"
-                        ),
-                    )
-                };
-                self.errors.push(TypeError {
-                    severity: crate::error::Severity::Error,
-                    kind: TypeErrorKind::BorrowedParamReturn,
-                    span: span.clone(),
-                    message,
-                    notes: vec![(span.clone(), note)],
-                    suggestions: vec![suggestion],
-                    source_module: self.current_module.clone(),
-                });
+            Expr::Identifier(name) => {
+                if let Some((source_param, _tag)) = Self::lookup_dangerous_binding(name, scopes) {
+                    self.emit_borrowed_param_return(name, &source_param, span);
+                }
             }
             // Descend into block expressions: `{ r }` wraps the identifier
-            // in an Expr::Block whose trailing_expr carries the real value.
+            // in an Expr::Block whose local bindings may also shadow params.
             Expr::Block(blk) => {
-                if let Some(trailing) = &blk.trailing_expr {
-                    self.check_expr_is_rc_param_return(
-                        &trailing.0,
-                        &trailing.1,
-                        rc_params,
-                        param_tags,
-                    );
-                }
+                let mut nested_scopes = scopes.to_vec();
+                self.scan_block_for_rc_param_return(blk, &mut nested_scopes);
             }
             // Aggregate escapes: enum-variant constructors like Some(r), Ok(r),
             // Err(r) embed an Rc param in a container, transferring the borrowed
@@ -1903,19 +1830,19 @@ impl Checker {
             Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
                 for arg in args {
                     let (e, s) = arg.expr();
-                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
+                    self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
             // Tuple literals: (r, 0), (r,) embed the borrowed Rc param.
             Expr::Tuple(elems) => {
                 for (e, s) in elems {
-                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
+                    self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
             // Struct initializers: MyStruct { field: r } embeds the borrowed Rc param.
             Expr::StructInit { fields, .. } => {
                 for (_field_name, (e, s)) in fields {
-                    self.check_expr_is_rc_param_return(e, s, rc_params, param_tags);
+                    self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
             _ => {}
@@ -1939,24 +1866,134 @@ impl Checker {
         }
     }
 
-    /// Check if `expr` directly names or structurally contains an identifier
-    /// in `dangerous`.  Returns the first match or `None`.
+    /// Return the nearest visible dangerous Rc binding for `name`.
+    fn lookup_dangerous_binding(
+        name: &str,
+        scopes: &[DangerousRcScope],
+    ) -> Option<DangerousRcBinding> {
+        for scope in scopes.iter().rev() {
+            if let Some(binding) = scope.get(name) {
+                return binding.clone();
+            }
+        }
+        None
+    }
+
+    fn current_dangerous_scope_mut(scopes: &mut [DangerousRcScope]) -> &mut DangerousRcScope {
+        scopes
+            .last_mut()
+            .expect("borrowed Rc tracking always maintains at least one scope")
+    }
+
+    fn define_dangerous_binding(
+        scopes: &mut [DangerousRcScope],
+        name: String,
+        binding: Option<DangerousRcBinding>,
+    ) {
+        Self::current_dangerous_scope_mut(scopes).insert(name, binding);
+    }
+
+    fn update_dangerous_binding(
+        scopes: &mut [DangerousRcScope],
+        name: &str,
+        binding: Option<DangerousRcBinding>,
+    ) {
+        for scope in scopes.iter_mut().rev() {
+            if let Some(existing) = scope.get_mut(name) {
+                *existing = binding;
+                return;
+            }
+        }
+        Self::define_dangerous_binding(scopes, name.to_string(), binding);
+    }
+
+    fn shadow_pattern_bindings(pattern: &Pattern, scopes: &mut [DangerousRcScope]) {
+        match pattern {
+            Pattern::Identifier(name) => {
+                Self::define_dangerous_binding(scopes, name.clone(), None);
+            }
+            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+                for (pattern, _) in patterns {
+                    Self::shadow_pattern_bindings(pattern, scopes);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for field in fields {
+                    if let Some((pattern, _)) = &field.pattern {
+                        Self::shadow_pattern_bindings(pattern, scopes);
+                    } else {
+                        Self::define_dangerous_binding(scopes, field.name.clone(), None);
+                    }
+                }
+            }
+            Pattern::Or(left, right) => {
+                Self::shadow_pattern_bindings(&left.0, scopes);
+                Self::shadow_pattern_bindings(&right.0, scopes);
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
+    fn emit_borrowed_param_return(&mut self, name: &str, source_param: &str, span: &Span) {
+        let (message, note, suggestion) = if name == source_param {
+            (
+                format!(
+                    "returning Rc parameter `{name}` transfers a borrowed reference \
+                     without incrementing the refcount — this will cause a double-free \
+                     when both the caller's local and the return value are dropped"
+                ),
+                "function parameters are borrowed under call-boundary ownership; \
+                 the caller retains ownership and drops at scope exit"
+                    .to_string(),
+                format!(
+                    "use `{name}.clone()` to create an owned copy with an incremented refcount"
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "returning local `{name}` which contains borrowed parameter \
+                     `{source_param}` — the parameter was stored without cloning, \
+                     causing a double-free when both the caller's local and the \
+                     return value are dropped"
+                ),
+                format!(
+                    "parameter `{source_param}` is borrowed under call-boundary \
+                     ownership; storing it in `{name}` does not transfer ownership"
+                ),
+                format!("clone the parameter before storing: `{source_param}.clone()`"),
+            )
+        };
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::BorrowedParamReturn,
+            span: span.clone(),
+            message,
+            notes: vec![(span.clone(), note)],
+            suggestions: vec![suggestion],
+            source_module: self.current_module.clone(),
+        });
+    }
+
+    /// Check if `expr` directly names or structurally contains a visible
+    /// dangerous Rc binding. Returns the first match or `None`.
     ///
     /// Structural descent mirrors `check_expr_is_rc_param_return`: constructors
     /// (uppercase-initial calls), tuples, struct inits, and blocks are
     /// containers that embed the value.  Regular lowercase function/method
     /// calls are borrows under call-boundary ownership — the return value is
     /// unrelated, so we do NOT recurse into those.
-    pub(super) fn expr_mentions_dangerous_param(
+    pub(super) fn dangerous_source_in_expr(
+        &mut self,
         expr: &Expr,
-        dangerous: &HashSet<String>,
-    ) -> Option<String> {
+        scopes: &[DangerousRcScope],
+    ) -> Option<DangerousRcBinding> {
         match expr {
-            Expr::Identifier(name) if dangerous.contains(name) => Some(name.clone()),
+            Expr::Identifier(name) => Self::lookup_dangerous_binding(name, scopes),
             Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
                 for arg in args {
                     let (e, _) = arg.expr();
-                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                    if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
                         return Some(hit);
                     }
                 }
@@ -1964,7 +2001,7 @@ impl Checker {
             }
             Expr::Tuple(elems) => {
                 for (e, _) in elems {
-                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                    if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
                         return Some(hit);
                     }
                 }
@@ -1972,78 +2009,94 @@ impl Checker {
             }
             Expr::StructInit { fields, .. } => {
                 for (_, (e, _)) in fields {
-                    if let Some(hit) = Self::expr_mentions_dangerous_param(e, dangerous) {
+                    if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
                         return Some(hit);
                     }
                 }
                 None
             }
-            Expr::Block(blk) => blk
-                .trailing_expr
-                .as_deref()
-                .and_then(|(e, _)| Self::expr_mentions_dangerous_param(e, dangerous)),
+            Expr::Block(blk) => {
+                let mut nested_scopes = scopes.to_vec();
+                nested_scopes.push(HashMap::new());
+                self.scan_stmts_for_rc_param_return(&blk.stmts, &mut nested_scopes);
+                blk.trailing_expr
+                    .as_deref()
+                    .and_then(|(e, _)| self.dangerous_source_in_expr(e, &nested_scopes))
+            }
             _ => None,
         }
     }
 
-    /// Forward-scan statements to find local variables tainted by storing a
-    /// dangerous Rc parameter.
-    ///
-    /// A local is "tainted" when:
-    /// 1. Direct alias: `let v = r;`
-    /// 2. Aggregate wrap: `let v = Some(r);`
-    /// 3. Method-call store: `v.push(r);`
-    ///
-    /// Taint propagates forward: `let a = r; v.push(a);` taints both `a`
-    /// and `v` because `a` enters the dangerous set before the `push` is
-    /// processed.  Control-flow bodies are scanned unconditionally
-    /// (fail-closed: if a dangerous param is stored inside a branch, the
-    /// local is tainted regardless of the branch condition).
-    #[allow(
+    pub(super) fn scan_block_for_rc_param_return(
+        &mut self,
+        block: &Block,
+        scopes: &mut Vec<DangerousRcScope>,
+    ) {
+        scopes.push(HashMap::new());
+        self.scan_stmts_for_rc_param_return(&block.stmts, scopes);
+        if let Some(trailing) = &block.trailing_expr {
+            self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
+        }
+        scopes.pop();
+    }
+
+    /// Recursively scan statements for `return <rc_param_ident>`,
+    /// `break <rc_param_ident>`, and nested control-flow bodies.
+    #[expect(
         clippy::too_many_lines,
-        reason = "forward taint tracks many statement kinds"
+        reason = "borrowed Rc escape scanning covers many statement forms"
     )]
-    pub(super) fn collect_tainted_locals(
+    pub(super) fn scan_stmts_for_rc_param_return(
+        &mut self,
         stmts: &[Spanned<Stmt>],
-        rc_params: &[&str],
-        param_tags: &HashMap<&str, &str>,
-        tainted: &mut HashMap<String, (String, String)>,
+        scopes: &mut Vec<DangerousRcScope>,
     ) {
         for (stmt, _span) in stmts {
-            // Rebuild the dangerous set each iteration to include newly
-            // tainted locals.  Uses owned Strings to avoid borrow conflicts
-            // when inserting into `tainted` below.
-            let dangerous: HashSet<String> = rc_params
-                .iter()
-                .map(|s| (*s).to_string())
-                .chain(tainted.keys().cloned())
-                .collect();
-
             match stmt {
-                Stmt::Let {
-                    pattern: (Pattern::Identifier(name), _),
-                    value: Some((expr, _)),
-                    ..
-                }
-                | Stmt::Var {
-                    name,
-                    value: Some((expr, _)),
-                    ..
-                } => {
-                    if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous) {
-                        let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
-                        tainted.insert(name.clone(), resolved);
+                Stmt::Let { pattern, value, .. } => {
+                    let binding = value
+                        .as_ref()
+                        .and_then(|(expr, _)| self.dangerous_source_in_expr(expr, scopes));
+                    match &pattern.0 {
+                        Pattern::Identifier(name) => {
+                            Self::define_dangerous_binding(scopes, name.clone(), binding);
+                        }
+                        _ => {
+                            Self::shadow_pattern_bindings(&pattern.0, scopes);
+                        }
                     }
                 }
+                Stmt::Var { name, value, .. } => {
+                    let binding = value
+                        .as_ref()
+                        .and_then(|(expr, _)| self.dangerous_source_in_expr(expr, scopes));
+                    Self::define_dangerous_binding(scopes, name.clone(), binding);
+                }
                 Stmt::Assign {
-                    target: (Expr::Identifier(target_name), _),
+                    target: (Expr::Identifier(name), _),
                     value: (expr, _),
                     ..
                 } => {
-                    if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous) {
-                        let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
-                        tainted.insert(target_name.clone(), resolved);
+                    let binding = self.dangerous_source_in_expr(expr, scopes);
+                    Self::update_dangerous_binding(scopes, name, binding);
+                }
+                Stmt::Assign {
+                    target: (Expr::FieldAccess { object, .. }, _),
+                    value: (expr, _),
+                    ..
+                } => {
+                    if let Expr::Identifier(obj_name) = &object.0 {
+                        if let Some(binding) = self.dangerous_source_in_expr(expr, scopes) {
+                            Self::update_dangerous_binding(scopes, obj_name, Some(binding));
+                        }
                     }
+                }
+                Stmt::Return(Some((expr, es)))
+                | Stmt::Break {
+                    value: Some((expr, es)),
+                    ..
+                } => {
+                    self.check_expr_is_rc_param_return(expr, es, scopes);
                 }
                 Stmt::Expression((
                     Expr::MethodCall {
@@ -2054,219 +2107,94 @@ impl Checker {
                     },
                     _,
                 )) => {
-                    // Only taint the receiver for methods that actually store
-                    // the argument.  Read-only methods (contains, index, len,
-                    // etc.) borrow the arg and return independently.
                     const STORING_METHODS: &[&str] = &["push", "set", "insert", "extend", "append"];
                     if STORING_METHODS.contains(&method.as_str()) {
                         if let Expr::Identifier(recv_name) = &receiver.0 {
                             for arg in args {
-                                let (e, _) = arg.expr();
-                                if let Some(source) =
-                                    Self::expr_mentions_dangerous_param(e, &dangerous)
-                                {
-                                    let resolved =
-                                        Self::resolve_taint_source(&source, param_tags, tainted);
-                                    tainted.insert(recv_name.clone(), resolved);
+                                let (expr, _) = arg.expr();
+                                if let Some(binding) = self.dangerous_source_in_expr(expr, scopes) {
+                                    Self::update_dangerous_binding(
+                                        scopes,
+                                        recv_name,
+                                        Some(binding),
+                                    );
                                     break;
                                 }
                             }
                         }
                     }
                 }
-                // Field-assignment escape: `s.field = r;` stores a dangerous
-                // param into a struct, tainting the struct variable.
-                Stmt::Assign {
-                    target: (Expr::FieldAccess { object, .. }, _),
-                    value: (expr, _),
-                    ..
-                } => {
-                    if let Expr::Identifier(obj_name) = &object.0 {
-                        if let Some(source) = Self::expr_mentions_dangerous_param(expr, &dangerous)
-                        {
-                            let resolved = Self::resolve_taint_source(&source, param_tags, tainted);
-                            tainted.insert(obj_name.clone(), resolved);
-                        }
-                    }
-                }
-                // Recurse into control flow — fail-closed: if a dangerous
-                // param is stored inside a branch, the local is tainted
-                // unconditionally.
-                Stmt::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    Self::collect_tainted_locals(&then_block.stmts, rc_params, param_tags, tainted);
-                    if let Some(else_blk) = else_block {
-                        if let Some(if_stmt) = &else_blk.if_stmt {
-                            Self::collect_tainted_locals(
-                                std::slice::from_ref(if_stmt.as_ref()),
-                                rc_params,
-                                param_tags,
-                                tainted,
-                            );
-                        }
-                        if let Some(blk) = &else_blk.block {
-                            Self::collect_tainted_locals(
-                                &blk.stmts, rc_params, param_tags, tainted,
-                            );
-                        }
-                    }
-                }
-                Stmt::IfLet {
-                    body, else_body, ..
-                } => {
-                    Self::collect_tainted_locals(&body.stmts, rc_params, param_tags, tainted);
-                    if let Some(else_blk) = else_body {
-                        Self::collect_tainted_locals(
-                            &else_blk.stmts,
-                            rc_params,
-                            param_tags,
-                            tainted,
-                        );
-                    }
-                }
-                Stmt::For { body, .. }
-                | Stmt::While { body, .. }
-                | Stmt::WhileLet { body, .. }
-                | Stmt::Loop { body, .. } => {
-                    Self::collect_tainted_locals(&body.stmts, rc_params, param_tags, tainted);
-                }
-                Stmt::Match { arms, .. } => {
-                    for arm in arms {
-                        if let Expr::Block(blk) = &arm.body.0 {
-                            Self::collect_tainted_locals(
-                                &blk.stmts, rc_params, param_tags, tainted,
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Trace a taint source back to the original parameter.  If `source` is
-    /// itself a tainted local, follow the chain to the root param.
-    pub(super) fn resolve_taint_source(
-        source: &str,
-        param_tags: &HashMap<&str, &str>,
-        tainted: &HashMap<String, (String, String)>,
-    ) -> (String, String) {
-        if let Some(tag) = param_tags.get(source) {
-            (source.to_string(), (*tag).to_string())
-        } else if let Some((orig, tag)) = tainted.get(source) {
-            (orig.clone(), tag.clone())
-        } else {
-            (source.to_string(), "Rc".to_string())
-        }
-    }
-
-    /// Recursively scan statements for `return <rc_param_ident>`,
-    /// `break <rc_param_ident>`, and nested control-flow bodies.
-    pub(super) fn scan_stmts_for_rc_param_return(
-        &mut self,
-        stmts: &[Spanned<Stmt>],
-        rc_params: &[&str],
-        param_tags: &HashMap<&str, &str>,
-    ) {
-        for (stmt, _span) in stmts {
-            match stmt {
-                Stmt::Return(Some((expr, es)))
-                | Stmt::Break {
-                    value: Some((expr, es)),
-                    ..
-                } => {
-                    self.check_expr_is_rc_param_return(expr, es, rc_params, param_tags);
+                Stmt::Expression((Expr::Block(block), _)) => {
+                    self.scan_block_for_rc_param_return(block, scopes);
                 }
                 Stmt::If {
                     then_block,
                     else_block,
                     ..
                 } => {
-                    self.scan_stmts_for_rc_param_return(&then_block.stmts, rc_params, param_tags);
-                    if let Some(then_trailing) = &then_block.trailing_expr {
-                        self.check_expr_is_rc_param_return(
-                            &then_trailing.0,
-                            &then_trailing.1,
-                            rc_params,
-                            param_tags,
-                        );
-                    }
+                    self.scan_block_for_rc_param_return(then_block, scopes);
                     if let Some(else_blk) = else_block {
                         if let Some(if_stmt) = &else_blk.if_stmt {
                             // else-if: recurse into the nested Stmt::If
                             self.scan_stmts_for_rc_param_return(
                                 std::slice::from_ref(if_stmt.as_ref()),
-                                rc_params,
-                                param_tags,
+                                scopes,
                             );
                         }
                         if let Some(blk) = &else_blk.block {
-                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params, param_tags);
-                            if let Some(trailing) = &blk.trailing_expr {
-                                self.check_expr_is_rc_param_return(
-                                    &trailing.0,
-                                    &trailing.1,
-                                    rc_params,
-                                    param_tags,
-                                );
-                            }
+                            self.scan_block_for_rc_param_return(blk, scopes);
                         }
                     }
                 }
-                Stmt::For { body, .. }
-                | Stmt::While { body, .. }
-                | Stmt::WhileLet { body, .. }
-                | Stmt::Loop { body, .. } => {
-                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params, param_tags);
+                Stmt::For { pattern, body, .. } => {
+                    scopes.push(HashMap::new());
+                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
+                    if let Some(trailing) = &body.trailing_expr {
+                        self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
+                    }
+                    scopes.pop();
+                }
+                Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+                    self.scan_block_for_rc_param_return(body, scopes);
+                }
+                Stmt::WhileLet { pattern, body, .. } => {
+                    scopes.push(HashMap::new());
+                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
+                    if let Some(trailing) = &body.trailing_expr {
+                        self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
+                    }
+                    scopes.pop();
                 }
                 Stmt::IfLet {
-                    body, else_body, ..
+                    pattern,
+                    body,
+                    else_body,
+                    ..
                 } => {
-                    self.scan_stmts_for_rc_param_return(&body.stmts, rc_params, param_tags);
+                    scopes.push(HashMap::new());
+                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(then_trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(
                             &then_trailing.0,
                             &then_trailing.1,
-                            rc_params,
-                            param_tags,
+                            scopes,
                         );
                     }
+                    scopes.pop();
                     if let Some(else_blk) = else_body {
-                        self.scan_stmts_for_rc_param_return(&else_blk.stmts, rc_params, param_tags);
-                        if let Some(else_trailing) = &else_blk.trailing_expr {
-                            self.check_expr_is_rc_param_return(
-                                &else_trailing.0,
-                                &else_trailing.1,
-                                rc_params,
-                                param_tags,
-                            );
-                        }
+                        self.scan_block_for_rc_param_return(else_blk, scopes);
                     }
                 }
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
+                        scopes.push(HashMap::new());
+                        Self::shadow_pattern_bindings(&arm.pattern.0, scopes);
                         // Match arm body is an Expr — check if it's a bare Rc param
-                        self.check_expr_is_rc_param_return(
-                            &arm.body.0,
-                            &arm.body.1,
-                            rc_params,
-                            param_tags,
-                        );
-                        // If the body is a Block, recurse into its statements
-                        if let Expr::Block(blk) = &arm.body.0 {
-                            self.scan_stmts_for_rc_param_return(&blk.stmts, rc_params, param_tags);
-                            if let Some(trailing) = &blk.trailing_expr {
-                                self.check_expr_is_rc_param_return(
-                                    &trailing.0,
-                                    &trailing.1,
-                                    rc_params,
-                                    param_tags,
-                                );
-                            }
-                        }
+                        self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, scopes);
+                        scopes.pop();
                     }
                 }
                 _ => {}

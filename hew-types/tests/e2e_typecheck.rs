@@ -3383,6 +3383,59 @@ fn rc_param_iflet_both_branches_trailing_expr_errors() {
     );
 }
 
+/// A local binding that shadows an Rc parameter must suppress the borrowed
+/// return diagnostic for that scope.
+#[test]
+fn rc_param_shadowing_local_return_is_clean() {
+    let output = typecheck_inline(
+        r"
+        fn shadow(r: Rc<int>) -> Rc<int> {
+            let r = Rc::new(99);
+            r
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        rc_errors.is_empty(),
+        "shadowing local Rc should not emit BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
+/// Shadowing only suppresses the borrowed return diagnostic inside the shadowed
+/// scope; other branches that still return the original parameter must warn.
+#[test]
+fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
+    let output = typecheck_inline(
+        r"
+        fn shadow_then_escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+            if let Some(v) = opt {
+                let r = Rc::new(v);
+                r
+            } else {
+                r
+            }
+        }
+        fn main() {}
+        ",
+    );
+    let rc_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert_eq!(
+        rc_errors.len(),
+        1,
+        "only the else branch should emit BorrowedParamReturn, got: {rc_errors:#?}",
+    );
+}
+
 // ── Known limitations of BorrowedParamReturn ────────────────────────────────────
 //
 // The following patterns are NOT caught by the current syntactic scanner and

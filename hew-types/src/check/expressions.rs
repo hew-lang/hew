@@ -2601,7 +2601,7 @@ impl Checker {
                 name: name.to_string(),
                 args: type_args,
             }
-        } else if let Some((enum_name, variant_fields)) =
+        } else if let Some((enum_name, variant_fields, enum_type_params)) =
             self.type_defs.iter().find_map(|(type_name, td)| {
                 let short = name.rsplit("::").next().unwrap_or(name);
                 // For qualified names (e.g., Keeper::Holding), verify prefix
@@ -2612,16 +2612,53 @@ impl Checker {
                     }
                 }
                 match td.variants.get(name).or_else(|| td.variants.get(short)) {
-                    Some(VariantDef::Struct(fields)) => Some((type_name.clone(), fields.clone())),
+                    Some(VariantDef::Struct(fields)) => {
+                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
+                    }
                     _ => None,
                 }
             })
         {
+            // Infer generic type args from field values, mirroring the plain-struct path.
+            let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+
             for (field_name, (expr, es)) in fields {
-                if let Some((_, declared_ty)) =
-                    variant_fields.iter().find(|(name, _)| name == field_name)
+                if let Some((_, declared_ty)) = variant_fields.iter().find(|(n, _)| n == field_name)
                 {
-                    self.check_against(expr, es, declared_ty);
+                    // Substitute already-inferred type params into the expected type
+                    let mut expected = declared_ty.clone();
+                    for (tp, concrete) in &type_arg_map {
+                        expected = expected.substitute_named_param(tp, concrete);
+                    }
+
+                    // If the expected type is still an unbound type parameter, synthesize
+                    // so the field value determines the concrete type.
+                    let is_unbound_param = enum_type_params.iter().any(|tp| {
+                        !type_arg_map.contains_key(tp)
+                            && expected
+                                == (Ty::Named {
+                                    name: tp.clone(),
+                                    args: vec![],
+                                })
+                    });
+                    let actual = if is_unbound_param {
+                        self.synthesize(expr, es)
+                    } else {
+                        self.check_against(expr, es, &expected)
+                    };
+
+                    // Bind bare type params from this field's declared type
+                    for tp in &enum_type_params {
+                        if !type_arg_map.contains_key(tp)
+                            && *declared_ty
+                                == (Ty::Named {
+                                    name: tp.clone(),
+                                    args: vec![],
+                                })
+                        {
+                            type_arg_map.insert(tp.clone(), actual.clone());
+                        }
+                    }
                 } else {
                     let similar = crate::error::find_similar(
                         field_name,
@@ -2645,9 +2682,19 @@ impl Checker {
                     );
                 }
             }
+            // Build concrete type args from inferred bindings
+            let type_args: Vec<Ty> = enum_type_params
+                .iter()
+                .map(|tp| {
+                    type_arg_map
+                        .get(tp)
+                        .cloned()
+                        .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                })
+                .collect();
             Ty::Named {
                 name: enum_name,
-                args: vec![],
+                args: type_args,
             }
         } else {
             let similar = crate::error::find_similar(

@@ -212,12 +212,17 @@ impl PendingLoweringFact {
 /// warning severity.  They reach codegen via a controlled path where codegen
 /// can emit grouped diagnostics.
 ///
-/// Variants in the **reject group** (`Channels`, `Timers`, `Streams`) are
-/// emitted as compile-time **errors**.  Their runtime entry points trap via
-/// `unreachable!` on wasm32 (see `hew-runtime/src/lib.rs` `wasm_stubs`), so
-/// allowing them through type checking would produce a program that traps
-/// silently at runtime.  Making them errors ensures WASM programs fail loudly
-/// at check time rather than at the first use at runtime.
+/// Variants in the **reject group** (`Channels`, `Streams`) are emitted as
+/// compile-time **errors**.  Their runtime entry points trap via `unreachable!`
+/// on wasm32 (see `hew-runtime/src/lib.rs` `wasm_stubs`), so allowing them
+/// through type checking would produce a program that traps silently at runtime.
+/// Making them errors ensures WASM programs fail loudly at check time rather
+/// than at the first use at runtime.
+///
+/// `Timers` is now in the **warning group**: `sleep_ms`/`sleep` are implemented
+/// with cooperative semantics on wasm32 (park at message boundary rather than
+/// mid-handler).  See `hew-runtime/src/scheduler_wasm.rs` for the
+/// sleeping-actor queue.
 ///
 /// `link`/`unlink`/`monitor`/`demonitor` are bundled together under
 /// `LinkMonitor` because they share the same OS-thread dependency.
@@ -231,6 +236,12 @@ pub(super) enum WasmUnsupportedFeature {
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
+    /// `sleep_ms`, `sleep`: sleep is cooperative on wasm32 — it takes effect
+    /// at the *message boundary*, not mid-handler.  Code after `sleep_ms` in
+    /// the same receive handler still executes before the park happens.
+    /// Use `hew_wasm_timer_tick` (host) or `hew_wasm_sched_tick` (scheduler)
+    /// to advance the timer queue.
+    Timers,
     // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
     /// `channel.new`, `Sender<T>::*`, `Receiver<T>::*`: MPSC channels require
     /// OS mutexes/condvars unavailable on the wasm32 cooperative scheduler.
@@ -240,10 +251,6 @@ pub(super) enum WasmUnsupportedFeature {
     /// cooperative-scheduler recv yield/resume and send backpressure are
     /// available.
     Channels,
-    /// `sleep_ms`, `sleep`: the wasm32 shim returns immediately (no blocking),
-    /// silently violating the expected delay semantics.
-    /// WASM-TODO: integrate with host timer API / WASI `clock_nanosleep`.
-    Timers,
     /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
     /// runtime module is not compiled for wasm32
     /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
@@ -279,8 +286,9 @@ impl WasmUnsupportedFeature {
                  use the actor ask pattern instead"
             }
             Self::Timers => {
-                "blocking sleep is a no-op on wasm32; \
-                 WASM-TODO: integrate with host timer / WASI clock_nanosleep"
+                "sleep is cooperative on wasm32: it parks the actor at the message boundary \
+                 rather than mid-handler; code after sleep_ms in the same handler still \
+                 executes before the park takes effect"
             }
             Self::Streams => {
                 "I/O streams require the OS threading and networking stack; \

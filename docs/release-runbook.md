@@ -138,7 +138,9 @@ This triggers `.github/workflows/release.yml`, which:
 - **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +
   TSan link failures (duplicate lang items, panic-strategy mismatch) have no clean
   repo-side fix as of 2026-04.  Kept for signal; re-evaluate when upstream resolves.
-- **WASM capability gaps**: Channels, timers, and I/O streams are rejected at
-  compile time when targeting wasm32-wasi; they are not yet implemented.  See
+- **WASM capability gaps**: Channels and I/O streams are rejected at compile
+  time when targeting wasm32-wasi.  Timers (`sleep_ms`/`sleep`) now have
+  cooperative semantics on WASM (actor parks at message boundary) and emit a
+  warning rather than an error.  See
   [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full
   Tier 1 / Tier 2 disposition table and the WASM-TODO backlog.

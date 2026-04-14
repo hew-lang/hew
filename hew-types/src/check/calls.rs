@@ -175,12 +175,14 @@ impl Checker {
             "supervisor_child" | "supervisor_stop" => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
             }
-            // sleep_ms / sleep: the wasm32 shim returns immediately without
-            // blocking (see hew-runtime/src/lib.rs wasm_stubs::hew_sleep_ms).
-            // This silently violates the expected delay semantics, so we reject
-            // at compile time rather than silently compiling a broken program.
+            // sleep_ms / sleep: the wasm32 scheduler now parks the calling actor
+            // at the message boundary and re-enqueues it once the deadline passes
+            // (see hew-runtime/src/scheduler_wasm.rs :: park_actor_sleep).
+            // Semantics are cooperative: code after sleep_ms in the same handler
+            // runs before the park takes effect.  Warn rather than reject so
+            // WASM programs can use timers with the degraded-semantics caveat.
             "sleep_ms" | "sleep" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Timers);
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::Timers);
             }
             _ => {}
         }

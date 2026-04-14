@@ -226,12 +226,12 @@ pub mod wasm_stubs {
     //!
     //! ## Design rules
     //!
-    //! - **Sleep**: must not block — `std::thread::sleep` is unavailable on
-    //!   `wasm32-unknown-unknown` and defeats the cooperative scheduler on
-    //!   `wasm32-wasi`. Return immediately; the host is responsible for
-    //!   rescheduling the actor after a timer fires.
-    //!   WASM-TODO: integrate with host timer API (e.g. `setTimeout` / WASI
-    //!   `clock_nanosleep`) once the WASM runtime has timer-backed rescheduling.
+    //! - **Sleep**: records the wakeup deadline via
+    //!   [`crate::scheduler_wasm::request_sleep`] and returns immediately.
+    //!   The cooperative scheduler parks the actor at the message boundary and
+    //!   re-enqueues it once the deadline passes (host calls
+    //!   [`crate::scheduler_wasm::hew_wasm_timer_tick`] or the implicit drain
+    //!   inside [`crate::scheduler_wasm::hew_wasm_sched_tick`]).
     //!
     //! - **Clock**: `hew_now_ms` mirrors the native runtime's monotonic
     //!   process-relative clock so timeout comparisons stay consistent on
@@ -250,20 +250,33 @@ pub mod wasm_stubs {
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 
-    /// WASM shim: yield immediately instead of blocking.
+    /// WASM sleep: park the current actor until `ms` milliseconds have elapsed.
     ///
-    /// On `wasm32-unknown-unknown`, `std::thread::sleep` is not implemented and
-    /// panics at runtime. On `wasm32-wasi` it would block the single scheduler
-    /// thread. Either way, blocking here is incorrect for the cooperative actor
-    /// model — the host must reschedule the actor after a timer fires.
+    /// Records the wakeup deadline and returns immediately.  After the current
+    /// message dispatch completes, [`crate::scheduler_wasm`] parks the actor in
+    /// the sleep queue.  The host re-enqueues it once the deadline passes by
+    /// calling [`crate::scheduler_wasm::hew_wasm_timer_tick`] with the current
+    /// time, or via the implicit drain inside [`crate::scheduler_wasm::hew_wasm_sched_tick`].
+    ///
+    /// This replaces the former intentional no-op.  The semantics are
+    /// cooperative: `sleep_ms` takes effect at the *message boundary* — code
+    /// running after `sleep_ms` in the same handler still executes before the
+    /// park happens.
     ///
     /// # Safety
     ///
-    /// No preconditions.
+    /// No preconditions — may be called from any context.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(_ms: c_int) {
-        // Intentional noop: the cooperative WASM scheduler cannot block.
-        // The caller resumes on the next scheduler tick driven by the host.
+    pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+        if ms <= 0 {
+            return;
+        }
+        // Compute the absolute deadline from the current clock.
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+        #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
+        let deadline_ms = now.saturating_add(ms as u64);
+        crate::scheduler_wasm::request_sleep(deadline_ms);
     }
 
     // ── Clock ────────────────────────────────────────────────────────────────

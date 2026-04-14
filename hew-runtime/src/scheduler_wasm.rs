@@ -206,6 +206,29 @@ unsafe fn hew_msg_node_free(node: *mut HewMsgNode) {
     unsafe { crate::mailbox_wasm::hew_msg_node_free(node.cast()) }
 }
 
+// ── Clock helper ────────────────────────────────────────────────────────
+// Resolved at link time: from io_time.rs on native, from wasm_stubs on WASM.
+
+/// Return current time in milliseconds (monotonic, simtime-aware in tests).
+///
+/// On native targets this calls `io_time::hew_now_ms` which honours the
+/// deterministic simulation clock.  On wasm32 it resolves to the
+/// `wasm_stubs::hew_now_ms` symbol.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn hew_now_ms() -> u64 {
+    // SAFETY: hew_now_ms from io_time.rs has no preconditions.
+    unsafe { crate::io_time::hew_now_ms() }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn hew_now_ms() -> u64 {
+    extern "C" {
+        fn hew_now_ms() -> u64;
+    }
+    // SAFETY: symbol is always present on wasm32 (wasm_stubs).
+    unsafe { hew_now_ms() }
+}
+
 // ── Arena lifecycle helpers ──────────────────────────────────────────────
 //
 // Both native and wasm32 builds now use the same `crate::arena` module
@@ -236,6 +259,21 @@ unsafe fn arena_reset(arena: *mut c_void) {
 
 static mut RUN_QUEUE: Option<VecDeque<*mut HewActor>> = None;
 static mut INITIALIZED: bool = false;
+
+/// Sleep queue: actors parked until a host-driven deadline expires.
+///
+/// Each entry is `(deadline_ms, actor_ptr)`.  The vector is kept sorted by
+/// ascending deadline so the front is always the soonest to wake.  Actors
+/// in this queue are in `Idle` state; they are re-enqueued as `Runnable`
+/// when the deadline passes (see [`drain_expired_sleepers`]).
+///
+/// Drop/cleanup contract: cleared in [`hew_sched_shutdown`].
+static mut SLEEP_QUEUE: Vec<(u64, *mut HewActor)> = Vec::new();
+
+/// Pending sleep deadline set by the currently-dispatching actor via
+/// [`request_sleep`].  Zero means no pending sleep.  Consumed and reset
+/// by [`activate_actor_wasm`] after each message dispatch.
+static mut PENDING_SLEEP_DEADLINE_MS: u64 = 0;
 
 /// Whether an actor is currently being activated (for `active_workers` metric).
 static mut ACTIVATING: bool = false;
@@ -323,6 +361,96 @@ pub(crate) fn record_message_received() {
     }
 }
 
+// ── Sleep timer helpers ─────────────────────────────────────────────────
+
+/// Record a sleep request for the currently-dispatching actor.
+///
+/// Called by `hew_sleep_ms` on WASM.  Records the largest (latest)
+/// deadline when called multiple times within a single dispatch cycle.
+/// The pending deadline is consumed by [`activate_actor_wasm`] after
+/// the current message dispatch returns.
+pub(crate) fn request_sleep(deadline_ms: u64) {
+    if deadline_ms == 0 {
+        return;
+    }
+    // SAFETY: Single-threaded on WASM; only mutated from dispatch context.
+    unsafe {
+        if deadline_ms > PENDING_SLEEP_DEADLINE_MS {
+            PENDING_SLEEP_DEADLINE_MS = deadline_ms;
+        }
+    }
+}
+
+/// Park `actor` in the sleep queue until `deadline_ms`.
+///
+/// Sets the actor state to `Idle` and inserts it into the sorted sleep
+/// queue.  The actor is NOT in the run queue while sleeping.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live `HewActor` that is currently
+/// in `Running` state (i.e., called from within `activate_actor_wasm`).
+unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
+    // SAFETY: caller guarantees `actor` is a valid, live pointer.
+    let a = unsafe { &*actor };
+    a.actor_state
+        .store(HewActorState::Idle as i32, Ordering::Relaxed);
+    #[expect(
+        static_mut_refs,
+        reason = "single-threaded cooperative scheduler; no concurrent mutation"
+    )]
+    // SAFETY: Single-threaded on WASM.
+    unsafe {
+        // Keep the queue sorted by ascending deadline for O(1) front-peek.
+        let pos = SLEEP_QUEUE.partition_point(|&(d, _)| d <= deadline_ms);
+        SLEEP_QUEUE.insert(pos, (deadline_ms, actor));
+    }
+}
+
+/// Wake all sleeping actors whose deadline ≤ `now_ms`.
+///
+/// For each expired entry:
+/// - If the actor is still `Idle`, transitions it to `Runnable` and
+///   re-enqueues it on the run queue.
+/// - If the actor has since been stopped/crashed, discards the entry.
+///
+/// Returns the number of actors woken.
+///
+/// # Safety
+///
+/// Must be called from within the WASM scheduler's single-threaded
+/// execution context.
+unsafe fn drain_expired_sleepers(now_ms: u64) -> u32 {
+    let mut woken: u32 = 0;
+    #[expect(
+        static_mut_refs,
+        reason = "single-threaded cooperative scheduler; no concurrent mutation"
+    )]
+    // SAFETY: Single-threaded cooperative scheduler; SLEEP_QUEUE not aliased.
+    unsafe {
+        while let Some(&(deadline, actor)) = SLEEP_QUEUE.first() {
+            if deadline > now_ms {
+                break; // Queue is sorted; all remaining deadlines are later.
+            }
+            SLEEP_QUEUE.remove(0);
+            let state = (*actor).actor_state.load(Ordering::Relaxed);
+            if state == HewActorState::Idle as i32 {
+                (*actor)
+                    .actor_state
+                    .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+                // Fail-closed: panic if the scheduler was not initialized.
+                if let Err(msg) = try_sched_enqueue(actor) {
+                    panic!("{msg}");
+                }
+                woken += 1;
+            }
+            // Stopped/Crashed actors are silently discarded from the queue;
+            // their resources are managed by hew_actor_close / cleanup_all_actors.
+        }
+    }
+    woken
+}
+
 // ── C ABI ───────────────────────────────────────────────────────────────
 
 /// Initialize the cooperative scheduler.
@@ -377,6 +505,11 @@ pub extern "C" fn hew_sched_shutdown() {
         TASKS_COMPLETED = 0;
         MESSAGES_SENT = 0;
         MESSAGES_RECEIVED = 0;
+        // Clear the sleep queue and pending-sleep context so any actors that
+        // were parked during a partial run do not linger across a re-init cycle.
+        #[expect(static_mut_refs, reason = "single-threaded shutdown path")]
+        SLEEP_QUEUE.clear();
+        PENDING_SLEEP_DEADLINE_MS = 0;
     }
 }
 
@@ -426,14 +559,38 @@ unsafe fn step_one_actor() -> bool {
 
 /// Run all enqueued actors to completion.
 ///
-/// Loops until the run queue is empty: pops the front actor, activates
-/// it, and re-enqueues it if it still has pending messages.
+/// Loops until both the run queue and the sleep queue are empty: pops
+/// the front actor, activates it, and re-enqueues it if it still has
+/// pending messages.  Between activation rounds, drains any sleeping
+/// actors whose deadline has passed (using the real/simulated clock).
+///
+/// For standalone WASM programs where sleeping actors are the only
+/// remaining work, this function spin-polls until all deadlines expire.
+/// In host-driven environments, prefer [`hew_wasm_sched_tick`] /
+/// [`hew_wasm_timer_tick`] to avoid blocking the host event loop.
 ///
 /// This is the main entry point for standalone WASM programs.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_run() {
-    // SAFETY: Single-threaded on WASM.
-    while unsafe { step_one_actor() } {}
+    loop {
+        // SAFETY: hew_now_ms is safe on all targets; drain is single-threaded.
+        let now = unsafe { hew_now_ms() };
+        // SAFETY: Single-threaded; SLEEP_QUEUE accessed from cooperative scheduler only.
+        unsafe { drain_expired_sleepers(now) };
+
+        // SAFETY: Single-threaded on WASM.
+        if !unsafe { step_one_actor() } {
+            // Run queue empty. Stop only when the sleep queue is also empty.
+            // SAFETY: Single-threaded on WASM.
+            #[expect(static_mut_refs, reason = "single-threaded cooperative scheduler")]
+            let sleeping = unsafe { SLEEP_QUEUE.is_empty() };
+            if sleeping {
+                break;
+            }
+            // Sleeping actors remain: spin-poll until the next deadline passes.
+            // This is a cooperative spin; in WASI the OS may preempt us.
+        }
+    }
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -516,6 +673,11 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 /// (ask/await/reply) never observe a non-zero return without actual work
 /// having been performed.
 ///
+/// Sleeping actors whose deadline has passed (according to the current
+/// clock) are re-enqueued before activations run.  Hosts that use
+/// hardware/JS timers should call [`hew_wasm_timer_tick`] with an
+/// explicit `now_ms` instead to avoid repeated clock reads.
+///
 /// # Safety
 ///
 /// The scheduler must have been initialized with [`hew_sched_init`].
@@ -525,6 +687,10 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
         COOPERATIVE_TICK_DEPTH += 1;
+
+        // Drain any sleeping actors whose deadline has now passed.
+        let now = hew_now_ms();
+        drain_expired_sleepers(now);
 
         for _ in 0..max_activations {
             if !step_one_actor() {
@@ -544,6 +710,58 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
             Some(ref q) => q.len() as i32,
             None => 0,
         }
+    }
+}
+
+/// Advance the WASM timer: re-enqueue all sleeping actors whose
+/// deadline ≤ `now_ms`.
+///
+/// Host-driven alternative to relying on the clock inside
+/// [`hew_wasm_sched_tick`].  Useful for JS hosts that receive
+/// `setTimeout` callbacks with a precise timestamp, or for WASI
+/// programs that advance the clock via `clock_time_get`.
+///
+/// Returns the number of actors woken; a return value > 0 indicates
+/// that there is new work in the run queue ready for [`hew_wasm_sched_tick`].
+///
+/// # Safety
+///
+/// The scheduler must have been initialized with [`hew_sched_init`].
+#[cfg_attr(not(test), no_mangle)]
+#[must_use]
+pub unsafe extern "C" fn hew_wasm_timer_tick(now_ms: u64) -> i32 {
+    // SAFETY: Single-threaded on WASM.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "number of woken actors will not exceed i32::MAX"
+    )]
+    // SAFETY: caller upholds single-threaded cooperative scheduler invariant.
+    unsafe {
+        drain_expired_sleepers(now_ms) as i32
+    }
+}
+
+/// Return the number of actors currently parked in the sleep queue.
+///
+/// Hosts can use this together with the run-queue length returned by
+/// [`hew_wasm_sched_tick`] to decide whether to schedule a future
+/// timer callback or stop driving the scheduler.
+#[cfg_attr(not(test), no_mangle)]
+#[must_use]
+pub extern "C" fn hew_wasm_sleeping_count() -> i32 {
+    // SAFETY: Single-threaded on WASM.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "sleep queue length will not exceed i32::MAX"
+    )]
+    #[expect(
+        static_mut_refs,
+        reason = "single-threaded cooperative scheduler; read-only access"
+    )]
+    // SAFETY: Single-threaded cooperative scheduler; SLEEP_QUEUE not mutated concurrently.
+    unsafe {
+        SLEEP_QUEUE.len() as i32
     }
 }
 
@@ -637,6 +855,10 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // freed by a terminate callback, making `a.arena` a dangling read.
     let actor_arena = a.arena;
     let mut msgs_processed: u32 = 0;
+    // Tracks a sleep deadline requested by a `sleep_ms` call inside dispatch.
+    // Non-zero means the actor should be parked in the sleep queue instead of
+    // going back to RUNNABLE/IDLE after the message loop exits.
+    let mut actor_sleep_deadline: u64 = 0;
 
     if !mailbox.is_null() {
         // Process up to `budget` messages.
@@ -708,6 +930,18 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             {
                 break;
             }
+
+            // Consume any sleep request emitted by the dispatch.
+            // SAFETY: Single-threaded on WASM.
+            let pending = unsafe {
+                let d = PENDING_SLEEP_DEADLINE_MS;
+                PENDING_SLEEP_DEADLINE_MS = 0;
+                d
+            };
+            if pending > 0 {
+                actor_sleep_deadline = pending;
+                break; // Park after this message; defer remaining messages.
+            }
         }
     }
 
@@ -766,6 +1000,15 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
     // Already terminal — nothing to do.
     if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
+        return;
+    }
+
+    // Sleep park: if the dispatch called `sleep_ms`, park the actor until the
+    // deadline instead of going to IDLE/RUNNABLE.  This happens AFTER the arena
+    // and activation-context are restored so the actor is in a clean state.
+    if actor_sleep_deadline > 0 {
+        // SAFETY: actor is Running and we have exclusive ownership here.
+        unsafe { park_actor_sleep(actor, actor_sleep_deadline) };
         return;
     }
 
@@ -1211,6 +1454,10 @@ mod tests {
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
             ptr::addr_of_mut!(MESSAGES_RECEIVED).write(0);
+            // Clear sleep queue and pending-sleep context.
+            ptr::drop_in_place(ptr::addr_of_mut!(SLEEP_QUEUE));
+            ptr::addr_of_mut!(SLEEP_QUEUE).write(Vec::new());
+            ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0);
             // Clear the thread-local current arena so arena lifecycle tests
             // start from a clean slate regardless of test ordering.
             crate::arena::set_current_arena(ptr::null_mut());
@@ -1319,14 +1566,44 @@ mod tests {
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(true);
             ptr::addr_of_mut!(MESSAGES_SENT).write(99);
             ptr::addr_of_mut!(MESSAGES_RECEIVED).write(99);
+            // Simulate a stale sleep queue entry.
+            ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(999_999);
         }
 
         // Phase 3: shutdown must reset every scheduler lifetime static.
-        // The run queue is empty at this point so hew_sched_run() inside
-        // hew_sched_shutdown() is a safe no-op.
         hew_sched_shutdown();
+        assert_shutdown_cleared_all_statics();
 
+        // Phase 4: re-init must start from a genuinely clean slate.
+        hew_sched_init();
         // SAFETY: Single-threaded test.
+        unsafe {
+            assert!(read_initialized(), "must be initialized after re-init");
+            assert!(run_queue_exists(), "run queue must exist after re-init");
+            assert_eq!(
+                read_tasks_spawned(),
+                0,
+                "metrics must be zero at re-init start"
+            );
+            assert_eq!(
+                hew_sched_metrics_global_queue_len(),
+                0,
+                "queue must be empty after re-init"
+            );
+            assert!(
+                !ptr::addr_of!(ACTIVATING).read(),
+                "ACTIVATING must be false at re-init start"
+            );
+        }
+
+        hew_sched_shutdown();
+    }
+
+    /// Assert that every scheduler lifetime static is in the post-shutdown
+    /// zero/empty/null state.  Extracted to keep `shutdown_resets_all_stale_statics`
+    /// within the function-length lint limit.
+    fn assert_shutdown_cleared_all_statics() {
+        // SAFETY: Single-threaded test; called immediately after hew_sched_shutdown.
         unsafe {
             assert!(
                 !ptr::addr_of!(INITIALIZED).read(),
@@ -1377,31 +1654,16 @@ mod tests {
                 0,
                 "MESSAGES_RECEIVED must be zero after shutdown"
             );
-        }
-
-        // Phase 4: re-init must start from a genuinely clean slate.
-        hew_sched_init();
-        // SAFETY: Single-threaded test.
-        unsafe {
-            assert!(read_initialized(), "must be initialized after re-init");
-            assert!(run_queue_exists(), "run queue must exist after re-init");
             assert_eq!(
-                read_tasks_spawned(),
+                ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
                 0,
-                "metrics must be zero at re-init start"
-            );
-            assert_eq!(
-                hew_sched_metrics_global_queue_len(),
-                0,
-                "queue must be empty after re-init"
+                "PENDING_SLEEP_DEADLINE_MS must be zero after shutdown"
             );
             assert!(
-                !ptr::addr_of!(ACTIVATING).read(),
-                "ACTIVATING must be false at re-init start"
+                ptr::addr_of!(SLEEP_QUEUE).read().is_empty(),
+                "SLEEP_QUEUE must be empty after shutdown"
             );
         }
-
-        hew_sched_shutdown();
     }
 
     #[test]
@@ -3860,6 +4122,296 @@ mod tests {
                 "depth must return to 0 after tick completes"
             );
         }
+
+        hew_sched_shutdown();
+    }
+
+    // ── WASM sleeping-actor timer tests ─────────────────────────────────
+
+    /// `request_sleep` stores the deadline; a later call with a smaller
+    /// deadline is ignored; a call with a larger deadline replaces it.
+    #[test]
+    fn request_sleep_takes_latest_deadline() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+
+        request_sleep(100);
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
+                100,
+                "first request should be stored"
+            );
+        }
+
+        request_sleep(50); // smaller — ignored
+                           // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
+                100,
+                "smaller deadline should be ignored"
+            );
+        }
+
+        request_sleep(200); // larger — replaces
+                            // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
+                200,
+                "larger deadline should replace"
+            );
+        }
+
+        // Cleanup
+        // SAFETY: Single-threaded test; no concurrent readers.
+        unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0) };
+    }
+
+    /// `drain_expired_sleepers` re-enqueues actors whose deadline has passed
+    /// and leaves actors whose deadline is still in the future.
+    #[test]
+    fn drain_expired_sleepers_wakes_ready_actors() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        let mut b = stub_actor();
+        b.id = 2;
+        let b_ptr: *mut HewActor = (&raw mut b);
+        b.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        // Park actor `a` at t=100 and actor `b` at t=300.
+        // SAFETY: actors are valid for the duration of the test.
+        unsafe {
+            park_actor_sleep(a_ptr, 100);
+            park_actor_sleep(b_ptr, 300);
+            assert_eq!(
+                hew_wasm_sleeping_count(),
+                2,
+                "both actors should be sleeping"
+            );
+        }
+
+        // Advance to t=200: only `a` should wake.
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { drain_expired_sleepers(200) };
+        assert_eq!(woken, 1, "only actor a should wake at t=200");
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor a should be Runnable after wake"
+        );
+        assert_eq!(
+            b.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "actor b should remain Idle before its deadline"
+        );
+        // SAFETY: Single-threaded test.
+        assert_eq!(hew_wasm_sleeping_count(), 1, "one actor still sleeping");
+        assert_eq!(
+            hew_sched_metrics_global_queue_len(),
+            1,
+            "actor a should be in run queue"
+        );
+
+        // Advance to t=400: `b` should wake.
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { drain_expired_sleepers(400) };
+        assert_eq!(woken, 1, "actor b should wake at t=400");
+        assert_eq!(
+            b.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor b should be Runnable after wake"
+        );
+        assert_eq!(hew_wasm_sleeping_count(), 0, "no actors sleeping");
+
+        hew_sched_shutdown();
+    }
+
+    /// `drain_expired_sleepers` silently discards stopped/crashed actors.
+    #[test]
+    fn drain_expired_sleepers_discards_terminal_actors() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        // SAFETY: actor is valid for the duration of the test.
+        unsafe { park_actor_sleep(a_ptr, 50) };
+
+        // Mark the actor as stopped before the timer fires.
+        a.actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { drain_expired_sleepers(100) };
+        assert_eq!(woken, 0, "stopped actor should be discarded, not woken");
+        assert_eq!(hew_wasm_sleeping_count(), 0, "sleep queue should be empty");
+        assert_eq!(
+            hew_sched_metrics_global_queue_len(),
+            0,
+            "run queue should be empty"
+        );
+
+        hew_sched_shutdown();
+    }
+
+    /// A dispatch that calls `request_sleep` causes the actor to be parked
+    /// after the message boundary, not re-enqueued as Runnable.
+    #[test]
+    fn actor_is_parked_after_sleep_request_in_dispatch() {
+        // Declare items before any statements to satisfy `items_after_statements`.
+        static DISPATCHED: AtomicI32 = AtomicI32::new(0);
+        // SAFETY: `hew_now_ms` is safe to call from dispatch; `request_sleep`
+        // is designed to be called from within a dispatch handler.
+        unsafe extern "C" fn sleeping_dispatch(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            // Simulate sleep_ms(500): record a deadline 500 ms from now.
+            // In simulated time: now=0, so deadline=500.
+            // SAFETY: hew_now_ms is safe to call from within dispatch.
+            let now = unsafe { hew_now_ms() };
+            request_sleep(now + 500);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        // Use simulated time so we can control deadlines deterministically.
+        crate::deterministic::hew_simtime_enable(0);
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.dispatch = Some(sleeping_dispatch);
+        a.mailbox = mailbox.cast();
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // Enqueue actor in scheduler, then send it a message.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { sched_enqueue(a_ptr) };
+        // SAFETY: actor has a valid mailbox.
+        unsafe { queue_wasm_message(a_ptr, 42) };
+
+        // Run one tick.
+        // SAFETY: Single-threaded test.
+        let _ = unsafe { hew_wasm_sched_tick(1) };
+
+        assert_eq!(
+            DISPATCHED.load(Ordering::Relaxed),
+            1,
+            "dispatch should have run once"
+        );
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "actor should be Idle (parked) after sleep request"
+        );
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            1,
+            "actor should be in sleep queue"
+        );
+
+        // Advance simulated time to t=499: actor should NOT wake yet.
+        crate::deterministic::hew_simtime_advance_ms(499);
+        // SAFETY: Single-threaded test.
+        let _ = unsafe { hew_wasm_sched_tick(1) };
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "actor should still be Idle at t=499"
+        );
+
+        // Advance to t=500 (exactly the deadline): actor should wake.
+        crate::deterministic::hew_simtime_advance_ms(1);
+        let now_ms = crate::deterministic::hew_simtime_now_ms();
+        // `hew_simtime_now_ms` returns i64; non-negative after enable(0) + advance.
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "simtime starts at 0 and only advances forward; always non-negative"
+        )]
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { hew_wasm_timer_tick(now_ms as u64) };
+        assert_eq!(woken, 1, "actor should wake at deadline t=500");
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor should be Runnable after timer fires"
+        );
+        assert_eq!(hew_wasm_sleeping_count(), 0, "sleep queue should be empty");
+
+        crate::deterministic::hew_simtime_disable();
+        // SAFETY: mailbox was allocated by hew_mailbox_new above; free to avoid leak.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        hew_sched_shutdown();
+    }
+
+    /// [`hew_wasm_sleeping_count`] returns 0 when no actors are sleeping.
+    #[test]
+    fn sleeping_count_zero_when_empty() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        assert_eq!(hew_wasm_sleeping_count(), 0);
+        hew_sched_shutdown();
+    }
+
+    /// [`hew_wasm_timer_tick`] re-enqueues only actors whose deadline ≤ `now_ms`.
+    #[test]
+    fn timer_tick_wakes_at_exact_deadline() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        // SAFETY: actor valid for duration of test.
+        unsafe { park_actor_sleep(a_ptr, 1000) };
+
+        // One ms before deadline: nothing wakes.
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { hew_wasm_timer_tick(999) };
+        assert_eq!(woken, 0);
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32
+        );
+
+        // Exactly at deadline: actor wakes.
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { hew_wasm_timer_tick(1000) };
+        assert_eq!(woken, 1);
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32
+        );
 
         hew_sched_shutdown();
     }

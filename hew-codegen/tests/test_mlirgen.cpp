@@ -3650,6 +3650,78 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Expression-position if (ExprIf in StmtExpression) gets init-bit guard
+//
+// Uses (if ...) syntax which parses as StmtExpression(ExprIf), routed through
+// generateExprStmt.  Without the ExprIf → generateDiscardedExpr routing fix,
+// the no-else case leaks the branch temporary (no drop ops emitted at all).
+// ============================================================================
+static void test_stmt_if_user_drop_initbit_guard() {
+  TEST(stmt_if_user_drop_initbit_guard);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+type Tracker {
+    id: int;
+}
+
+impl Drop for Tracker {
+    fn drop(t: Tracker) {
+        println(t.id);
+    }
+}
+
+fn expr_if_no_else_user_drop(flag: bool) -> int {
+    (if flag { Tracker { id: 42 } });
+    0
+}
+
+fn main() -> int {
+    expr_if_no_else_user_drop(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto noElseFn = lookupFuncBySuffix(module, "expr_if_no_else_user_drop");
+  if (!noElseFn) {
+    FAIL("expression-position if user-drop init-bit test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The then-branch temp must be materialized with a user-drop op.
+  // Without the fix, generateExprStmt falls through to generateExpression
+  // which calls generateIfExpr(statementPosition=false); the no-else path
+  // creates a resultless scf.if but never materialises the branch value,
+  // so no drop ops are emitted at all (resource leak).
+  if (countUserDropOps(noElseFn) == 0) {
+    FAIL("expression-position if (no else) must produce user-drop ops, not leak the value");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasZeroInitializedUserDropSlot(noElseFn)) {
+    FAIL("expression-position if (no else) should zero-initialize the user-drop temp slot");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasInitFlagGuardedUserDrop(noElseFn)) {
+    FAIL("expression-position if (no else) user-drop must be init-flag guarded");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Arithmetic operations
 // ============================================================================
 static void test_arithmetic() {
@@ -10854,6 +10926,7 @@ int main() {
   test_none_without_type_context_fails_closed();
   test_match_arm_direct_none_uses_match_result_type_hint();
   test_discarded_if_expr_user_drop_branch_temp_zero_init();
+  test_stmt_if_user_drop_initbit_guard();
   test_arithmetic();
   test_comparisons();
   test_materialized_unsigned_range_uses_unsigned_compare();

@@ -3688,6 +3688,13 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
     val = generateBlock(unsafeExpr->block, /*statementPosition=*/true);
     if (failClosedDiscardedBlockLike("unsafe expression", unsafeExpr->block, val, errorsBefore))
       return;
+  } else if (std::holds_alternative<ast::ExprIf>(stmt.expr.value.kind)) {
+    // Route statement-position if expressions through the discarded-expr
+    // path so that each branch materialises its own temporary with an
+    // individual init-bit guard.  Without this, a no-else if leaks the
+    // branch value, and an if-else creates a value-producing scf.if whose
+    // single temp lacks per-branch init-flag protection.
+    val = generateDiscardedExpr(stmt.expr);
   } else {
     val = generateExpression(stmt.expr.value);
   }

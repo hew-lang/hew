@@ -7429,6 +7429,110 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: scoped actor spawns clean up and panic when scope registration fails
+// ============================================================================
+static void test_scoped_spawn_panics_on_scope_overflow() {
+  TEST(scoped_spawn_panics_on_scope_overflow);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+actor Worker {
+    receive fn ping() {
+    }
+}
+
+fn main() {
+    scope {
+        let worker = spawn Worker;
+        worker.ping();
+    };
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("main function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_scope_spawn") != 1) {
+    FAIL("scoped spawn should call hew_scope_spawn exactly once");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  hew::RuntimeCallOp scopeSpawnCall;
+  mainFn.walk([&](hew::RuntimeCallOp call) {
+    if (!scopeSpawnCall && call.getCallee().str() == "hew_scope_spawn")
+      scopeSpawnCall = call;
+  });
+  if (!scopeSpawnCall) {
+    FAIL("scoped spawn did not emit hew_scope_spawn runtime call");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  mlir::arith::CmpIOp scopeOverflowCheck;
+  mlir::Value scopeSpawnStatus = scopeSpawnCall.getResult();
+  for (auto *user : scopeSpawnStatus.getUsers()) {
+    auto cmp = mlir::dyn_cast<mlir::arith::CmpIOp>(user);
+    if (!cmp)
+      continue;
+    if (cmp.getPredicate() != mlir::arith::CmpIPredicate::ne &&
+        cmp.getPredicate() != mlir::arith::CmpIPredicate::eq)
+      continue;
+
+    if (cmp.getLhs() == scopeSpawnStatus && isZeroLiteralValue(cmp.getRhs())) {
+      scopeOverflowCheck = cmp;
+      break;
+    }
+    if (cmp.getRhs() == scopeSpawnStatus && isZeroLiteralValue(cmp.getLhs())) {
+      scopeOverflowCheck = cmp;
+      break;
+    }
+  }
+
+  if (!scopeOverflowCheck) {
+    FAIL("scoped spawn must compare hew_scope_spawn status against zero");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool foundOverflowCleanup = false;
+  mainFn.walk([&](mlir::scf::IfOp ifOp) {
+    if (foundOverflowCleanup || ifOp.getCondition() != scopeOverflowCheck.getResult())
+      return;
+
+    bool sawClose = false;
+    bool sawFree = false;
+    bool sawPanicMsg = false;
+    ifOp.getThenRegion().walk([&](hew::RuntimeCallOp call) {
+      auto callee = call.getCallee().str();
+      sawClose |= callee == "hew_actor_close";
+      sawFree |= callee == "hew_actor_free";
+      sawPanicMsg |= callee == "hew_panic_msg";
+    });
+    foundOverflowCleanup = sawClose && sawFree && sawPanicMsg;
+  });
+
+  if (!foundOverflowCleanup) {
+    FAIL("scoped spawn overflow path must close/free the actor and panic with a diagnostic");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Generator with wrapped yields (ExprCall variant ctor) lowers correctly
 // ============================================================================
 static void test_generator_wrapped_yield_drop_exclusion() {
@@ -10719,6 +10823,7 @@ int main() {
   test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();
   test_join_emits_send_failure_cleanup();
+  test_scoped_spawn_panics_on_scope_overflow();
   test_generator_wrapped_yield_drop_exclusion();
   test_actor_receive_http_request_drop();
   test_actor_receive_http_server_drop();

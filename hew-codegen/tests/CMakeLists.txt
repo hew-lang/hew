@@ -576,6 +576,10 @@ add_e2e_panic_test(wire_json_integer_range e2e_wire wire_json_integer_range_pani
   "wire json decode error for field 'byte_value': expected byte in range [0, 255]")
 add_e2e_panic_test(wire_yaml_integer_range e2e_wire wire_yaml_integer_range_panic
   "wire yaml decode error for field 'big_count': expected u32 in range [0, 4294967295]")
+# Structured concurrency scopes are not supported on wasm32, so this bounded
+# lane stays native-only while still exercising the fail-closed panic contract.
+add_e2e_panic_test(scope_spawn_overflow e2e_concurrency scope_spawn_overflow_panic
+  "scope actor limit exceeded")
 
 # ── WASM target tests (compile with --target=wasm32-wasi, run with wasmtime) ──
 # These validate that Hew programs produce identical output on native and WASM.

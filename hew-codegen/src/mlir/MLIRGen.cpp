@@ -492,6 +492,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
     }
     if (name == "Range") {
       if (!named->type_args || named->type_args->empty()) {
+        ++errorCount_;
         emitError(diagLoc) << "Range type requires a type argument";
         return mlir::NoneType::get(&context);
       }
@@ -1718,6 +1719,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // println_str / print_str: takes a string (ptr), prints it
   if (name == "println_str" || name == "print_str") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1733,6 +1735,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // println_int / print_int: takes an integer, prints it
   if (name == "println_int" || name == "print_int") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1753,6 +1756,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // println_f64 / print_f64: takes a float, prints it
   if (name == "println_f64" || name == "print_f64") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1767,6 +1771,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // println_bool / print_bool: takes a bool, prints it
   if (name == "println_bool" || name == "print_bool") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1781,6 +1786,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // sqrt(x) -> f64
   if (name == "sqrt") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1798,6 +1804,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // to_float(x) -> f64: convert any integer to f64
   if (name == "to_float") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1810,6 +1817,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // abs(x) -> i64
   if (name == "abs") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1828,6 +1836,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // min(a, b) -> i64
   if (name == "min") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -1846,6 +1855,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // max(a, b) -> i64
   if (name == "max") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -1864,6 +1874,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_concat(a, b) -> string_ref
   if (name == "string_concat") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -1880,6 +1891,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_length(s) -> i32
   if (name == "string_length") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1895,6 +1907,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_equals(a, b) -> i32
   if (name == "string_equals") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -1912,6 +1925,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // sleep_ms(ms) -> void
   if (name == "sleep_ms") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -1931,6 +1945,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // bytes::from([...]) -> !hew.vec<i32>  (create vec then push each element)
   if (name == "bytes::from") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << "bytes::from requires an array argument";
       return nullptr;
     }
@@ -1947,6 +1962,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         hew::VecPushOp::create(builder, location, vec, val);
       }
     } else {
+      ++errorCount_;
       emitError(location) << "bytes::from expects an array literal argument";
       return nullptr;
     }
@@ -1956,12 +1972,14 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Vec::from([...]) -> !hew.vec<T>  (create vec then push each element)
   if (name == "Vec::from") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << "Vec::from requires an array argument";
       return nullptr;
     }
     // The argument should be an array literal
     if (auto *arr = std::get_if<ast::ExprArray>(&ast::callArgExpr(args[0]).value.kind)) {
       if (arr->elements.empty()) {
+        ++errorCount_;
         emitError(location) << "Vec::from requires a non-empty array";
         return nullptr;
       }
@@ -1982,6 +2000,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       }
       return vec;
     }
+    ++errorCount_;
     emitError(location) << "Vec::from expects an array literal argument";
     return nullptr;
   }
@@ -1998,6 +2017,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (typeHint && mlir::isa<hew::VecType>(typeHint)) {
       vecType = typeHint;
     } else {
+      ++errorCount_;
       emitError(location) << "cannot determine element type for Vec; add explicit type annotation";
       return nullptr;
     }
@@ -2010,6 +2030,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (typeHint && mlir::isa<hew::HashMapType>(typeHint)) {
       hmType = typeHint;
     } else {
+      ++errorCount_;
       emitError(location)
           << "cannot determine key/value types for HashMap; add explicit type annotation";
       return nullptr;
@@ -2023,6 +2044,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (typeHint && mlir::isa<hew::HandleType>(typeHint)) {
       setType = typeHint;
     } else {
+      ++errorCount_;
       emitError(location)
           << "cannot determine element type for HashSet; add explicit type annotation";
       return nullptr;
@@ -2051,6 +2073,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   //      checker's move analysis prevents any further use of the source.
   if (name == "Rc::new") {
     if (args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "Rc::new requires exactly one argument";
       return nullptr;
     }
@@ -2129,6 +2152,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // duration::from_nanos(x) -> i64: identity passthrough (duration is i64 nanos)
   if (name == "duration::from_nanos") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires 1 argument";
       return nullptr;
     }
@@ -2144,6 +2168,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // stop(actor) -> void: stop an actor
   if (name == "stop") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2157,6 +2182,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // close(actor) -> actor: close an actor's mailbox and return the same ref
   if (name == "close") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2170,6 +2196,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // link(actor_ref) — link current actor to target
   if (name == "link") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2185,6 +2212,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // unlink(actor_ref) — unlink current actor from target
   if (name == "unlink") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2199,6 +2227,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // monitor(actor_ref) -> i64 (ref_id)
   if (name == "monitor") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2213,6 +2242,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // demonitor(ref_id) — cancel a monitor by reference id
   if (name == "demonitor") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2226,6 +2256,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // supervisor_child(sup, index) -> actor_ptr or supervisor_ptr
   if (name == "supervisor_child") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2283,6 +2314,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // supervisor_stop(sup) -> void
   if (name == "supervisor_stop") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2325,6 +2357,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_char_at(s, idx) -> i32
   if (name == "string_char_at") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2343,6 +2376,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_slice(s, start, end) -> string
   if (name == "string_slice" || name == "substring") {
     if (args.size() < 3) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
     }
@@ -2364,6 +2398,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_find(haystack, needle) -> i32
   if (name == "string_find") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2381,6 +2416,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_contains(haystack, needle) -> bool
   if (name == "string_contains") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2398,6 +2434,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_starts_with(s, prefix) -> i32
   if (name == "string_starts_with") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2415,6 +2452,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_ends_with(s, suffix) -> i32
   if (name == "string_ends_with") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2432,6 +2470,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_trim(s) -> string
   if (name == "string_trim") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2447,6 +2486,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_replace(s, from, to) -> string
   if (name == "string_replace") {
     if (args.size() < 3) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
     }
@@ -2467,6 +2507,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_to_int(s) -> i32
   if (name == "string_to_int") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2482,6 +2523,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // string_from_int(n) / int_to_string(n) -> string
   if (name == "string_from_int" || name == "int_to_string") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2501,6 +2543,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // char_to_string(c) -> string
   if (name == "char_to_string") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2516,6 +2559,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Node::start(addr) -> void: create and start a node
   if (name == "Node::start") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires 1 argument (bind address)";
       return nullptr;
     }
@@ -2540,6 +2584,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Node::connect(addr) -> void: connect to a peer node
   if (name == "Node::connect") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires 1 argument (peer address)";
       return nullptr;
     }
@@ -2556,6 +2601,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Node::set_transport(name) -> void: set transport before start
   if (name == "Node::set_transport") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires 1 argument (\"tcp\" or \"quic\")";
       return nullptr;
     }
@@ -2572,6 +2618,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Node::register(name, actor) -> void: register a named actor
   if (name == "Node::register") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires 2 arguments (name, actor)";
       return nullptr;
     }
@@ -2590,6 +2637,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // Node::lookup(name) -> actor_id (u64)
   if (name == "Node::lookup") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires 1 argument (actor name)";
       return nullptr;
     }
@@ -2607,6 +2655,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // read_file(path) -> string
   if (name == "read_file") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2623,6 +2672,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // assert(cond) -> void: abort if cond is falsy
   if (name == "assert") {
     if (args.empty()) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
@@ -2636,6 +2686,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // assert_eq(left, right) -> void: abort if left != right
   if (name == "assert_eq") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -2652,6 +2703,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   // assert_ne(left, right) -> void: abort if left == right
   if (name == "assert_ne") {
     if (args.size() < 2) {
+      ++errorCount_;
       emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
     }
@@ -4407,6 +4459,7 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
                                       const std::string &traitName, mlir::Location location) {
   auto dispIt = traitDispatchRegistry.find(traitName);
   if (dispIt == traitDispatchRegistry.end()) {
+    ++errorCount_;
     emitError(location) << "no dispatch info for trait '" << traitName << "'";
     return nullptr;
   }
@@ -4420,6 +4473,7 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
     }
   }
   if (!implInfo) {
+    ++errorCount_;
     emitError(location) << typeName << " does not implement " << traitName;
     return nullptr;
   }
@@ -4473,6 +4527,7 @@ void MLIRGen::generateDynDispatchShim(const std::string &implFuncName) {
   // Look up the impl function to get its type
   auto implFunc = module.lookupSymbol<mlir::func::FuncOp>(implFuncName);
   if (!implFunc) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc()) << "vtable shim generation failed: function '"
                                        << implFuncName << "' not found for dyn dispatch shim";
     return;
@@ -6018,12 +6073,14 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
 
   auto it = genericFunctions.find(baseName);
   if (it == genericFunctions.end()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc()) << "unknown generic function '" << baseName << "'";
     return nullptr;
   }
 
   const ast::FnDecl *fn = it->second;
   if (!fn->type_params || fn->type_params->empty()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "generic function '" << baseName << "' has no type params";
     return nullptr;
@@ -6031,6 +6088,7 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
   const auto &params = *fn->type_params;
 
   if (typeArgs.size() != params.size()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "generic function '" << baseName << "' expects " << params.size()
         << " type arguments, got " << typeArgs.size();
@@ -6073,18 +6131,21 @@ mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
 
   auto lamIt = genericLambdas.find(varName);
   if (lamIt == genericLambdas.end()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc()) << "unknown generic lambda '" << varName << "'";
     return nullptr;
   }
   const ast::ExprLambda *lam = lamIt->second;
 
   if (!lam->type_params.has_value() || lam->type_params->empty()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc()) << "generic lambda '" << varName << "' has no type params";
     return nullptr;
   }
   const auto &tps = *lam->type_params;
 
   if (typeArgs.size() != tps.size()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "generic lambda '" << varName << "' expects " << tps.size() << " type argument(s), got "
         << typeArgs.size();
@@ -6103,6 +6164,7 @@ mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
   llvm::SmallVector<mlir::Type, 4> paramTypes;
   for (const auto &p : lam->params) {
     if (!p.ty.has_value()) {
+      ++errorCount_;
       emitError(location) << "generic lambda '" << varName << "': parameter '" << p.name
                           << "' has no type annotation";
       typeParamSubstitutions = std::move(prevSubstitutions);
@@ -6212,12 +6274,14 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseT
     }
   }
   if (!fn) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "no method '" << methodName << "' in generic impl for '" << baseTypeName << "'";
     return nullptr;
   }
 
   if (typeArgs.size() != implInfo.typeParams->size()) {
+    ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "generic impl for '" << baseTypeName << "' expects " << implInfo.typeParams->size()
         << " type arguments, got " << typeArgs.size();

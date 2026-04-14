@@ -442,15 +442,18 @@ pub extern "C" fn hew_sched_run() {
 ///
 /// # Panics
 ///
-/// Panics if the scheduler has not been initialized (aligning with the
-/// native scheduler's fail-closed posture). Previously this silently
-/// dropped the actor while still incrementing `TASKS_SPAWNED`, leaving
-/// metrics inconsistent and work silently lost.
+/// Fallible inner implementation of [`sched_enqueue`].
+///
+/// Returns `Ok(())` when the actor was successfully placed on the run queue,
+/// or `Err` with a static message when the scheduler is not initialized.
+/// The public [`sched_enqueue`] wrapper calls this and panics on `Err`,
+/// preserving the fail-closed contract while allowing wasm-target tests to
+/// assert on the error path without relying on unwinding.
 ///
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor`.
-pub unsafe fn sched_enqueue(actor: *mut HewActor) {
+unsafe fn try_sched_enqueue(actor: *mut HewActor) -> Result<(), &'static str> {
     // SAFETY: Single-threaded on WASM; caller guarantees actor validity.
     unsafe {
         match RUN_QUEUE {
@@ -458,8 +461,33 @@ pub unsafe fn sched_enqueue(actor: *mut HewActor) {
                 q.push_back(actor);
                 // Only count after the actor is actually on the queue.
                 TASKS_SPAWNED += 1;
+                Ok(())
             }
-            None => panic!("sched_enqueue: scheduler not initialized (RUN_QUEUE is None)"),
+            None => Err("sched_enqueue: scheduler not initialized (RUN_QUEUE is None)"),
+        }
+    }
+}
+
+/// Enqueue an actor onto the WASM run queue.
+///
+/// This is the fail-closed public wrapper around [`try_sched_enqueue`].
+/// Previously this silently dropped the actor while still incrementing
+/// `TASKS_SPAWNED`, leaving metrics inconsistent and work silently lost.
+///
+/// # Panics
+///
+/// Panics if the scheduler has not been initialized (`RUN_QUEUE` is
+/// `None`), aligning with the native scheduler's fail-closed posture.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live `HewActor`.
+pub unsafe fn sched_enqueue(actor: *mut HewActor) {
+    // SAFETY: caller guarantees actor validity; try_sched_enqueue has
+    // the same safety contract.
+    unsafe {
+        if let Err(msg) = try_sched_enqueue(actor) {
+            panic!("{msg}");
         }
     }
 }
@@ -3561,10 +3589,17 @@ mod tests {
     }
 
     // ── sched_enqueue fail-closed tests ─────────────────────────────────
+    //
+    // On wasm32-wasip1 panics abort the binary (no unwinding), so
+    // `#[should_panic]` and `catch_unwind` are unusable.  We verify the
+    // fail-closed semantics on all targets via the fallible
+    // `try_sched_enqueue` helper, and additionally confirm the panic
+    // wrapper on host targets where unwinding is available.
 
+    /// Verify that the fallible path returns `Err` when the scheduler is
+    /// not initialized — works on every target including wasm.
     #[test]
-    #[should_panic(expected = "scheduler not initialized")]
-    fn enqueue_panics_when_run_queue_is_none() {
+    fn try_enqueue_returns_err_when_run_queue_is_none() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
@@ -3572,28 +3607,26 @@ mod tests {
 
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
-        // This must panic rather than silently dropping the actor.
-        // SAFETY: actor is valid; the test expects panic.
-        unsafe { sched_enqueue(actor_ptr) };
+        // SAFETY: actor is valid; we expect Err, not UB.
+        let result = unsafe { try_sched_enqueue(actor_ptr) };
+        assert!(
+            result.is_err(),
+            "try_sched_enqueue must return Err when RUN_QUEUE is None"
+        );
     }
 
+    /// Verify that `TASKS_SPAWNED` is not incremented when enqueue fails.
     #[test]
-    fn enqueue_does_not_increment_tasks_spawned_on_failure() {
+    fn try_enqueue_does_not_increment_tasks_spawned_on_failure() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
-        // RUN_QUEUE is None — sched_enqueue should panic.
+        // RUN_QUEUE is None — try_sched_enqueue should return Err.
 
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // SAFETY: actor is valid; we catch the expected panic.
-            unsafe { sched_enqueue(actor_ptr) };
-        }));
-        assert!(
-            result.is_err(),
-            "sched_enqueue must panic when RUN_QUEUE is None"
-        );
+        // SAFETY: actor is valid.
+        let _ = unsafe { try_sched_enqueue(actor_ptr) };
 
         // TASKS_SPAWNED must not have been incremented.
         // SAFETY: Single-threaded test.
@@ -3604,6 +3637,21 @@ mod tests {
                 "TASKS_SPAWNED must remain 0 when enqueue fails"
             );
         }
+    }
+
+    /// On hosts that support unwinding, also confirm the public wrapper panics.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[should_panic(expected = "scheduler not initialized")]
+    fn enqueue_panics_when_run_queue_is_none() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // SAFETY: actor is valid; the test expects panic.
+        unsafe { sched_enqueue(actor_ptr) };
     }
 
     #[test]

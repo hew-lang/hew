@@ -10433,6 +10433,192 @@ fn extract_name(w: Wrapper) -> int {
   PASS();
 }
 
+// ============================================================================
+// Satellite fail-closed regressions: MLIRGenActor.cpp
+// ============================================================================
+
+// Test: spawn targeting an unregistered actor name increments errorCount_ and
+// aborts codegen.  Exercises the `unknown actor type` guard added to
+// generateSpawnExpr in MLIRGenActor.cpp.
+static void test_spawn_unknown_actor_type_fails_closed() {
+  TEST(spawn_unknown_actor_type_fails_closed);
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::nullopt};
+    return {std::move(ty), span};
+  };
+
+  // Build: fn main() -> int { spawn Ghost(); }
+  // "Ghost" has no ActorDecl in the program, so it is not in actorRegistry.
+  Expr targetExpr;
+  targetExpr.kind = ExprIdentifier{"Ghost"};
+  targetExpr.span = span;
+
+  ExprSpawn spawn;
+  spawn.target = std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(targetExpr), span});
+
+  Expr spawnExpr;
+  spawnExpr.kind = std::move(spawn);
+  spawnExpr.span = span;
+
+  StmtExpression stmtExpr;
+  stmtExpr.expr = Spanned<Expr>{std::move(spawnExpr), span};
+
+  Stmt stmt;
+  stmt.kind = std::move(stmtExpr);
+  stmt.span = span;
+
+  FnDecl fn;
+  fn.name = "main";
+  fn.is_async = false;
+  fn.is_generator = false;
+  fn.visibility = Visibility::Pub;
+  fn.is_pure = false;
+  fn.return_type = mkType("int");
+  fn.body.stmts.push_back(std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span}));
+
+  Program program;
+  program.items.push_back({Item{std::move(fn)}, span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail for spawn of unknown actor type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "unknown actor type: Ghost";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected 'unknown actor type' diagnostic; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Satellite fail-closed regressions: MLIRGenSupervisor.cpp
+// ============================================================================
+
+// Test: supervisor with an unparseable window string increments errorCount_ and
+// aborts codegen.  Exercises the `invalid supervisor window value` guard added
+// to generateSupervisorDecl in MLIRGenSupervisor.cpp.
+static void test_supervisor_invalid_window_fails_closed() {
+  TEST(supervisor_invalid_window_fails_closed);
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  SupervisorDecl sup;
+  sup.name = "MySupervisor";
+  sup.strategy = SupervisorStrategy::OneForOne;
+  sup.window = "not_a_number";
+
+  Program program;
+  program.items.push_back({Item{std::move(sup)}, span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail for supervisor with invalid window value");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "invalid supervisor window value";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected 'invalid supervisor window value' diagnostic; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Satellite fail-closed regressions: MLIRGenIfLet.cpp
+// ============================================================================
+
+// Test: if-let statement whose constructor is not registered in variantLookup
+// increments errorCount_ and aborts codegen.  Exercises the
+// `unknown constructor in if-let pattern` guard in MLIRGenIfLet.cpp.
+static void test_iflet_stmt_unknown_constructor_fails_closed() {
+  TEST(iflet_stmt_unknown_constructor_fails_closed);
+
+  using namespace hew::ast;
+  const Span span{0, 0};
+
+  auto mkType = [&](llvm::StringRef name) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::nullopt};
+    return {std::move(ty), span};
+  };
+
+  // Build: fn main() -> int { if let Phantom = 0 { } else { } }
+  // "Phantom" has no entry in variantLookup (only the builtins None/Some/Ok/Err
+  // are pre-seeded), so generateIfLetStmt hits
+  // "unknown constructor '...' in if-let pattern".
+  Expr scrutineeExpr;
+  scrutineeExpr.kind = ExprLiteral{Literal(LitInteger{0})};
+  scrutineeExpr.span = span;
+
+  PatConstructor ctor;
+  ctor.name = "Phantom";
+  Pattern pat;
+  pat.kind = std::move(ctor);
+
+  StmtIfLet ifLetStmt;
+  ifLetStmt.pattern = {std::move(pat), span};
+  ifLetStmt.expr = std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(scrutineeExpr), span});
+
+  Stmt stmt;
+  stmt.kind = std::move(ifLetStmt);
+  stmt.span = span;
+
+  FnDecl fn;
+  fn.name = "main";
+  fn.is_async = false;
+  fn.is_generator = false;
+  fn.visibility = Visibility::Pub;
+  fn.is_pure = false;
+  fn.return_type = mkType("int");
+  fn.body.stmts.push_back(std::make_unique<Spanned<Stmt>>(Spanned<Stmt>{std::move(stmt), span}));
+
+  Program program;
+  program.items.push_back({Item{std::move(fn)}, span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for unknown constructor in if-let");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("unknown constructor") == std::string::npos) {
+    FAIL(("expected 'unknown constructor' diagnostic for if-let; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -10575,6 +10761,9 @@ int main() {
   test_whilelet_stmt_unsupported_pattern_fails_closed();
   test_param_drop_stmt_if_let_value_position_fails_closed();
   test_param_drop_shadow_label_inner_break_not_attributed();
+  test_spawn_unknown_actor_type_fails_closed();
+  test_supervisor_invalid_window_fails_closed();
+  test_iflet_stmt_unknown_constructor_fails_closed();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

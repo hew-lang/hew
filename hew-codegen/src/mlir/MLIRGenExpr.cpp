@@ -44,6 +44,16 @@
 using namespace hew;
 using namespace mlir;
 
+// Keep the ownership-exemption list in one place: generateCallExpr's
+// fail-closed pre-scan and its post-call transfer cleanup must stay bit-for-bit
+// aligned or ownership bugs can slip in during maintenance.
+static bool isOwnershipExemptDropFunc(llvm::StringRef dropFunc) {
+  return dropFunc == "hew_vec_free" || dropFunc == "hew_hashmap_free_impl" ||
+         dropFunc == "hew_hashset_free" || dropFunc == "hew_rc_drop" ||
+         dropFunc == "hew_string_drop" || dropFunc == "__auto_field_drop" ||
+         dropFunc.starts_with("__hew_drop_");
+}
+
 // ============================================================================
 // Expression generation
 // ============================================================================
@@ -2122,11 +2132,6 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   // drop it again → double-free.  Check BEFORE emitting any call IR so
   // that compilation genuinely fails.
   if (callee && !callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
-    auto isBorrowSemanticsDropFuncPreScan = [](const std::string &df) {
-      return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
-             df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
-             df.starts_with("__hew_drop_");
-    };
     // Recursively check whether an expression yields a field access through
     // wrapper expressions (block, if, if-let, match, unsafe, scope).
     // Fail-closed: if ANY branch yields a field access, we treat the whole
@@ -2399,7 +2404,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
         if (calleeFuncType && i < calleeFuncType.getNumInputs()) {
           auto paramType = calleeFuncType.getInput(i);
           auto dropFunc = dropFuncForMLIRType(paramType, /*includeStructTypes=*/true);
-          if (!dropFunc.empty() && !isBorrowSemanticsDropFuncPreScan(dropFunc)) {
+          if (!dropFunc.empty() && !isOwnershipExemptDropFunc(dropFunc)) {
             ++errorCount_;
             emitError(location) << "passing a struct field to a function that takes ownership "
                                 << "is not yet supported (field-alias ownership tracking is "
@@ -2596,17 +2601,12 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     //
     // Stream/Sink args are handled by nullOutRaiiAlloca above; skip them here.
     if (!callee.isExternal() && calleeName.substr(0, 4) != "hew_") {
-      auto isBorrowSemanticsDropFunc = [](const std::string &df) {
-        return df == "hew_vec_free" || df == "hew_hashmap_free_impl" || df == "hew_hashset_free" ||
-               df == "hew_rc_drop" || df == "hew_string_drop" || df == "__auto_field_drop" ||
-               df.starts_with("__hew_drop_"); // indirect enum recursive drops
-      };
       for (size_t i = 0; i < call.args.size(); ++i) {
         const auto &argExpr = ast::callArgExpr(call.args[i]).value;
         if (auto *ident = std::get_if<ast::ExprIdentifier>(&argExpr.kind)) {
           if (!lookupTrackedStreamHandleInfo(ident->name)) {
             auto regDrop = getRegisteredDropFunc(ident->name);
-            if (!regDrop.empty() && !isBorrowSemanticsDropFunc(regDrop))
+            if (!regDrop.empty() && !isOwnershipExemptDropFunc(regDrop))
               unregisterDroppable(ident->name);
           }
         } else if (i < materializedArgAllocas.size() && materializedArgAllocas[i]) {
@@ -2615,7 +2615,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           // sole owner.  Only applies to types with callee-side drops (String,
           // user-Drop structs) — exempt borrow-semantics types stay caller-owned.
           auto info = inferDropFuncForTemporary(i < args.size() ? args[i] : mlir::Value{}, argExpr);
-          if (!info.dropFunc.empty() && !isBorrowSemanticsDropFunc(info.dropFunc))
+          if (!info.dropFunc.empty() && !isOwnershipExemptDropFunc(info.dropFunc))
             nullOutDropSlotByAlloca(materializedArgAllocas[i], location);
         }
       }

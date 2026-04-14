@@ -393,8 +393,11 @@ pub(crate) fn request_sleep(deadline_ms: u64) {
 unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
     // SAFETY: caller guarantees `actor` is a valid, live pointer.
     let a = unsafe { &*actor };
+    // Use Sleeping (not Idle) so that message-send paths do not treat this
+    // actor as wake-eligible.  Messages queue in the mailbox and are
+    // delivered when the timer fires and drain_expired_sleepers re-enqueues.
     a.actor_state
-        .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        .store(HewActorState::Sleeping as i32, Ordering::Relaxed);
     #[expect(
         static_mut_refs,
         reason = "single-threaded cooperative scheduler; no concurrent mutation"
@@ -434,7 +437,7 @@ unsafe fn drain_expired_sleepers(now_ms: u64) -> u32 {
             }
             SLEEP_QUEUE.remove(0);
             let state = (*actor).actor_state.load(Ordering::Relaxed);
-            if state == HewActorState::Idle as i32 {
+            if state == HewActorState::Sleeping as i32 {
                 (*actor)
                     .actor_state
                     .store(HewActorState::Runnable as i32, Ordering::Relaxed);
@@ -898,6 +901,17 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // Non-zero means the actor should be parked in the sleep queue instead of
     // going back to RUNNABLE/IDLE after the message loop exits.
     let mut actor_sleep_deadline: u64 = 0;
+    // Belt-and-suspenders: clear any stale PENDING_SLEEP_DEADLINE_MS that
+    // could have been left by a caller that invoked `request_sleep` outside of
+    // a dispatch handler (e.g., from a top-level Hew `main` block), or by a
+    // prior activation that exited without running the per-iteration consume
+    // step (empty mailbox path).  Normally this is already 0, but clearing at
+    // entry ensures no cross-actor bleed regardless of how the global was set.
+    // SAFETY: Single-threaded; PENDING is only mutated by request_sleep and
+    // the per-iteration consume step, both called from this function.
+    unsafe {
+        PENDING_SLEEP_DEADLINE_MS = 0;
+    }
 
     if !mailbox.is_null() {
         // Process up to `budget` messages.
@@ -4262,8 +4276,8 @@ mod tests {
         );
         assert_eq!(
             b.actor_state.load(Ordering::Relaxed),
-            HewActorState::Idle as i32,
-            "actor b should remain Idle before its deadline"
+            HewActorState::Sleeping as i32,
+            "actor b should remain Sleeping before its deadline"
         );
         // SAFETY: Single-threaded test.
         assert_eq!(hew_wasm_sleeping_count(), 1, "one actor still sleeping");
@@ -4373,8 +4387,8 @@ mod tests {
         );
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
-            HewActorState::Idle as i32,
-            "actor should be Idle (parked) after sleep request"
+            HewActorState::Sleeping as i32,
+            "actor should be Sleeping (parked) after sleep request"
         );
         assert_eq!(
             hew_wasm_sleeping_count(),
@@ -4388,8 +4402,8 @@ mod tests {
         let _ = unsafe { hew_wasm_sched_tick(1) };
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
-            HewActorState::Idle as i32,
-            "actor should still be Idle at t=499"
+            HewActorState::Sleeping as i32,
+            "actor should still be Sleeping at t=499"
         );
 
         // Advance to t=500 (exactly the deadline): actor should wake.
@@ -4449,7 +4463,7 @@ mod tests {
         assert_eq!(woken, 0);
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
-            HewActorState::Idle as i32
+            HewActorState::Sleeping as i32
         );
 
         // Exactly at deadline: actor wakes.
@@ -4654,6 +4668,175 @@ mod tests {
             crate::mailbox_wasm::hew_mailbox_free(mb_crash);
             crate::mailbox_wasm::hew_mailbox_free(mb_normal);
         }
+        hew_sched_shutdown();
+    }
+
+    // ── Fix 1 regression: activation-entry PENDING clear ────────────────
+
+    /// Regression: `PENDING_SLEEP_DEADLINE_MS` set before activation (e.g.,
+    /// from `hew_sleep_ms` called outside a dispatch) must not cause a
+    /// spurious sleep park when the activated actor processes no messages.
+    ///
+    /// This exercises the belt-and-suspenders clear at activation entry
+    /// introduced as part of the two-blocker repair pass.
+    #[test]
+    fn activation_entry_clears_stale_pending_sleep() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Manually inject a stale PENDING to simulate sleep_ms called outside
+        // of a dispatch (e.g., top-level Hew main block).
+        // SAFETY: Single-threaded test; no concurrent access.
+        unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(99_999) };
+
+        // Activate an actor with an EMPTY mailbox — no dispatch runs, so
+        // without the entry-clear the stale PENDING would never be consumed
+        // by the per-iteration step.
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.mailbox = mailbox.cast();
+        // Set Runnable so activate_actor_wasm doesn't return early.
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        let a_ptr: *mut HewActor = (&raw mut a);
+        // SAFETY: actor and mailbox are valid for the duration of the test.
+        unsafe { activate_actor_wasm(a_ptr) };
+
+        // The activation must NOT have parked the actor in the sleep queue.
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "stale PENDING must not park an actor that processed no messages"
+        );
+        // The actor should be Idle (went through activation, no messages).
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "actor should be Idle after empty-mailbox activation"
+        );
+        // PENDING must have been cleared at entry even though no messages ran.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
+                0,
+                "PENDING_SLEEP_DEADLINE_MS must be 0 after activation"
+            );
+        }
+
+        // SAFETY: mailbox was heap-allocated above.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        hew_sched_shutdown();
+    }
+
+    // ── Fix 2 regression: Sleeping vs Idle state, no early wake ─────────
+
+    /// Regression: a message sent to a sleeping actor must NOT wake it before
+    /// the timer fires.  The message must queue in the mailbox and be
+    /// delivered only when `drain_expired_sleepers` transitions the actor
+    /// from `Sleeping` → `Runnable`.
+    ///
+    /// Also verifies that there is no stale `SLEEP_QUEUE` entry after the timer
+    /// fires (no double-enqueue / phantom wake).
+    #[test]
+    fn message_to_sleeping_actor_queues_without_early_wake() {
+        static DISPATCHED: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C" fn counting_dispatch(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            DISPATCHED.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        crate::deterministic::hew_simtime_enable(0);
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.dispatch = Some(counting_dispatch);
+        a.mailbox = mailbox.cast();
+        // Leave state at the stub default (Runnable) — park_actor_sleep will
+        // transition it to Sleeping internally.
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // Park actor directly at t=1000 (simulating post-dispatch park).
+        // SAFETY: actor is valid; scheduler is initialized.
+        unsafe { park_actor_sleep(a_ptr, 1000) };
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Sleeping as i32,
+            "actor must be Sleeping after park"
+        );
+        assert_eq!(hew_wasm_sleeping_count(), 1, "actor must be in sleep queue");
+
+        // Send a message to the sleeping actor via the standard send path
+        // (queue_wasm_message mirrors hew_actor_send: mailbox_send + wake_wasm_actor).
+        // wake_wasm_actor only wakes Idle actors; it must be a no-op for Sleeping.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_wasm_message(a_ptr, 0) };
+
+        // State must still be Sleeping — NOT Runnable — after the send.
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Sleeping as i32,
+            "sleeping actor must NOT be woken by a message send"
+        );
+        assert_eq!(hew_wasm_sleeping_count(), 1, "still in sleep queue");
+        assert_eq!(
+            hew_sched_metrics_global_queue_len(),
+            0,
+            "sleeping actor must NOT be in the run queue after message send"
+        );
+        // Dispatch must NOT have run (actor was not activated).
+        assert_eq!(
+            DISPATCHED.load(Ordering::Relaxed),
+            0,
+            "no dispatch before timer"
+        );
+
+        // Advance time past deadline and drain: actor wakes, processes message.
+        // SAFETY: Single-threaded test.
+        let woken = unsafe { drain_expired_sleepers(1001) };
+        assert_eq!(woken, 1, "actor must wake when timer fires");
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor must be Runnable after timer fires"
+        );
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "sleep queue must be empty after wake"
+        );
+
+        // Actually activate the actor to drain the queued message.
+        // SAFETY: actor and mailbox are valid.
+        unsafe { activate_actor_wasm(a_ptr) };
+        assert_eq!(
+            DISPATCHED.load(Ordering::Relaxed),
+            1,
+            "queued message delivered"
+        );
+
+        // No phantom re-wake: sleep queue is still empty.
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "no stale sleep entry after message delivery"
+        );
+
+        crate::deterministic::hew_simtime_disable();
+        // SAFETY: mailbox was heap-allocated above.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
         hew_sched_shutdown();
     }
 }

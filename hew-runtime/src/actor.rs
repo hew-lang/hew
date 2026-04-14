@@ -2866,6 +2866,25 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     {
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
+        return;
+    }
+
+    // If SLEEPING, cancel the sleep-queue entry and transition to STOPPED.
+    // Sleeping actors use a distinct state so message sends don't wake them
+    // early; closing one must still produce an immediate terminal transition.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Sleeping as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
+        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // SAFETY: actor just transitioned to Stopped.
+        unsafe { call_terminate_fn(actor) };
     }
 }
 
@@ -2894,6 +2913,23 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         .is_ok()
     {
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
+        unsafe { call_terminate_fn(actor) };
+        return;
+    }
+
+    // If SLEEPING, cancel the sleep-queue entry and stop immediately.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Sleeping as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
+        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
         return;
     }

@@ -3644,6 +3644,104 @@ impl Worker {
         );
     }
 
+    // ── Transitive-refresh regression tests ──────────────────────────────
+
+    /// Changing C in the chain A → B → C must propagate diagnostics all the
+    /// way back to A, not just to B (the direct importer).
+    ///
+    /// Before the BFS fix, `refresh_open_importers` was single-hop: saving C
+    /// re-analysed B but left A with stale diagnostics.
+    #[test]
+    fn typecheck_transitive_importer_chain_a_b_c_all_refreshed() {
+        // C exports `provided`.
+        // B imports C and re-exports `provided` as `b_provided`.
+        // A imports B and calls `b_provided`.
+        let c_source = "pub fn provided() -> i32 { 1 }";
+        let b_source = "import \"c.hew\";\npub fn b_provided() -> i32 { provided() }";
+        let a_source = "import \"b.hew\";\nfn main() -> i32 { b_provided() }";
+
+        let a_url = make_test_uri("/fake/project/a.hew");
+        let b_url = make_test_uri("/fake/project/b.hew");
+        let c_url = make_test_uri("/fake/project/c.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        // Open A first — B and C are not yet in the store, so A has stale
+        // diagnostics (UnresolvedImport for b.hew).
+        refresh_document_and_dependents(&a_url, a_source, &documents);
+        assert!(
+            has_unresolved_import(&documents, &a_url),
+            "A should have UnresolvedImport before B is open"
+        );
+
+        // Open B — C is still missing, but A should now be re-analysed.
+        refresh_document_and_dependents(&b_url, b_source, &documents);
+        // B itself will have an UnresolvedImport (c.hew not open yet).
+        assert!(
+            has_unresolved_import(&documents, &b_url),
+            "B should have UnresolvedImport before C is open"
+        );
+
+        // Open C — this should transitively refresh B and then A.
+        let refreshed = refresh_document_and_dependents(&c_url, c_source, &documents);
+
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &b_url),
+            "opening C must refresh its direct importer B"
+        );
+        assert!(
+            refreshed.iter().any(|(uri, _)| uri == &a_url),
+            "opening C must transitively refresh A (the two-hop importer)"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &b_url),
+            "B should have no UnresolvedImport after C is open"
+        );
+        assert!(
+            !has_unresolved_import(&documents, &a_url),
+            "A should have no UnresolvedImport after C is open (transitive refresh)"
+        );
+    }
+
+    /// Diamond import: both B and C import D; A imports both B and C.
+    /// Opening D must refresh B, C, and A exactly once (no duplicate work /
+    /// no infinite loop).
+    #[test]
+    fn typecheck_diamond_import_no_cycle_all_refreshed() {
+        let d_source = "pub fn d_fn() -> i32 { 1 }";
+        let b_source = "import \"d.hew\";\npub fn b_fn() -> i32 { d_fn() }";
+        let c_source = "import \"d.hew\";\npub fn c_fn() -> i32 { d_fn() }";
+        let a_source = "import \"b.hew\";\nimport \"c.hew\";\nfn main() -> i32 { b_fn() + c_fn() }";
+
+        let a_url = make_test_uri("/fake/project/a.hew");
+        let b_url = make_test_uri("/fake/project/b.hew");
+        let c_url = make_test_uri("/fake/project/c.hew");
+        let d_url = make_test_uri("/fake/project/d.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&a_url, a_source, &documents);
+        refresh_document_and_dependents(&b_url, b_source, &documents);
+        refresh_document_and_dependents(&c_url, c_source, &documents);
+
+        // Opening D triggers the refresh.  This must not panic or loop.
+        let refreshed = refresh_document_and_dependents(&d_url, d_source, &documents);
+
+        for url in [&b_url, &c_url, &a_url] {
+            assert!(
+                refreshed.iter().any(|(uri, _)| uri == url),
+                "opening D should refresh {url}"
+            );
+        }
+
+        // Each URI appears at most once in the publish list (dedup guarantee).
+        let counts = refreshed.iter().filter(|(u, _)| u == &a_url).count();
+        assert_eq!(
+            counts, 1,
+            "A should appear exactly once in the publish list"
+        );
+    }
+
     /// Stale on-disk content is superseded by an open editor buffer.
     /// The type-checker should see the in-memory version's exported type,
     /// not whatever might be saved on disk.

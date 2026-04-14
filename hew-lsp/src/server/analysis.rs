@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
@@ -461,36 +461,47 @@ pub(super) fn refresh_open_importers(
     documents: &DashMap<Url, DocumentState>,
     publish_uris: &mut HashSet<Url>,
 ) {
-    let dependents: Vec<_> = documents
-        .iter()
-        .filter_map(|entry| {
-            let importer_uri = entry.key().clone();
-            if &importer_uri == target_uri {
-                return None;
-            }
+    // BFS over the open-document importer graph so that transitive importers
+    // (e.g. A -> B -> C when C changes) are also re-analysed.
+    // `visited` tracks every URI we have already queued or processed so that
+    // diamond imports and import cycles don't cause infinite loops.
+    let mut visited: HashSet<Url> = HashSet::from([target_uri.clone()]);
+    let mut queue: VecDeque<Url> = VecDeque::from([target_uri.clone()]);
 
-            let importer = entry.value();
-            if document_imports_target(&importer_uri, &importer.parse_result, target_uri) {
-                Some((
-                    importer_uri,
-                    importer.source.clone(),
-                    importer
-                        .diagnostics_by_uri
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
+    while let Some(current) = queue.pop_front() {
+        let dependents: Vec<_> = documents
+            .iter()
+            .filter_map(|entry| {
+                let importer_uri = entry.key().clone();
+                if visited.contains(&importer_uri) {
+                    return None;
+                }
+                let importer = entry.value();
+                if document_imports_target(&importer_uri, &importer.parse_result, &current) {
+                    Some((
+                        importer_uri,
+                        importer.source.clone(),
+                        importer
+                            .diagnostics_by_uri
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    for (importer_uri, importer_source, previous_diagnostic_uris) in dependents {
-        publish_uris.insert(importer_uri.clone());
-        publish_uris.extend(previous_diagnostic_uris);
-        let document = analyze_document(&importer_uri, &importer_source, documents);
-        documents.insert(importer_uri.clone(), document);
+        for (importer_uri, importer_source, previous_diagnostic_uris) in dependents {
+            visited.insert(importer_uri.clone());
+            publish_uris.insert(importer_uri.clone());
+            publish_uris.extend(previous_diagnostic_uris);
+            let document = analyze_document(&importer_uri, &importer_source, documents);
+            documents.insert(importer_uri.clone(), document);
+            // Enqueue this importer so its own importers are refreshed too.
+            queue.push_back(importer_uri);
+        }
     }
 }
 

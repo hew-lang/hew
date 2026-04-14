@@ -106,6 +106,17 @@ enum CompiledEvalError {
     },
 }
 
+impl From<crate::compile::CompileFromSourceError> for CompiledEvalError {
+    fn from(error: crate::compile::CompileFromSourceError) -> Self {
+        match error {
+            crate::compile::CompileFromSourceError::DiagnosticsRendered => {
+                Self::DiagnosticsRendered
+            }
+            crate::compile::CompileFromSourceError::Message(message) => Self::Message(message),
+        }
+    }
+}
+
 pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
     if !stdout.is_empty() {
         print!("{stdout}");
@@ -1091,7 +1102,7 @@ fn run_inprocess_compiled(
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(|error| normalize_compiled_eval_error(&error))?;
+    .map_err(CompiledEvalError::from)?;
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
@@ -1113,16 +1124,6 @@ fn run_inprocess_compiled(
         Err(e) => Err(CompiledEvalError::Message(format!(
             "cannot execute compiled program: {e}"
         ))),
-    }
-}
-
-fn normalize_compiled_eval_error(error: &str) -> CompiledEvalError {
-    match error {
-        "type errors found" => CompiledEvalError::DiagnosticsRendered,
-        _ if error.starts_with("parsing failed in imported file") => {
-            CompiledEvalError::DiagnosticsRendered
-        }
-        _ => CompiledEvalError::Message(error.strip_prefix("Error: ").unwrap_or(error).to_string()),
     }
 }
 
@@ -1181,7 +1182,7 @@ fn run_wasm_eval_compiled(
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(|error| normalize_compiled_eval_error(&error))?;
+    .map_err(CompiledEvalError::from)?;
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),

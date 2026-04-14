@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,11 @@ fn diag_println(s: &str) {
     });
 }
 
+/// Emit a plain diagnostic line through the capture-aware sink.
+pub(crate) fn emit_plain_diagnostic_line(s: &str) {
+    diag_println(s);
+}
+
 // ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
 const YELLOW: &str = "\x1b[1;33m";
@@ -58,6 +64,47 @@ const BLUE: &str = "\x1b[1;34m";
 const CYAN: &str = "\x1b[1;36m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
+
+struct DiagnosticPalette {
+    red: &'static str,
+    yellow: &'static str,
+    blue: &'static str,
+    cyan: &'static str,
+    bold: &'static str,
+    reset: &'static str,
+}
+
+fn diagnostic_capture_active() -> bool {
+    DIAG_CAPTURE.with(|c| c.borrow().is_some())
+}
+
+fn use_ansi_diagnostics() -> bool {
+    !diagnostic_capture_active()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::io::stderr().is_terminal()
+}
+
+fn diagnostic_palette() -> DiagnosticPalette {
+    if use_ansi_diagnostics() {
+        DiagnosticPalette {
+            red: RED,
+            yellow: YELLOW,
+            blue: BLUE,
+            cyan: CYAN,
+            bold: BOLD,
+            reset: RESET,
+        }
+    } else {
+        DiagnosticPalette {
+            red: "",
+            yellow: "",
+            blue: "",
+            cyan: "",
+            bold: "",
+            reset: "",
+        }
+    }
+}
 
 /// A secondary note attached to a diagnostic.
 #[derive(Debug)]
@@ -86,28 +133,39 @@ pub fn render_diagnostic(
     notes: &[DiagnosticNote<'_>],
     suggestions: &[String],
 ) {
+    let palette = diagnostic_palette();
     let (line, col) = offset_to_line_col(source, span.start);
 
     // Header: filename:line:col: error: message
     diag_println(&format!(
-        "{BOLD}{filename}:{line}:{col}:{RESET} {RED}error{RESET}{BOLD}: {message}{RESET}"
+        "{bold}{filename}:{line}:{col}:{reset} {red}error{reset}{bold}: {message}{reset}",
+        bold = palette.bold,
+        red = palette.red,
+        reset = palette.reset,
     ));
 
-    render_source_underline(source, span, line);
+    render_source_underline(source, span, line, &palette);
 
     // Secondary notes with their own spans
     for note in notes {
         let (note_line, note_col) = offset_to_line_col(source, note.span.start);
         diag_println(&format!(
-            "{BOLD}{filename}:{note_line}:{note_col}:{RESET} {CYAN}note{RESET}{BOLD}: {}{RESET}",
-            note.message
+            "{bold}{filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
+            bold = palette.bold,
+            cyan = palette.cyan,
+            message = note.message,
+            reset = palette.reset,
         ));
-        render_source_underline(source, note.span, note_line);
+        render_source_underline(source, note.span, note_line, &palette);
     }
 
     // Suggestions
     for suggestion in suggestions {
-        diag_println(&format!("  {CYAN}= help{RESET}: {suggestion}"));
+        diag_println(&format!(
+            "  {cyan}= help{reset}: {suggestion}",
+            cyan = palette.cyan,
+            reset = palette.reset,
+        ));
     }
 }
 
@@ -122,25 +180,36 @@ pub fn render_warning(
     notes: &[DiagnosticNote<'_>],
     suggestions: &[String],
 ) {
+    let palette = diagnostic_palette();
     let (line, col) = offset_to_line_col(source, span.start);
 
     diag_println(&format!(
-        "{BOLD}{filename}:{line}:{col}:{RESET} {YELLOW}warning{RESET}{BOLD}: {message}{RESET}"
+        "{bold}{filename}:{line}:{col}:{reset} {yellow}warning{reset}{bold}: {message}{reset}",
+        bold = palette.bold,
+        reset = palette.reset,
+        yellow = palette.yellow,
     ));
 
-    render_source_underline(source, span, line);
+    render_source_underline(source, span, line, &palette);
 
     for note in notes {
         let (note_line, note_col) = offset_to_line_col(source, note.span.start);
         diag_println(&format!(
-            "{BOLD}{filename}:{note_line}:{note_col}:{RESET} {CYAN}note{RESET}{BOLD}: {}{RESET}",
-            note.message
+            "{bold}{filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
+            bold = palette.bold,
+            cyan = palette.cyan,
+            message = note.message,
+            reset = palette.reset,
         ));
-        render_source_underline(source, note.span, note_line);
+        render_source_underline(source, note.span, note_line, &palette);
     }
 
     for suggestion in suggestions {
-        diag_println(&format!("  {CYAN}= help{RESET}: {suggestion}"));
+        diag_println(&format!(
+            "  {cyan}= help{reset}: {suggestion}",
+            cyan = palette.cyan,
+            reset = palette.reset,
+        ));
     }
 }
 
@@ -285,7 +354,12 @@ pub(crate) fn render_type_diagnostics_with_sources(
 }
 
 /// Render the source line and `^^^` underline for a span.
-fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
+fn render_source_underline(
+    source: &str,
+    span: &Range<usize>,
+    line: usize,
+    palette: &DiagnosticPalette,
+) {
     let lines: Vec<&str> = source.lines().collect();
 
     if line == 0 {
@@ -296,8 +370,17 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     if line > lines.len() {
         let line_num = line.to_string();
         let padding = " ".repeat(line_num.len());
-        diag_println(&format!(" {BLUE}{line_num} |{RESET}"));
-        diag_println(&format!(" {padding} {BLUE}|{RESET} {RED}^{RESET}"));
+        diag_println(&format!(
+            " {blue}{line_num} |{reset}",
+            blue = palette.blue,
+            reset = palette.reset,
+        ));
+        diag_println(&format!(
+            " {padding} {blue}|{reset} {red}^{reset}",
+            blue = palette.blue,
+            red = palette.red,
+            reset = palette.reset,
+        ));
         return;
     }
 
@@ -308,7 +391,11 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     let padding = " ".repeat(line_num.len());
 
     // Print the source line
-    diag_println(&format!(" {BLUE}{line_num} |{RESET} {display_line}"));
+    diag_println(&format!(
+        " {blue}{line_num} |{reset} {display_line}",
+        blue = palette.blue,
+        reset = palette.reset,
+    ));
 
     // Compute underline position within the line using character counts,
     // not byte offsets, so multi-byte UTF-8 characters align correctly.
@@ -335,9 +422,12 @@ fn render_source_underline(source: &str, span: &Range<usize>, line: usize) {
     let underline_len = end_chars.saturating_sub(start_chars).max(1);
 
     diag_println(&format!(
-        " {padding} {BLUE}|{RESET} {}{RED}{}{RESET}",
+        " {padding} {blue}|{reset} {}{red}{}{reset}",
         " ".repeat(start_chars),
         "^".repeat(underline_len),
+        blue = palette.blue,
+        red = palette.red,
+        reset = palette.reset,
     ));
 }
 
@@ -431,5 +521,18 @@ mod tests {
 
         assert_eq!(source, "fn main() {}\n");
         assert_eq!(filename, "main.hew");
+    }
+
+    #[test]
+    fn captured_diagnostics_strip_ansi_sequences() {
+        start_diagnostic_capture();
+        render_diagnostic("oops()\n", "main.hew", &(0..4), "bad call", &[], &[]);
+        let captured = finish_diagnostic_capture();
+
+        assert!(
+            !captured.contains("\u{1b}["),
+            "captured diagnostics must not contain ANSI escapes: {captured:?}"
+        );
+        assert!(captured.contains("main.hew:1:1: error: bad call"));
     }
 }

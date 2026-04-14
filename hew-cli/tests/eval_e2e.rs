@@ -1433,12 +1433,64 @@ fn eval_json_compile_error_contains_diagnostic_text() {
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
     let diagnostics = v["diagnostics"].as_str().unwrap_or("");
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        parent_stderr.is_empty(),
+        "compile diagnostics leaked to parent stderr instead of JSON: {parent_stderr:?}"
+    );
+    assert!(
+        !diagnostics.contains("\u{1b}["),
+        "compile diagnostics in JSON must not contain ANSI escapes: {diagnostics:?}"
+    );
     // The diagnostic must mention the unknown name so tooling can surface it.
     assert!(
         diagnostics.contains("this_does_not_exist_at_all")
             || diagnostics.contains("error")
             || diagnostics.contains("not found"),
         "diagnostics text appears empty or unhelpful: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn eval_json_manifest_message_diagnostic_stays_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hew.toml"), "[package]\nname = \"myapp\"\n").unwrap();
+
+    let path = dir.path().join("manifest_error.hew");
+    std::fs::write(&path, "import math;\n\n1 + 2\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json on manifest diagnostic, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        parent_stderr.is_empty(),
+        "message diagnostic leaked to parent stderr: {parent_stderr:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "compile_error", "unexpected status: {v}");
+    let diagnostics = v["diagnostics"].as_str().unwrap_or("");
+    assert!(
+        diagnostics.contains("module `math` is not declared in hew.toml"),
+        "expected manifest diagnostic in JSON payload: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.contains("adze add math"),
+        "expected manifest hint in JSON payload: {diagnostics:?}"
     );
 }
 

@@ -1,6 +1,7 @@
 //! Build command: parse, type-check, serialize to `MessagePack`, invoke the
 //! embedded MLIR/LLVM backend, and link the final executable.
 
+use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -120,10 +121,27 @@ fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOp
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompileFromSourceError {
+    DiagnosticsRendered,
+    Message(String),
+}
+
+impl fmt::Display for CompileFromSourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiagnosticsRendered => f.write_str("diagnostics already rendered"),
+            Self::Message(message) => message.fmt(f),
+        }
+    }
+}
+
 fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
     for diagnostic in diagnostics {
         match &diagnostic.kind {
-            FrontendDiagnosticKind::Message(message) => eprintln!("{message}"),
+            FrontendDiagnosticKind::Message(message) => {
+                crate::diagnostic::emit_plain_diagnostic_line(message);
+            }
             FrontendDiagnosticKind::Parse(error) => {
                 let suggestions: Vec<String> = error.hint.iter().cloned().collect();
                 if let (Some(source), Some(filename)) =
@@ -152,7 +170,10 @@ fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                         hew_parser::Severity::Warning => "warning",
                         hew_parser::Severity::Error => "error",
                     };
-                    eprintln!("{level}: {}", error.message);
+                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "{level}: {}",
+                        error.message
+                    ));
                 }
             }
             FrontendDiagnosticKind::Type(error) => {
@@ -186,7 +207,10 @@ fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                         hew_types::error::Severity::Warning => "warning",
                         hew_types::error::Severity::Error => "error",
                     };
-                    eprintln!("{level}: {}", error.message);
+                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "{level}: {}",
+                        error.message
+                    ));
                 }
             }
             FrontendDiagnosticKind::InferredType { error, fatal } => {
@@ -242,26 +266,26 @@ fn render_inferred_type_serialization_diagnostic(
                 );
             }
         } else if let Some(filename) = filename {
-            eprintln!(
+            crate::diagnostic::emit_plain_diagnostic_line(&format!(
                 "{}: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
                 if fatal { "error" } else { "warning" },
                 filename,
                 span.start,
                 span.end
-            );
+            ));
         } else {
-            eprintln!(
+            crate::diagnostic::emit_plain_diagnostic_line(&format!(
                 "{}: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
                 if fatal { "error" } else { "warning" },
                 span.start,
                 span.end
-            );
+            ));
         }
     } else {
-        eprintln!(
+        crate::diagnostic::emit_plain_diagnostic_line(&format!(
             "{}: cannot serialize inferred type for code generation: {error}",
             if fatal { "error" } else { "warning" }
-        );
+        ));
     }
 }
 
@@ -401,8 +425,9 @@ pub(crate) fn compile_from_source_checked(
     source_label: &str,
     output_path: &str,
     options: &CompileOptions,
-) -> Result<(), String> {
-    let target = TargetSpec::from_requested(options.target.as_deref())?;
+) -> Result<(), CompileFromSourceError> {
+    let target = TargetSpec::from_requested(options.target.as_deref())
+        .map_err(CompileFromSourceError::Message)?;
     let frontend_options = frontend_options(&target, options);
 
     let frontend =
@@ -411,13 +436,19 @@ pub(crate) fn compile_from_source_checked(
             Ok(frontend) => frontend,
             Err(failure) => {
                 render_frontend_diagnostics(&failure.diagnostics);
-                return Err(failure.message);
+                return Err(if failure.diagnostics.is_empty() {
+                    CompileFromSourceError::Message(failure.message)
+                } else {
+                    CompileFromSourceError::DiagnosticsRendered
+                });
             }
         };
     render_frontend_diagnostics(&frontend.diagnostics);
 
     if !target.can_link_with_host_tools() {
-        return Err(target.unsupported_native_link_error());
+        return Err(CompileFromSourceError::Message(
+            target.unsupported_native_link_error(),
+        ));
     }
 
     compile_and_link(
@@ -426,7 +457,8 @@ pub(crate) fn compile_from_source_checked(
         Some(output_path),
         &target,
         options,
-    )?;
+    )
+    .map_err(CompileFromSourceError::Message)?;
     Ok(())
 }
 

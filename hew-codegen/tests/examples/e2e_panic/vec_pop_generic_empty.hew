@@ -1,0 +1,9 @@
+type Pair {
+    a: int;
+    b: int;
+}
+
+fn main() {
+    let items: Vec<Pair> = Vec::new();
+    items.pop();
+}

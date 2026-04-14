@@ -117,6 +117,17 @@ unsafe fn abort_pop_empty() -> ! {
     }
 }
 
+/// Abort on pop of empty vec.
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_abort_pop_empty() -> ! {
+    // SAFETY: abort_pop_empty writes to stderr and aborts; always safe to call.
+    unsafe { abort_pop_empty() }
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------

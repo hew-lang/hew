@@ -159,10 +159,16 @@ fn test_string_to_int_strict_parse() -> int {
 }
 
 fn test_string_to_int_wraps() -> int {
-    let wrapped = string_to_int("4294967296");
-    if wrapped == 0 {
-        println("PASS: string_to_int_wraps");
-        1
+    let wrapped_zero = string_to_int("4294967296");
+    let wrapped_negative = string_to_int("2147483648");
+    if wrapped_zero == 0 {
+        if wrapped_negative == -2147483648 {
+            println("PASS: string_to_int_wraps");
+            1
+        } else {
+            println("FAIL: string_to_int_wraps");
+            0
+        }
     } else {
         println("FAIL: string_to_int_wraps");
         0

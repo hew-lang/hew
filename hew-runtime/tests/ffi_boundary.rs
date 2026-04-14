@@ -454,8 +454,11 @@ fn string_to_int_strict_semantics() {
         let min = cstr("-2147483648");
         assert_eq!(hew_string_to_int(min.as_ptr()), i32::MIN);
 
-        let overflow = cstr("4294967296");
-        assert_eq!(hew_string_to_int(overflow.as_ptr()), 0);
+        let wrapped_zero = cstr("4294967296");
+        assert_eq!(hew_string_to_int(wrapped_zero.as_ptr()), 0);
+
+        let wrapped_negative = cstr("2147483648");
+        assert_eq!(hew_string_to_int(wrapped_negative.as_ptr()), i32::MIN);
     }
 }
 

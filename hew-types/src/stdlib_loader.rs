@@ -729,16 +729,16 @@ mod tests {
         assert!(params.is_empty(), "setup() takes no parameters");
         assert_eq!(*ret, Ty::Unit, "setup() returns Unit");
 
-        // `pub fn setup_level(level: i32)` takes one i32 param
-        let setup_level = info
+        // `pub fn set_level(level: i32)` takes one i32 param
+        let set_level = info
             .wrapper_fns
             .iter()
-            .find(|(name, _, _)| name == "setup_level");
+            .find(|(name, _, _)| name == "set_level");
         assert!(
-            setup_level.is_some(),
-            "log module should have 'setup_level' wrapper fn"
+            set_level.is_some(),
+            "log module should have 'set_level' wrapper fn"
         );
-        let (_, params, _) = setup_level.unwrap();
+        let (_, params, _) = set_level.unwrap();
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], Ty::I32);
     }

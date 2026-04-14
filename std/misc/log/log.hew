@@ -40,20 +40,15 @@ pub fn setup() {
     unsafe { hew_log_set_level(2) };
 }
 
-/// Initialize logging at a specific level.
+/// Set the log level filter.
 ///
 /// Levels: 0=error, 1=warn, 2=info, 3=debug, 4=trace.
 ///
 /// # Examples
 ///
 /// ```
-/// log.setup_level(3); // enable debug and above
+/// log.set_level(3); // enable debug and above
 /// ```
-pub fn setup_level(level: i32) {
-    unsafe { hew_log_set_level(level) };
-}
-
-/// Set the log level filter.
 pub fn set_level(level: i32) {
     unsafe { hew_log_set_level(level) };
 }

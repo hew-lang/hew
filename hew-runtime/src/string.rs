@@ -272,7 +272,32 @@ pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
-/// Parse a C string as an `i32` (like C `atoi`).
+fn parse_strict_i32(bytes: &[u8]) -> i32 {
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let (negative, digits) = match bytes[0] {
+        b'-' => (true, &bytes[1..]),
+        b'+' => (false, &bytes[1..]),
+        _ => (false, bytes),
+    };
+
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return 0;
+    }
+
+    let value = digits.iter().fold(0_i32, |acc, digit| {
+        acc.wrapping_mul(10).wrapping_add(i32::from(digit - b'0'))
+    });
+    if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    }
+}
+
+/// Parse a C string as an `i32` using `std::string.to_int` semantics.
 ///
 /// # Safety
 ///
@@ -281,7 +306,8 @@ pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut c_char {
 pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i32 {
     cabi_guard!(s.is_null(), 0);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    unsafe { libc::atoi(s) }
+    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
+    parse_strict_i32(bytes)
 }
 
 /// Convert an `f64` to its string representation. Caller must `free`.

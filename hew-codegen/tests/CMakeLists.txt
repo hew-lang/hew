@@ -1104,6 +1104,8 @@ add_wasm_file_test(ex_hashmap_complete  e2e_examples test_hashmap_complete)
 add_wasm_file_test(ex_float_arith       e2e_examples test_float_arithmetic)
 add_wasm_file_test(ex_loop_patterns     e2e_examples test_loop_patterns)
 add_wasm_file_test(ex_nested_structs    e2e_examples test_nested_structs)
+# WASM-TODO: test_string_edge_cases currently produces no output under the wasm
+# e2e harness, so string_to_int parity remains tracked but unverified there.
 add_wasm_file_test(ex_string_edges      e2e_examples test_string_edge_cases)
 add_wasm_file_test(ex_match_patterns    e2e_examples test_match_patterns)
 add_wasm_file_test(ex_lambda_patterns   e2e_examples test_lambda_patterns)

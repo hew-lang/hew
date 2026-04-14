@@ -5,9 +5,9 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 #[test]
-fn werror_flag_is_accepted_as_noop_by_build_style_commands() {
-    // --Werror is accepted for spec compatibility but is a no-op.
-    // It should not cause an "unknown option" error.
+fn werror_flag_is_accepted_by_build_style_commands() {
+    // --Werror must stay accepted by the build-style commands even when the
+    // input itself is otherwise invalid.
     for command in ["build", "check", "run", "debug"] {
         let output = Command::new(hew_binary())
             .args([command, "--Werror", "placeholder.hew"])

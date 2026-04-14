@@ -15,6 +15,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 #[derive(Debug, Clone, Default)]
 pub struct FrontendOptions {
     pub no_typecheck: bool,
+    pub warnings_as_errors: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
     /// Anchor the in-memory compile to a specific project directory, enabling
@@ -79,6 +80,19 @@ impl FrontendDiagnostic {
             kind: FrontendDiagnosticKind::InferredType { error, fatal },
         }
     }
+
+    fn is_warning(&self) -> bool {
+        match &self.kind {
+            FrontendDiagnosticKind::Message(_) => false,
+            FrontendDiagnosticKind::Parse(diagnostic) => {
+                diagnostic.severity == hew_parser::Severity::Warning
+            }
+            FrontendDiagnosticKind::Type(diagnostic) => {
+                diagnostic.severity == hew_types::error::Severity::Warning
+            }
+            FrontendDiagnosticKind::InferredType { fatal, .. } => !fatal,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +121,20 @@ impl fmt::Display for FrontendFailure {
 }
 
 impl std::error::Error for FrontendFailure {}
+
+fn fail_on_warning_diagnostics(
+    diagnostics: Vec<FrontendDiagnostic>,
+    options: &FrontendOptions,
+) -> Result<Vec<FrontendDiagnostic>, FrontendFailure> {
+    if options.warnings_as_errors && diagnostics.iter().any(FrontendDiagnostic::is_warning) {
+        Err(FrontendFailure::new(
+            "warnings treated as errors",
+            diagnostics,
+        ))
+    } else {
+        Ok(diagnostics)
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutput {
@@ -1448,9 +1476,8 @@ fn finish_compile(
 /// checking fails.
 pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput, FrontendFailure> {
     let state = run_file_frontend_to_typecheck(input, options)?;
-    Ok(CheckOutput {
-        diagnostics: state.diagnostics,
-    })
+    let diagnostics = fail_on_warning_diagnostics(state.diagnostics, options)?;
+    Ok(CheckOutput { diagnostics })
 }
 
 /// Run the full frontend pipeline for an on-disk source file.
@@ -1468,13 +1495,15 @@ pub fn compile_file(
         typecheck_result,
         source,
     } = run_file_frontend_to_typecheck(input, options)?;
-    finish_compile(
+    let frontend = finish_compile(
         program,
         diagnostics,
         &typecheck_result,
         source,
         input.to_string(),
-    )
+    )?;
+    fail_on_warning_diagnostics(frontend.diagnostics.clone(), options)?;
+    Ok(frontend)
 }
 
 /// Run the full frontend pipeline for an already-parsed in-memory program.
@@ -1512,13 +1541,15 @@ pub fn compile_program(
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
 
-    finish_compile(
+    let frontend = finish_compile(
         program,
         diagnostics,
         &typecheck_result,
         source.to_string(),
         source_label.to_string(),
-    )
+    )?;
+    fail_on_warning_diagnostics(frontend.diagnostics.clone(), options)?;
+    Ok(frontend)
 }
 
 /// Run the full frontend pipeline for a source file and serialize to msgpack.
@@ -1642,7 +1673,10 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 
 #[cfg(test)]
 mod tests {
-    use super::{check_file, load_dependencies, load_lockfile, load_package_name, FrontendOptions};
+    use super::{
+        check_file, compile_file, load_dependencies, load_lockfile, load_package_name,
+        FrontendOptions,
+    };
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -1655,6 +1689,14 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("adze.lock")).expect("create adze.lock");
         file.write_all(content.as_bytes()).expect("write adze.lock");
+    }
+
+    fn write_source(dir: &Path, name: &str, content: &str) -> String {
+        let path = dir.join(name);
+        let mut file = File::create(&path).expect("create source file");
+        file.write_all(content.as_bytes())
+            .expect("write source file");
+        path.display().to_string()
     }
 
     #[test]
@@ -1820,5 +1862,72 @@ mod tests {
         .expect_err("invalid lockfile should fail closed");
         assert!(err.message.contains("cannot parse"), "{}", err.message);
         assert!(err.message.contains("adze.lock"), "{}", err.message);
+    }
+
+    #[test]
+    fn check_file_preserves_warnings_without_werror() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(dir.path(), "main.hew", "fn main() { let unused = 42; }\n");
+
+        let result = check_file(&input, &FrontendOptions::default()).expect("check should succeed");
+
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(super::FrontendDiagnostic::is_warning),
+            "expected warning diagnostics, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn check_file_fails_when_warnings_are_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(dir.path(), "main.hew", "fn main() { let unused = 42; }\n");
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                warnings_as_errors: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("warnings should fail when warnings_as_errors is enabled");
+
+        assert_eq!(failure.message, "warnings treated as errors");
+        assert!(
+            failure
+                .diagnostics
+                .iter()
+                .any(super::FrontendDiagnostic::is_warning),
+            "expected warning diagnostics, got: {:?}",
+            failure.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_file_fails_when_warnings_are_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(dir.path(), "main.hew", "fn main() { let unused = 42; }\n");
+
+        let failure = compile_file(
+            &input,
+            &FrontendOptions {
+                warnings_as_errors: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("frontend compile should fail when warnings_as_errors is enabled");
+
+        assert_eq!(failure.message, "warnings treated as errors");
+        assert!(
+            failure
+                .diagnostics
+                .iter()
+                .any(super::FrontendDiagnostic::is_warning),
+            "expected warning diagnostics, got: {:?}",
+            failure.diagnostics
+        );
     }
 }

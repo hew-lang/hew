@@ -186,6 +186,48 @@ fn non_root_unused_variable_warning_rendered_with_dep_filename() {
     );
 }
 
+/// `hew check --Werror` must fail on the same dep warning that plain
+/// `hew check` reports non-fatally.
+#[test]
+fn non_root_unused_variable_warning_becomes_error_with_werror() {
+    let fixture = write_fixture(&[
+        ("main.hew", "import \"dep.hew\";\n\nfn main() {}\n"),
+        ("dep.hew", "pub fn helper() -> i64 { let x = 42; 100 }\n"),
+    ]);
+
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["check", "--Werror", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew check --Werror must exit non-zero when dep.hew has only a warning; got stderr:\n{}",
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("dep.hew:"),
+        "--Werror warning output must still be attributed to dep.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:"),
+        "--Werror should still render the original warning; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warnings treated as errors"),
+        "--Werror failure should explain why the command failed; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(": OK"),
+        "--Werror failure must not print the success footer; got:\n{stderr}"
+    );
+}
+
 /// An unreachable-code warning in `dep.hew` must be rendered with `dep.hew`
 /// as the filename header.
 ///

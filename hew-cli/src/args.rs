@@ -63,7 +63,7 @@ pub enum Command {
 
 #[derive(Debug, Args, Clone, Default)]
 pub struct CommonBuildArgs {
-    /// Accepted for spec compatibility (no-op).
+    /// Treat warnings as errors.
     #[arg(long = "Werror")]
     pub werror: bool,
     /// Skip type-checking phase.
@@ -89,6 +89,7 @@ impl CommonBuildArgs {
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             no_typecheck: self.no_typecheck,
+            werror: self.werror,
             pkg_path: self.pkg_path.clone(),
             ..Default::default()
         }

@@ -1264,7 +1264,13 @@ mod tests {
     /// and verify the ticker is stopped.
     #[test]
     fn ticker_stops_during_runtime_cleanup() {
-        use crate::timer_periodic::TICKER_RUNNING;
+        use crate::timer_periodic::{TICKER_RUNNING, TICKER_TEST_MUTEX};
+
+        // Hold the shared ticker mutex for the duration of this test so it
+        // cannot race with timer_periodic tests that poll the same globals.
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Start the global wheel so the ticker is running.
         let _tw = crate::timer_periodic::global_wheel();

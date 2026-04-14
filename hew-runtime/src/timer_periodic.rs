@@ -316,6 +316,13 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
     ctx.cancelled.store(true, Ordering::Release);
 }
 
+/// Mutex that serialises every test touching the process-wide ticker globals
+/// (`GLOBAL_WHEEL`, `TICKER_RUNNING`, `TICKER_STOP`).  Declared at module
+/// level so that coupled tests in other modules (e.g. `scheduler`) can import
+/// and acquire it without duplicating the guard.
+#[cfg(test)]
+pub(crate) static TICKER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
 /// Gracefully stop the ticker thread.
 ///
 /// Sets the stop flag, waits for the thread to join, then resets the flag
@@ -374,14 +381,10 @@ mod tests {
     use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64};
     use std::time::{Duration, Instant};
 
-    // Serialise every test that touches the process-wide ticker globals
-    // (GLOBAL_WHEEL, TICKER_RUNNING, TICKER_STOP, TEST_COUNTER).  Rust's
-    // default test runner uses multiple threads, so without this lock two
-    // tests can race: one resets TEST_COUNTER to 0 while the other is
-    // polling it, or one calls shutdown_ticker() while the other is waiting
-    // for the ticker to fire.  Poisoning is recovered so a panicking test
-    // does not permanently block subsequent tests.
-    static TICKER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+    // TICKER_TEST_MUTEX is declared at module level (pub(crate)) so that
+    // TICKER_TEST_MUTEX is declared at module level (pub(crate)) and
+    // brought in by `use super::*` above; it is also imported directly by
+    // coupled tests in other modules (e.g. scheduler).
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 

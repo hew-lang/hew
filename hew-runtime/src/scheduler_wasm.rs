@@ -390,6 +390,37 @@ pub extern "C" fn hew_runtime_cleanup() {
     crate::registry::hew_registry_clear();
 }
 
+/// Pop one actor from the run queue, activate it, and re-enqueue it if
+/// it is still runnable. Returns `true` if an actor was activated, `false`
+/// if the queue was empty or uninitialized.
+///
+/// # Safety
+///
+/// Must only be called from a single-threaded WASM context after
+/// [`hew_sched_init`] has been called.
+unsafe fn step_one_actor() -> bool {
+    // SAFETY: Single-threaded on WASM; RUN_QUEUE is only mutated here.
+    unsafe {
+        let actor = match RUN_QUEUE {
+            Some(ref mut q) => q.pop_front(),
+            None => return false,
+        };
+        let Some(actor) = actor else {
+            return false;
+        };
+        activate_actor_wasm(actor);
+
+        // Re-enqueue if the actor is still runnable.
+        let state = (*actor).actor_state.load(Ordering::Relaxed);
+        if state == HewActorState::Runnable as i32 {
+            if let Some(ref mut q) = RUN_QUEUE {
+                q.push_back(actor);
+            }
+        }
+        true
+    }
+}
+
 /// Run all enqueued actors to completion.
 ///
 /// Loops until the run queue is empty: pops the front actor, activates
@@ -399,23 +430,7 @@ pub extern "C" fn hew_runtime_cleanup() {
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_run() {
     // SAFETY: Single-threaded on WASM.
-    unsafe {
-        while let Some(ref mut q) = RUN_QUEUE {
-            let Some(actor) = q.pop_front() else {
-                break;
-            };
-            activate_actor_wasm(actor);
-
-            // Re-enqueue if the actor is still runnable.
-            let a = &*actor;
-            let state = a.actor_state.load(Ordering::Relaxed);
-            if state == HewActorState::Runnable as i32 {
-                if let Some(ref mut q) = RUN_QUEUE {
-                    q.push_back(actor);
-                }
-            }
-        }
-    }
+    while unsafe { step_one_actor() } {}
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -461,28 +476,9 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
-        let mut activations = 0i32;
-        loop {
-            if activations >= max_activations {
+        for _ in 0..max_activations {
+            if !step_one_actor() {
                 break;
-            }
-            let actor = match RUN_QUEUE {
-                Some(ref mut q) => q.pop_front(),
-                None => break,
-            };
-            let Some(actor) = actor else {
-                break;
-            };
-            activate_actor_wasm(actor);
-            activations += 1;
-
-            // Re-enqueue if the actor is still runnable.
-            let a = &*actor;
-            let state = a.actor_state.load(Ordering::Relaxed);
-            if state == HewActorState::Runnable as i32 {
-                if let Some(ref mut q) = RUN_QUEUE {
-                    q.push_back(actor);
-                }
             }
         }
 
@@ -745,7 +741,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         // More work pending -> RUNNING -> RUNNABLE.
         a.actor_state
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        // NOTE: The caller (hew_sched_run) handles re-enqueue by checking
+        // NOTE: The caller (step_one_actor) handles re-enqueue by checking
         // the actor state after activation.
     } else {
         // No more messages -> RUNNING -> IDLE.

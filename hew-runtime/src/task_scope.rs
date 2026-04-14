@@ -760,14 +760,19 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
         return;
     }
 
-    let reaper = std::thread::spawn(move || {
-        for handle in detached_handles {
-            let _ = handle.join();
-        }
-        // SAFETY: every detached worker has exited, so no task pointer can be
-        // observed again after this point.
-        unsafe { free_scope_tasks(&mut scope_box) };
-    });
+    // WASM-TODO: task_scope uses OS threads throughout and has no WASM target;
+    // the reaper thread below is likewise native-only.
+    let reaper = std::thread::Builder::new()
+        .name("hew-task-reaper".into())
+        .spawn(move || {
+            for handle in detached_handles {
+                let _ = handle.join();
+            }
+            // SAFETY: every detached worker has exited, so no task pointer can be
+            // observed again after this point.
+            unsafe { free_scope_tasks(&mut scope_box) };
+        })
+        .expect("failed to spawn hew-task-reaper thread");
     drop(reaper);
 }
 
@@ -1431,5 +1436,96 @@ mod tests {
                 hew_task_scope_destroy(scope);
             }
         }
+    }
+
+    /// Two or more running tasks are all cancelled-and-detached together.
+    ///
+    /// This exercises the multi-handle Vec path in `take_detached_task_handles`:
+    /// every thread is joined by the reaper and every allocation is freed
+    /// exactly once, with no UAF (all joins happen before any free).
+    #[test]
+    fn destroy_cancel_multiple_running_tasks_all_reclaimed_by_reaper() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::time::{Duration, Instant};
+
+        const N: usize = 3;
+
+        static STARTED: AtomicUsize = AtomicUsize::new(0);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn blocking_worker_n(task: *mut HewTask) {
+            STARTED.fetch_add(1, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // SAFETY: `task` is the live task pointer owned by this worker.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        unsafe extern "C" fn count_env_drop_n(_: *mut u8) {
+            ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        STARTED.store(0, Ordering::SeqCst);
+        RELEASE.store(false, Ordering::SeqCst);
+        ENV_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+
+            for _ in 0..N {
+                let t = hew_task_new();
+                // Attach a drop-counting env so we can detect when the reaper
+                // has freed each task allocation.
+                hew_task_set_env(
+                    t,
+                    crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop_n)).cast(),
+                );
+                hew_task_scope_spawn(scope, t);
+                hew_task_spawn_thread(t, blocking_worker_n);
+            }
+
+            // Wait for all N workers to start blocking.
+            let started_deadline = Instant::now() + Duration::from_secs(2);
+            while STARTED.load(Ordering::SeqCst) < N && Instant::now() < started_deadline {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                STARTED.load(Ordering::SeqCst),
+                N,
+                "not all {N} workers started"
+            );
+
+            // Cancel + destroy: all N running tasks must be detached, reaper spawned.
+            hew_task_scope_cancel(scope);
+            let t0 = Instant::now();
+            hew_task_scope_destroy(scope);
+            assert!(
+                t0.elapsed() < Duration::from_millis(250),
+                "destroy blocked with {N} running tasks"
+            );
+        }
+
+        // Allocations must not be freed while workers are still running.
+        assert_eq!(
+            ENV_DROPS.load(Ordering::SeqCst),
+            0,
+            "reaper freed tasks before workers exited"
+        );
+
+        // Release all workers → reaper joins all N threads, then frees all N tasks.
+        RELEASE.store(true, Ordering::SeqCst);
+
+        let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+        while ENV_DROPS.load(Ordering::SeqCst) < N && Instant::now() < cleanup_deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            ENV_DROPS.load(Ordering::SeqCst),
+            N,
+            "reaper did not reclaim all {N} task allocations"
+        );
     }
 }

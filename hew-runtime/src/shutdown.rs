@@ -34,6 +34,8 @@ const PHASE_DRAIN: i32 = 2;
 const PHASE_TERMINATE: i32 = 3;
 /// Shutdown complete.
 const PHASE_DONE: i32 = 4;
+/// Shutdown failed before completion.
+const PHASE_FAILED: i32 = 5;
 
 /// Current shutdown phase (global atomic).
 static SHUTDOWN_PHASE: AtomicI32 = AtomicI32::new(PHASE_RUNNING);
@@ -70,6 +72,7 @@ static TOP_LEVEL_SUPERVISORS: std::sync::Mutex<Vec<SupervisorPtr>> =
 /// - 2 = draining
 /// - 3 = terminating
 /// - 4 = done
+/// - 5 = failed
 #[no_mangle]
 pub extern "C" fn hew_shutdown_phase() -> c_int {
     SHUTDOWN_PHASE.load(Ordering::Acquire)
@@ -200,31 +203,38 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
     // so the caller is not blocked.
     match std::thread::Builder::new()
         .name("hew-shutdown".into())
-        .spawn(move || shutdown_orchestrate(timeout))
-    {
+        .spawn(move || {
+            if let Err(panic_payload) =
+                run_shutdown_with_panic_handling(|| shutdown_orchestrate(timeout))
+            {
+                std::panic::resume_unwind(panic_payload);
+            }
+        }) {
         Ok(_) => {
             // Shutdown orchestration thread started successfully.
         }
         Err(_) => {
             // Spawn failed — run shutdown synchronously on current thread.
             // This ensures shutdown completes even if thread spawning fails.
-            shutdown_orchestrate(timeout);
+            let _ = run_shutdown_with_panic_handling(|| shutdown_orchestrate(timeout));
         }
     }
 }
 
 /// Block the calling thread until shutdown is complete (phase == DONE).
 ///
-/// Returns 0 on success, -1 if shutdown was never initiated.
+/// Returns 0 on success, -1 if shutdown was never initiated, and -2 if the
+/// shutdown worker panicked before completion.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_wait() -> c_int {
-    if SHUTDOWN_PHASE.load(Ordering::Acquire) == PHASE_RUNNING {
-        return -1;
+    loop {
+        match SHUTDOWN_PHASE.load(Ordering::Acquire) {
+            PHASE_RUNNING => return -1,
+            PHASE_DONE => return 0,
+            PHASE_FAILED => return -2,
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
-    while SHUTDOWN_PHASE.load(Ordering::Acquire) != PHASE_DONE {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +336,29 @@ pub fn check_signal_shutdown() {
 // ---------------------------------------------------------------------------
 // Internal orchestration
 // ---------------------------------------------------------------------------
+
+fn run_shutdown_with_panic_handling<F>(operation: F) -> Result<(), Box<dyn std::any::Any + Send>>
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(operation) {
+        Ok(()) => Ok(()),
+        Err(panic_payload) => {
+            report_shutdown_panic(panic_payload.as_ref());
+            SHUTDOWN_PHASE.store(PHASE_FAILED, Ordering::Release);
+            Err(panic_payload)
+        }
+    }
+}
+
+fn report_shutdown_panic(panic_payload: &(dyn std::any::Any + Send)) {
+    let reason = panic_payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload");
+    eprintln!("hew-runtime: shutdown orchestration panicked: {reason}");
+}
 
 /// Orchestrate the 3-phase shutdown.
 fn shutdown_orchestrate(drain_timeout: Duration) {
@@ -435,6 +468,7 @@ mod tests {
         assert_eq!(PHASE_DRAIN, 2);
         assert_eq!(PHASE_TERMINATE, 3);
         assert_eq!(PHASE_DONE, 4);
+        assert_eq!(PHASE_FAILED, 5);
     }
 
     #[test]
@@ -459,6 +493,31 @@ mod tests {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         assert_eq!(hew_shutdown_wait(), -1);
+    }
+
+    #[test]
+    fn shutdown_wait_returns_error_if_shutdown_worker_panics() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        let handle = std::thread::Builder::new()
+            .name("panic-shutdown-worker".into())
+            .spawn(|| {
+                if let Err(panic_payload) =
+                    run_shutdown_with_panic_handling(|| panic!("boom during shutdown"))
+                {
+                    std::panic::resume_unwind(panic_payload);
+                }
+            })
+            .expect("panic test thread spawn");
+
+        assert!(
+            handle.join().is_err(),
+            "panic should still surface on the worker"
+        );
+        assert_eq!(hew_shutdown_phase(), PHASE_FAILED);
+        assert_eq!(hew_shutdown_wait(), -2);
     }
 
     #[test]

@@ -332,6 +332,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
     // Yield expressions outside generator context are handled at the
     // statement level during static generator codegen.
     if (!currentGenCtx && !currentCoroPromisePtr) {
+      ++errorCount_;
       emitError(currentLoc) << "yield expression outside generator function";
     }
     return nullptr;
@@ -446,6 +447,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
           }
         }
       }
+      ++errorCount_;
       emitError(location) << "field '" << fieldName << "' not found on pointer type";
       return nullptr;
     }
@@ -456,11 +458,13 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       unsigned long numericIdx = std::strtoul(fieldName.c_str(), &end, 10);
       bool isNumericField = (end != fieldName.c_str() && *end == '\0');
       if (!isNumericField) {
+        ++errorCount_;
         emitError(location) << "named field access on tuple type";
         return nullptr;
       }
       auto elemTypes = hewTuple.getElementTypes();
       if (numericIdx >= elemTypes.size()) {
+        ++errorCount_;
         emitError(location) << "tuple index " << numericIdx << " out of bounds (size "
                             << elemTypes.size() << ")";
         return nullptr;
@@ -471,6 +475,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
 
     auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(operandType);
     if (!structType) {
+      ++errorCount_;
       emitError(location) << "field access on non-struct type";
       return nullptr;
     }
@@ -484,6 +489,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       // Direct numeric index into struct/tuple
       auto bodyTypes = structType.getBody();
       if (numericIdx >= bodyTypes.size()) {
+        ++errorCount_;
         emitError(location) << "tuple index " << numericIdx << " out of bounds (size "
                             << bodyTypes.size() << ")";
         return nullptr;
@@ -512,6 +518,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       }
     }
     if (!structType.isIdentified()) {
+      ++errorCount_;
       emitError(location) << "named field access on anonymous struct type";
       return nullptr;
     }
@@ -578,6 +585,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       }
     }
 
+    ++errorCount_;
     emitError(location) << "unknown struct type '" << structName << "'";
     return nullptr;
   }
@@ -691,6 +699,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
       }
     }
 
+    ++errorCount_;
     emitError(location) << "indexing not supported for this type";
     return nullptr;
   }
@@ -717,6 +726,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
         }
       }
 
+      ++errorCount_;
       emitError(location) << "await requires an actor method call";
       return nullptr;
     }
@@ -790,6 +800,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
   if (auto *range = std::get_if<ast::ExprRange>(&expr.kind)) {
     // Range expression: start..end or start..=end
     if (!range->start || !range->end) {
+      ++errorCount_;
       emitError(currentLoc) << "unbounded ranges not yet supported as values";
       return nullptr;
     }
@@ -813,6 +824,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
         auto one = createIntConstant(builder, currentLoc, endVal.getType(), 1);
         endVal = mlir::arith::AddIOp::create(builder, currentLoc, endVal, one);
       } else {
+        ++errorCount_;
         emitError(currentLoc) << "inclusive range only supported for integers";
         return nullptr;
       }
@@ -823,6 +835,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
                                       mlir::ValueRange{startVal, endVal});
   }
 
+  ++errorCount_;
   emitError(currentLoc) << "unsupported expression kind";
   return nullptr;
 }
@@ -867,6 +880,7 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
           partValues.push_back(str);
           ownedTemps.push_back(str); // heap-allocated — we own this
         } else {
+          ++errorCount_;
           emitError(location) << "unsupported type in string interpolation";
           return nullptr;
         }
@@ -1011,6 +1025,7 @@ mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit, const ast::Span &s
     auto type = defaultIntType();
     return createIntConstant(builder, location, type, durLit->value);
   }
+  ++errorCount_;
   emitError(location) << "unsupported literal kind";
   return nullptr;
 }
@@ -1162,6 +1177,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   // Helper: string ordering comparison via compare() method.
   auto ptrOrderingCmp = [&](mlir::arith::CmpIPredicate pred) -> mlir::Value {
     if (isActorPtr) {
+      ++errorCount_;
       emitError(location, "ordering comparison on actor references is not supported");
       return nullptr;
     }
@@ -1343,6 +1359,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       auto one = createIntConstant(builder, location, rhs.getType(), 1);
       rhs = mlir::arith::AddIOp::create(builder, location, rhs, one);
     } else {
+      ++errorCount_;
       emitError(location) << "inclusive range only supported for integers";
       return nullptr;
     }
@@ -1356,6 +1373,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return nullptr;
 
   default:
+    ++errorCount_;
     emitError(location) << "unsupported binary operator";
     return nullptr;
   }
@@ -1460,9 +1478,24 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                       std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
+  // cooperate() is parsed as ExprCall{ function: ExprCooperate, args:[] } by the Hew parser
+  // (cooperate is a keyword, so the callee is not an ExprIdentifier).  Lower it directly here
+  // rather than falling through to the identifier-only guard below.
+  // Only the zero-arg form is valid; any arguments are a hard error.
+  if (std::get_if<ast::ExprCooperate>(&call.function->value.kind)) {
+    if (!call.args.empty()) {
+      ++errorCount_;
+      emitError(location) << "cooperate() takes no arguments";
+      return nullptr;
+    }
+    hew::CooperateOp::create(builder, location);
+    return nullptr;
+  }
+
   // Check if the callee is a simple identifier (direct call)
   auto *calleeIdentExpr = std::get_if<ast::ExprIdentifier>(&call.function->value.kind);
   if (!calleeIdentExpr) {
+    ++errorCount_;
     emitError(location) << "only direct function calls supported";
     return nullptr;
   }
@@ -1536,6 +1569,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   if (calleeName == "hew_channel_try_recv") {
     // String variant: hew_channel_try_recv(rx) → ptr (NULL = empty).
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "hew_channel_try_recv expects 1 argument";
       return nullptr;
     }
@@ -1567,6 +1601,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     // Int variant: hew_channel_try_recv_int(rx, &out_valid) → i64.
     // The enricher only passes 1 arg (rx); we synthesise the out_valid alloca.
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "hew_channel_try_recv_int expects 1 argument";
       return nullptr;
     }
@@ -1617,6 +1652,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   if (calleeName == "hew_channel_recv") {
     // String variant: hew_channel_recv(rx) → ptr (NULL = closed).
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "hew_channel_recv expects 1 argument";
       return nullptr;
     }
@@ -1646,6 +1682,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   if (calleeName == "hew_channel_recv_int") {
     // Int variant: hew_channel_recv_int(rx, &out_valid) → i64.
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "hew_channel_recv_int expects 1 argument";
       return nullptr;
     }
@@ -1770,6 +1807,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   // (null=EOF, non-null=HewVec*); we wrap that into Option<bytes>.
   if (calleeName == "hew_stream_next_bytes") {
     if (call.args.size() != 1) {
+      ++errorCount_;
       emitError(location) << "hew_stream_next_bytes expects exactly 1 argument";
       return nullptr;
     }
@@ -1890,6 +1928,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       // Built-in Some(x)
       if (calleeName == "Some" && enumName == "__Option") {
         if (call.args.size() != 1) {
+          ++errorCount_;
           emitError(location) << "Some() expects exactly one argument";
           return nullptr;
         }
@@ -1915,6 +1954,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       // Built-in Ok(x)
       if (calleeName == "Ok" && enumName == "__Result") {
         if (call.args.size() != 1) {
+          ++errorCount_;
           emitError(location) << "Ok() expects exactly one argument";
           return nullptr;
         }
@@ -1946,6 +1986,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       // Built-in Err(x)
       if (calleeName == "Err" && enumName == "__Result") {
         if (call.args.size() != 1) {
+          ++errorCount_;
           emitError(location) << "Err() expects exactly one argument";
           return nullptr;
         }
@@ -2673,6 +2714,7 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   auto location = currentLoc;
 
   if (call.args.empty()) {
+    ++errorCount_;
     emitError(location) << "print/println requires at least one argument";
     return nullptr;
   }
@@ -2809,6 +2851,7 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   } else if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
+    ++errorCount_;
     emitError(location) << "if-expression result type not resolved";
     return nullptr;
   }
@@ -2915,6 +2958,7 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
 
   auto resType = mlir::dyn_cast<hew::ResultEnumType>(operandType);
   if (!resType) {
+    ++errorCount_;
     emitError(location) << "? operator requires a Result or Option type";
     return nullptr;
   }
@@ -3021,6 +3065,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
         const auto &enumName = varIt->second.first;
         auto enumIt = enumTypes.find(enumName);
         if (enumIt == enumTypes.end()) {
+          ++errorCount_;
           emitError(location) << "unknown enum type '" << enumName << "'";
           return nullptr;
         }
@@ -3033,11 +3078,13 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
           }
         }
         if (!vi) {
+          ++errorCount_;
           emitError(location) << "unknown variant '" << structName << "' in enum '" << enumName
                               << "'";
           return nullptr;
         }
         if (vi->fieldNames.empty()) {
+          ++errorCount_;
           emitError(location) << "enum variant '" << structName
                               << "' does not support struct-style initialization";
           return nullptr;
@@ -3060,6 +3107,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
         }
         for (size_t i = 0; i < payloads.size(); ++i) {
           if (!payloads[i]) {
+            ++errorCount_;
             emitError(location) << "missing field '" << vi->fieldNames[i] << "' in initializer of '"
                                 << structName << "'";
             return nullptr;
@@ -3071,6 +3119,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
             builder, location, enumInfo.mlirType, static_cast<uint32_t>(varIt->second.second),
             llvm::StringRef(enumName), payloads, payloadPositionsAttr);
       }
+      ++errorCount_;
       emitError(location) << "unknown struct type '" << structName << "'";
       return nullptr;
     }
@@ -3138,6 +3187,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
 
   for (size_t i = 0; i < info.fields.size(); ++i) {
     if (!fieldValues[i]) {
+      ++errorCount_;
       emitError(location) << "missing field '" << info.fields[i].name << "' in struct init for '"
                           << structName << "'";
       return nullptr;
@@ -3182,6 +3232,7 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
     else if (method == "get_level" || method == "is_enabled")
       callee = "hew_log_get_level";
     else {
+      ++errorCount_;
       emitError(location) << "unknown log method: " << method;
       return nullptr;
     }
@@ -3462,6 +3513,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     }
     if (method == "append" || method == "extend") {
       if (mc.args.empty()) {
+        ++errorCount_;
         emitError(location) << ".append() requires one argument";
         resultOut = nullptr;
         return true;
@@ -3508,6 +3560,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       }
       auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
       if (!closureType) {
+        ++errorCount_;
         emitError(location) << "Vec::map argument must be a closure";
         resultOut = nullptr;
         return true;
@@ -3573,6 +3626,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       }
       auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
       if (!closureType) {
+        ++errorCount_;
         emitError(location) << "Vec::filter argument must be a closure";
         resultOut = nullptr;
         return true;
@@ -3647,6 +3701,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       }
       auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
       if (!closureType) {
+        ++errorCount_;
         emitError(location) << "Vec::fold second argument must be a closure";
         resultOut = nullptr;
         return true;
@@ -3834,6 +3889,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     // Helper for insert/contains/remove — identical structure, different runtime function.
     auto emitHashSetElemOp = [&](llvm::StringRef opName) -> bool {
       if (!argValue) {
+        ++errorCount_;
         emitError(location) << "HashSet::" << opName << " requires an argument";
         return true;
       }
@@ -3846,6 +3902,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       } else if (mlir::isa<hew::StringRefType>(elemType)) {
         funcName = ("hew_hashset_" + opName + "_string").str();
       } else {
+        ++errorCount_;
         emitError(location) << "HashSet::" << opName
                             << " only supports int and String element types";
         return true;
@@ -3892,6 +3949,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     mlir::Value vecResult;
     if (emitVecMethod(receiver, vecType.getElementType(), vecResult))
       return vecResult;
+    ++errorCount_;
     emitError(location) << "unknown method '" << method << "' on collection type '" << receiverType
                         << "'";
     return mlir::Value{};
@@ -3901,6 +3959,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     mlir::Value hmResult;
     if (emitHashMapMethod(receiver, hmType.getKeyType(), hmType.getValueType(), hmResult))
       return hmResult;
+    ++errorCount_;
     emitError(location) << "unknown method '" << method << "' on collection type '" << receiverType
                         << "'";
     return mlir::Value{};
@@ -3954,6 +4013,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
       if (methodRequiresArg) {
         if (mc.args.empty()) {
+          ++errorCount_;
           emitError(location) << "HashSet method '" << method << "' requires an argument";
           return mlir::Value{};
         }
@@ -3965,6 +4025,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       mlir::Value setResult;
       if (emitHashSetMethod(receiver, elemType, argValue, setResult))
         return setResult;
+      ++errorCount_;
       emitError(location) << "unknown method '" << method << "' on HashSet";
       return mlir::Value{};
     }
@@ -3982,6 +4043,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto strType = hew::StringRefType::get(&context);
       if (method == "map" || method == "filter") {
         if (mc.args.empty()) {
+          ++errorCount_;
           emitError(location) << "Stream::" << method << " requires a closure argument";
           return mlir::Value{};
         }
@@ -4014,6 +4076,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           return mlir::Value{};
         auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
         if (!closureType) {
+          ++errorCount_;
           emitError(location) << "Stream::" << method << " argument must be a closure";
           return mlir::Value{};
         }
@@ -4042,6 +4105,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       }
       if (method == "take") {
         if (mc.args.empty()) {
+          ++errorCount_;
           emitError(location) << "Stream::take requires a count argument";
           return mlir::Value{};
         }
@@ -4360,6 +4424,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           innerMlirType = convertType((*rcNamed->type_args)[0].value);
         }
         if (!innerMlirType) {
+          ++errorCount_;
           emitError(location) << "Rc::get: cannot determine inner type";
           return mlir::Value{};
         }
@@ -4379,6 +4444,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return mlir::arith::ExtUIOp::create(builder, location, i64Type, count).getResult();
       }
 
+      ++errorCount_;
       emitError(location) << "unknown method '" << method << "' on Rc<T>";
       return mlir::Value{};
     }
@@ -4417,6 +4483,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
         return mlir::arith::ConstantOp::create(builder, location,
                                                builder.getF64FloatAttr(2.71828182845904523536))
             .getResult();
+      ++errorCount_;
       emitError(location) << "unknown math constant: math." << methodName;
       return nullptr;
     }
@@ -4464,6 +4531,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     // Two-argument: math.pow(base, exp)
     if (methodName == "pow") {
       if (mc.args.size() < 2) {
+        ++errorCount_;
         emitError(location) << "math.pow requires 2 arguments";
         return nullptr;
       }
@@ -4480,6 +4548,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     // math.max(a, b), math.min(a, b)
     if (methodName == "max") {
       if (mc.args.size() < 2) {
+        ++errorCount_;
         emitError(location) << "math.max requires 2 arguments";
         return nullptr;
       }
@@ -4495,6 +4564,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     }
     if (methodName == "min") {
       if (mc.args.size() < 2) {
+        ++errorCount_;
         emitError(location) << "math.min requires 2 arguments";
         return nullptr;
       }
@@ -4532,6 +4602,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     // math.clamp(x, lo, hi) — clamp x to [lo, hi]
     if (methodName == "clamp") {
       if (mc.args.size() < 3) {
+        ++errorCount_;
         emitError(location) << "math.clamp requires 3 arguments";
         return nullptr;
       }
@@ -4566,6 +4637,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
     }
 
+    ++errorCount_;
     emitError(location) << "unknown math function: math." << methodName;
     return nullptr;
   }
@@ -4639,6 +4711,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
         return nullptr;
       return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
     }
+    ++errorCount_;
     emitError(location) << "unknown random function: random." << methodName;
     return nullptr;
   }
@@ -4650,6 +4723,7 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     std::string mangledFunc = mangleName(modulePath, "", methodName);
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(mangledFunc);
     if (!callee) {
+      ++errorCount_;
       emitError(location) << "undefined function '" << ident.name << "." << methodName
                           << "' (mangled: " << mangledFunc << ")";
       return nullptr;
@@ -4956,6 +5030,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         }
         if (method == "write_string") {
           if (argVals.size() < 2) {
+            ++errorCount_;
             emitError(location) << ".write_string() requires one argument";
             return nullptr;
           }
@@ -5091,6 +5166,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   auto generateTraitObjectDispatch = [&](llvm::StringRef traitName) -> mlir::Value {
     auto dispIt = traitDispatchRegistry.find(traitName.str());
     if (dispIt == traitDispatchRegistry.end() || dispIt->second.impls.empty()) {
+      ++errorCount_;
       emitError(location) << "no implementations for trait '" << traitName << "'";
       return nullptr;
     }
@@ -5147,6 +5223,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       resolvedTypeName = fallbackTypeName.str();
     }
     if (resolvedTypeName.empty()) {
+      ++errorCount_;
       emitError(location) << "method call on non-struct/enum type"
                           << " (method='" << methodName << "'"
                           << ", receiver type: " << receiverType << ")";
@@ -5231,6 +5308,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       }
     }
     if (!callee) {
+      ++errorCount_;
       emitError(location) << "undefined method '" << methodName << "' on type '" << resolvedTypeName
                           << "'";
       return nullptr;
@@ -5269,6 +5347,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
   if (auto result = generateActorMethodCall(mc, receiver, location))
     return *result;
   if (mlir::isa<hew::ActorRefType, hew::TypedActorRefType>(receiverType)) {
+    ++errorCount_;
     emitError(location) << "method call on non-struct/enum type"
                         << " (method='" << methodName << "'"
                         << ", receiver type: " << receiverType << ")";
@@ -5334,6 +5413,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       structuralTypeName = candidate;
   }
   if (structuralTypeName.empty()) {
+    ++errorCount_;
     emitError(location) << "method call on non-struct/enum type"
                         << " (method='" << methodName << "'"
                         << ", receiver type: " << receiverType << ")";
@@ -5394,6 +5474,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
       auto vecType = mlir::cast<hew::VecType>(*typeHint);
       return hew::VecNewOp::create(builder, location, vecType).getResult();
     }
+    ++errorCount_;
     emitError(location) << "empty array literal without type context";
     return nullptr;
   }
@@ -5462,10 +5543,12 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
     if (mlir::isa<hew::HashMapType>(resolvedMlirType)) {
       hmType = resolvedMlirType;
     } else {
+      ++errorCount_;
       emitError(location) << "map literal must produce a HashMap, got " << resolvedMlirType;
       return nullptr;
     }
   } else {
+    ++errorCount_;
     emitError(location)
         << "cannot determine key/value types for map literal; add explicit type annotation";
     return nullptr;
@@ -5499,6 +5582,7 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
   auto location = currentLoc;
 
   if (!repeat.value || !repeat.count) {
+    ++errorCount_;
     emitError(location) << "array repeat expression requires value and count";
     return nullptr;
   }
@@ -5530,6 +5614,7 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
       if (!valueVal)
         return nullptr;
     } else {
+      ++errorCount_;
       emitError(location) << "array repeat expression must produce a Vec";
       return nullptr;
     }
@@ -5999,6 +6084,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     } else if (expectedClosureType && i < expectedClosureType.getInputTypes().size()) {
       userParamTypes.push_back(expectedClosureType.getInputTypes()[i]);
     } else {
+      ++errorCount_;
       emitError(location) << "cannot infer type for lambda parameter '" << param.name << "'";
       return nullptr;
     }
@@ -6629,6 +6715,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 mlir::Value MLIRGen::generateScopeCancelExpr() {
   auto location = builder.getUnknownLoc();
   if (!currentTaskScopePtr) {
+    ++errorCount_;
     emitError(location) << "scope.cancel() used outside a scope block";
     return nullptr;
   }
@@ -6802,6 +6889,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
   const auto &arms = sel.arms;
   size_t armCount = arms.size();
   if (armCount == 0) {
+    ++errorCount_;
     emitError(location) << "select expression must have at least one arm";
     return nullptr;
   }
@@ -6833,6 +6921,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     const auto &arm = arms.front();
     auto *mcPtr = getSelectMethodCall(arm);
     if (!mcPtr) {
+      ++errorCount_;
       emitError(location) << "select arm source must be actor.method(args)";
       return nullptr;
     }
@@ -6844,11 +6933,13 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     std::string actorTypeName =
         resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
     if (actorTypeName.empty()) {
+      ++errorCount_;
       emitError(location) << "cannot resolve actor type for select arm source";
       return nullptr;
     }
     auto actorIt = actorRegistry.find(actorTypeName);
     if (actorIt == actorRegistry.end()) {
+      ++errorCount_;
       emitError(location) << "unknown actor type '" << actorTypeName << "' in select arm";
       return nullptr;
     }
@@ -6860,6 +6951,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
 
     auto optionType = mlir::dyn_cast<hew::OptionEnumType>(timedResult.getType());
     if (!optionType) {
+      ++errorCount_;
       emitError(location) << "WASM single-arm select timeout lowering expected Option result";
       return nullptr;
     }
@@ -6923,6 +7015,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     // Source is either actor.method(args) or await actor.method(args)
     const ast::ExprMethodCall *mcPtr = getSelectMethodCall(arm);
     if (!mcPtr) {
+      ++errorCount_;
       emitError(location) << "select arm source must be actor.method(args)";
       return nullptr;
     }
@@ -6934,11 +7027,13 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     std::string actorTypeName =
         resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
     if (actorTypeName.empty()) {
+      ++errorCount_;
       emitError(location) << "cannot resolve actor type for select arm source";
       return nullptr;
     }
     auto actorIt = actorRegistry.find(actorTypeName);
     if (actorIt == actorRegistry.end()) {
+      ++errorCount_;
       emitError(location) << "unknown actor type '" << actorTypeName << "' in select arm";
       return nullptr;
     }
@@ -6955,6 +7050,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       }
     }
     if (!recvInfo || !recvInfo->returnType.has_value()) {
+      ++errorCount_;
       emitError(location) << "select arm requires receive handler '" << selectMethodName
                           << "' with a return type";
       return nullptr;
@@ -7124,6 +7220,7 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
   const auto &exprs = join.exprs;
   size_t exprCount = exprs.size();
   if (exprCount == 0) {
+    ++errorCount_;
     emitError(location) << "join expression must have at least one expression";
     return nullptr;
   }
@@ -7143,6 +7240,7 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
       }
     }
     if (!mcPtr) {
+      ++errorCount_;
       emitError(location) << "join expression element must be actor.method(args)";
       return nullptr;
     }
@@ -7154,11 +7252,13 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     std::string actorTypeName =
         resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
     if (actorTypeName.empty()) {
+      ++errorCount_;
       emitError(location) << "cannot resolve actor type for join element";
       return nullptr;
     }
     auto actorIt = actorRegistry.find(actorTypeName);
     if (actorIt == actorRegistry.end()) {
+      ++errorCount_;
       emitError(location) << "unknown actor type '" << actorTypeName << "' in join";
       return nullptr;
     }
@@ -7175,6 +7275,7 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
       }
     }
     if (!recvInfo || !recvInfo->returnType.has_value()) {
+      ++errorCount_;
       emitError(location) << "join element requires receive handler '" << joinMethodName
                           << "' with a return type";
       return nullptr;

@@ -1,0 +1,28 @@
+// Computed timeout expressions should lower to finite timeout_ms on all targets.
+actor Responder {
+    let value: int;
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let first = spawn Responder(value: 1);
+    let second = spawn Responder(value: 2);
+    let timeout_now = 0ms + 0ms;
+
+    let result = select {
+        x from first.get() => x,
+        y from second.get() => y,
+        after timeout_now => -1,
+    };
+    println(result);
+
+    let fast = spawn Responder(value: 42);
+    let timeout_later = 50ms + 50ms;
+    let result2 = select {
+        x from fast.get() => x,
+        after timeout_later => -1,
+    };
+    println(result2);
+}

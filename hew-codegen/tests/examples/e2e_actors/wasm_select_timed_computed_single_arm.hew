@@ -1,0 +1,19 @@
+// WASM computed single-arm timed select must still honor timeout-body behavior
+// even though the literal single-arm path takes a different lowering fast path.
+actor Responder {
+    let value: int;
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let a = spawn Responder(value: 1);
+    let timeout = 0ms + 0ms;
+
+    let result = select {
+        x from a.get() => x,
+        after timeout => -1,
+    };
+    println(result);
+}

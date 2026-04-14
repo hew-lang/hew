@@ -26,23 +26,6 @@ impl Checker {
             Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Tasks);
             }
-            Expr::Select { .. } => {
-                // No-timeout selects are now supported on WASM via the cooperative
-                // scheduler (hew_select_first / hew_reply_wait).
-                // Literal timed selects are supported as well: single-arm forms lower
-                // to hew_actor_ask_timeout and multi-arm forms lower to
-                // hew_select_first's deadline loop. Only computed timeout expressions
-                // still need dedicated lowering.
-                let has_non_literal_timeout = matches!(
-                    expr,
-                    Expr::Select { arms, timeout: Some(timeout) }
-                        if !arms.is_empty()
-                            && !matches!(timeout.duration.0, Expr::Literal(Literal::Duration(_)))
-                );
-                if has_non_literal_timeout {
-                    self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
-                }
-            }
             _ => {}
         }
     }

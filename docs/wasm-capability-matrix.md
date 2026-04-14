@@ -40,8 +40,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Standard collections, arithmetic | ✅ Pass | Implemented | — |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | WASI socket I/O (HTTP/TCP clients) | ✅ Pass | Implemented via WASI | — |
-| `select {}` (literal timeout, any arm count) | ✅ Pass | Implemented | — |
-| `select {}` (computed timeout expression) | ⚠️ Warn (`Select`) | Diagnostic path | WASM-TODO |
+| `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
 | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | ⚠️ Warn (`SupervisionTrees`) | Diagnostic path | WASM-TODO |
 | Actor `link` / `unlink` / `monitor` / `demonitor` | ⚠️ Warn (`LinkMonitor`) | Diagnostic path | WASM-TODO |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | ⚠️ Warn (`StructuredConcurrency`) | Diagnostic path | WASM-TODO |
@@ -121,7 +120,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 ```
 
 **Warn group** is wired in:
-- `hew-types/src/check/expressions.rs :: maybe_warn_wasm_expr` (scope/select/tasks)
+- `hew-types/src/check/expressions.rs :: maybe_warn_wasm_expr` (scope/tasks)
 - `hew-types/src/check/calls.rs :: warn_if_wasm_incompatible_call` (link/monitor/supervisor)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
 
@@ -142,7 +141,6 @@ These gaps are explicitly deferred and tracked here:
 | Single-threaded MPSC channel queues | Actor mailbox integration | `WASM-TODO: channels` |
 | Host-driven timer rescheduling | WASI `clock_time_get` / `setTimeout` | `WASM-TODO: timers` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
-| `select {}` with computed timeouts | Dynamic timeout lowering for WASM select/ask paths | `WASM-TODO: select` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |

@@ -37,6 +37,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
@@ -7087,24 +7088,37 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     mlir::LLVM::StoreOp::create(builder, location, channels[i], gep);
   }
 
-  // Default to -1 (infinite wait) for no-timeout select.
-  // Literal duration timeouts are constant-folded to milliseconds below for
-  // both native and WASM lowering. Non-constant timeout expressions remain
-  // `-1`; the checker keeps warning about that WASM gap.
-  int64_t timeoutMs = -1;
+  // Default to -1 (infinite wait) for no-timeout select. Duration values are
+  // nanoseconds; the runtime expects a millisecond deadline. Clamp finite
+  // values into the i32 ABI range so computed durations fail closed instead of
+  // silently wrapping.
+  mlir::Value timeoutVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, -1);
   if (sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->duration) {
-    auto timeoutVal = generateExpression((*sel.timeout)->duration->value);
-    if (timeoutVal) {
-      if (auto constOp = timeoutVal.getDefiningOp<mlir::arith::ConstantIntOp>()) {
-        // Duration values are i64 nanoseconds; runtime expects milliseconds.
-        timeoutMs = constOp.value() / 1'000'000;
-      }
+    auto timeoutDurationVal = generateExpression((*sel.timeout)->duration->value);
+    if (!timeoutDurationVal)
+      return nullptr;
+    if (timeoutDurationVal.getType() != i64Type) {
+      timeoutDurationVal = coerceType(timeoutDurationVal, i64Type, location);
+      if (!timeoutDurationVal)
+        return nullptr;
     }
+    auto nanosPerMs = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1'000'000);
+    auto timeoutMs64 =
+        mlir::arith::DivSIOp::create(builder, location, timeoutDurationVal, nanosPerMs);
+    auto zero64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 0);
+    auto maxI32Ms64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type,
+                                                         std::numeric_limits<int32_t>::max());
+    auto boundedTimeoutMs64 =
+        mlir::arith::MinSIOp::create(builder, location, timeoutMs64, maxI32Ms64);
+    auto clampedTimeoutMs64 =
+        mlir::arith::MaxSIOp::create(builder, location, zero64, boundedTimeoutMs64);
+    timeoutVal = coerceType(clampedTimeoutMs64, i32Type, location);
+    if (!timeoutVal)
+      return nullptr;
   }
 
   auto countVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
                                                      static_cast<int64_t>(armCount));
-  auto timeoutVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, timeoutMs);
   auto winnerIdx =
       hew::SelectFirstOp::create(builder, location, i32Type, channelArray, countVal, timeoutVal);
 

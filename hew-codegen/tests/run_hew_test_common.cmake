@@ -103,3 +103,41 @@ function(hew_run_reject_test)
   )
   _hew_assert_compile_rejected("${ARG_SUCCESS_MESSAGE}")
 endfunction()
+
+function(hew_run_panic_test)
+  cmake_parse_arguments(PARSE_ARGV 0 ARG
+    ""
+    "COMPILE_FAILURE_MESSAGE;SUCCESS_MESSAGE;EXPECTED_STDERR;RUN_TIMEOUT"
+    "COMPILE_COMMAND;RUN_COMMAND")
+
+  _hew_execute_capture(
+    COMMAND ${ARG_COMPILE_COMMAND}
+    RESULT_VAR compile_result
+    OUTPUT_VAR compile_out
+    ERROR_VAR compile_err
+  )
+  if(NOT compile_result EQUAL 0)
+    message(FATAL_ERROR "${ARG_COMPILE_FAILURE_MESSAGE}:\n${compile_out}\n${compile_err}")
+  endif()
+
+  _hew_execute_capture(
+    COMMAND ${ARG_RUN_COMMAND}
+    RESULT_VAR run_result
+    OUTPUT_VAR run_out
+    ERROR_VAR run_err
+    TIMEOUT ${ARG_RUN_TIMEOUT}
+  )
+  if(run_result EQUAL 0)
+    message(FATAL_ERROR
+      "${ARG_SUCCESS_MESSAGE}\nstdout:\n${run_out}\nstderr:\n${run_err}")
+  endif()
+
+  string(FIND "${run_err}" "${ARG_EXPECTED_STDERR}" pos)
+  if(pos EQUAL -1)
+    message(FATAL_ERROR
+      "stderr does not contain expected text.\n"
+      "Expected: ${ARG_EXPECTED_STDERR}\n"
+      "Got stderr:\n${run_err}\n"
+      "Exit code: ${run_result}")
+  endif()
+endfunction()

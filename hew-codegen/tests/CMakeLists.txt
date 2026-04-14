@@ -236,6 +236,7 @@ add_e2e_test(actor_closure_struct_message test_actor_closure_struct_message.hew 
 add_e2e_test(actor_nested_handle_struct_message test_actor_nested_handle_struct_message.hew "true\nfalse\n")
 add_e2e_test(vec_basic test_vec_basic.hew "3\n10\n20\n30\n60\n")
 add_e2e_test(vec_append test_vec_append.hew "5\n1\n4\n5\n1\n99\n")
+add_e2e_test(vec_pop_generic_struct test_vec_pop_generic_struct.hew "PASS: vec_pop_generic_struct\n")
 add_e2e_test(else_if test_else_if.hew "2\n-1\n0\n")
 add_e2e_test(vec_loop test_vec_loop.hew "5\n100\n40\n4\n")
 add_e2e_test(hashmap_basic test_hashmap_basic.hew "3\n10\n20\n30\ntrue\nfalse\n")
@@ -295,6 +296,26 @@ function(add_e2e_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
       -DEXPECTED_STDERR=${EXPECTED_STDERR}
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/panic_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test.cmake
+  )
+endfunction()
+
+function(add_wasm_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
+  if(NOT WASMTIME)
+    return()
+  endif()
+  set(HEW_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.hew)
+  add_test(
+    NAME wasm_panic_${CATEGORY}_${HEW_NAME}
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DHEW_FILE=${HEW_FILE}
+      -DEXPECTED_STDERR=${EXPECTED_STDERR}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/wasm_panic_${CATEGORY}_${HEW_NAME}.wasm
+      -DWASMTIME=${WASMTIME}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test_wasm.cmake
+  )
+  set_tests_properties(wasm_panic_${CATEGORY}_${HEW_NAME} PROPERTIES
+    LABELS "wasm"
   )
 endfunction()
 
@@ -568,6 +589,7 @@ add_e2e_reject_test(if_let_trailing_call_arg_field    e2e_param_drops reject_if_
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")
+add_e2e_panic_test(vec_pop_generic_empty e2e_panic vec_pop_generic_empty "PANIC: Vec pop on empty vector")
 add_e2e_panic_test(wire_binary_integer_sign e2e_wire wire_binary_integer_sign_panic
   "wire binary decode error for field 'byte_value': expected byte in range [0, 255]")
 add_e2e_panic_test(wire_binary_integer_range e2e_wire wire_binary_integer_range_panic
@@ -918,6 +940,7 @@ add_wasm_test(const test_const.hew "100\n42\n200\n3.14159\n")
 add_wasm_test(type_alias test_type_alias.hew "30\n")
 add_wasm_test(vec_basic test_vec_basic.hew "3\n10\n20\n30\n60\n")
 add_wasm_test(vec_append test_vec_append.hew "5\n1\n4\n5\n1\n99\n")
+add_wasm_test(vec_pop_generic_struct test_vec_pop_generic_struct.hew "PASS: vec_pop_generic_struct\n")
 add_wasm_test(vec_loop test_vec_loop.hew "5\n100\n40\n4\n")
 add_wasm_test(for_vec test_for_vec.hew "10\n20\n30\n")
 add_wasm_test(hashmap_basic test_hashmap_basic.hew "3\n10\n20\n30\ntrue\nfalse\n")
@@ -933,6 +956,7 @@ add_wasm_test(trait_default test_trait_default.hew "10\n42\n")
 add_wasm_test(labeled_break test_labeled_break.hew "2\n1\n")
 add_wasm_test(labeled_continue test_labeled_continue.hew "15\n")
 add_wasm_test(break_with_value test_break_with_value.hew "7\n")
+add_wasm_panic_test(vec_pop_generic_empty e2e_panic vec_pop_generic_empty "PANIC: Vec pop on empty vector")
 
 # File-based WASM tests (category/name with .expected file)
 add_wasm_file_test(type_aliases         e2e_type_aliases type_aliases)

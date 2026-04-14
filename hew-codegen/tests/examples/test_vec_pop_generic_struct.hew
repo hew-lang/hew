@@ -1,0 +1,29 @@
+type Point {
+    a: int;
+    b: int;
+}
+
+fn main() -> int {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { a: 1, b: 2 });
+    points.push(Point { a: 3, b: 4 });
+
+    let popped = points.pop();
+    let remaining = points.get(0);
+
+    if popped.a == 3 {
+        if popped.b == 4 {
+            if points.len() == 1 {
+                if remaining.a == 1 {
+                    if remaining.b == 2 {
+                        println("PASS: vec_pop_generic_struct");
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+
+    println("FAIL: vec_pop_generic_struct");
+    1
+}

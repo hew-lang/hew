@@ -2605,24 +2605,54 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
     if (suffix.empty())
       suffix = vecElemSuffix(resultType);
 
-    std::string funcName = "hew_vec_pop" + suffix;
-    mlir::Type callResultType = resultType;
-    if (suffix == "_f64" && resultType.isF32())
-      callResultType = rewriter.getF64Type();
-    if (suffix == "_i32" && !resultType.isInteger(32))
-      callResultType = rewriter.getI32Type();
-    auto funcType = rewriter.getFunctionType({ptrType}, {callResultType});
-    getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-    auto call = mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{callResultType},
-                                           mlir::ValueRange{adaptor.getVec()});
-    mlir::Value popResult = call.getResult(0);
-    if (callResultType != resultType) {
-      if (callResultType.isF64() && resultType.isF32())
-        popResult = mlir::arith::TruncFOp::create(rewriter, loc, resultType, popResult);
-      else
-        popResult = mlir::arith::TruncIOp::create(rewriter, loc, resultType, popResult);
+    if (suffix == "_generic") {
+      auto one = mlir::LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
+                                                rewriter.getI64IntegerAttr(1));
+      auto alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
+      auto i32Type = rewriter.getI32Type();
+      auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i32Type});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_pop_generic",
+                          funcType);
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, "hew_vec_pop_generic", mlir::TypeRange{i32Type},
+                                     mlir::ValueRange{adaptor.getVec(), alloca});
+      auto zero = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
+      auto isEmpty = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                call.getResult(0), zero);
+      auto abortFuncType = rewriter.getFunctionType({}, {});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter,
+                          "hew_vec_abort_pop_empty", abortFuncType);
+      mlir::scf::IfOp::create(
+          rewriter, loc, isEmpty,
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            mlir::func::CallOp::create(b, l, "hew_vec_abort_pop_empty", mlir::TypeRange{},
+                                       mlir::ValueRange{});
+            mlir::scf::YieldOp::create(b, l);
+          },
+          nullptr);
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, alloca);
+      rewriter.replaceOp(op, loaded.getResult());
+    } else {
+      std::string funcName = "hew_vec_pop" + suffix;
+      mlir::Type callResultType = resultType;
+      if (suffix == "_f64" && resultType.isF32())
+        callResultType = rewriter.getF64Type();
+      if (suffix == "_i32" && !resultType.isInteger(32))
+        callResultType = rewriter.getI32Type();
+      auto funcType = rewriter.getFunctionType({ptrType}, {callResultType});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{callResultType},
+                                     mlir::ValueRange{adaptor.getVec()});
+      mlir::Value popResult = call.getResult(0);
+      if (callResultType != resultType) {
+        if (callResultType.isF64() && resultType.isF32())
+          popResult = mlir::arith::TruncFOp::create(rewriter, loc, resultType, popResult);
+        else
+          popResult = mlir::arith::TruncIOp::create(rewriter, loc, resultType, popResult);
+      }
+      rewriter.replaceOp(op, popResult);
     }
-    rewriter.replaceOp(op, popResult);
     return mlir::success();
   }
 };

@@ -100,6 +100,7 @@ impl CodegenMode {
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
+    pub werror: bool,
     pub codegen_mode: CodegenMode,
     pub target: Option<String>,
     pub extra_libs: Vec<String>,
@@ -115,6 +116,7 @@ pub struct CompileOptions {
 fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
         no_typecheck: options.no_typecheck,
+        warnings_as_errors: options.werror,
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),

@@ -139,7 +139,14 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// discarded; the data protected by this lock is append-only and safe to use
 /// after poison recovery.
 pub(crate) fn push_crash_report(report: CrashReport) {
-    let mut crashes = RECENT_CRASHES.lock_or_recover();
+    push_crash_report_to(&RECENT_CRASHES, report);
+}
+
+/// Inner implementation shared with tests.  Accepts any
+/// `&Mutex<VecDeque<CrashReport>>` so tests can supply a local, isolated
+/// mutex without touching the process-global `RECENT_CRASHES`.
+fn push_crash_report_to(log: &Mutex<VecDeque<CrashReport>>, report: CrashReport) {
+    let mut crashes = log.lock_or_recover();
     // Make room if needed
     while crashes.len() >= MAX_CRASH_LOG_SIZE {
         crashes.pop_front();
@@ -483,52 +490,48 @@ mod tests {
         assert!(t2 - t1 >= 1_000_000);
     }
 
-    /// Proves that `push_crash_report` (and its `lock_or_recover` path) records
-    /// crash entries through a poisoned mutex, whereas the old `if let Ok` guard
-    /// would silently discard them.
+    /// `push_crash_report` must record the crash even when the underlying
+    /// mutex is poisoned.
+    ///
+    /// Tests through `push_crash_report_to` (the inner function that
+    /// `push_crash_report` delegates to), supplying a local isolated mutex.
+    /// This exercises the exact production body — the only difference from
+    /// calling `push_crash_report` directly is that we avoid contaminating
+    /// the process-global `RECENT_CRASHES`.
     #[test]
     fn push_crash_report_survives_poison() {
         use std::collections::VecDeque;
-        use std::sync::{Arc, Mutex};
+        use std::sync::Mutex;
 
-        // Build a local crash log so we don't disturb the global RECENT_CRASHES.
-        let log: Arc<Mutex<VecDeque<CrashReport>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let log: Mutex<VecDeque<CrashReport>> = Mutex::new(VecDeque::new());
 
-        // Poison the mutex: acquire it in a thread that panics.
-        let shared = Arc::clone(&log);
+        // Poison the mutex.
+        let ptr = (&raw const log) as usize;
         let _ = std::thread::spawn(move || {
-            let _guard = shared.lock().unwrap();
+            // SAFETY: ptr is valid for the duration of this test.
+            let m = unsafe { &*(ptr as *const Mutex<VecDeque<CrashReport>>) };
+            let _guard = m.lock().unwrap();
             panic!("intentional poison");
         })
         .join();
         assert!(log.lock().is_err(), "precondition: mutex must be poisoned");
 
-        // ── Old pattern (if let Ok): silently drops the report ──────────────
-        let dropped = CrashReport {
-            actor_id: 1,
+        // Calling the real production logic through a poisoned mutex must
+        // still record the report (not silently drop it).
+        let report = CrashReport {
+            actor_id: 42,
+            signal: 11,
             ..CrashReport::zeroed()
         };
-        if let Ok(mut crashes) = log.lock() {
-            crashes.push_back(dropped);
-        }
-        assert_eq!(
-            log.lock_or_recover().len(),
-            0,
-            "baseline: old if-let-Ok silently discards the report when poisoned"
-        );
+        push_crash_report_to(&log, report);
 
-        // ── New pattern (lock_or_recover): records the report through poison ─
-        let kept = CrashReport {
-            actor_id: 2,
-            ..CrashReport::zeroed()
-        };
-        log.lock_or_recover().push_back(kept);
         let crashes = log.lock_or_recover();
-        assert_eq!(crashes.len(), 1, "new pattern must record the report");
         assert_eq!(
-            crashes.back().unwrap().actor_id,
-            2,
-            "recorded report must match the submitted one"
+            crashes.len(),
+            1,
+            "push_crash_report_to must record through poison"
         );
+        assert_eq!(crashes.back().unwrap().actor_id, 42);
+        assert_eq!(crashes.back().unwrap().signal, 11);
     }
 }

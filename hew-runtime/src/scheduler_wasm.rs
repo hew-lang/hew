@@ -498,12 +498,39 @@ pub extern "C" fn hew_sched_init() -> c_int {
     0
 }
 
+/// Drain all currently-runnable actors without spinning on the sleep queue.
+///
+/// Unlike [`hew_sched_run`], this function exits as soon as the run queue is
+/// empty regardless of whether any actors are sleeping.  It is used by
+/// [`hew_sched_shutdown`] to prevent a far-future sleep deadline from
+/// indefinitely blocking teardown.
+///
+/// Any actor that calls `sleep_ms` during this drain will be parked into
+/// `SLEEP_QUEUE`; the caller must clear that queue afterwards.
+///
+/// # Safety
+///
+/// Must be called from a single-threaded WASM context after
+/// [`hew_sched_init`].
+unsafe fn drain_run_queue_for_shutdown() {
+    loop {
+        // SAFETY: single-threaded cooperative scheduler.
+        if !unsafe { step_one_actor() } {
+            break; // run queue empty — do not wait for sleep deadlines
+        }
+    }
+}
+
 /// Shut down the cooperative scheduler.
 ///
-/// Process all pending actors and then reset **all** scheduler lifetime
-/// statics to their initial values. On WASM the scheduler is cooperative,
-/// so we drain the run queue (just like [`hew_sched_run`]) before tearing
-/// down. Safe to call if the scheduler was never initialized.
+/// Drains all currently-runnable actors and then resets **all** scheduler
+/// lifetime statics to their initial values.  Safe to call if the scheduler
+/// was never initialized.
+///
+/// Unlike [`hew_sched_run`], shutdown does **not** wait for sleeping actors
+/// whose timer has not yet expired.  The sleep queue is cleared before the
+/// drain and again after, so any actor that calls `sleep_ms` during the
+/// shutdown drain cannot prolong teardown.
 ///
 /// Resetting every static (including `ACTIVATING`, `PREV_ARENA`,
 /// `CURRENT_REPLY_CHANNEL`, `CURRENT_REPLY_CHANNEL_CONSUMED`, and the
@@ -511,11 +538,9 @@ pub extern "C" fn hew_sched_init() -> c_int {
 /// from a genuinely clean slate even after hot-reload or test-harness reuse.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_shutdown() {
-    // Cancel all sleeping actors BEFORE running the scheduler. If we ran
-    // hew_sched_run() first, it would spin-poll until every far-future deadline
-    // expired — potentially hanging for a long time.  Clearing the sleep queue
-    // here is correct because shutdown means we are not going to service those
-    // timers anyway; actors that were sleeping are about to be freed.
+    // Cancel all sleeping actors before draining.  This prevents
+    // hew_sched_run()'s sleep-queue spin-wait from blocking teardown on
+    // far-future timer deadlines.
     #[expect(
         static_mut_refs,
         reason = "single-threaded shutdown; no concurrent access"
@@ -526,8 +551,23 @@ pub extern "C" fn hew_sched_shutdown() {
         PENDING_SLEEP_DEADLINE_MS = 0;
     }
 
-    // Process all remaining runnable messages before shutting down.
-    hew_sched_run();
+    // Drain all currently-runnable actors without waiting for sleep deadlines.
+    // If any actor calls sleep_ms during this drain it will be added to
+    // SLEEP_QUEUE, which we clear again immediately below.
+    // SAFETY: Single-threaded on WASM.
+    unsafe { drain_run_queue_for_shutdown() };
+
+    // Second clear: discard any new sleep entries created during the drain.
+    #[expect(
+        static_mut_refs,
+        reason = "single-threaded shutdown; no concurrent access"
+    )]
+    // SAFETY: Single-threaded; drain_run_queue_for_shutdown has returned.
+    unsafe {
+        SLEEP_QUEUE.clear();
+        PENDING_SLEEP_DEADLINE_MS = 0;
+    }
+
     crate::bridge::bridge_shutdown();
 
     // SAFETY: Single-threaded on WASM.
@@ -901,17 +941,25 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // Non-zero means the actor should be parked in the sleep queue instead of
     // going back to RUNNABLE/IDLE after the message loop exits.
     let mut actor_sleep_deadline: u64 = 0;
-    // Belt-and-suspenders: clear any stale PENDING_SLEEP_DEADLINE_MS that
-    // could have been left by a caller that invoked `request_sleep` outside of
-    // a dispatch handler (e.g., from a top-level Hew `main` block), or by a
-    // prior activation that exited without running the per-iteration consume
-    // step (empty mailbox path).  Normally this is already 0, but clearing at
-    // entry ensures no cross-actor bleed regardless of how the global was set.
+    // Save and clear PENDING_SLEEP_DEADLINE_MS on activation entry.
+    //
+    // Saving is required to support nested activations: if an outer actor calls
+    // `sleep_ms(...)` and then performs an ask/await that drives a nested
+    // `activate_actor_wasm` call, the inner activation must not destroy the
+    // outer actor's pending sleep.  We save it here and restore it on exit so
+    // the outer actor's dispatch loop still sees it when the ask/await returns.
+    //
+    // Clearing is still required so that any stale value written by
+    // `request_sleep` outside a dispatch handler (or left over from an edge
+    // case) cannot bleed into the inner actor being activated now.
+    //
     // SAFETY: Single-threaded; PENDING is only mutated by request_sleep and
     // the per-iteration consume step, both called from this function.
-    unsafe {
+    let saved_pending_sleep: u64 = unsafe {
+        let d = PENDING_SLEEP_DEADLINE_MS;
         PENDING_SLEEP_DEADLINE_MS = 0;
-    }
+        d
+    };
 
     if !mailbox.is_null() {
         // Process up to `budget` messages.
@@ -1039,6 +1087,12 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         CURRENT_REPLY_CHANNEL = saved_reply_channel;
         CURRENT_REPLY_CHANNEL_CONSUMED = saved_reply_channel_consumed;
         ACTIVATING = saved_activating;
+        // Restore the outer actor's pending sleep deadline so that a nested
+        // activation (ask/await from dispatch) cannot erase it.  The inner
+        // actor's own sleep deadline was captured in `actor_sleep_deadline`
+        // (a local variable) during the dispatch loop above and is applied
+        // further below; the global is no longer needed for the inner actor.
+        PENDING_SLEEP_DEADLINE_MS = saved_pending_sleep;
         TASKS_COMPLETED += 1;
     }
 
@@ -4717,15 +4771,23 @@ mod tests {
             HewActorState::Idle as i32,
             "actor should be Idle after empty-mailbox activation"
         );
-        // PENDING must have been cleared at entry even though no messages ran.
+        // With save/restore semantics, PENDING is restored to its pre-entry value
+        // (99_999) at activation exit.  The key property — that the stale value
+        // did NOT cause this actor to park — is already verified by the sleep-queue
+        // and actor-state assertions above.  The stale value will similarly not
+        // cause the next actor to park because the per-message consume step never
+        // ran (empty mailbox → dispatch loop never entered).
         // SAFETY: Single-threaded test.
         unsafe {
             assert_eq!(
                 ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read(),
-                0,
-                "PENDING_SLEEP_DEADLINE_MS must be 0 after activation"
+                99_999,
+                "PENDING_SLEEP_DEADLINE_MS is restored to its saved value by save/restore"
             );
         }
+        // Cleanup: clear the stale pending value so it doesn't leak into later tests.
+        // SAFETY: Single-threaded test; no concurrent access.
+        unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0) };
 
         // SAFETY: mailbox was heap-allocated above.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
@@ -4838,5 +4900,120 @@ mod tests {
         // SAFETY: mailbox was heap-allocated above.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
         hew_sched_shutdown();
+    }
+
+    // ── Sonnet 4.6 repair regressions ────────────────────────────────────
+
+    /// Regression: a nested `activate_actor_wasm` call (e.g. from ask/await
+    /// inside a dispatch handler) must NOT erase the outer actor's pending
+    /// sleep request.  If the save/restore is missing, `actor_sleep_deadline`
+    /// for the outer actor will be 0 and it will never park.
+    #[test]
+    fn nested_activation_preserves_outer_pending_sleep() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut inner = stub_actor();
+        inner.id = 99;
+        inner.dispatch = Some(inner_dispatch_noop);
+        inner.mailbox = mailbox.cast();
+        inner
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        let inner_ptr: *mut HewActor = (&raw mut inner);
+
+        // Simulate the outer actor having called sleep_ms(500): write directly
+        // into the global, the same way request_sleep() does.
+        // SAFETY: Single-threaded test; simulates outer-actor sleep request.
+        unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(500) };
+
+        // Queue a message so the inner actor's dispatch loop actually runs.
+        // SAFETY: inner actor and mailbox are valid.
+        unsafe { queue_wasm_message(inner_ptr, 0) };
+
+        // Activate the inner actor directly — this is what a nested ask/await
+        // does at runtime.  With the fix, it must save 500, clear to 0, run,
+        // then restore 500.  Without the fix, it clears to 0 and never restores.
+        // SAFETY: inner actor is Runnable and its mailbox is valid.
+        unsafe { activate_actor_wasm(inner_ptr) };
+
+        // The outer actor's pending sleep (500) must survive the nested activation.
+        // SAFETY: Single-threaded test.
+        let pending = unsafe { ptr::addr_of!(PENDING_SLEEP_DEADLINE_MS).read() };
+        assert_eq!(
+            pending, 500,
+            "outer actor's pending sleep must be preserved after nested activation"
+        );
+
+        // Cleanup: clear the pending deadline and free resources.
+        // SAFETY: Single-threaded test; no concurrent readers.
+        unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0) };
+        // SAFETY: mailbox was heap-allocated above.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        hew_sched_shutdown();
+    }
+
+    /// Regression: if a runnable actor calls `sleep_ms` during the shutdown
+    /// drain, `hew_sched_shutdown` must still return promptly.  Before the fix,
+    /// the newly-added sleep entry caused the scheduler spin-loop to block until
+    /// the (far-future) deadline expired.  If this test hangs, the fix regressed.
+    #[test]
+    fn shutdown_does_not_hang_when_draining_actor_calls_sleep() {
+        // Declare items before statements (items-after-statements lint).
+        static DRAIN_DISPATCHED: AtomicI32 = AtomicI32::new(0);
+        // SAFETY: `request_sleep` is safe to call from dispatch context.
+        unsafe extern "C" fn sleep_requesting_dispatch(
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+        ) {
+            DRAIN_DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            // Far-future absolute deadline — hangs if not cleared on shutdown.
+            request_sleep(u64::MAX / 2);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.dispatch = Some(sleep_requesting_dispatch);
+        a.mailbox = mailbox.cast();
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // SAFETY: actor and scheduler are valid.
+        unsafe { sched_enqueue(a_ptr) };
+        // SAFETY: actor and mailbox are valid.
+        unsafe { queue_wasm_message(a_ptr, 0) };
+
+        // Shutdown must drain the run queue AND clear the sleep entry created
+        // by sleep_requesting_dispatch — without blocking on the deadline.
+        hew_sched_shutdown();
+
+        // Verify the dispatch actually ran (actor was drained, not skipped).
+        assert_eq!(
+            DRAIN_DISPATCHED.load(Ordering::Relaxed),
+            1,
+            "actor dispatch must have run during shutdown drain"
+        );
+        // Sleep queue must be empty: new entries must not survive shutdown.
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "sleep queue must be empty after shutdown regardless of new entries"
+        );
+
+        // SAFETY: mailbox was heap-allocated above.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
 }

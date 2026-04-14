@@ -49,8 +49,6 @@ use crate::actor::HewActor;
 
 /// An outbound message emitted by an actor for the host.
 struct OutboundMsg {
-    /// Source actor name (empty string if unnamed).
-    _source: String,
     /// Message type tag.
     msg_type: i32,
     /// Payload bytes (deep-copied from actor dispatch).
@@ -342,15 +340,7 @@ pub unsafe extern "C" fn hew_wasm_emit(msg_type: i32, data_ptr: *const c_void, d
         Vec::new()
     };
 
-    // Try to get the current actor's name from the registry for source info.
-    // For now, leave source empty — the host can identify by msg_type.
-    let source = String::new();
-
-    outbound_queue().push_back(OutboundMsg {
-        _source: source,
-        msg_type,
-        data,
-    });
+    outbound_queue().push_back(OutboundMsg { msg_type, data });
 }
 
 // ── Host polls for outbound messages ────────────────────────────────────

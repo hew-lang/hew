@@ -15,7 +15,6 @@ use serde::{de::DeserializeOwned, Deserialize};
 #[derive(Debug, Clone, Default)]
 pub struct FrontendOptions {
     pub no_typecheck: bool,
-    pub warnings_as_errors: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
     /// Anchor the in-memory compile to a specific project directory, enabling
@@ -23,6 +22,14 @@ pub struct FrontendOptions {
     /// validation, lockfile) identical to `compile_file`.  When `None` the
     /// old cwd-fallback with no manifest is used.
     pub project_dir: Option<PathBuf>,
+    /// Treat warning-severity diagnostics as hard errors.
+    ///
+    /// When `true`, [`check_file`], [`check_program`], [`compile_file`], and
+    /// [`compile_program`] all fail with [`FrontendFailure`] when the pipeline
+    /// produces any warning-severity diagnostic.  Mirrors `--deny warnings`
+    /// semantics and is checked uniformly at the end of each pipeline's
+    /// success arm so no path silently swallows warnings.
+    pub warnings_as_errors: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -80,19 +87,6 @@ impl FrontendDiagnostic {
             kind: FrontendDiagnosticKind::InferredType { error, fatal },
         }
     }
-
-    fn is_warning(&self) -> bool {
-        match &self.kind {
-            FrontendDiagnosticKind::Message(_) => false,
-            FrontendDiagnosticKind::Parse(diagnostic) => {
-                diagnostic.severity == hew_parser::Severity::Warning
-            }
-            FrontendDiagnosticKind::Type(diagnostic) => {
-                diagnostic.severity == hew_types::error::Severity::Warning
-            }
-            FrontendDiagnosticKind::InferredType { fatal, .. } => !fatal,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -122,18 +116,33 @@ impl fmt::Display for FrontendFailure {
 
 impl std::error::Error for FrontendFailure {}
 
+fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
+    match &d.kind {
+        FrontendDiagnosticKind::Type(e) => e.severity == hew_types::error::Severity::Warning,
+        FrontendDiagnosticKind::Parse(e) => e.severity == hew_parser::Severity::Warning,
+        FrontendDiagnosticKind::InferredType { fatal, .. } => !fatal,
+        FrontendDiagnosticKind::Message(_) => false,
+    }
+}
+
+/// If `options.warnings_as_errors` is set and `diagnostics` contains any
+/// warning-severity entry, return a `FrontendFailure` that includes all
+/// accumulated diagnostics.  Otherwise return `Ok(())`.
+///
+/// Call this in the success arm of every top-level pipeline function
+/// (`check_file`, `check_program`, `compile_file`, `compile_program`) so the
+/// behaviour is uniform across all public entry points.
 fn fail_on_warning_diagnostics(
     diagnostics: Vec<FrontendDiagnostic>,
     options: &FrontendOptions,
 ) -> Result<Vec<FrontendDiagnostic>, FrontendFailure> {
-    if options.warnings_as_errors && diagnostics.iter().any(FrontendDiagnostic::is_warning) {
-        Err(FrontendFailure::new(
+    if options.warnings_as_errors && diagnostics.iter().any(is_warning_diagnostic) {
+        return Err(FrontendFailure::new(
             "warnings treated as errors",
             diagnostics,
-        ))
-    } else {
-        Ok(diagnostics)
+        ));
     }
+    Ok(diagnostics)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -510,6 +519,11 @@ fn typecheck_program_with_diagnostics(
 
 /// Type-check a parsed program after import resolution.
 ///
+/// This is a low-level primitive that expects imports to have been resolved
+/// before the call.  For a project-aware check that handles manifest
+/// validation and import resolution automatically, use [`check_program`] or
+/// [`check_file`].
+///
 /// # Errors
 ///
 /// Returns [`FrontendFailure`] when type checking reports any hard errors.
@@ -520,6 +534,50 @@ pub fn typecheck_program(
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
     typecheck_program_with_diagnostics(program, source, input, options).map(|(result, _)| result)
+}
+
+/// Resolve imports and type-check an already-parsed in-memory program.
+///
+/// This is the in-memory counterpart to [`check_file`]: it runs the same
+/// project-aware pipeline (manifest validation, import resolution, type
+/// checking) without needing a file on disk.
+///
+/// Set [`FrontendOptions::project_dir`] to anchor dependency resolution and
+/// manifest validation to a specific project directory.  When `None` the
+/// current working directory is used and manifest validation is skipped.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when manifest loading, import resolution, or
+/// type checking fails.
+pub fn check_program(
+    mut program: Program,
+    source: &str,
+    source_label: &str,
+    options: &FrontendOptions,
+) -> Result<CheckOutput, FrontendFailure> {
+    let project = project_context_for_program(source, options)?;
+    let mut diagnostics = Vec::new();
+
+    if let Err(failure) = resolve_imports_internal(
+        &mut program,
+        source,
+        source_label,
+        &project,
+        options,
+        &mut diagnostics,
+    ) {
+        return Err(merge_prior_diagnostics(diagnostics, failure));
+    }
+
+    match typecheck_program_with_diagnostics(&program, source, source_label, options) {
+        Ok((_, type_diagnostics)) => {
+            diagnostics.extend(type_diagnostics);
+            let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
+            Ok(CheckOutput { diagnostics })
+        }
+        Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
+    }
 }
 
 fn inferred_type_serialization_diagnostic_is_fatal(error: &TypeExprConversionError) -> bool {
@@ -1495,15 +1553,15 @@ pub fn compile_file(
         typecheck_result,
         source,
     } = run_file_frontend_to_typecheck(input, options)?;
-    let frontend = finish_compile(
+    let mut artifacts = finish_compile(
         program,
         diagnostics,
         &typecheck_result,
         source,
         input.to_string(),
     )?;
-    fail_on_warning_diagnostics(frontend.diagnostics.clone(), options)?;
-    Ok(frontend)
+    artifacts.diagnostics = fail_on_warning_diagnostics(artifacts.diagnostics, options)?;
+    Ok(artifacts)
 }
 
 /// Run the full frontend pipeline for an already-parsed in-memory program.
@@ -1541,15 +1599,15 @@ pub fn compile_program(
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
 
-    let frontend = finish_compile(
+    let mut artifacts = finish_compile(
         program,
         diagnostics,
         &typecheck_result,
         source.to_string(),
         source_label.to_string(),
     )?;
-    fail_on_warning_diagnostics(frontend.diagnostics.clone(), options)?;
-    Ok(frontend)
+    artifacts.diagnostics = fail_on_warning_diagnostics(artifacts.diagnostics, options)?;
+    Ok(artifacts)
 }
 
 /// Run the full frontend pipeline for a source file and serialize to msgpack.
@@ -1674,8 +1732,8 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, compile_file, load_dependencies, load_lockfile, load_package_name,
-        FrontendOptions,
+        check_file, check_program, compile_file, load_dependencies, load_lockfile,
+        load_package_name, parse_source, FrontendOptions,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -1872,10 +1930,7 @@ mod tests {
         let result = check_file(&input, &FrontendOptions::default()).expect("check should succeed");
 
         assert!(
-            result
-                .diagnostics
-                .iter()
-                .any(super::FrontendDiagnostic::is_warning),
+            result.diagnostics.iter().any(super::is_warning_diagnostic),
             "expected warning diagnostics, got: {:?}",
             result.diagnostics
         );
@@ -1897,10 +1952,7 @@ mod tests {
 
         assert_eq!(failure.message, "warnings treated as errors");
         assert!(
-            failure
-                .diagnostics
-                .iter()
-                .any(super::FrontendDiagnostic::is_warning),
+            failure.diagnostics.iter().any(super::is_warning_diagnostic),
             "expected warning diagnostics, got: {:?}",
             failure.diagnostics
         );
@@ -1922,12 +1974,172 @@ mod tests {
 
         assert_eq!(failure.message, "warnings treated as errors");
         assert!(
-            failure
-                .diagnostics
-                .iter()
-                .any(super::FrontendDiagnostic::is_warning),
+            failure.diagnostics.iter().any(super::is_warning_diagnostic),
             "expected warning diagnostics, got: {:?}",
             failure.diagnostics
+        );
+    }
+
+    // ── check_program tests ───────────────────────────────────────────────
+
+    #[test]
+    fn check_program_no_manifest_accepts_simple_program() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let source = "fn main() { let x: i32 = 1; }\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let result = check_program(program, source, "main.hew", &options);
+        assert!(result.is_ok(), "valid program should pass: {result:?}");
+    }
+
+    #[test]
+    fn check_program_rejects_undeclared_dependency() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Manifest with an empty [dependencies] section — no deps declared.
+        write_toml(dir.path(), "[package]\nname = \"myapp\"\n[dependencies]\n");
+
+        // Use a user-space module (no std::/hew::/ecosystem:: prefix) so
+        // validate_imports_against_manifest actually checks it.
+        let source = "import mylib::utils;\nfn main() {}\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let err = check_program(program, source, "main.hew", &options)
+            .expect_err("undeclared dep should fail");
+        assert!(
+            err.message.contains("undeclared"),
+            "expected undeclared-dep error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn check_program_fails_closed_on_invalid_manifest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "this is not valid toml {{{\n");
+
+        let source = "fn main() {}\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let err = check_program(program, source, "main.hew", &options)
+            .expect_err("invalid manifest should fail closed");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("hew.toml"), "{}", err.message);
+    }
+
+    #[test]
+    fn check_program_fails_closed_on_invalid_lockfile() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[package]\nname = \"myapp\"\n");
+        write_lockfile(dir.path(), "this is not valid toml {{{\n");
+
+        let source = "fn main() {}\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let err = check_program(program, source, "main.hew", &options)
+            .expect_err("invalid lockfile should fail closed");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("adze.lock"), "{}", err.message);
+    }
+
+    #[test]
+    fn check_program_catches_type_error() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // No manifest — no import validation.
+        let source = "fn main() { let x: i32 = true; }\n";
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let err = check_program(program, source, "main.hew", &options)
+            .expect_err("type error should fail");
+        assert!(
+            err.message.contains("type error"),
+            "expected type-error message, got: {}",
+            err.message
+        );
+    }
+
+    // Unreachable code after a return statement generates a type Warning.
+    const SOURCE_WITH_WARNING: &str = "fn main() { return; let _x: i32 = 1; }\n";
+
+    #[test]
+    fn check_program_warnings_as_errors_fails_on_warning() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let source = SOURCE_WITH_WARNING;
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            warnings_as_errors: true,
+            ..Default::default()
+        };
+
+        let err = check_program(program, source, "main.hew", &options)
+            .expect_err("warnings_as_errors should promote warning to failure");
+        assert!(
+            err.message.contains("warnings treated as errors"),
+            "expected warnings-as-errors message, got: {}",
+            err.message
+        );
+        assert!(
+            !err.diagnostics.is_empty(),
+            "failure should carry the warning diagnostics"
+        );
+    }
+
+    #[test]
+    fn check_program_warnings_ok_without_flag() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let source = SOURCE_WITH_WARNING;
+        let program = parse_source(source, "main.hew").expect("source should parse");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            warnings_as_errors: false,
+            ..Default::default()
+        };
+
+        // Without the flag, warnings should be collected but not fail the check.
+        let output = check_program(program, source, "main.hew", &options)
+            .expect("warnings should not fail when flag is off");
+        assert!(
+            !output.diagnostics.is_empty(),
+            "warning diagnostic should still be present in output"
+        );
+    }
+
+    #[test]
+    fn check_file_warnings_as_errors_parity() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = dir.path().join("main.hew");
+        fs::write(&input, SOURCE_WITH_WARNING).expect("write main.hew");
+        let options = FrontendOptions {
+            warnings_as_errors: true,
+            ..Default::default()
+        };
+
+        let err = check_file(input.to_str().expect("utf-8 path"), &options)
+            .expect_err("check_file with warnings_as_errors should fail on warning");
+        assert!(
+            err.message.contains("warnings treated as errors"),
+            "expected warnings-as-errors message, got: {}",
+            err.message
         );
     }
 }

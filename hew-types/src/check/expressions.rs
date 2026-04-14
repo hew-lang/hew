@@ -1329,6 +1329,116 @@ impl Checker {
                 }
             }
 
+            // Enum struct-variant init with a known expected enum type:
+            // pre-seed type params from the expected args before field checking
+            // so that nested generic fields (e.g. Box<T> → Box<int>) resolve
+            // correctly.  This mirrors the plain-struct coercion arm above but
+            // matches when the init name is a variant, not the type itself.
+            (
+                Expr::StructInit { name, fields },
+                Ty::Named {
+                    name: expected_enum_name,
+                    args: expected_args,
+                },
+            ) => {
+                let short = name.rsplit("::").next().unwrap_or(name.as_str());
+                // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
+                // when expected is MyEnum).
+                let prefix_ok = !name.contains("::")
+                    || name.split("::").next().unwrap_or("") == expected_enum_name.as_str();
+
+                let mut handled = false;
+                if prefix_ok {
+                    if let Some(td) = self.lookup_type_def(expected_enum_name) {
+                        let variant_def = td
+                            .variants
+                            .get(name.as_str())
+                            .or_else(|| td.variants.get(short))
+                            .cloned();
+                        if let Some(VariantDef::Struct(variant_fields)) = variant_def {
+                            let type_params = td.type_params.clone();
+                            // Only pre-seed when arity matches and there are
+                            // type params to substitute.
+                            if type_params.len() == expected_args.len() && !type_params.is_empty() {
+                                handled = true;
+                                // Clone early so we can mutably borrow `self`.
+                                let expected_args = expected_args.clone();
+                                let mut type_arg_map: HashMap<String, Ty> = type_params
+                                    .iter()
+                                    .zip(expected_args.iter())
+                                    .map(|(p, a)| (p.clone(), a.clone()))
+                                    .collect();
+
+                                for (field_name, (fexpr, fs)) in fields {
+                                    if let Some((_, declared_ty)) =
+                                        variant_fields.iter().find(|(n, _)| n == field_name)
+                                    {
+                                        let declared_ty = declared_ty.clone();
+                                        let mut field_expected = declared_ty.clone();
+                                        for (tp, concrete) in &type_arg_map {
+                                            field_expected =
+                                                field_expected.substitute_named_param(tp, concrete);
+                                        }
+                                        let actual = self.check_against(fexpr, fs, &field_expected);
+                                        // Bind any remaining unbound type params
+                                        for tp in &type_params {
+                                            if !type_arg_map.contains_key(tp)
+                                                && declared_ty
+                                                    == (Ty::Named {
+                                                        name: tp.clone(),
+                                                        args: vec![],
+                                                    })
+                                            {
+                                                type_arg_map.insert(tp.clone(), actual.clone());
+                                            }
+                                        }
+                                    } else {
+                                        let similar = crate::error::find_similar(
+                                            field_name,
+                                            variant_fields.iter().map(|(n, _)| n.as_str()),
+                                        );
+                                        self.report_error_with_suggestions(
+                                            TypeErrorKind::UndefinedField,
+                                            span,
+                                            format!("no field `{field_name}` on variant `{name}`"),
+                                            similar,
+                                        );
+                                    }
+                                }
+                                let provided: HashSet<&str> =
+                                    fields.iter().map(|(n, _)| n.as_str()).collect();
+                                for (declared, _) in &variant_fields {
+                                    if !provided.contains(declared.as_str()) {
+                                        self.report_error(
+                                            TypeErrorKind::UndefinedField,
+                                            span,
+                                            format!(
+                                                "missing field `{declared}` in initializer of `{name}`"
+                                            ),
+                                        );
+                                    }
+                                }
+                                self.record_type(span, expected);
+                            }
+                        }
+                    }
+                }
+                if handled {
+                    expected.clone()
+                } else {
+                    // Variant not found in the expected enum, non-generic, or
+                    // arity mismatch — fall back to synthesize + unify.
+                    let actual = self.synthesize(expr, span);
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
+                }
+            }
+
             (
                 Expr::Call {
                     function,

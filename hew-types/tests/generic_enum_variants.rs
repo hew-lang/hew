@@ -136,6 +136,36 @@ fn struct_variant_init_unqualified_infers_type_args() {
     );
 }
 
+// ── Nested-generic expected-type preseed (review blocker fix) ─────────────────
+
+// When the declared type (e.g. `let w: Wrap<int>`) is already known, nested
+// generic fields such as `inner: Box<T>` must be checked as `Box<int>`, not
+// the raw `Box<T>`.  Without preseed the checker would see `Box<int>` (from
+// the inner struct init) vs `Box<T>` (from the variant definition) and emit a
+// spurious mismatch.
+#[test]
+fn struct_variant_init_nested_generic_field_with_expected_type() {
+    let output = typecheck(
+        r"
+        type Box<T> { value: T }
+
+        enum Wrap<T> {
+            Boxed { inner: Box<T> };
+        }
+
+        fn main() {
+            let w: Wrap<int> = Wrap::Boxed { inner: Box { value: 1 } };
+            let _ = w;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors (nested generic field in enum struct-variant): {:?}",
+        output.errors
+    );
+}
+
 // ── Tuple-variant coverage (regression guard) ─────────────────────────────────
 
 // Use an Option-like enum with different variant names to avoid clashing

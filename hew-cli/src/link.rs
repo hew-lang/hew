@@ -371,27 +371,48 @@ fn find_wasi_libc(target: &str) -> Option<String> {
     }
 }
 
-fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
-    let exe_dir = exe.parent().expect("exe should have a parent directory");
-
-    let candidates = [
-        // Per-triple path first: supports Phase 2 pre-built libs per target
-        // and lets `make assemble` wire the host triple without disturbing the
-        // generic fallback path.  Mirrors the `lib/wasm32-wasip1/` pattern.
-        exe_dir.join(format!("../lib/{triple}")).join(name),
+fn hew_lib_candidates(
+    exe_dir: &std::path::Path,
+    name: &str,
+    triple: &str,
+) -> Vec<std::path::PathBuf> {
+    vec![
+        // Installed target-aware layouts.
+        exe_dir.join("../lib").join(triple).join(name),
+        exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
+        exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
+        // Flat installed fallback layouts.
         exe_dir.join("../lib").join(name),
-        exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/ (Debian/Ubuntu)
-        exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/ (Fedora/RHEL)
-        exe_dir.join(name), // same dir as the binary (target/debug/ or target/release/)
+        exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/
+        exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/
+        // Cargo target-dir outputs for cross-target dev/test builds.
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("release")
+            .join(name),
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("debug")
+            .join(name),
+        // Same dir as the binary (target/debug/ or target/release/) for host-target dev builds.
+        exe_dir.join(name),
         exe_dir.join("../../target/release").join(name),
         exe_dir.join("../../target/debug").join(name),
+        // Existing WASI and runtime fallback paths.
         exe_dir
             .join("../../target/wasm32-wasip1/release")
             .join(name),
         exe_dir.join("../../target/wasm32-wasip1/debug").join(name),
         exe_dir.join("../../hew-runtime/target/release").join(name),
-    ];
+    ]
+}
+
+fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
+    let exe_dir = exe.parent().expect("exe should have a parent directory");
+    let candidates = hew_lib_candidates(exe_dir, name, triple);
 
     for c in &candidates {
         if c.exists() {
@@ -776,6 +797,51 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("cannot find nonexistent_lib_xyz.a"));
         assert!(err.contains("make stdlib"));
+    }
+
+    #[test]
+    fn hew_lib_candidates_prioritize_target_specific_installed_paths() {
+        let exe_dir = std::path::Path::new("/opt/hew/bin");
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin");
+        let expected: Vec<_> = [
+            "/opt/hew/bin/../lib/aarch64-apple-darwin/libhew.a",
+            "/opt/hew/bin/../lib/hew/aarch64-apple-darwin/libhew.a",
+            "/opt/hew/bin/../lib64/hew/aarch64-apple-darwin/libhew.a",
+            "/opt/hew/bin/../lib/libhew.a",
+            "/opt/hew/bin/../lib/hew/libhew.a",
+            "/opt/hew/bin/../lib64/hew/libhew.a",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+        assert_eq!(&candidates[..expected.len()], expected.as_slice());
+    }
+
+    #[test]
+    fn hew_lib_candidates_probe_cargo_target_triple_dirs_before_host_fallbacks() {
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates = hew_lib_candidates(exe_dir, "hew.lib", "x86_64-pc-windows-msvc");
+        let cross_release = std::path::PathBuf::from(
+            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/release/hew.lib",
+        );
+        let cross_debug = std::path::PathBuf::from(
+            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/debug/hew.lib",
+        );
+        let host_same_dir = std::path::PathBuf::from("/repo/target/debug/hew.lib");
+        let cross_release_index = candidates
+            .iter()
+            .position(|path| path == &cross_release)
+            .expect("cross-target release candidate");
+        let cross_debug_index = candidates
+            .iter()
+            .position(|path| path == &cross_debug)
+            .expect("cross-target debug candidate");
+        let host_same_dir_index = candidates
+            .iter()
+            .position(|path| path == &host_same_dir)
+            .expect("same-dir host fallback candidate");
+        assert!(cross_release_index < host_same_dir_index);
+        assert!(cross_debug_index < host_same_dir_index);
     }
 
     // ── output-path sanitisation (extracted from link_executable) ─────

@@ -10,13 +10,8 @@
 
 mod support;
 
-use std::path::PathBuf;
 use std::process::Command;
-use support::strip_ansi;
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, strip_ansi};
 
 /// Write a set of `(filename, content)` pairs into a temporary directory and
 /// return the directory handle (kept alive for the duration of the test).

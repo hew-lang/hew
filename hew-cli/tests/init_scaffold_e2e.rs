@@ -1,9 +1,8 @@
-use std::path::PathBuf;
+mod support;
+
 use std::process::Command;
 
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::hew_binary;
 
 /// Run `hew init <name>` in `dir` and return the output.
 fn run_init(dir: &std::path::Path, name: &str) -> std::process::Output {

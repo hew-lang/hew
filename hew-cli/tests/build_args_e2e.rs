@@ -1,16 +1,8 @@
 mod support;
 
-use std::process::{Command, Output};
+use std::process::Command;
 
-use support::{hew_binary, repo_root, require_codegen};
-
-fn describe_output(output: &Output) -> String {
-    format!(
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    )
-}
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 #[test]
 fn werror_flag_is_accepted_as_noop_by_build_style_commands() {

@@ -3,15 +3,7 @@ mod support;
 use std::fs;
 use std::process::Command;
 
-use support::{hew_binary, repo_root, require_codegen, strip_ansi};
-
-fn describe_output(output: &std::process::Output) -> String {
-    format!(
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    )
-}
+use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
 
 #[test]
 fn extern_type_codegen_errors_report_the_type_span() {

@@ -1,14 +1,9 @@
 mod support;
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use support::strip_ansi;
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, strip_ansi};
 
 fn run_fmt(args: &[&str], input: &str) -> Output {
     let mut child = Command::new(hew_binary())

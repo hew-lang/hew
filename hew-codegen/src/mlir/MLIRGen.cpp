@@ -672,12 +672,10 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
     // Unresolved type: emit an error and force codegen failure.
     ++errorCount_;
     if (fromSubstitution) {
-      ++errorCount_;
       emitError(diagLoc) << "unresolved type substitution '" << name << "' for type parameter '"
                          << named->name
                          << "' — no builtin, struct, enum, or actor with this name is defined";
     } else {
-      ++errorCount_;
       emitError(diagLoc) << "unresolved type '" << name
                          << "' — no struct, enum, or actor with this name is defined";
     }

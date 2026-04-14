@@ -236,7 +236,7 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
     // Remove the actor's own link-list entry from its shard.
     let own_shard = get_shard_index(actor_id);
     {
-        let mut shard = LINK_TABLE[own_shard].write().unwrap();
+        let mut shard = LINK_TABLE[own_shard].write_or_recover();
         shard.links.remove(&actor_id);
     }
 
@@ -244,7 +244,7 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
     // link lists. This is O(shards × entries) but actors rarely have many
     // links, and this only runs at free time.
     for shard_rw in LINK_TABLE.iter() {
-        let mut shard = shard_rw.write().unwrap();
+        let mut shard = shard_rw.write_or_recover();
         shard.links.retain(|_id, linked_actors| {
             linked_actors.retain(|&addr| addr != actor_usize);
             !linked_actors.is_empty()
@@ -268,14 +268,14 @@ pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> b
     let actor_usize = actor_addr as usize;
     let own_shard = get_shard_index(actor_id);
     {
-        let shard = LINK_TABLE[own_shard].read().unwrap();
+        let shard = LINK_TABLE[own_shard].read_or_recover();
         if shard.links.contains_key(&actor_id) {
             return true;
         }
     }
     // Check if this actor appears as a target in any other actor's link list.
     for shard_rw in LINK_TABLE.iter() {
-        let shard = shard_rw.read().unwrap();
+        let shard = shard_rw.read_or_recover();
         for linked in shard.links.values() {
             if linked.contains(&actor_usize) {
                 return true;
@@ -340,14 +340,14 @@ mod tests {
         let shard_b = get_shard_index(200);
 
         {
-            let table_a = LINK_TABLE[shard_a].read().unwrap();
+            let table_a = LINK_TABLE[shard_a].read_or_recover();
             assert!(table_a
                 .links
                 .get(&100)
                 .is_some_and(|v| v.contains(&(b_ptr as usize))));
         }
         {
-            let table_b = LINK_TABLE[shard_b].read().unwrap();
+            let table_b = LINK_TABLE[shard_b].read_or_recover();
             assert!(table_b
                 .links
                 .get(&200)
@@ -362,14 +362,14 @@ mod tests {
 
         // Verify links are removed
         {
-            let table_a = LINK_TABLE[shard_a].read().unwrap();
+            let table_a = LINK_TABLE[shard_a].read_or_recover();
             assert!(!table_a
                 .links
                 .get(&100)
                 .is_some_and(|v| v.contains(&(b_ptr as usize))));
         }
         {
-            let table_b = LINK_TABLE[shard_b].read().unwrap();
+            let table_b = LINK_TABLE[shard_b].read_or_recover();
             assert!(!table_b
                 .links
                 .get(&200)
@@ -401,7 +401,7 @@ mod tests {
         }
 
         let shard = get_shard_index(300);
-        let table = LINK_TABLE[shard].read().unwrap();
+        let table = LINK_TABLE[shard].read_or_recover();
         assert!(!table.links.contains_key(&300));
     }
 
@@ -457,7 +457,7 @@ mod tests {
 
         // Actor B's own entry that pointed to A should also be gone.
         let shard_b = get_shard_index(30_200);
-        let table_b = LINK_TABLE[shard_b].read().unwrap();
+        let table_b = LINK_TABLE[shard_b].read_or_recover();
         let b_links = table_b.links.get(&30_200);
         assert!(
             b_links.is_none() || !b_links.unwrap().contains(&(a_ptr as usize)),

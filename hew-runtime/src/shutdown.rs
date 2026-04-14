@@ -100,10 +100,9 @@ pub unsafe extern "C" fn hew_shutdown_register_supervisor(
     if sup.is_null() {
         return;
     }
-    if let Ok(mut sups) = TOP_LEVEL_SUPERVISORS.lock() {
-        if !sups.iter().any(|s| s.0 == sup) {
-            sups.push(SupervisorPtr(sup));
-        }
+    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+    if !sups.iter().any(|s| s.0 == sup) {
+        sups.push(SupervisorPtr(sup));
     }
 }
 
@@ -120,9 +119,8 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(
     if sup.is_null() {
         return;
     }
-    if let Ok(mut sups) = TOP_LEVEL_SUPERVISORS.lock() {
-        sups.retain(|s| s.0 != sup);
-    }
+    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+    sups.retain(|s| s.0 != sup);
 }
 
 #[cfg(test)]
@@ -141,12 +139,11 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
 pub(crate) unsafe fn free_registered_supervisors() {
-    if let Ok(mut sups) = TOP_LEVEL_SUPERVISORS.lock() {
-        for s in sups.drain(..) {
-            if !s.0.is_null() {
-                // SAFETY: supervisor was registered and pointer is valid.
-                unsafe { crate::supervisor::free_supervisor_resources(s.0) };
-            }
+    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+    for s in sups.drain(..) {
+        if !s.0.is_null() {
+            // SAFETY: supervisor was registered and pointer is valid.
+            unsafe { crate::supervisor::free_supervisor_resources(s.0) };
         }
     }
 }
@@ -353,12 +350,11 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Stop registered supervisors in reverse order (bottom-up).
     // Extract the supervisor list to avoid holding the mutex while stopping them.
     // This prevents deadlock when hew_supervisor_stop calls hew_shutdown_unregister_supervisor.
-    let supervisors_to_stop = if let Ok(mut sups) = TOP_LEVEL_SUPERVISORS.lock() {
+    let supervisors_to_stop = {
+        let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
         // Reverse: last registered (innermost) first.
         sups.reverse();
         std::mem::take(&mut *sups) // Extract all supervisors, leaving empty vec
-    } else {
-        Vec::new()
     };
 
     // Stop supervisors without holding the mutex.
@@ -687,6 +683,145 @@ mod tests {
             .join()
             .expect("spawn-failure fallback must not self-join deadlock");
         assert_eq!(phase, PHASE_DONE);
+
+        reset_shutdown_state();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Mutex poison-recovery tests
+    // ---------------------------------------------------------------------------
+
+    /// `hew_shutdown_register_supervisor` must proceed even when
+    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    #[test]
+    fn register_supervisor_recovers_from_poisoned_mutex() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+
+        // Poison the mutex by panicking while holding it.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
+            panic!("intentional poison");
+        });
+
+        // The mutex is now poisoned.  hew_shutdown_register_supervisor must
+        // not silently skip — it must recover and register the supervisor.
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is a valid pointer returned by hew_supervisor_new.
+        unsafe { hew_shutdown_register_supervisor(sup) };
+
+        assert!(
+            is_supervisor_registered_for_test(sup),
+            "register must succeed even after mutex poison"
+        );
+
+        // Must stop `sup` before reset_shutdown_state() to avoid re-entrant
+        // lock deadlock: hew_supervisor_stop calls hew_shutdown_unregister_supervisor
+        // which also acquires TOP_LEVEL_SUPERVISORS; reset_shutdown_state holds
+        // that lock while calling hew_supervisor_stop.
+        // SAFETY: sup is a valid pointer we own.
+        unsafe { crate::supervisor::hew_supervisor_stop(sup) };
+
+        reset_shutdown_state();
+    }
+
+    /// `hew_shutdown_unregister_supervisor` must proceed even when
+    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    #[test]
+    fn unregister_supervisor_recovers_from_poisoned_mutex() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+
+        // Register a supervisor first (mutex is clean at this point).
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is a valid pointer.
+        unsafe { hew_shutdown_register_supervisor(sup) };
+        assert!(is_supervisor_registered_for_test(sup));
+
+        // Poison the mutex.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
+            panic!("intentional poison");
+        });
+
+        // Unregister must recover from the poison and actually remove the entry.
+        // SAFETY: sup is a valid pointer previously registered.
+        unsafe { hew_shutdown_unregister_supervisor(sup) };
+
+        assert!(
+            !is_supervisor_registered_for_test(sup),
+            "unregister must succeed even after mutex poison"
+        );
+
+        // sup is no longer in the list; free its resources directly.
+        // SAFETY: sup is a valid pointer we own.
+        unsafe { crate::supervisor::hew_supervisor_stop(sup) };
+
+        reset_shutdown_state();
+    }
+
+    /// `free_registered_supervisors` must drain all supervisors even when
+    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    #[test]
+    fn free_registered_supervisors_recovers_from_poisoned_mutex() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is a valid pointer.
+        unsafe { hew_shutdown_register_supervisor(sup) };
+
+        // Poison the mutex.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
+            panic!("intentional poison");
+        });
+
+        // SAFETY: worker threads are not running in this unit-test context;
+        // calling free_registered_supervisors mirrors the cleanup call site.
+        unsafe { free_registered_supervisors() };
+
+        // After the call the list must be empty (supervisor was freed).
+        assert!(
+            !is_supervisor_registered_for_test(sup),
+            "free_registered_supervisors must drain even after mutex poison"
+        );
+
+        reset_shutdown_state();
+    }
+
+    /// The graceful-shutdown supervisor drain path must extract supervisors
+    /// and stop them even when `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    #[test]
+    fn shutdown_orchestrate_recovers_from_poisoned_supervisor_mutex() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is a valid pointer.
+        unsafe { hew_shutdown_register_supervisor(sup) };
+
+        // Poison the mutex before orchestration begins.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
+            panic!("intentional poison");
+        });
+
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        let handle = std::thread::spawn(|| {
+            shutdown_orchestrate(Duration::from_millis(10));
+        });
+
+        assert!(
+            handle.join().is_ok(),
+            "shutdown_orchestrate must complete even after mutex poison"
+        );
+        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();
     }

@@ -1481,7 +1481,13 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
   // cooperate() is parsed as ExprCall{ function: ExprCooperate, args:[] } by the Hew parser
   // (cooperate is a keyword, so the callee is not an ExprIdentifier).  Lower it directly here
   // rather than falling through to the identifier-only guard below.
+  // Only the zero-arg form is valid; any arguments are a hard error.
   if (std::get_if<ast::ExprCooperate>(&call.function->value.kind)) {
+    if (!call.args.empty()) {
+      ++errorCount_;
+      emitError(location) << "cooperate() takes no arguments";
+      return nullptr;
+    }
     hew::CooperateOp::create(builder, location);
     return nullptr;
   }

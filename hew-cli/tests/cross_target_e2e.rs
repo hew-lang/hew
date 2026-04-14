@@ -6,8 +6,6 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use object::{Architecture, BinaryFormat, Object};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::os::unix::fs as unix_fs;
 #[cfg(target_os = "macos")]
 use support::require_codegen;
 use support::{hew_binary, repo_root};
@@ -154,22 +152,8 @@ fn bootstrap_darwin_cross_target_library() -> Result<(), String> {
         ));
     }
 
-    let staged_dir = target_dir.join("lib").join(target);
-    std::fs::create_dir_all(&staged_dir)
-        .map_err(|error| format!("failed to create {}: {error}", staged_dir.display()))?;
-    let staged_archive = staged_dir.join("libhew.a");
-    if staged_archive.exists() {
-        std::fs::remove_file(&staged_archive)
-            .map_err(|error| format!("failed to replace {}: {error}", staged_archive.display()))?;
-    }
-    unix_fs::symlink(&built_archive, &staged_archive).map_err(|error| {
-        format!(
-            "failed to stage Darwin cross-target archive {} -> {}: {error}",
-            staged_archive.display(),
-            built_archive.display(),
-        )
-    })?;
-
+    // No extra staging: `find_hew_lib` now probes `target/<triple>/<profile>/`
+    // directly for native cross-target archives.
     Ok(())
 }
 
@@ -421,10 +405,9 @@ fn require_linux_cross_target_library(cross_triple: &str) {
     }
 }
 
-/// Build `hew-lib` for the cross-arch Linux target and symlink it into the
-/// Cargo target-dir staging path so `find_hew_lib` in link.rs can find it.
-///
-/// Mirrors `bootstrap_darwin_cross_target_library` in structure and intent.
+/// Build `hew-lib` for the cross-arch Linux target in its native Cargo target
+/// directory so `find_hew_lib` can probe `target/<triple>/<profile>/libhew.a`
+/// directly without extra staging.
 #[cfg(target_os = "linux")]
 fn bootstrap_linux_cross_target_library(target: &str) -> Result<(), String> {
     let target_dir = hew_binary()
@@ -469,22 +452,6 @@ fn bootstrap_linux_cross_target_library(target: &str) -> Result<(), String> {
             built_archive.display()
         ));
     }
-
-    let staged_dir = target_dir.join("lib").join(target);
-    std::fs::create_dir_all(&staged_dir)
-        .map_err(|error| format!("failed to create {}: {error}", staged_dir.display()))?;
-    let staged_archive = staged_dir.join("libhew.a");
-    if staged_archive.exists() {
-        std::fs::remove_file(&staged_archive)
-            .map_err(|error| format!("failed to replace {}: {error}", staged_archive.display()))?;
-    }
-    unix_fs::symlink(&built_archive, &staged_archive).map_err(|error| {
-        format!(
-            "failed to stage Linux cross-target archive {} -> {}: {error}",
-            staged_archive.display(),
-            built_archive.display(),
-        )
-    })?;
 
     Ok(())
 }

@@ -99,6 +99,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   const auto &ctorName = ctorPat->name;
   auto ctorVarIt = variantLookup.find(ctorName);
   if (ctorVarIt == variantLookup.end()) {
+    ++errorCount_;
     emitError(location) << "unknown constructor '" << ctorName << "' in if-let pattern";
     return;
   }
@@ -156,6 +157,7 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   }
 
   if (!resultType) {
+    ++errorCount_;
     emitError(location) << "cannot determine result type for if-let expression";
     return nullptr;
   }
@@ -241,6 +243,7 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   const auto &ctorName = ctorPat->name;
   auto ctorVarIt = variantLookup.find(ctorName);
   if (ctorVarIt == variantLookup.end()) {
+    ++errorCount_;
     emitError(location) << "unknown constructor '" << ctorName << "' in if-let pattern";
     return nullptr;
   }

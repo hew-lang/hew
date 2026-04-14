@@ -1049,6 +1049,7 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
   }
 
   if (actorName.empty()) {
+    ++errorCount_;
     emitError(location) << "spawn requires an actor name";
     return nullptr;
   }
@@ -1067,6 +1068,7 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
 
   auto it = actorRegistry.find(actorName);
   if (it == actorRegistry.end()) {
+    ++errorCount_;
     emitError(location) << "unknown actor type: " << actorName;
     return nullptr;
   }
@@ -1279,6 +1281,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   recvInfo.name = "receive";
   for (const auto &param : expr.params) {
     if (!param.ty) {
+      ++errorCount_;
       emitError(location) << "actor receive parameter '" << param.name
                           << "' has no type annotation";
       return nullptr;
@@ -1509,6 +1512,7 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
   }
 
   if (msgIdx < 0) {
+    ++errorCount_;
     emitError(location) << "unknown receive handler '" << methodName << "' on actor '"
                         << actorInfo.name << "'";
     return nullptr;
@@ -1624,6 +1628,7 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
   }
 
   if (msgIdx < 0 || !recvInfo) {
+    ++errorCount_;
     emitError(location) << "unknown receive handler '" << methodName << "' on actor '"
                         << actorInfo.name << "'";
     return nullptr;
@@ -1640,6 +1645,7 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
   mlir::IntegerAttr timeoutAttr;
   if (timeoutMs.has_value()) {
     if (!recvInfo->returnType.has_value()) {
+      ++errorCount_;
       emitError(location) << "timed actor ask requires receive handler '" << methodName
                           << "' with a return type";
       return nullptr;

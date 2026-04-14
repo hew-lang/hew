@@ -823,6 +823,13 @@ mod tests {
         );
         assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
 
+        // The supervisor must have been extracted and stopped, not silently
+        // skipped.  Check before reset_shutdown_state() masks the miss.
+        assert!(
+            !is_supervisor_registered_for_test(sup),
+            "shutdown_orchestrate must drain supervisors even after mutex poison"
+        );
+
         reset_shutdown_state();
     }
 }

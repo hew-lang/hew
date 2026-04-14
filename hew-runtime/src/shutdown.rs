@@ -131,17 +131,6 @@ pub(crate) fn is_supervisor_registered_for_test(
     sups.iter().any(|candidate| candidate.0 == sup)
 }
 
-/// Test-only helper that exercises the exact drain-path fix in
-/// `shutdown_orchestrate` (the `lock_or_recover` + `std::mem::take` lines)
-/// without triggering a full scheduler/ticker shutdown, which would race
-/// with timer tests that share the global ticker thread.
-#[cfg(test)]
-fn drain_supervisors_for_test() -> Vec<SupervisorPtr> {
-    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    sups.reverse();
-    std::mem::take(&mut *sups)
-}
-
 /// Free all registered top-level supervisors without waiting for actors.
 ///
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker
@@ -808,11 +797,8 @@ mod tests {
     /// `std::mem::take` in `shutdown_orchestrate`) must extract supervisors
     /// even when `TOP_LEVEL_SUPERVISORS` was previously poisoned.
     ///
-    /// NOTE: We test the drain path via `drain_supervisors_for_test` rather
-    /// than calling full `shutdown_orchestrate`, because the latter calls
-    /// `scheduler::hew_sched_shutdown` → `hew_periodic_shutdown` →
-    /// `shutdown_ticker`, which would stop the global ticker thread and race
-    /// with `timer_periodic::tests::test_ticker_shutdown_positive`.
+    /// This test exercises the real `shutdown_orchestrate` production path —
+    /// not an isolated helper — to verify the fix end-to-end.
     #[test]
     fn shutdown_orchestrate_drain_path_recovers_from_poisoned_mutex() {
         let _guard = shutdown_test_guard();
@@ -829,28 +815,32 @@ mod tests {
             panic!("intentional poison");
         });
 
-        // The drain-path fix: lock_or_recover + std::mem::take must work on
-        // a poisoned mutex and return the registered supervisor.
-        let drained = drain_supervisors_for_test();
+        // Enter QUIESCE phase as if shutdown was initiated.
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        // Call the real production path on a helper thread.
+        // `shutdown_orchestrate` must recover from the poisoned mutex via
+        // `lock_or_recover`, drain the supervisor list, stop supervisors, and
+        // reach PHASE_DONE.  `hew_sched_shutdown` is a no-op when no scheduler
+        // has been initialised (unit-test context).
+        let handle = std::thread::spawn(|| {
+            shutdown_orchestrate(Duration::from_millis(10));
+        });
         assert!(
-            !drained.is_empty(),
-            "drain path must recover from poisoned mutex and return supervisors"
-        );
-        assert!(
-            drained.iter().any(|s| s.0 == sup),
-            "drained list must contain the registered supervisor"
+            handle.join().is_ok(),
+            "shutdown_orchestrate must complete even after mutex poison"
         );
 
-        // Stop the drained supervisors — must happen outside any lock.
-        for s in &drained {
-            // SAFETY: drained supervisors are valid pointers returned by
-            // drain_supervisors_for_test(); the lock is no longer held here.
-            unsafe { crate::supervisor::hew_supervisor_stop(s.0) };
-        }
+        assert_eq!(
+            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            PHASE_DONE,
+            "shutdown_orchestrate must reach DONE even after mutex poison"
+        );
 
+        // The supervisor must have been drained and stopped by the production path.
         assert!(
             !is_supervisor_registered_for_test(sup),
-            "supervisor list must be empty after drain and stop"
+            "supervisor must be drained by shutdown_orchestrate even after mutex poison"
         );
 
         reset_shutdown_state();

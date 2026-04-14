@@ -579,6 +579,31 @@ mod tests {
     }
 
     #[test]
+    fn load_process_module_exposes_argv_first_surface() {
+        let info = load_module("std::process", &test_root());
+        assert!(info.is_some(), "should load process module");
+        let info = info.unwrap();
+
+        for name in ["try_run", "run", "try_run_argv", "run_argv", "start"] {
+            assert!(
+                info.wrapper_fns
+                    .iter()
+                    .any(|(fn_name, _, _)| fn_name == name),
+                "process module should expose `{name}`"
+            );
+        }
+
+        for name in ["try_run_args", "run_args"] {
+            assert!(
+                info.wrapper_fns
+                    .iter()
+                    .any(|(fn_name, _, _)| fn_name == name),
+                "process module should retain legacy `{name}` wrapper for compatibility"
+            );
+        }
+    }
+
+    #[test]
     fn load_all_std_modules() {
         use crate::module_registry::ModuleRegistry;
 

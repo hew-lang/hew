@@ -731,7 +731,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`, `net.close`                                                                              |
 | `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
 | `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
-| `std::process`     | `process.run`, `process.spawn`, `process.wait`, `process.kill`                                                                                               |
+| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`                                                               |
 
 Predicate functions (`fs.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -2054,7 +2054,7 @@ These provide type-safe method access:
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                                      |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                           |
 | `regex.Pattern`  | `re"pattern"` or `regex.new(pattern)`      | `.is_match(text)`, `.find(text)`, `.replace(text, replacement)`                                                                                 |
-| `process.Child`  | `process.spawn(cmd)`                       | `.wait()`, `.kill()`                                                                                                                            |
+| `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                            |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and returned from functions.

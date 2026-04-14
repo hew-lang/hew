@@ -135,14 +135,23 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// Add a crash report to the global crash log.
 ///
 /// If the log is full, removes the oldest entry to make room.
+/// Recovers from a poisoned mutex so that crash reports are never silently
+/// discarded; the data protected by this lock is append-only and safe to use
+/// after poison recovery.
 pub(crate) fn push_crash_report(report: CrashReport) {
-    if let Ok(mut crashes) = RECENT_CRASHES.lock() {
-        // Make room if needed
-        while crashes.len() >= MAX_CRASH_LOG_SIZE {
-            crashes.pop_front();
-        }
-        crashes.push_back(report);
+    push_crash_report_to(&RECENT_CRASHES, report);
+}
+
+/// Inner implementation shared with tests.  Accepts any
+/// `&Mutex<VecDeque<CrashReport>>` so tests can supply a local, isolated
+/// mutex without touching the process-global `RECENT_CRASHES`.
+fn push_crash_report_to(log: &Mutex<VecDeque<CrashReport>>, report: CrashReport) {
+    let mut crashes = log.lock_or_recover();
+    // Make room if needed
+    while crashes.len() >= MAX_CRASH_LOG_SIZE {
+        crashes.pop_front();
     }
+    crashes.push_back(report);
 }
 
 /// Record a fault-injected crash in the global crash log.
@@ -276,16 +285,7 @@ pub unsafe extern "C" fn hew_crash_log_push(report: CrashReport) {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_crash_log_count() -> i32 {
-    RECENT_CRASHES.lock().map_or(0, |crashes| {
-        #[expect(
-            clippy::cast_possible_wrap,
-            clippy::cast_possible_truncation,
-            reason = "crash log is bounded to 64 entries, well within i32 positive range"
-        )]
-        {
-            crashes.len() as i32
-        }
-    })
+    crash_log_count_of(&RECENT_CRASHES)
 }
 
 /// Get the most recent crash report from the global log.
@@ -297,11 +297,36 @@ pub unsafe extern "C" fn hew_crash_log_count() -> i32 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_crash_log_last() -> CrashReport {
-    RECENT_CRASHES
-        .lock()
-        .map_or(CrashReport::zeroed(), |crashes| {
-            crashes.back().copied().unwrap_or_else(CrashReport::zeroed)
-        })
+    crash_log_last_of(&RECENT_CRASHES)
+}
+
+/// Inner implementation for [`hew_crash_log_count`].
+///
+/// Accepts any `&Mutex<VecDeque<CrashReport>>` so that tests can supply a
+/// locally-isolated mutex without touching the process-global `RECENT_CRASHES`.
+/// Recovers from poison so that crashes pushed via [`push_crash_report_to`]
+/// remain visible after a panic in a lock-holder.
+fn crash_log_count_of(log: &Mutex<VecDeque<CrashReport>>) -> i32 {
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        reason = "crash log is bounded to 64 entries, well within i32 positive range"
+    )]
+    {
+        log.lock_or_recover().len() as i32
+    }
+}
+
+/// Inner implementation for [`hew_crash_log_last`].
+///
+/// Same poison-recovery policy as [`crash_log_count_of`] and
+/// [`push_crash_report_to`]: the three read/write operations on
+/// `RECENT_CRASHES` are now behaviourally consistent.
+fn crash_log_last_of(log: &Mutex<VecDeque<CrashReport>>) -> CrashReport {
+    log.lock_or_recover()
+        .back()
+        .copied()
+        .unwrap_or_else(CrashReport::zeroed)
 }
 
 #[cfg(feature = "profiler")]
@@ -479,5 +504,99 @@ mod tests {
         // Should have advanced by at least 1ms (1_000_000 ns)
         assert!(t2 > t1);
         assert!(t2 - t1 >= 1_000_000);
+    }
+
+    /// `push_crash_report` must record the crash even when the underlying
+    /// mutex is poisoned.
+    ///
+    /// Tests through `push_crash_report_to` (the inner function that
+    /// `push_crash_report` delegates to), supplying a local isolated mutex.
+    /// This exercises the exact production body — the only difference from
+    /// calling `push_crash_report` directly is that we avoid contaminating
+    /// the process-global `RECENT_CRASHES`.
+    #[test]
+    fn push_crash_report_survives_poison() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        let log: Mutex<VecDeque<CrashReport>> = Mutex::new(VecDeque::new());
+
+        // Poison the mutex.
+        let ptr = (&raw const log) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: ptr is valid for the duration of this test.
+            let m = unsafe { &*(ptr as *const Mutex<VecDeque<CrashReport>>) };
+            let _guard = m.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(log.lock().is_err(), "precondition: mutex must be poisoned");
+
+        // Calling the real production logic through a poisoned mutex must
+        // still record the report (not silently drop it).
+        let report = CrashReport {
+            actor_id: 42,
+            signal: 11,
+            ..CrashReport::zeroed()
+        };
+        push_crash_report_to(&log, report);
+
+        let crashes = log.lock_or_recover();
+        assert_eq!(
+            crashes.len(),
+            1,
+            "push_crash_report_to must record through poison"
+        );
+        assert_eq!(crashes.back().unwrap().actor_id, 42);
+        assert_eq!(crashes.back().unwrap().signal, 11);
+    }
+
+    /// After a poison event the public readers `hew_crash_log_count` /
+    /// `hew_crash_log_last` must return the real log contents, not the
+    /// fail-closed defaults (`0` / zeroed report).
+    ///
+    /// Tests through the extracted `crash_log_count_of` / `crash_log_last_of`
+    /// inner functions so we can supply a locally-isolated poisoned mutex
+    /// without touching the process-global `RECENT_CRASHES`.
+    #[test]
+    fn crash_log_readers_survive_poison() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        let log: Mutex<VecDeque<CrashReport>> = Mutex::new(VecDeque::new());
+
+        // Poison the mutex.
+        let ptr = (&raw const log) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: ptr is valid for the duration of this test.
+            let m = unsafe { &*(ptr as *const Mutex<VecDeque<CrashReport>>) };
+            let _guard = m.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(log.lock().is_err(), "precondition: mutex must be poisoned");
+
+        // Write a report through the poisoned mutex.
+        let report = CrashReport {
+            actor_id: 99,
+            signal: 7,
+            ..CrashReport::zeroed()
+        };
+        push_crash_report_to(&log, report);
+
+        // count: must return 1, not the fail-closed 0.
+        assert_eq!(
+            crash_log_count_of(&log),
+            1,
+            "crash_log_count_of must return the real count through poison"
+        );
+
+        // last: must return the pushed report, not a zeroed default.
+        let last = crash_log_last_of(&log);
+        assert_eq!(
+            last.actor_id, 99,
+            "crash_log_last_of must return the real report through poison"
+        );
+        assert_eq!(last.signal, 7);
     }
 }

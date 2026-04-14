@@ -28,6 +28,7 @@ use tokio::runtime::Runtime;
 
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
+use crate::util::MutexExt;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -126,9 +127,14 @@ impl QuicTransport {
     }
 
     /// Allocate a slot for a new connection, returning its index as `conn_id`.
+    ///
+    /// Recovers from poisoned slot mutexes so that a slot whose lock was
+    /// poisoned (e.g. by a panicking holder) can still be reused once it is
+    /// otherwise empty — matching the poison-recovery policy applied by
+    /// `remove_conn` and `quic_destroy`.
     fn store_conn(&self, conn: QuicConn) -> c_int {
         for (i, slot) in self.conns.iter().enumerate() {
-            let Ok(mut guard) = slot.lock() else { continue };
+            let mut guard = slot.lock_or_recover();
             if guard.is_none() {
                 *guard = Some(conn);
                 return c_int::try_from(i).unwrap_or(HEW_CONN_INVALID);
@@ -141,9 +147,7 @@ impl QuicTransport {
     fn remove_conn(&self, id: c_int) {
         let Ok(idx) = usize::try_from(id) else { return };
         if let Some(slot) = self.conns.get(idx) {
-            if let Ok(mut guard) = slot.lock() {
-                *guard = None;
-            }
+            *slot.lock_or_recover() = None;
         }
     }
 }
@@ -494,9 +498,7 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
     });
 
     qt.endpoint = Some(result);
-    if let Ok(mut guard) = qt.incoming_rx.lock() {
-        *guard = Some(rx);
-    }
+    *qt.incoming_rx.lock_or_recover() = Some(rx);
     0
 }
 
@@ -508,9 +510,7 @@ unsafe extern "C" fn quic_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_
     // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
 
-    let Ok(guard) = qt.incoming_rx.lock() else {
-        return HEW_CONN_INVALID;
-    };
+    let guard = qt.incoming_rx.lock_or_recover();
     let Some(rx) = guard.as_ref() else {
         return HEW_CONN_INVALID;
     };
@@ -628,14 +628,10 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     }
     // Drop all connections.
     for slot in &qt.conns {
-        if let Ok(mut guard) = slot.lock() {
-            *guard = None;
-        }
+        *slot.lock_or_recover() = None;
     }
     // Drop the incoming channel receiver.
-    if let Ok(mut guard) = qt.incoming_rx.lock() {
-        *guard = None;
-    }
+    *qt.incoming_rx.lock_or_recover() = None;
     // Extract the Arc<Runtime> before dropping the Box<QuicTransport>.
     // We need an owned Runtime to call shutdown_background(), which avoids
     // both the "cannot drop runtime in async context" panic and the leak
@@ -1273,5 +1269,212 @@ mod tests {
 
         client.close_conn(cc);
         server.close_conn(sc);
+    }
+
+    // -- Poison-recovery regression tests ------------------------------------
+    //
+    // Each test exercises the real production codepath (quic_connect,
+    // quic_accept, quic_close_conn / remove_conn, quic_destroy) while a
+    // mutex is in the poisoned state, then asserts the externally visible
+    // outcome rather than merely checking that the operation does not panic.
+
+    /// Poison a single conn slot by acquiring its mutex in a thread that panics.
+    fn poison_quic_slot(qt: &QuicTransport, idx: usize) {
+        let ptr = (&raw const qt.conns[idx]) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: ptr is valid while the calling test function is on the
+            // stack (the join() below returns before it goes out of scope).
+            let s = unsafe { &*(ptr as *const std::sync::Mutex<Option<QuicConn>>) };
+            let _g = s.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        debug_assert!(qt.conns[idx].lock().is_err(), "slot {idx} must be poisoned");
+    }
+
+    /// Poison the `incoming_rx` mutex by the same mechanism.
+    fn poison_incoming_rx(qt: &QuicTransport) {
+        let ptr = (&raw const qt.incoming_rx) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: same lifetime guarantee as poison_quic_slot.
+            let rx = unsafe {
+                &*(ptr as *const std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicConn>>>)
+            };
+            let _g = rx.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        debug_assert!(
+            qt.incoming_rx.lock().is_err(),
+            "incoming_rx must be poisoned"
+        );
+    }
+
+    /// `remove_conn` / `close_conn` must clear the connection slot even when
+    /// the slot's mutex is poisoned.
+    ///
+    /// Old behaviour: `if let Ok(mut guard) = slot.lock()` — guard is skipped
+    /// on poison, so the `QuicConn` is never cleared.
+    /// New behaviour: `lock_or_recover()` — slot is set to `None` regardless.
+    #[test]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "conn IDs are non-negative on success; test asserts cc >= 0 before use"
+    )]
+    fn remove_conn_clears_poisoned_slot() {
+        let (server, client, _sc, cc) = setup_loopback();
+
+        // The live connection is stored in slot `cc`.
+        assert!(
+            client.qt().conns[cc as usize].lock_or_recover().is_some(),
+            "precondition: slot must hold the connection"
+        );
+
+        // Poison the slot that holds the connection.
+        poison_quic_slot(client.qt(), cc as usize);
+        assert!(
+            client.qt().conns[cc as usize].lock().is_err(),
+            "precondition: slot mutex must be poisoned"
+        );
+
+        // close_conn → quic_close_conn → remove_conn(cc).
+        // Must clear the slot through the poisoned mutex.
+        client.close_conn(cc);
+
+        assert!(
+            client.qt().conns[cc as usize].lock_or_recover().is_none(),
+            "remove_conn must clear the slot even through a poisoned mutex"
+        );
+
+        drop(server);
+    }
+
+    /// `store_conn` (called internally by `quic_connect`) must recover from
+    /// poisoned slot mutexes and still store the connection.
+    ///
+    /// Old behaviour: `let Ok(mut guard) = slot.lock() else { continue }` —
+    /// every poisoned slot is permanently skipped; if all slots are poisoned,
+    /// `store_conn` returns `HEW_CONN_INVALID`.
+    /// New behaviour: `lock_or_recover()` — each slot is checked and, if
+    /// empty (`None`), used — even when the mutex is poisoned.
+    #[test]
+    fn store_conn_tolerates_all_poisoned_slots() {
+        let server = TestTransport::new();
+        assert_eq!(server.listen("127.0.0.1:0"), 0);
+        let bound = server.bound_addr();
+
+        let client = TestTransport::new();
+        client.configure_client_for(server.server_cert_der());
+
+        // Poison every one of the 64 conn slots on the client (all are None).
+        for i in 0..MAX_CONNS {
+            poison_quic_slot(client.qt(), i);
+        }
+        for slot in &client.qt().conns {
+            assert!(slot.lock().is_err(), "all slots must be poisoned");
+        }
+
+        // quic_connect → store_conn(qc) must recover slot 0 from poison
+        // (is_none() == true) and store the connection there.
+        let mut cc = HEW_CONN_INVALID;
+        let mut sc = HEW_CONN_INVALID;
+        std::thread::scope(|s| {
+            s.spawn(|| sc = server.accept(10_000));
+            std::thread::sleep(Duration::from_millis(50));
+            cc = client.connect(&bound.to_string());
+        });
+
+        assert!(
+            cc >= 0,
+            "store_conn must store through poisoned slots; got {cc}"
+        );
+        assert!(sc >= 0, "server must accept; got {sc}");
+
+        client.close_conn(cc);
+        server.close_conn(sc);
+    }
+
+    /// `quic_accept` must deliver an inbound connection even when
+    /// `incoming_rx`'s mutex is poisoned.
+    ///
+    /// Old behaviour: `let Ok(guard) = qt.incoming_rx.lock() else { return
+    /// HEW_CONN_INVALID }` — returns an error on every accept call after the
+    /// mutex is poisoned, even though `quic_listen` has already placed a
+    /// `Receiver` inside it.
+    /// New behaviour: `lock_or_recover()` — recovers from poison and reads the
+    /// `Receiver`, delivering the pending connection.
+    #[test]
+    fn accept_tolerates_poisoned_incoming_rx() {
+        let server = TestTransport::new();
+        assert_eq!(server.listen("127.0.0.1:0"), 0);
+        let bound = server.bound_addr();
+
+        let client = TestTransport::new();
+        client.configure_client_for(server.server_cert_der());
+
+        // Poison incoming_rx after quic_listen has stored Some(rx) there.
+        poison_incoming_rx(server.qt());
+        assert!(
+            server.qt().incoming_rx.lock().is_err(),
+            "precondition: incoming_rx must be poisoned"
+        );
+
+        // quic_connect + quic_accept with poisoned incoming_rx.
+        let mut cc = HEW_CONN_INVALID;
+        let mut sc = HEW_CONN_INVALID;
+        std::thread::scope(|s| {
+            s.spawn(|| sc = server.accept(10_000));
+            std::thread::sleep(Duration::from_millis(50));
+            cc = client.connect(&bound.to_string());
+        });
+
+        assert!(
+            sc >= 0,
+            "quic_accept must succeed through poisoned incoming_rx; got {sc}"
+        );
+        assert!(cc >= 0, "client must connect; got {cc}");
+
+        client.close_conn(cc);
+        server.close_conn(sc);
+    }
+
+    /// `quic_destroy` (via `hew_transport_quic_free`) must clear both
+    /// connection slots and `incoming_rx` even when their mutexes are
+    /// poisoned, without panicking.
+    ///
+    /// Exercises the two `lock_or_recover()` sites inside `quic_destroy`.
+    ///
+    /// The *server* transport is used here because it is the side that calls
+    /// `quic_listen()` — which places a real `Receiver<QuicConn>` inside
+    /// `incoming_rx` — and it holds the accepted connection in slot `sc`.
+    /// The client's `incoming_rx` is always `None` (client never calls
+    /// `listen()`), so poisoning the client would not exercise the
+    /// populated-`incoming_rx` code path.
+    #[test]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "conn IDs are non-negative on success; test asserts sc >= 0 before use"
+    )]
+    fn destroy_drops_conn_in_poisoned_slot() {
+        let (server, client, sc, _cc) = setup_loopback();
+
+        // Precondition: the server's incoming_rx must hold a real Receiver
+        // (Some) because listen() was called on it.
+        assert!(
+            server.qt().incoming_rx.lock_or_recover().is_some(),
+            "precondition: server incoming_rx must be Some after listen()"
+        );
+
+        // Poison the slot holding the live server-side connection and the
+        // populated incoming_rx.
+        poison_quic_slot(server.qt(), sc as usize);
+        poison_incoming_rx(server.qt());
+
+        // Dropping server calls hew_transport_quic_free → quic_destroy.
+        // quic_destroy clears the live connection slot (sc) and the populated
+        // incoming_rx Receiver via lock_or_recover; it must not panic.
+        drop(server);
+
+        drop(client);
     }
 }

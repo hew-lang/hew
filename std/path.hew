@@ -3,10 +3,6 @@
 //! Manipulate file paths (join, split, check existence) and expand
 //! glob patterns to lists of matching paths.
 //!
-//! Compatibility note: `fs.exists()` remains the validated native existence
-//! probe on current main while the overlapping `std::path` query surface is
-//! being clarified.
-//!
 //! # Examples
 //!
 //! ```
@@ -135,9 +131,6 @@ pub fn extension(p: String) -> String {
 }
 
 /// Test whether a path exists on the filesystem.
-///
-/// Compatibility note: prefer `fs.exists()` when you need the currently
-/// validated native existence probe.
 pub fn exists(p: String) -> bool {
     unsafe { hew_path_exists(p) }
 }

@@ -2736,7 +2736,7 @@ mod file_io_tests {
 
     use hew_runtime::file_io::{
         hew_file_append, hew_file_delete, hew_file_exists, hew_file_read, hew_file_size,
-        hew_file_write,
+        hew_file_write, hew_path_exists,
     };
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
@@ -2799,6 +2799,20 @@ mod file_io_tests {
     }
 
     #[test]
+    fn path_exists_accepts_directories() {
+        let dir = tmp_path("hew_test_path_exists_dir");
+        let c_dir = cstr(dir.to_str().unwrap());
+
+        std::fs::create_dir_all(&dir).unwrap();
+
+        unsafe {
+            assert_eq!(hew_path_exists(c_dir.as_ptr()), 1);
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn file_io_append() {
         let path = tmp_path("hew_test_append.txt");
         let c_path = cstr(path.to_str().unwrap());
@@ -2852,6 +2866,7 @@ mod file_io_tests {
             assert_eq!(hew_file_write(std::ptr::null(), std::ptr::null()), -1);
             assert_eq!(hew_file_append(std::ptr::null(), std::ptr::null()), -1);
             assert_eq!(hew_file_exists(std::ptr::null()), 0);
+            assert_eq!(hew_path_exists(std::ptr::null()), 0);
             assert_eq!(hew_file_delete(std::ptr::null()), -1);
             assert_eq!(hew_file_size(std::ptr::null()), -1);
         }

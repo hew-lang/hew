@@ -4,6 +4,10 @@ use std::process::Command;
 
 use support::{hew_binary, repo_root, require_codegen};
 
+fn hew_std() -> std::path::PathBuf {
+    repo_root().join("std")
+}
+
 /// Verify that `hew run --timeout` kills the entire process tree spawned by
 /// the compiled Hew program, not just the root binary.
 ///
@@ -126,4 +130,43 @@ fn run_timeout_exit_code_is_non_zero() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Error: program timed out after 1s"));
+}
+
+#[test]
+fn run_program_with_std_path_exists_succeeds() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("path_exists_run.hew");
+    std::fs::write(dir.path().join("present.txt"), "ok").unwrap();
+    std::fs::create_dir(dir.path().join("present-dir")).unwrap();
+    std::fs::write(
+        &path,
+        "import std::path;\n\
+         fn main() {\n\
+         \x20   println(path.exists(\"present.txt\"));\n\
+         \x20   println(path.exists(\"present-dir\"));\n\
+         \x20   println(path.exists(\"missing.txt\"));\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&path)
+        .env("HEW_STD", hew_std())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\nfalse\n"
+    );
 }

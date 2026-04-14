@@ -182,10 +182,6 @@ pub fn try_append(file_path: String, content: String) -> Result<i32, IoError> {
 }
 
 /// Check whether a file exists at the given path.
-///
-/// Compatibility note: `std::path` also exposes existence predicates, but
-/// `fs.exists` remains the validated native existence probe on current main.
-///
 /// # Examples
 ///
 /// ```

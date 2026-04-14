@@ -736,11 +736,10 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
 | `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`                                                               |
 
-Predicate functions (`fs.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
+Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
 `fs.read_line()` remains available as a compatibility alias, but `io.read_line()`
-is the canonical stdin helper on current main. `fs.exists()` remains the
-validated existence probe on current native builds.
+is the canonical stdin helper on current main.
 
 **Visibility modifiers:**
 

@@ -210,7 +210,6 @@ pub(super) enum WasmUnsupportedFeature {
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
-    Select,
     // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
     /// `channel.new`, `Sender<T>::*`, `Receiver<T>::*`: MPSC channels require
     /// OS mutexes/condvars unavailable on the wasm32 cooperative scheduler.
@@ -236,7 +235,6 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "Link/monitor operations",
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
-            Self::Select => "Select expressions",
             Self::Channels => "Channel operations",
             Self::Timers => "Timer/sleep operations",
             Self::Streams => "Stream operations",
@@ -253,9 +251,6 @@ impl WasmUnsupportedFeature {
             }
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
-            Self::Select => {
-                "computed select timeouts are not supported on WASM32; use a duration literal such as `after 100ms`"
-            }
             Self::Channels => {
                 "MPSC channels require OS mutexes/condvars not available on wasm32; \
                  use the actor ask pattern instead"

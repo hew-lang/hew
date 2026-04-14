@@ -10285,7 +10285,7 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_computed_timed_select_still_warns() {
+    fn wasm_computed_timed_select_no_longer_warns() {
         let output = check_wasm(
             r"
             actor Responder {
@@ -10309,10 +10309,10 @@ mod wasm_rejects {
         ",
         );
         assert!(
-            output.warnings.iter().any(
+            !output.warnings.iter().any(
                 |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
             ),
-            "computed timed select should remain a WASM warning; got warnings: {:?}",
+            "computed timed select should not warn on WASM; got warnings: {:?}",
             output.warnings
         );
         assert!(

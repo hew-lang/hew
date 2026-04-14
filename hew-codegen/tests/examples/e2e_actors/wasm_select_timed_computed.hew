@@ -1,0 +1,21 @@
+// WASM timed-select parity: computed duration expressions must lower to the
+// same bounded select deadline path as duration literals.
+actor Responder {
+    let value: int;
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let a = spawn Responder(value: 1);
+    let b = spawn Responder(value: 2);
+    let timeout = 0ms + 0ms;
+
+    let result = select {
+        x from a.get() => x,
+        y from b.get() => y,
+        after timeout => -1,
+    };
+    println(result);
+}

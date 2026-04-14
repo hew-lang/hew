@@ -1392,8 +1392,10 @@ add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "is not suppo
 add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "is not supported on WASM")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "is not supported on WASM")
 # Select is now supported on WASM via the cooperative scheduler, including
-# literal timed multi-arm selects. Register both infinite-wait parity and the
+# computed timeout expressions. Register the infinite-wait parity and the
 # timeout/reply winner paths.
 add_wasm_file_test(select_basic          e2e_actors wasm_select_basic)
+add_wasm_file_test(select_timed_computed e2e_actors wasm_select_timed_computed)
+add_wasm_file_test(select_timed_computed_single_arm e2e_actors wasm_select_timed_computed_single_arm)
 add_wasm_file_test(select_timed_timeout  e2e_actors wasm_select_timed_timeout)
 add_wasm_file_test(select_timed_reply    e2e_actors wasm_select_timed_reply)

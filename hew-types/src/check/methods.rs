@@ -229,6 +229,92 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
+    /// Drain `deferred_channel_rewrites`, resolve each inner type through the
+    /// current substitution, and record the correct type-specific C symbol.
+    ///
+    /// This must be called from `check_program` **after** all inference has
+    /// settled (i.e. after `check_item` for every item in the program, and
+    /// after all other inference-driving passes like `apply_deferred_range_bound_types`).
+    ///
+    /// * Fully resolved concrete type (`String` or integer) → select symbol and
+    ///   record [`MethodCallRewrite::RewriteToFunction`].
+    /// * `Ty::Error` → skip silently; a diagnostic was already emitted upstream.
+    /// * `Ty::Var` (still unresolved) → emit [`TypeErrorKind::InferenceFailed`];
+    ///   leave the span absent from `method_call_rewrites` so codegen fails
+    ///   closed rather than silently using the wrong ABI.
+    /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
+    ///   the inline validation pass may have already emitted a diagnostic, but
+    ///   deferred entries bypass that guard, so we re-check here.
+    pub(super) fn finalize_channel_rewrites(&mut self) {
+        let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        for (span_key, entry) in deferred {
+            let resolved = self
+                .subst
+                .resolve(&entry.inner_ty)
+                .materialize_literal_defaults();
+
+            // Already-errored upstream: fail closed, no duplicate diagnostic.
+            if resolved.contains_error() {
+                continue;
+            }
+
+            // Still unresolved: inference did not converge on a concrete type.
+            if let Ty::Var(_) = &resolved {
+                new_errors.push(crate::error::TypeError::new(
+                    TypeErrorKind::InferenceFailed,
+                    span_key.start..span_key.end,
+                    format!(
+                        "cannot resolve channel method `{}`: inner type of \
+                         {}<T> is still unknown after inference — \
+                         add an explicit type annotation, e.g. \
+                         `Sender<int>` or `Receiver<String>`",
+                        entry.method, entry.handle_kind,
+                    ),
+                ));
+                // Span intentionally absent from method_call_rewrites → codegen fails closed.
+                continue;
+            }
+
+            // Reject unsupported concrete types (guard against deferred entries
+            // that escaped the inline validation because T was Var at visit time
+            // but resolved to something unsupported, e.g. a user struct).
+            if !matches!(resolved, Ty::String) && !resolved.is_integer() {
+                new_errors.push(crate::error::TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span_key.start..span_key.end,
+                    format!(
+                        "Channel<{resolved}> is not supported; \
+                         only Channel<String> and Channel<int> are currently supported"
+                    ),
+                ));
+                continue;
+            }
+
+            // Concrete, supported type: select the correct C symbol.
+            if let Some(c_symbol) = crate::stdlib::resolve_channel_method(
+                &entry.handle_kind,
+                &entry.method,
+                Some(&resolved),
+            ) {
+                self.method_call_rewrites.insert(
+                    span_key,
+                    MethodCallRewrite::RewriteToFunction {
+                        c_symbol: c_symbol.to_string(),
+                    },
+                );
+            }
+            // resolve_channel_method returning None for a concrete, supported
+            // type would be a compiler bug — the match table in stdlib.rs is
+            // exhaustive for the (Sender|Receiver, method, is_int) combinations
+            // we produce.  No else-branch needed; the span stays absent and
+            // codegen fails closed, which is the desired invariant.
+        }
+
+        self.errors.extend(new_errors);
+    }
+
     fn record_method_call_receiver_kind(&mut self, span: &Span, kind: MethodCallReceiverKind) {
         self.method_call_receiver_kinds
             .insert(SpanKey::from(span), kind);
@@ -286,6 +372,29 @@ impl Checker {
 
     fn record_deferred_method_call_rewrite(&mut self, span: &Span) {
         self.record_method_call_rewrite(span, MethodCallRewrite::DeferToLowering);
+    }
+
+    /// Record a channel method rewrite to be resolved after inference settles.
+    ///
+    /// Called instead of `record_runtime_method_call_rewrite` when the inner
+    /// type `T` of `Sender<T>` / `Receiver<T>` is still a `Ty::Var` at the
+    /// call site.  The deferred entry is drained by `finalize_channel_rewrites`
+    /// in `check_program`.
+    fn record_deferred_channel_method_rewrite(
+        &mut self,
+        span: &Span,
+        handle_kind: &str,
+        method: &str,
+        inner_ty: Ty,
+    ) {
+        self.deferred_channel_rewrites.insert(
+            SpanKey::from(span),
+            DeferredChannelMethodRewrite {
+                handle_kind: handle_kind.to_string(),
+                method: method.to_string(),
+                inner_ty,
+            },
+        );
     }
 
     fn record_handle_method_call_rewrite_if_any(
@@ -1822,13 +1931,30 @@ impl Checker {
                             );
                             return Ty::Error;
                         }
-                        let c_symbol = crate::stdlib::resolve_channel_method(
-                            BuiltinNamedType::Sender.canonical_name(),
-                            method,
-                            Some(&resolved_inner),
-                        )
-                        .unwrap_or_else(|| unreachable!("builtin Sender::send rewrite missing"));
-                        self.record_runtime_method_call_rewrite(span, c_symbol);
+                        if matches!(resolved_inner, Ty::Var(_)) {
+                            // Inner type is still unresolved after argument
+                            // unification — the constraint may arrive from the
+                            // call-site's surrounding context (e.g.
+                            // `let _: () = tx.send(v)` where `v: int` is
+                            // declared elsewhere).  Defer the symbol selection
+                            // until post-inference drain.
+                            self.record_deferred_channel_method_rewrite(
+                                span,
+                                BuiltinNamedType::Sender.canonical_name(),
+                                method,
+                                inner.clone(),
+                            );
+                        } else {
+                            let c_symbol = crate::stdlib::resolve_channel_method(
+                                BuiltinNamedType::Sender.canonical_name(),
+                                method,
+                                Some(&resolved_inner),
+                            )
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Sender::send rewrite missing")
+                            });
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
+                        }
                         sig.return_type
                     }
                     "clone" | "close" => {
@@ -1889,28 +2015,68 @@ impl Checker {
                                 unreachable!("builtin Receiver::recv signature missing")
                             });
                         self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
-                        let c_symbol = crate::stdlib::resolve_channel_method(
-                            BuiltinNamedType::Receiver.canonical_name(),
-                            method,
-                            Some(&resolved_inner),
-                        )
-                        .unwrap_or_else(|| unreachable!("builtin Receiver::recv rewrite missing"));
-                        self.record_runtime_method_call_rewrite(span, c_symbol);
+                        if matches!(resolved_inner, Ty::Var(_)) {
+                            // No argument to unify against — the return-type
+                            // constraint (e.g. `let v: int = rx.recv()`) is
+                            // applied by the caller *after* this arm returns.
+                            // Defer the C-symbol selection until
+                            // post-inference drain.
+                            self.record_deferred_channel_method_rewrite(
+                                span,
+                                BuiltinNamedType::Receiver.canonical_name(),
+                                method,
+                                inner.clone(),
+                            );
+                        } else {
+                            let c_symbol = crate::stdlib::resolve_channel_method(
+                                BuiltinNamedType::Receiver.canonical_name(),
+                                method,
+                                Some(&resolved_inner),
+                            )
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Receiver::recv rewrite missing")
+                            });
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
+                        }
                         sig.return_type
                     }
-                    "try_recv" | "close" => {
+                    "try_recv" => {
+                        if matches!(resolved_inner, Ty::Var(_)) {
+                            self.record_deferred_channel_method_rewrite(
+                                span,
+                                BuiltinNamedType::Receiver.canonical_name(),
+                                method,
+                                inner.clone(),
+                            );
+                        } else {
+                            let c_symbol = crate::stdlib::resolve_channel_method(
+                                BuiltinNamedType::Receiver.canonical_name(),
+                                method,
+                                Some(&resolved_inner),
+                            )
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Receiver::try_recv rewrite missing")
+                            });
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
+                        }
+                        lookup_builtin_method_sig(&receiver_ty, method)
+                            .unwrap_or_else(|| {
+                                unreachable!("builtin Receiver::try_recv signature missing")
+                            })
+                            .return_type
+                    }
+                    "close" => {
+                        // `close` maps to a single type-independent symbol.
                         let c_symbol = crate::stdlib::resolve_channel_method(
                             BuiltinNamedType::Receiver.canonical_name(),
                             method,
                             Some(&resolved_inner),
                         )
-                        .unwrap_or_else(|| {
-                            unreachable!("builtin Receiver::{method} rewrite missing")
-                        });
+                        .unwrap_or_else(|| unreachable!("builtin Receiver::close rewrite missing"));
                         self.record_runtime_method_call_rewrite(span, c_symbol);
                         lookup_builtin_method_sig(&receiver_ty, method)
                             .unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::{method} signature missing")
+                                unreachable!("builtin Receiver::close signature missing")
                             })
                             .return_type
                     }

@@ -175,6 +175,26 @@ pub(super) struct DeferredHashSetAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A channel method call rewrite deferred until after all inference has settled.
+///
+/// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` /
+/// `Sender<T>::clone` / `Sender<T>::close` / `Receiver<T>::close` call is
+/// encountered but the inner type `T` is still an unresolved `Ty::Var` at the
+/// call site (for example `let v: int = rx.recv()` — the `int` annotation
+/// constrains `T` *after* the call is visited).
+///
+/// Drained by `finalize_channel_rewrites` in `check_program`, after all
+/// inference has settled, so the correct type-specific C symbol is selected.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredChannelMethodRewrite {
+    /// The built-in handle kind: `"Sender"` or `"Receiver"`.
+    pub(super) handle_kind: String,
+    /// The method name: `"send"`, `"recv"`, `"try_recv"`, `"clone"`, or `"close"`.
+    pub(super) method: String,
+    /// The inner element type variable (still unresolved at record time).
+    pub(super) inner_ty: Ty,
+}
+
 impl PendingLoweringFact {
     pub(super) fn hashset(hashset_element_ty: Ty, source_module: Option<String>) -> Self {
         Self {
@@ -410,6 +430,11 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
     pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
+    /// Channel method call rewrites deferred until after inference completes.
+    /// Keyed by call-site span so repeated traversal of the same site is
+    /// idempotent (last write wins, which is fine since the inner type is the
+    /// same variable every time).
+    pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
@@ -566,6 +591,7 @@ impl Checker {
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
+            deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),

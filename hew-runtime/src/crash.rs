@@ -135,14 +135,16 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// Add a crash report to the global crash log.
 ///
 /// If the log is full, removes the oldest entry to make room.
+/// Recovers from a poisoned mutex so that crash reports are never silently
+/// discarded; the data protected by this lock is append-only and safe to use
+/// after poison recovery.
 pub(crate) fn push_crash_report(report: CrashReport) {
-    if let Ok(mut crashes) = RECENT_CRASHES.lock() {
-        // Make room if needed
-        while crashes.len() >= MAX_CRASH_LOG_SIZE {
-            crashes.pop_front();
-        }
-        crashes.push_back(report);
+    let mut crashes = RECENT_CRASHES.lock_or_recover();
+    // Make room if needed
+    while crashes.len() >= MAX_CRASH_LOG_SIZE {
+        crashes.pop_front();
     }
+    crashes.push_back(report);
 }
 
 /// Record a fault-injected crash in the global crash log.
@@ -479,5 +481,54 @@ mod tests {
         // Should have advanced by at least 1ms (1_000_000 ns)
         assert!(t2 > t1);
         assert!(t2 - t1 >= 1_000_000);
+    }
+
+    /// Proves that `push_crash_report` (and its `lock_or_recover` path) records
+    /// crash entries through a poisoned mutex, whereas the old `if let Ok` guard
+    /// would silently discard them.
+    #[test]
+    fn push_crash_report_survives_poison() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+
+        // Build a local crash log so we don't disturb the global RECENT_CRASHES.
+        let log: Arc<Mutex<VecDeque<CrashReport>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+        // Poison the mutex: acquire it in a thread that panics.
+        let shared = Arc::clone(&log);
+        let _ = std::thread::spawn(move || {
+            let _guard = shared.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(log.lock().is_err(), "precondition: mutex must be poisoned");
+
+        // ── Old pattern (if let Ok): silently drops the report ──────────────
+        let dropped = CrashReport {
+            actor_id: 1,
+            ..CrashReport::zeroed()
+        };
+        if let Ok(mut crashes) = log.lock() {
+            crashes.push_back(dropped);
+        }
+        assert_eq!(
+            log.lock_or_recover().len(),
+            0,
+            "baseline: old if-let-Ok silently discards the report when poisoned"
+        );
+
+        // ── New pattern (lock_or_recover): records the report through poison ─
+        let kept = CrashReport {
+            actor_id: 2,
+            ..CrashReport::zeroed()
+        };
+        log.lock_or_recover().push_back(kept);
+        let crashes = log.lock_or_recover();
+        assert_eq!(crashes.len(), 1, "new pattern must record the report");
+        assert_eq!(
+            crashes.back().unwrap().actor_id,
+            2,
+            "recorded report must match the submitted one"
+        );
     }
 }

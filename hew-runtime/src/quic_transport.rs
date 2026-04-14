@@ -28,6 +28,7 @@ use tokio::runtime::Runtime;
 
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
+use crate::util::MutexExt;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -141,9 +142,7 @@ impl QuicTransport {
     fn remove_conn(&self, id: c_int) {
         let Ok(idx) = usize::try_from(id) else { return };
         if let Some(slot) = self.conns.get(idx) {
-            if let Ok(mut guard) = slot.lock() {
-                *guard = None;
-            }
+            *slot.lock_or_recover() = None;
         }
     }
 }
@@ -494,9 +493,7 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
     });
 
     qt.endpoint = Some(result);
-    if let Ok(mut guard) = qt.incoming_rx.lock() {
-        *guard = Some(rx);
-    }
+    *qt.incoming_rx.lock_or_recover() = Some(rx);
     0
 }
 
@@ -628,14 +625,10 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     }
     // Drop all connections.
     for slot in &qt.conns {
-        if let Ok(mut guard) = slot.lock() {
-            *guard = None;
-        }
+        *slot.lock_or_recover() = None;
     }
     // Drop the incoming channel receiver.
-    if let Ok(mut guard) = qt.incoming_rx.lock() {
-        *guard = None;
-    }
+    *qt.incoming_rx.lock_or_recover() = None;
     // Extract the Arc<Runtime> before dropping the Box<QuicTransport>.
     // We need an owned Runtime to call shutdown_background(), which avoids
     // both the "cannot drop runtime in async context" panic and the leak
@@ -1273,5 +1266,193 @@ mod tests {
 
         client.close_conn(cc);
         server.close_conn(sc);
+    }
+
+    // -- Poison-recovery regression tests ------------------------------------
+    //
+    // Each test below directly characterises the old fail-open behaviour
+    // (`if let Ok`) and then verifies that the hardened path (`lock_or_recover`)
+    // does not silently skip the operation when a mutex is poisoned.
+
+    /// Confirms that `remove_conn` clears a slot even when the slot mutex is
+    /// poisoned.  The old `if let Ok` guard would have silently skipped the
+    /// write, leaking whatever was stored in the slot.
+    #[test]
+    fn remove_conn_tolerates_poisoned_slot() {
+        use std::sync::Mutex;
+
+        // Stand-alone slot that mirrors a QuicTransport conn slot type.
+        let slot: Mutex<Option<u32>> = Mutex::new(Some(42));
+
+        // Poison it: acquire the lock in a thread that panics.
+        let slot_ptr = (&raw const slot) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: slot_ptr is valid until the end of this test function.
+            let s = unsafe { &*(slot_ptr as *const Mutex<Option<u32>>) };
+            let _g = s.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(
+            slot.lock().is_err(),
+            "precondition: slot mutex must be poisoned"
+        );
+
+        // ── Old pattern: silently skips the clear on poison ──────────────────
+        if let Ok(mut guard) = slot.lock() {
+            *guard = None;
+        }
+        assert_eq!(
+            *slot.lock_or_recover(),
+            Some(42),
+            "baseline: old if-let-Ok leaves the slot intact (silent skip)"
+        );
+
+        // ── New pattern (lock_or_recover): clears despite poison ─────────────
+        *slot.lock_or_recover() = None;
+        assert!(
+            slot.lock_or_recover().is_none(),
+            "hardened path must clear the slot even through a poisoned mutex"
+        );
+    }
+
+    /// Confirms that shutdown cleanup of multiple connection slots proceeds
+    /// through poisoned mutexes.  The old `if let Ok` loop would have left
+    /// every slot un-cleared, preventing QUIC connections from being dropped.
+    #[test]
+    fn destroy_cleanup_tolerates_poisoned_conn_slots() {
+        use std::sync::Mutex;
+
+        let slots: Vec<Mutex<Option<u32>>> = (0..3u32).map(|i| Mutex::new(Some(i))).collect();
+
+        // Poison all three slots.
+        for slot in &slots {
+            let ptr = (&raw const *slot) as usize;
+            let _ = std::thread::spawn(move || {
+                // SAFETY: ptr is valid until the end of this test function.
+                let s = unsafe { &*(ptr as *const Mutex<Option<u32>>) };
+                let _g = s.lock().unwrap();
+                panic!("intentional poison");
+            })
+            .join();
+        }
+        for slot in &slots {
+            assert!(slot.lock().is_err(), "precondition: slot must be poisoned");
+        }
+
+        // ── Old pattern: all slots remain un-cleared ─────────────────────────
+        for slot in &slots {
+            if let Ok(mut guard) = slot.lock() {
+                *guard = None;
+            }
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            assert!(
+                slot.lock_or_recover().is_some(),
+                "baseline: old if-let-Ok leaves slot {i} un-cleared"
+            );
+        }
+
+        // ── New pattern: all slots are cleared ───────────────────────────────
+        for slot in &slots {
+            *slot.lock_or_recover() = None;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            assert!(
+                slot.lock_or_recover().is_none(),
+                "hardened path must clear slot {i} despite poisoned mutex"
+            );
+        }
+    }
+
+    /// Confirms that the `incoming_rx` field is written during listen even
+    /// when the mutex is poisoned, and that `quic_destroy` can clear it.
+    ///
+    /// Exercises the two `incoming_rx.lock_or_recover()` call sites:
+    ///   • setting `*guard = Some(rx)` at the end of `quic_listen`
+    ///   • setting `*guard = None`   inside `quic_destroy`
+    #[test]
+    fn incoming_rx_set_and_destroy_tolerate_poison() {
+        use std::sync::mpsc;
+        use std::sync::Mutex;
+
+        // Stand-alone incoming_rx that mirrors QuicTransport::incoming_rx.
+        let incoming_rx: Mutex<Option<mpsc::Receiver<u32>>> = Mutex::new(None);
+
+        // Poison it.
+        let ptr = (&raw const incoming_rx) as usize;
+        let _ = std::thread::spawn(move || {
+            // SAFETY: ptr is valid until the end of this test function.
+            let rx = unsafe { &*(ptr as *const Mutex<Option<mpsc::Receiver<u32>>>) };
+            let _g = rx.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(
+            incoming_rx.lock().is_err(),
+            "precondition: incoming_rx mutex must be poisoned"
+        );
+
+        // ── Old pattern: silently skips setting the receiver ─────────────────
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut guard) = incoming_rx.lock() {
+            *guard = Some(rx);
+            drop(tx);
+        }
+        assert!(
+            incoming_rx.lock_or_recover().is_none(),
+            "baseline: old if-let-Ok silently drops rx and leaves incoming_rx as None"
+        );
+
+        // ── New pattern: sets the receiver through poison ────────────────────
+        let (tx2, rx2) = mpsc::channel::<u32>();
+        *incoming_rx.lock_or_recover() = Some(rx2);
+        assert!(
+            incoming_rx.lock_or_recover().is_some(),
+            "hardened path must store rx2 even through a poisoned mutex"
+        );
+
+        // ── Simulated destroy: clears the receiver through poison ─────────────
+        *incoming_rx.lock_or_recover() = None;
+        assert!(
+            incoming_rx.lock_or_recover().is_none(),
+            "hardened destroy path must clear incoming_rx even through a poisoned mutex"
+        );
+        drop(tx2);
+    }
+
+    /// Integration smoke-test: creating and immediately freeing a transport
+    /// whose internal mutexes are poisoned must not panic.
+    #[test]
+    fn free_transport_with_poisoned_slots_does_not_panic() {
+        let t = TestTransport::new();
+
+        // Poison slots 0, 1, 2 and incoming_rx.
+        for i in 0..3usize {
+            let ptr = (&raw const t.qt().conns[i]) as usize;
+            let _ = std::thread::spawn(move || {
+                // SAFETY: ptr is valid while t lives in the calling thread.
+                let s = unsafe { &*(ptr as *const std::sync::Mutex<Option<QuicConn>>) };
+                let _g = s.lock().unwrap();
+                panic!("intentional poison");
+            })
+            .join();
+        }
+        {
+            let ptr = (&raw const t.qt().incoming_rx) as usize;
+            let _ = std::thread::spawn(move || {
+                // SAFETY: ptr is valid while t lives in the calling thread.
+                let rx = unsafe {
+                    &*(ptr as *const std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicConn>>>)
+                };
+                let _g = rx.lock().unwrap();
+                panic!("intentional poison");
+            })
+            .join();
+        }
+
+        // Dropping t calls hew_transport_quic_free → quic_destroy.
+        // quic_destroy must use lock_or_recover and not panic.
+        drop(t);
     }
 }

@@ -1170,6 +1170,48 @@ fn actor_ref_send_method_requires_send_payload() {
     );
 }
 
+#[test]
+fn lambda_actor_send_operator_requires_send_payload() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = spawn (msg: Rc<int>) => {
+                println(msg.strong_count());
+            };
+            let rc: Rc<int> = Rc::new(1);
+            worker <- rc;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "`<-` must reject non-Send payloads, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn lambda_actor_send_operator_allows_send_payload() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = spawn (msg: int) => {
+                println(msg);
+            };
+            worker <- 1;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`<-` with Send payload should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `Rc::new` must accept non-Copy `T`; the codegen passes the real drop function.
 /// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]

@@ -374,6 +374,15 @@ mod tests {
     use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64};
     use std::time::{Duration, Instant};
 
+    // Serialise every test that touches the process-wide ticker globals
+    // (GLOBAL_WHEEL, TICKER_RUNNING, TICKER_STOP, TEST_COUNTER).  Rust's
+    // default test runner uses multiple threads, so without this lock two
+    // tests can race: one resets TEST_COUNTER to 0 while the other is
+    // polling it, or one calls shutdown_ticker() while the other is waiting
+    // for the ticker to fire.  Poisoning is recovered so a panicking test
+    // does not permanently block subsequent tests.
+    static TICKER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
     // Mock timer callback that increments a counter
@@ -414,6 +423,10 @@ mod tests {
 
     #[test]
     fn test_ticker_shutdown_positive() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         // Reset counter
         TEST_COUNTER.store(0, Ordering::SeqCst);
 
@@ -427,13 +440,16 @@ mod tests {
             hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
         }
 
-        // Wait for at least one tick to verify the ticker is working
-        std::thread::sleep(Duration::from_millis(20));
-        let count_after_ticks = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_ticks > 0,
-            "Timer should have fired at least once"
-        );
+        // Poll until the timer fires (or give up after 500 ms).  A fixed
+        // sleep is fragile under parallel-test or heavy-load conditions.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "Timer did not fire within 500 ms"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
 
         // Now shutdown the ticker and measure how long it takes
         let start_time = Instant::now();
@@ -449,6 +465,10 @@ mod tests {
 
     #[test]
     fn test_ticker_shutdown_negative() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         // Test calling shutdown when no ticker was started
         // This should not panic or hang
         shutdown_ticker(); // Should be safe to call multiple times
@@ -457,6 +477,10 @@ mod tests {
 
     #[test]
     fn test_ticker_shutdown_sabotage() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         // Reset counter
         TEST_COUNTER.store(0, Ordering::SeqCst);
 
@@ -469,13 +493,15 @@ mod tests {
             hew_timer_wheel_schedule(tw, 5, test_timer_cb, ptr::null_mut());
         }
 
-        // Wait for at least one tick to verify the ticker is working
-        std::thread::sleep(Duration::from_millis(20));
-        let count_after_ticks = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_ticks > 0,
-            "Timer should have fired at least once"
-        );
+        // Poll until the timer fires (or give up after 500 ms).
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "Timer did not fire within 500 ms"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
 
         // Now temporarily disable the stop check to test that our test detects the UAF scenario
         // This is commented out because it would break the fix, but this test structure
@@ -498,6 +524,10 @@ mod tests {
 
     #[test]
     fn test_ticker_restart_after_shutdown() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         // Test that we can restart the ticker after shutdown
         TEST_COUNTER.store(0, Ordering::SeqCst);
 
@@ -507,7 +537,15 @@ mod tests {
         unsafe {
             hew_timer_wheel_schedule(tw1, 10, test_timer_cb, ptr::null_mut());
         }
-        std::thread::sleep(Duration::from_millis(25));
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "First timer did not fire within 500 ms"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
         shutdown_ticker();
 
         let count_after_first = TEST_COUNTER.load(Ordering::SeqCst);
@@ -520,12 +558,15 @@ mod tests {
         unsafe {
             hew_timer_wheel_schedule(tw2, 10, test_timer_cb, ptr::null_mut());
         }
-        std::thread::sleep(Duration::from_millis(25));
-        let count_after_second = TEST_COUNTER.load(Ordering::SeqCst);
-        assert!(
-            count_after_second > 0,
-            "Ticker should restart after shutdown"
-        );
+
+        let deadline2 = Instant::now() + Duration::from_millis(500);
+        while TEST_COUNTER.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline2,
+                "Ticker should restart after shutdown — timer did not fire within 500 ms"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
 
         // Cleanup
         shutdown_ticker();

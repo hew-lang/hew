@@ -40,6 +40,37 @@ using namespace mlir;
 // Actor registration (phase 1): struct types, field tracking, registry entry
 // ============================================================================
 
+void MLIRGen::panicOnScopeSpawnFailure(mlir::Value scopeSpawnStatus, mlir::Value actor,
+                                       mlir::Location location) {
+  auto i32Type = builder.getI32Type();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto okStatus = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 0);
+  auto scopeOverflow = mlir::arith::CmpIOp::create(
+      builder, location, mlir::arith::CmpIPredicate::ne, scopeSpawnStatus, okStatus);
+  auto failIf = mlir::scf::IfOp::create(builder, location, scopeOverflow, /*withElseRegion=*/false);
+  builder.setInsertionPointToStart(&failIf.getThenRegion().front());
+
+  mlir::Value actorPtr = actor;
+  if (actorPtr.getType() != ptrType)
+    actorPtr = hew::BitcastOp::create(builder, location, ptrType, actorPtr).getResult();
+
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, "hew_actor_close"),
+                             mlir::ValueRange{actorPtr});
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                             mlir::SymbolRefAttr::get(&context, "hew_actor_free"),
+                             mlir::ValueRange{actorPtr});
+
+  auto errSym = getOrCreateGlobalString("scope actor limit exceeded");
+  auto errStrRef = hew::ConstantOp::create(builder, location, hew::StringRefType::get(&context),
+                                           builder.getStringAttr(errSym))
+                       .getResult();
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                             mlir::ValueRange{errStrRef});
+  builder.setInsertionPointAfter(failIf);
+}
+
 void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
                                 std::optional<mlir::Location> fallbackLoc) {
   hasActors = true;
@@ -1175,10 +1206,12 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
 
   // Register with enclosing scope, if any.
   if (currentScopePtr) {
-    auto i32Type = builder.getI32Type();
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                               mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
-                               mlir::ValueRange{currentScopePtr, result});
+    auto scopeSpawnStatus =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{builder.getI32Type()},
+                                   mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
+                                   mlir::ValueRange{currentScopePtr, result})
+            .getResult();
+    panicOnScopeSpawnFailure(scopeSpawnStatus, result, location);
   }
 
   // Schedule periodic timers for #[every(duration)] receive fns.
@@ -1399,9 +1432,12 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
   // Register with enclosing scope, if any.
   if (currentScopePtr) {
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
-                               mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
-                               mlir::ValueRange{currentScopePtr, result});
+    auto scopeSpawnStatus =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                   mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
+                                   mlir::ValueRange{currentScopePtr, result})
+            .getResult();
+    panicOnScopeSpawnFailure(scopeSpawnStatus, result, location);
   }
 
   return result;

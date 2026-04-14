@@ -124,6 +124,33 @@ fn scope_spawn_tracks_actors() {
     }
 }
 
+/// Filling the scope to `HEW_SCOPE_MAX_ACTORS` succeeds.
+#[test]
+fn scope_spawn_accepts_at_limit() {
+    ensure_scheduler();
+
+    unsafe {
+        let mut scope = hew_scope_new();
+
+        let mut actors = Vec::new();
+        for index in 0..HEW_SCOPE_MAX_ACTORS {
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let rc = hew_scope_spawn(&raw mut scope, actor.cast());
+            assert_eq!(rc, 0, "spawn {index} should succeed at or below capacity");
+            actors.push(actor);
+        }
+
+        assert_eq!(
+            scope.actor_count, HEW_SCOPE_MAX_ACTORS as i32,
+            "scope should hold exactly HEW_SCOPE_MAX_ACTORS actors",
+        );
+
+        hew_scope_wait_all(&raw mut scope);
+        hew_scope_destroy(&raw mut scope);
+    }
+}
+
 /// Exceeding `HEW_SCOPE_MAX_ACTORS` returns -1.
 #[test]
 fn scope_spawn_rejects_when_full() {

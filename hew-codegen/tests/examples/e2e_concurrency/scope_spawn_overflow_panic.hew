@@ -1,0 +1,16 @@
+actor Worker {
+    receive fn ping() {
+    }
+}
+
+fn main() {
+    scope {
+        var i: int = 0;
+        while i < 65 {
+            let worker = spawn Worker;
+            worker.ping();
+            i = i + 1;
+        }
+    };
+    println("unreachable");
+}

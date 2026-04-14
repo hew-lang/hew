@@ -373,6 +373,9 @@ private:
   /// Panic after cleaning up all reply channels created before a failed send.
   void panicOnReplySendFailure(mlir::Value sendStatus, llvm::ArrayRef<mlir::Value> pendingChannels,
                                mlir::Location location);
+  /// Close/free a just-spawned scoped actor and panic if scope registration fails.
+  void panicOnScopeSpawnFailure(mlir::Value scopeSpawnStatus, mlir::Value actor,
+                                mlir::Location location);
 
   // ── Helpers ──────────────────────────────────────────────────────
   /// Join currentModulePath into a "::" delimited key string.

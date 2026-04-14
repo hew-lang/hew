@@ -10,7 +10,7 @@ use hew_serialize::{
     LoweringFactEntry, MethodCallReceiverKindEntry, TypeExprConversionError,
     TypeExprConversionKind,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 
 #[derive(Debug, Clone, Default)]
 pub struct FrontendOptions {
@@ -277,31 +277,38 @@ fn load_project_context(input: &str) -> Result<ProjectContext, FrontendFailure> 
         .parent()
         .unwrap_or(Path::new("."))
         .to_path_buf();
+    let (manifest_deps, package_name) = load_manifest_metadata(&project_dir)?;
     Ok(ProjectContext {
         source,
         project_dir: project_dir.clone(),
-        manifest_deps: load_dependencies(&project_dir),
-        package_name: load_package_name(&project_dir),
-        locked_versions: load_lockfile(&project_dir),
+        manifest_deps,
+        package_name,
+        locked_versions: load_lockfile(&project_dir)?,
     })
 }
 
-fn project_context_for_program(source: &str, options: &FrontendOptions) -> ProjectContext {
+fn project_context_for_program(
+    source: &str,
+    options: &FrontendOptions,
+) -> Result<ProjectContext, FrontendFailure> {
     match &options.project_dir {
-        Some(dir) => ProjectContext {
-            source: source.to_string(),
-            project_dir: dir.clone(),
-            manifest_deps: load_dependencies(dir),
-            package_name: load_package_name(dir),
-            locked_versions: load_lockfile(dir),
-        },
-        None => ProjectContext {
+        Some(dir) => {
+            let (manifest_deps, package_name) = load_manifest_metadata(dir)?;
+            Ok(ProjectContext {
+                source: source.to_string(),
+                project_dir: dir.clone(),
+                manifest_deps,
+                package_name,
+                locked_versions: load_lockfile(dir)?,
+            })
+        }
+        None => Ok(ProjectContext {
             source: source.to_string(),
             project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             manifest_deps: None,
             package_name: None,
             locked_versions: None,
-        },
+        }),
     }
 }
 
@@ -1482,7 +1489,7 @@ pub fn compile_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<FrontendArtifacts, FrontendFailure> {
-    let project = project_context_for_program(source, options);
+    let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
 
     if let Err(failure) = resolve_imports_internal(
@@ -1575,43 +1582,68 @@ struct LockedEntry {
     version: String,
 }
 
-fn load_lockfile(dir: &Path) -> Option<Vec<(String, String)>> {
+fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, FrontendFailure> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(FrontendFailure::message_only(format!(
+                "Error: cannot read {}: {err}",
+                path.display()
+            )))
+        }
+    };
+    toml::from_str(&text).map(Some).map_err(|err| {
+        FrontendFailure::message_only(format!("Error: cannot parse {}: {err}", path.display()))
+    })
+}
+
+fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
+    load_optional_toml(&dir.join("hew.toml"))
+}
+
+fn load_manifest_metadata(
+    dir: &Path,
+) -> Result<(Option<Vec<String>>, Option<String>), FrontendFailure> {
+    match load_manifest(dir)? {
+        Some(TomlManifest {
+            package,
+            dependencies,
+        }) => Ok((
+            Some(dependencies.into_keys().collect()),
+            package.map(|package| package.name),
+        )),
+        None => Ok((None, None)),
+    }
+}
+
+fn load_lockfile(dir: &Path) -> Result<Option<Vec<(String, String)>>, FrontendFailure> {
     let path = dir.join("adze.lock");
-    let text = std::fs::read_to_string(path).ok()?;
-    let lock: AdzeTomlLock = toml::from_str(&text).ok()?;
-    Some(
+    let Some(lock) = load_optional_toml::<AdzeTomlLock>(&path)? else {
+        return Ok(None);
+    };
+    Ok(Some(
         lock.package
             .into_iter()
             .map(|entry| (entry.name, entry.version))
             .collect(),
-    )
+    ))
 }
 
-fn load_package_name(dir: &Path) -> Option<String> {
-    let path = dir.join("hew.toml");
-    let text = std::fs::read_to_string(path).ok()?;
-    let manifest: TomlManifest = toml::from_str(&text).ok()?;
-    manifest.package.map(|package| package.name)
+#[cfg(test)]
+fn load_package_name(dir: &Path) -> Result<Option<String>, FrontendFailure> {
+    Ok(load_manifest(dir)?.and_then(|manifest| manifest.package.map(|package| package.name)))
 }
 
-fn load_dependencies(dir: &Path) -> Option<Vec<String>> {
-    let path = dir.join("hew.toml");
-    if !path.exists() {
-        return None;
-    }
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return None;
-    };
-    let Ok(manifest) = toml::from_str::<TomlManifest>(&text) else {
-        return None;
-    };
-    Some(manifest.dependencies.into_keys().collect())
+#[cfg(test)]
+fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure> {
+    Ok(load_manifest(dir)?.map(|manifest| manifest.dependencies.into_keys().collect()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{load_dependencies, load_lockfile, load_package_name};
-    use std::fs::File;
+    use super::{check_file, load_dependencies, load_lockfile, load_package_name, FrontendOptions};
+    use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
 
@@ -1628,34 +1660,47 @@ mod tests {
     #[test]
     fn no_manifest_returns_none() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        assert!(load_dependencies(dir.path()).is_none());
+        assert!(load_dependencies(dir.path())
+            .expect("missing manifest should not error")
+            .is_none());
     }
 
     #[test]
     fn package_name_loaded() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_toml(dir.path(), "[package]\nname = \"myapp\"\n");
-        assert_eq!(load_package_name(dir.path()), Some("myapp".to_string()));
+        assert_eq!(
+            load_package_name(dir.path()).expect("valid manifest should load"),
+            Some("myapp".to_string())
+        );
     }
 
     #[test]
     fn package_name_missing_section() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_toml(dir.path(), "[dependencies]\n");
-        assert_eq!(load_package_name(dir.path()), None);
+        assert_eq!(
+            load_package_name(dir.path()).expect("valid manifest should load"),
+            None
+        );
     }
 
     #[test]
     fn package_name_no_manifest() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        assert_eq!(load_package_name(dir.path()), None);
+        assert_eq!(
+            load_package_name(dir.path()).expect("missing manifest should not error"),
+            None
+        );
     }
 
     #[test]
     fn manifest_no_deps_returns_some_empty() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_toml(dir.path(), "[package]\nname = \"foo\"\n");
-        let deps = load_dependencies(dir.path()).expect("manifest should load");
+        let deps = load_dependencies(dir.path())
+            .expect("manifest should load")
+            .expect("manifest should be present");
         assert!(deps.is_empty());
     }
 
@@ -1666,22 +1711,37 @@ mod tests {
             dir.path(),
             "[dependencies]\nstd_utils = \"1.0\"\nmath = \"0.2\"\n",
         );
-        let mut deps = load_dependencies(dir.path()).expect("manifest should load");
+        let mut deps = load_dependencies(dir.path())
+            .expect("manifest should load")
+            .expect("manifest should be present");
         deps.sort();
         assert_eq!(deps, vec!["math", "std_utils"]);
     }
 
     #[test]
+    fn manifest_invalid_toml_returns_err() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "this is not valid toml {{{\n");
+        let err = load_dependencies(dir.path()).expect_err("invalid manifest should error");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("hew.toml"), "{}", err.message);
+    }
+
+    #[test]
     fn no_lockfile_returns_none() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        assert!(load_lockfile(dir.path()).is_none());
+        assert!(load_lockfile(dir.path())
+            .expect("missing lockfile should not error")
+            .is_none());
     }
 
     #[test]
     fn empty_lockfile_returns_some_empty() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_lockfile(dir.path(), "# empty\n");
-        let entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        let entries = load_lockfile(dir.path())
+            .expect("lockfile should parse")
+            .expect("lockfile should be present");
         assert!(entries.is_empty());
     }
 
@@ -1693,7 +1753,9 @@ mod tests {
             "[[package]]\nname = \"ecosystem::db::postgres\"\nversion = \"1.0.0\"\n\n\
              [[package]]\nname = \"std::net::http\"\nversion = \"2.1.0\"\n",
         );
-        let mut entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        let mut entries = load_lockfile(dir.path())
+            .expect("lockfile should parse")
+            .expect("lockfile should be present");
         entries.sort();
         assert_eq!(
             entries,
@@ -1711,15 +1773,52 @@ mod tests {
             dir.path(),
             "[[package]]\nname = \"mypkg\"\nversion = \"0.1.0\"\nchecksum = \"sha256:abc\"\n",
         );
-        let entries = load_lockfile(dir.path()).expect("lockfile should parse");
+        let entries = load_lockfile(dir.path())
+            .expect("lockfile should parse")
+            .expect("lockfile should be present");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], ("mypkg".to_string(), "0.1.0".to_string()));
     }
 
     #[test]
-    fn lockfile_invalid_toml_returns_none() {
+    fn lockfile_invalid_toml_returns_err() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_lockfile(dir.path(), "this is not valid toml {{{\n");
-        assert!(load_lockfile(dir.path()).is_none());
+        let err = load_lockfile(dir.path()).expect_err("invalid lockfile should error");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("adze.lock"), "{}", err.message);
+    }
+
+    #[test]
+    fn check_file_fails_closed_on_invalid_manifest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "this is not valid toml {{{\n");
+        let input = dir.path().join("main.hew");
+        fs::write(&input, "").expect("write main.hew");
+
+        let err = check_file(
+            input.to_str().expect("utf-8 path"),
+            &FrontendOptions::default(),
+        )
+        .expect_err("invalid manifest should fail closed");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("hew.toml"), "{}", err.message);
+    }
+
+    #[test]
+    fn check_file_fails_closed_on_invalid_lockfile() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[package]\nname = \"myapp\"\n");
+        write_lockfile(dir.path(), "this is not valid toml {{{\n");
+        let input = dir.path().join("main.hew");
+        fs::write(&input, "").expect("write main.hew");
+
+        let err = check_file(
+            input.to_str().expect("utf-8 path"),
+            &FrontendOptions::default(),
+        )
+        .expect_err("invalid lockfile should fail closed");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
+        assert!(err.message.contains("adze.lock"), "{}", err.message);
     }
 }

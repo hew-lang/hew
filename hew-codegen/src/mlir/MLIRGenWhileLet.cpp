@@ -137,6 +137,7 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
   const auto &ctorName = ctorPat->name;
   auto ctorVarIt = variantLookup.find(ctorName);
   if (ctorVarIt == variantLookup.end()) {
+    ++errorCount_;
     emitError(location) << "unknown constructor '" << ctorName << "' in while-let pattern";
     return;
   }

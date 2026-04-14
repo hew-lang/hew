@@ -81,10 +81,12 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
   if (decl.window.has_value()) {
     int32_t val;
     if (llvm::StringRef(*decl.window).getAsInteger(10, val)) {
+      ++errorCount_;
       emitError(location) << "invalid supervisor window value: " << *decl.window;
       return;
     }
     if (val < 0) {
+      ++errorCount_;
       emitError(location) << "supervisor window value out of range: " << *decl.window;
       return;
     }
@@ -130,6 +132,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     // Look up actor in registry for state type and receive info
     auto actorIt = actorRegistry.find(actorTypeName);
     if (actorIt == actorRegistry.end()) {
+      ++errorCount_;
       emitError(location) << "supervisor '" << supervisorName << "': unknown child actor type '"
                           << actorTypeName << "'";
       mlir::func::ReturnOp::create(builder, location, supervisorPtr);

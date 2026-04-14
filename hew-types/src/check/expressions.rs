@@ -1704,6 +1704,7 @@ impl Checker {
             }
             BinaryOp::Send => {
                 // target <- message
+                self.enforce_actor_boundary_send(&right.0, &right.1, &right.1, &right_ty);
                 Ty::Unit
             }
             BinaryOp::RegexMatch | BinaryOp::RegexNotMatch => {

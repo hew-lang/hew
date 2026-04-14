@@ -328,10 +328,15 @@ pub extern "C" fn hew_sched_init() -> c_int {
 
 /// Shut down the cooperative scheduler.
 ///
-/// Process all pending actors and then reset state. On WASM the
-/// scheduler is cooperative, so we must drain the run queue (just like
-/// [`hew_sched_run`]) before tearing down. Safe to call if the
-/// scheduler was never initialized.
+/// Process all pending actors and then reset **all** scheduler lifetime
+/// statics to their initial values. On WASM the scheduler is cooperative,
+/// so we drain the run queue (just like [`hew_sched_run`]) before tearing
+/// down. Safe to call if the scheduler was never initialized.
+///
+/// Resetting every static (including `ACTIVATING`, `PREV_ARENA`,
+/// `CURRENT_REPLY_CHANNEL`, `CURRENT_REPLY_CHANNEL_CONSUMED`, and the
+/// metrics counters) ensures that a subsequent [`hew_sched_init`] starts
+/// from a genuinely clean slate even after hot-reload or test-harness reuse.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_shutdown() {
     // Process all pending messages before shutting down.
@@ -341,6 +346,18 @@ pub extern "C" fn hew_sched_shutdown() {
     unsafe {
         RUN_QUEUE = None;
         INITIALIZED = false;
+        // Reset activation-context statics so stale state from a prior
+        // mid-activation abort or skipped shutdown cannot bleed into a
+        // subsequent init → use cycle.
+        ACTIVATING = false;
+        PREV_ARENA = std::ptr::null_mut();
+        CURRENT_REPLY_CHANNEL = std::ptr::null_mut();
+        CURRENT_REPLY_CHANNEL_CONSUMED = false;
+        // Reset metrics so a re-init cycle starts from zero.
+        TASKS_SPAWNED = 0;
+        TASKS_COMPLETED = 0;
+        MESSAGES_SENT = 0;
+        MESSAGES_RECEIVED = 0;
     }
 }
 
@@ -1176,6 +1193,127 @@ mod tests {
             assert!(!read_initialized());
             assert!(!run_queue_exists());
         }
+    }
+
+    /// Verify that `hew_sched_shutdown` resets every scheduler lifetime static
+    /// so that a subsequent `hew_sched_init` → use cycle starts from a clean
+    /// slate (hot-reload / test-harness reuse contract).
+    #[test]
+    fn shutdown_resets_all_stale_statics() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+
+        // Phase 1: init and use the scheduler so metrics become non-zero.
+        hew_sched_init();
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // SAFETY: actor is valid, scheduler is initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+        hew_sched_run();
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert!(
+                read_tasks_spawned() > 0,
+                "need non-zero tasks_spawned before shutdown"
+            );
+            assert!(
+                read_tasks_completed() > 0,
+                "need non-zero tasks_completed before shutdown"
+            );
+        }
+
+        // Phase 2: simulate stale activation state that can survive a prior
+        // mid-activation abort or a test that skipped hew_sched_shutdown.
+        let sentinel: u8 = 0;
+        let sentinel_ptr: *mut c_void = (&raw const sentinel).cast_mut().cast();
+        // SAFETY: Single-threaded; ptr::addr_of_mut! avoids creating
+        // references to mutable statics.
+        unsafe {
+            ptr::addr_of_mut!(ACTIVATING).write(true);
+            ptr::addr_of_mut!(PREV_ARENA).write(sentinel_ptr);
+            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(sentinel_ptr);
+            ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(true);
+            ptr::addr_of_mut!(MESSAGES_SENT).write(99);
+            ptr::addr_of_mut!(MESSAGES_RECEIVED).write(99);
+        }
+
+        // Phase 3: shutdown must reset every scheduler lifetime static.
+        // The run queue is empty at this point so hew_sched_run() inside
+        // hew_sched_shutdown() is a safe no-op.
+        hew_sched_shutdown();
+
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert!(
+                !ptr::addr_of!(INITIALIZED).read(),
+                "INITIALIZED must be false after shutdown"
+            );
+            assert!(
+                ptr::addr_of!(RUN_QUEUE).read().is_none(),
+                "RUN_QUEUE must be None after shutdown"
+            );
+            assert!(
+                !ptr::addr_of!(ACTIVATING).read(),
+                "ACTIVATING must be false after shutdown"
+            );
+            assert!(
+                ptr::addr_of!(PREV_ARENA).read().is_null(),
+                "PREV_ARENA must be null after shutdown"
+            );
+            assert!(
+                ptr::addr_of!(CURRENT_REPLY_CHANNEL).read().is_null(),
+                "CURRENT_REPLY_CHANNEL must be null after shutdown"
+            );
+            assert!(
+                !ptr::addr_of!(CURRENT_REPLY_CHANNEL_CONSUMED).read(),
+                "CURRENT_REPLY_CHANNEL_CONSUMED must be false after shutdown"
+            );
+            assert_eq!(
+                read_tasks_spawned(),
+                0,
+                "TASKS_SPAWNED must be zero after shutdown"
+            );
+            assert_eq!(
+                read_tasks_completed(),
+                0,
+                "TASKS_COMPLETED must be zero after shutdown"
+            );
+            assert_eq!(
+                hew_sched_metrics_messages_sent(),
+                0,
+                "MESSAGES_SENT must be zero after shutdown"
+            );
+            assert_eq!(
+                hew_sched_metrics_messages_received(),
+                0,
+                "MESSAGES_RECEIVED must be zero after shutdown"
+            );
+        }
+
+        // Phase 4: re-init must start from a genuinely clean slate.
+        hew_sched_init();
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert!(read_initialized(), "must be initialized after re-init");
+            assert!(run_queue_exists(), "run queue must exist after re-init");
+            assert_eq!(
+                read_tasks_spawned(),
+                0,
+                "metrics must be zero at re-init start"
+            );
+            assert_eq!(
+                hew_sched_metrics_global_queue_len(),
+                0,
+                "queue must be empty after re-init"
+            );
+            assert!(
+                !ptr::addr_of!(ACTIVATING).read(),
+                "ACTIVATING must be false at re-init start"
+            );
+        }
+
+        hew_sched_shutdown();
     }
 
     #[test]

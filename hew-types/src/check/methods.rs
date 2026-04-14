@@ -1450,11 +1450,12 @@ impl Checker {
                         if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
                             for (i, arg) in args.iter().enumerate() {
                                 let (expr, sp) = arg.expr();
-                                if let Some(param_ty) = sig.params.get(i) {
-                                    self.check_against(expr, sp, param_ty);
-                                }
-                                let ty_raw = self.synthesize(expr, sp);
-                                self.enforce_actor_boundary_send(expr, sp, sp, &ty_raw);
+                                let ty = if let Some(param_ty) = sig.params.get(i) {
+                                    self.check_against(expr, sp, param_ty)
+                                } else {
+                                    self.synthesize(expr, sp)
+                                };
+                                self.enforce_actor_boundary_send(expr, sp, sp, &ty);
                             }
                             return sig.return_type;
                         }

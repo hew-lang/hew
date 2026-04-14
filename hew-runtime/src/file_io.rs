@@ -117,6 +117,19 @@ pub unsafe extern "C" fn hew_file_exists(path: *const c_char) -> i32 {
     i32::from(std::path::Path::new(rust_path).exists())
 }
 
+/// Check whether any filesystem path exists.
+///
+/// Returns 1 if the path exists, 0 if not.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_path_exists(path: *const c_char) -> i32 {
+    // SAFETY: forwarded unchanged to the existing existence probe.
+    unsafe { hew_file_exists(path) }
+}
+
 /// Delete a file.
 ///
 /// Returns 0 on success, -1 on error.
@@ -712,6 +725,26 @@ mod tests {
         let bad = invalid_utf8_cstring();
         // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
         assert_eq!(unsafe { hew_file_exists(bad.as_ptr()) }, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // hew_path_exists
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_exists_returns_one_for_existing_directory() {
+        let dir = test_dir("path_exists_dir_yes");
+        let p = cpath(&dir);
+        // SAFETY: p is a valid NUL-terminated C string.
+        assert_eq!(unsafe { hew_path_exists(p.as_ptr()) }, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_exists_returns_zero_for_missing_path() {
+        let p = CString::new("/tmp/hew_path_exists_ghost").unwrap();
+        // SAFETY: p is a valid NUL-terminated C string.
+        assert_eq!(unsafe { hew_path_exists(p.as_ptr()) }, 0);
     }
 
     // -----------------------------------------------------------------------

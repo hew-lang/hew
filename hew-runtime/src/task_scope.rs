@@ -744,6 +744,11 @@ pub unsafe extern "C" fn hew_task_scope_has_active_tasks(scope: *mut HewTaskScop
 ///
 /// `scope` must have been returned by [`hew_task_scope_new`] and must
 /// not be used after this call.
+///
+/// # Panics
+///
+/// Panics if the OS refuses to spawn the background reaper thread (i.e.
+/// the system thread limit has been exhausted).
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
     cabi_guard!(scope.is_null());

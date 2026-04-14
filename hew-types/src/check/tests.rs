@@ -8988,6 +8988,51 @@ mod module_body_diagnostic_envelope {
         }
     }
 
+    /// Deferred channel rewrite finalization must preserve the non-root module
+    /// tag when it emits a post-inference `InferenceFailed` diagnostic.
+    #[test]
+    fn deferred_channel_rewrite_error_tagged_with_source_module() {
+        let parsed = hew_parser::parse(
+            r"
+                fn bad(rx: Receiver<_>) {
+                    let _ = rx.recv();
+                }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "module parse errors: {:?}",
+            parsed.errors
+        );
+
+        let program = make_program_with_named_module("chanmod", parsed.program.items.clone());
+
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&program);
+
+        let inference_failed: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, TypeErrorKind::InferenceFailed) && e.message.contains("inner type")
+            })
+            .collect();
+
+        assert!(
+            !inference_failed.is_empty(),
+            "expected deferred channel inference failure in non-root module; errors: {:?}",
+            output.errors
+        );
+        for err in inference_failed {
+            assert_eq!(
+                err.source_module.as_deref(),
+                Some("chanmod"),
+                "deferred channel rewrite error must carry source module 'chanmod'; got {:?}",
+                err.source_module
+            );
+        }
+    }
+
     #[test]
     fn assign_target_shapes_populated_for_while_loop_with_import() {
         // Reproduces the eval_large_stderr CI failure:

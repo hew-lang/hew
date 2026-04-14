@@ -4050,3 +4050,190 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
         widget.methods
     );
 }
+
+// ===========================================================================
+// Deferred channel method rewrite tests
+//
+// These tests cover the post-inference symbol-selection fix for
+// Sender<T>::send, Receiver<T>::recv, and Receiver<T>::try_recv when the
+// inner type T is only constrained *after* the call site.  The correct
+// type-specific C symbol must be selected even when the call is visited before
+// the surrounding context has narrowed T.
+// ===========================================================================
+
+/// `recv()` on a `Receiver<int>` channel where the element type is inferred
+/// from a downstream `let v: int = rx.recv()` annotation must emit the int-
+/// specific symbol (`hew_channel_recv_int`) rather than the string variant.
+#[test]
+fn deferred_channel_recv_int_constrained_after_call() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn take_one() -> Option<int> {
+            let (tx, rx) = channel.new(4);
+            let v: Option<int> = rx.recv();
+            tx.close();
+            v
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_channel_recv_int"
+        )),
+        "expected hew_channel_recv_int rewrite after deferred resolution, got: {:?}",
+        output.method_call_rewrites
+    );
+    // The string variant must NOT be recorded for this call site.
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_channel_recv"
+        )),
+        "hew_channel_recv (string variant) must not be recorded for int channel: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `recv()` on a `Receiver<String>` channel where the element type is inferred
+/// from the usage of the received value must emit `hew_channel_recv`.
+#[test]
+fn deferred_channel_recv_string_constrained_after_call() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn take_one() -> Option<String> {
+            let (tx, rx) = channel.new(4);
+            let v: Option<String> = rx.recv();
+            tx.close();
+            v
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_channel_recv"
+        )),
+        "expected hew_channel_recv rewrite after deferred resolution, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `try_recv()` on a `Receiver<int>` where the element type is constrained
+/// after the call site must resolve to the int-specific symbol.
+#[test]
+fn deferred_channel_try_recv_int_constrained_after_call() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn try_take() -> Option<int> {
+            let (tx, rx) = channel.new(4);
+            let v: Option<int> = rx.try_recv();
+            tx.close();
+            v
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_channel_try_recv_int"
+        )),
+        "expected hew_channel_try_recv_int rewrite after deferred resolution, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `send()` must defer when both the channel inner type and the sent value are
+/// still `Ty::Var` at the call site, then pick the int-specific symbol once a
+/// later `recv()` annotation constrains the shared channel type.
+#[test]
+fn deferred_channel_send_int_constrained_after_call() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn relay() {
+            let (tx, rx) = channel.new(4);
+            if let Some(v) = rx.recv() {
+                tx.send(v);
+            }
+            let _: Option<int> = rx.recv();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_channel_send_int"
+        )),
+        "expected hew_channel_send_int rewrite after deferred resolution, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+/// When neither send nor recv arguments or annotations constrain the inner type
+/// before the checker boundary, `finalize_channel_rewrites` must emit an
+/// `InferenceFailed` error rather than silently recording the wrong symbol.
+#[test]
+fn deferred_channel_unresolved_inner_fails_closed() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn untyped() {
+            let (tx, rx) = channel.new(4);
+            let _ = rx.recv();
+            tx.close();
+        }
+        ",
+    );
+    // Must produce InferenceFailed — T is genuinely unconstrained.
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InferenceFailed && e.message.contains("inner type")
+        }),
+        "expected InferenceFailed for unresolved channel inner type, got: {:#?}",
+        output.errors
+    );
+    // The span must NOT have a rewrite recorded (codegen-fails-closed invariant).
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol.contains("hew_channel_recv")
+        )),
+        "no recv rewrite should be recorded when inner type is unresolved: {:?}",
+        output.method_call_rewrites
+    );
+}

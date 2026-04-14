@@ -4748,6 +4748,41 @@ fn typecheck_await_actor_ref_returns_unit() {
 }
 
 #[test]
+fn named_actor_receive_dispatch_reports_bad_arg_once() {
+    let result = hew_parser::parse(
+        r"
+        actor Greeter {
+            receive fn greet(name: String) {}
+        }
+
+        fn main() {
+            let g = spawn Greeter;
+            g.greet(missing_name);
+        }
+        ",
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let undefined_variable_count = output
+        .errors
+        .iter()
+        .filter(|error| matches!(error.kind, TypeErrorKind::UndefinedVariable))
+        .count();
+
+    assert_eq!(
+        undefined_variable_count, 1,
+        "named actor receive dispatch should not resynthesize the same bad arg: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn typecheck_await_close_actor_ref() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();

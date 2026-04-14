@@ -10524,3 +10524,155 @@ mod iflet_whilelet_pattern_contract {
         );
     }
 }
+
+// ── for-loop iterable fail-closed regressions ──────────────────────────────
+
+mod for_loop_iterable_fail_closed {
+    use super::*;
+
+    fn check_for_over(iter_ty: Ty) -> Vec<TypeError> {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.env.define("it".to_string(), iter_ty, false);
+        let for_stmt = Stmt::For {
+            label: None,
+            is_await: false,
+            pattern: (Pattern::Identifier("x".to_string()), 0..1),
+            iterable: (Expr::Identifier("it".to_string()), 7..9),
+            body: Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+        };
+        checker.check_stmt(&for_stmt, &(0..20));
+        checker.errors
+    }
+
+    // ── catch-all: unsupported iterable type ───────────────────────────────
+
+    #[test]
+    fn unsupported_iterable_bool_emits_not_iterable_diagnostic() {
+        let result = hew_parser::parse("fn main() { for x in true { } }");
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {result_errors:?}",
+            result_errors = result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.iter().any(|e| {
+                e.kind == TypeErrorKind::InvalidOperation && e.message.contains("not iterable")
+            }),
+            "expected 'not iterable' diagnostic for bool iterable; got: {errs:?}",
+            errs = output.errors
+        );
+    }
+
+    #[test]
+    fn unsupported_iterable_does_not_produce_fresh_typevar_elem() {
+        // Direct AST: `for x in it` where `it: bool`. The elem type must be
+        // Ty::Error, not Ty::Var, ensuring no inference holes leak downstream.
+        let errors = check_for_over(Ty::Bool);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "expected InvalidOperation diagnostic for non-iterable; got: {errors:?}",
+        );
+    }
+
+    // ── Vec with empty type args ───────────────────────────────────────────
+
+    #[test]
+    fn vec_with_empty_type_args_emits_diagnostic_not_fresh_var() {
+        let errors = check_for_over(Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![],
+        });
+        assert!(
+            errors.iter().any(|e| {
+                e.kind == TypeErrorKind::InvalidOperation && e.message.contains("Vec")
+            }),
+            "expected InvalidOperation for Vec with no type args; got: {errors:?}",
+        );
+    }
+
+    // ── Stream with empty type args (plain `for`, not `for await`) ────────
+
+    #[test]
+    fn stream_with_empty_type_args_emits_diagnostic_not_fresh_var() {
+        let errors = check_for_over(Ty::Named {
+            name: "Stream".to_string(),
+            args: vec![],
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "expected InvalidOperation for Stream with no type args; got: {errors:?}",
+        );
+    }
+
+    // ── valid iterables must not regress ──────────────────────────────────
+
+    #[test]
+    fn vec_with_type_arg_is_valid() {
+        let errors = check_for_over(Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::I64],
+        });
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "Vec<i64> iterable must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn array_iterable_is_valid() {
+        let errors = check_for_over(Ty::Array(Box::new(Ty::I32), 4));
+        assert!(
+            errors.is_empty(),
+            "Array iterable must not emit errors; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn range_iterable_is_valid() {
+        let errors = check_for_over(Ty::Named {
+            name: "Range".to_string(),
+            args: vec![Ty::I64],
+        });
+        assert!(
+            errors.is_empty(),
+            "Range<i64> iterable must not emit errors; got: {errors:?}",
+        );
+    }
+
+    // ── already-errored / divergent iterables must not get extra diagnostics ─
+
+    #[test]
+    fn error_typed_iterable_does_not_emit_extra_not_iterable_diagnostic() {
+        // Ty::Error propagates silently; no spurious "type is not iterable".
+        let errors = check_for_over(Ty::Error);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "Ty::Error iterable must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn never_typed_iterable_does_not_emit_not_iterable_diagnostic() {
+        // Ty::Never is divergent; no spurious "type is not iterable".
+        let errors = check_for_over(Ty::Never);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "Ty::Never iterable must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+}

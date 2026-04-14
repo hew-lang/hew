@@ -612,7 +612,7 @@ impl Checker {
                     Ty::Named { name, args }
                         if builtin_named_type(name) == Some(BuiltinNamedType::Stream) =>
                     {
-                        let inner = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                        let inner_opt = args.first().cloned();
                         if *is_await {
                             if args.is_empty() {
                                 self.report_error(
@@ -625,6 +625,8 @@ impl Checker {
                             } else if let Some(method_name) =
                                 self.for_await_actor_method_name(&iterable.0)
                             {
+                                // SAFETY: args is non-empty (checked above)
+                                let inner = inner_opt.unwrap();
                                 if self.receive_generator_methods.contains(&method_name) {
                                     let resolved_inner = self.subst.resolve(&inner);
                                     if resolved_inner.has_inference_var() {
@@ -659,8 +661,15 @@ impl Checker {
                                     None => Ty::Error,
                                 }
                             }
-                        } else {
+                        } else if let Some(inner) = inner_opt {
                             inner
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for` over a Stream requires a resolved element type".to_string(),
+                            );
+                            Ty::Error
                         }
                     }
                     Ty::Named { name, args } if name == "Vec" => {
@@ -673,7 +682,16 @@ impl Checker {
                                     .to_string(),
                             );
                         }
-                        args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()))
+                        if let Some(elem) = args.first().cloned() {
+                            elem
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for` over a Vec requires a resolved element type".to_string(),
+                            );
+                            Ty::Error
+                        }
                     }
                     Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
                         if *is_await {
@@ -703,7 +721,18 @@ impl Checker {
                         }
                         inner
                     }
-                    _ => Ty::Var(TypeVar::fresh()),
+                    // Propagate already-errored or divergent iterable expressions
+                    // without adding a redundant "type is not iterable" diagnostic.
+                    Ty::Error => Ty::Error,
+                    Ty::Never => Ty::Never,
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &iterable.1,
+                            "type is not iterable".to_string(),
+                        );
+                        Ty::Error
+                    }
                 };
                 self.env.push_scope();
                 self.in_for_binding = true;

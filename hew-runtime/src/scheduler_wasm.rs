@@ -5016,4 +5016,143 @@ mod tests {
         // SAFETY: mailbox was heap-allocated above.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
+
+    /// Regression: `actor_ask_wasm_impl` (and the shared wait loops) must not
+    /// bail when the run queue is empty but the sleep queue is non-empty.
+    ///
+    /// Before the fix, `remaining == 0` was treated as "no further progress
+    /// possible" even when sleeping actors would eventually wake and deposit a
+    /// reply.  This test spawns an actor whose phase-1 dispatch:
+    ///
+    ///   1. Retains the reply channel for later use.
+    ///   2. Schedules a 1 ms cooperative sleep (`request_sleep`).
+    ///   3. Self-sends a continuation message (`msg_type=2`) so the actor is
+    ///      re-activated after the sleep expires.
+    ///
+    /// Phase-2 dispatch (the continuation) deposits the reply.
+    ///
+    /// Without the fix the ask loop sees `remaining == 0` after phase 1 (the
+    /// actor is sleeping, not in the run queue) and returns `NoRunnableWork`.
+    /// With the fix the loop recognises that sleepers remain, keeps driving
+    /// `hew_wasm_sched_tick`, and eventually receives the reply.
+    #[test]
+    fn ask_reply_after_sleep_parks_then_wakes() {
+        use std::sync::atomic::{AtomicPtr, Ordering as AOrdering};
+
+        static STORED_CH: AtomicPtr<crate::reply_channel_wasm::WasmReplyChannel> =
+            AtomicPtr::new(ptr::null_mut());
+
+        /// Phase 1 (`msg_type` == 1): retain the reply channel, request a 1 ms
+        /// cooperative sleep, self-send a continuation.
+        /// Phase 2 (`msg_type` == 2): deposit the reply on the stored channel.
+        unsafe extern "C" fn sleep_then_reply_dispatch(
+            _state: *mut c_void,
+            msg_type: i32,
+            _data: *mut c_void,
+            _size: usize,
+        ) {
+            if msg_type == 1 {
+                let ch = hew_get_reply_channel();
+                // Extra retain: the message teardown path will release the
+                // message's reference; we need our own ref to survive it.
+                // SAFETY: ch is the active reply channel for this dispatch;
+                // single-threaded cooperative scheduler, no data races.
+                unsafe {
+                    crate::reply_channel_wasm::hew_reply_channel_retain(ch.cast());
+                }
+                STORED_CH.store(ch.cast(), AOrdering::Relaxed);
+
+                // Schedule a ≈1 ms sleep (real wall-clock time).
+                // SAFETY: hew_now_ms has no preconditions.
+                let now = unsafe { hew_now_ms() };
+                request_sleep(now.saturating_add(1));
+
+                // Self-send continuation so the actor is re-activated after
+                // the sleep.  The actor is RUNNING during dispatch so
+                // `wake_wasm_actor` is a no-op; the message queues in the
+                // mailbox and is delivered when the timer fires.
+                let me = crate::actor::hew_actor_self();
+                if !me.is_null() {
+                    // SAFETY: `me` is the currently-running actor; its mailbox
+                    // is valid for the duration of the dispatch.
+                    let _ = unsafe {
+                        crate::mailbox_wasm::hew_mailbox_send(
+                            (*me).mailbox.cast(),
+                            2,
+                            ptr::null_mut(),
+                            0,
+                        )
+                    };
+                }
+            } else if msg_type == 2 {
+                // Phase 2: deposit the reply on the stashed channel.
+                let ch = STORED_CH.swap(ptr::null_mut(), AOrdering::Relaxed);
+                if !ch.is_null() {
+                    let mut v: i32 = 7;
+                    // SAFETY: ch was retained in phase 1; the caller's ref
+                    // keeps it alive.  hew_reply will release our extra retain.
+                    unsafe {
+                        crate::reply_channel_wasm::hew_reply(
+                            ch,
+                            (&raw mut v).cast(),
+                            std::mem::size_of::<i32>(),
+                        );
+                    }
+                }
+            }
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut actor = stub_actor();
+        actor.dispatch = Some(sleep_then_reply_dispatch);
+        actor.mailbox = mailbox.cast();
+        // Start Idle so that `ask_with_channel_wasm_internal` → `wake_wasm_actor`
+        // transitions the actor to Runnable and enqueues it.
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw mut actor);
+
+        // Drive the full ask loop.  Before the fix this returned null because
+        // `remaining == 0` fired when the actor parked in the sleep queue.
+        // Cast to actor::HewActor — both types are layout-identical (verified
+        // by compile-time offset_of! assertions in scheduler_wasm.rs).
+        // SAFETY: actor_ptr is valid and live for the duration of this call;
+        // layout compatibility is verified by the offset_of! assertions.
+        let reply = unsafe {
+            crate::actor::actor_ask_wasm_impl(
+                actor_ptr.cast::<crate::actor::HewActor>(),
+                1,
+                ptr::null_mut(),
+                0,
+                None,
+            )
+        };
+        assert!(
+            !reply.is_null(),
+            "ask must succeed even when the handler parks in the sleep queue before replying"
+        );
+        // SAFETY: reply was malloc'd by hew_reply; caller takes ownership.
+        unsafe {
+            assert_eq!(*reply.cast::<i32>(), 7, "reply value must match");
+            libc::free(reply);
+        }
+        // All reply-channel references must be balanced.
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            0,
+            "ask loop must release the reply channel after a sleep-deferred reply"
+        );
+
+        // SAFETY: mailbox was heap-allocated above.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        hew_sched_shutdown();
+        hew_runtime_cleanup();
+    }
 }

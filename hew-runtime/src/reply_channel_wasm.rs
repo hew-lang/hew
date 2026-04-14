@@ -260,8 +260,9 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
                 }
                 return ptr::null_mut();
             }
-            if remaining == 0 {
-                // Run queue empty — do a final readiness check.
+            if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
+                // Both run queue and sleep queue are empty — no further
+                // progress is possible.  Do a final readiness check.
                 if reply_ready(ch) {
                     return reply_take(ch);
                 }
@@ -300,10 +301,9 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut WasmReplyChannel) -> *mut c_voi
     unsafe {
         while !reply_ready(ch) {
             let remaining = crate::scheduler_wasm::hew_wasm_sched_tick(1);
-            if remaining == 0 {
-                // Run queue empty but no reply yet: caller program likely
-                // has an ask with no responder.  Return null rather than
-                // spinning forever.
+            if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
+                // Both run queue and sleep queue are empty; no reply will
+                // ever arrive.  Return null rather than spinning forever.
                 break;
             }
         }
@@ -364,8 +364,8 @@ pub unsafe extern "C" fn hew_select_first(
             if deadline.is_some_and(|limit| Instant::now() >= limit) {
                 return -1;
             }
-            if remaining == 0 {
-                // Run queue exhausted; do a final scan.
+            if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
+                // Both run queue and sleep queue are exhausted; do a final scan.
                 for i in 0..n {
                     let ch = *channels.add(i);
                     if reply_ready(ch) {

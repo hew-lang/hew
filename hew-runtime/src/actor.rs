@@ -2654,9 +2654,10 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
             break;
         }
 
-        if remaining == 0 {
-            // No runnable work remains. Cancel the channel for both bounded and
-            // unbounded asks so any later replier skips allocating reply data.
+        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
+            // Both run queue and sleep queue are empty.  Cancel the channel
+            // for both bounded and unbounded asks so any later replier skips
+            // allocating reply data.
             // SAFETY: ch remains live until the caller-side reference is released below.
             unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference before returning without a reply.
@@ -2792,7 +2793,7 @@ pub unsafe extern "C" fn hew_actor_await(actor: *mut HewActor) -> i32 {
         if is_terminal(a.actor_state.load(Ordering::Acquire)) {
             return a.error_code.load(Ordering::Acquire);
         }
-        if remaining == 0 {
+        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
             return HewError::ErrTimeout as i32;
         }
     }

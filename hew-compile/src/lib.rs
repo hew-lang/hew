@@ -1324,46 +1324,27 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
     Ok(())
 }
 
-/// Parse, resolve imports, and type-check a Hew source file.
-///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when parsing, import resolution, or type
-/// checking fails.
-pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput, FrontendFailure> {
-    let project = load_project_context(input)?;
-    let (mut program, parse_diagnostics) = parse_source_with_diagnostics(&project.source, input)?;
-    let mut diagnostics = parse_diagnostics;
-
-    if let Err(failure) = resolve_imports_internal(
-        &mut program,
-        &project.source,
-        input,
-        &project,
-        options,
-        &mut diagnostics,
-    ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
-    }
-
-    match typecheck_program_with_diagnostics(&program, &project.source, input, options) {
-        Ok((_result, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            Ok(CheckOutput { diagnostics })
-        }
-        Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
-    }
+/// Intermediate state produced by the shared file-frontend driver after
+/// loading, parsing, import resolution, and type-checking have all succeeded.
+/// Consumed by either `check_file` (phase stop here) or `compile_file`
+/// (continues into enrichment and codegen-metadata assembly).
+struct FileFrontendState {
+    program: Program,
+    diagnostics: Vec<FrontendDiagnostic>,
+    typecheck_result: TypeCheckResult,
+    source: String,
 }
 
-/// Run the full frontend pipeline for an on-disk source file.
+/// Shared frontend driver for on-disk source files.
 ///
-/// # Errors
-///
-/// Returns [`FrontendFailure`] when any frontend stage fails.
-pub fn compile_file(
+/// Runs load → parse → import-resolution → type-check and returns the
+/// intermediate [`FileFrontendState`].  Both `check_file` and `compile_file`
+/// call this helper; `check_file` stops here while `compile_file` continues
+/// into enrichment and codegen-metadata assembly via `finish_compile`.
+fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
-) -> Result<FrontendArtifacts, FrontendFailure> {
+) -> Result<FileFrontendState, FrontendFailure> {
     let project = load_project_context(input)?;
     let (mut program, parse_diagnostics) = parse_source_with_diagnostics(&project.source, input)?;
     let mut diagnostics = parse_diagnostics;
@@ -1388,13 +1369,33 @@ pub fn compile_file(
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
 
+    Ok(FileFrontendState {
+        program,
+        diagnostics,
+        typecheck_result,
+        source: project.source,
+    })
+}
+
+/// Shared enrichment and codegen-metadata assembly stage.
+///
+/// Takes the already type-checked program state and runs AST enrichment,
+/// side-table construction, and metadata assembly, returning the final
+/// [`FrontendArtifacts`].  Used by both `compile_file` and `compile_program`.
+fn finish_compile(
+    mut program: Program,
+    mut diagnostics: Vec<FrontendDiagnostic>,
+    typecheck_result: &TypeCheckResult,
+    source: String,
+    source_label: String,
+) -> Result<FrontendArtifacts, FrontendFailure> {
     let ((expr_type_entries, method_call_receiver_kinds), enrich_diagnostics) =
         match enrich_program_ast_with_diagnostics(
             &mut program,
             typecheck_result.tco.as_ref(),
             &typecheck_result.module_registry,
-            &project.source,
-            input,
+            &source,
+            &source_label,
         ) {
             Ok(result) => result,
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
@@ -1412,12 +1413,12 @@ pub fn compile_file(
         .as_ref()
         .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
     let metadata =
-        build_codegen_metadata(&typecheck_result.module_registry, input, &project.source);
+        build_codegen_metadata(&typecheck_result.module_registry, &source_label, &source);
 
     Ok(FrontendArtifacts {
         diagnostics,
-        source: project.source,
-        source_label: input.to_string(),
+        source,
+        source_label,
         program,
         expr_type_entries,
         method_call_receiver_kinds,
@@ -1430,6 +1431,43 @@ pub fn compile_file(
         abs_source_path: metadata.abs_source_path,
         line_map: metadata.line_map,
     })
+}
+
+/// Parse, resolve imports, and type-check a Hew source file.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when parsing, import resolution, or type
+/// checking fails.
+pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput, FrontendFailure> {
+    let state = run_file_frontend_to_typecheck(input, options)?;
+    Ok(CheckOutput {
+        diagnostics: state.diagnostics,
+    })
+}
+
+/// Run the full frontend pipeline for an on-disk source file.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when any frontend stage fails.
+pub fn compile_file(
+    input: &str,
+    options: &FrontendOptions,
+) -> Result<FrontendArtifacts, FrontendFailure> {
+    let FileFrontendState {
+        program,
+        diagnostics,
+        typecheck_result,
+        source,
+    } = run_file_frontend_to_typecheck(input, options)?;
+    finish_compile(
+        program,
+        diagnostics,
+        &typecheck_result,
+        source,
+        input.to_string(),
+    )
 }
 
 /// Run the full frontend pipeline for an already-parsed in-memory program.
@@ -1467,47 +1505,13 @@ pub fn compile_program(
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
 
-    let ((expr_type_entries, method_call_receiver_kinds), enrich_diagnostics) =
-        match enrich_program_ast_with_diagnostics(
-            &mut program,
-            typecheck_result.tco.as_ref(),
-            &typecheck_result.module_registry,
-            source,
-            source_label,
-        ) {
-            Ok(result) => result,
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
-    diagnostics.extend(enrich_diagnostics);
-
-    let assign_target_kinds = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
-        build_assign_target_kind_entries(&program, tco)
-    });
-    let assign_target_shapes = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
-        build_assign_target_shape_entries(&program, tco)
-    });
-    let lowering_facts = typecheck_result
-        .tco
-        .as_ref()
-        .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
-    let metadata = build_codegen_metadata(&typecheck_result.module_registry, source_label, source);
-
-    Ok(FrontendArtifacts {
-        diagnostics,
-        source: source.to_string(),
-        source_label: source_label.to_string(),
+    finish_compile(
         program,
-        expr_type_entries,
-        method_call_receiver_kinds,
-        assign_target_kinds,
-        assign_target_shapes,
-        lowering_facts,
-        handle_types: metadata.handle_types,
-        handle_type_repr: metadata.handle_type_repr,
-        drop_funcs: metadata.drop_funcs,
-        abs_source_path: metadata.abs_source_path,
-        line_map: metadata.line_map,
-    })
+        diagnostics,
+        &typecheck_result,
+        source.to_string(),
+        source_label.to_string(),
+    )
 }
 
 /// Run the full frontend pipeline for a source file and serialize to msgpack.

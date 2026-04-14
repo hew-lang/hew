@@ -20,25 +20,10 @@ use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
-use crate::internal::types::HewActorState;
-
-// ── Constants ───────────────────────────────────────────────────────────
-
-/// Default message processing budget per activation.
-const HEW_MSG_BUDGET: i32 = 256;
-
-/// Default reduction budget per dispatch call.
-const HEW_DEFAULT_REDUCTIONS: i32 = 4000;
-
-/// Priority: high (2x budget).
-const HEW_PRIORITY_HIGH: i32 = 0;
-
-/// Priority: normal (1x budget, default).
 #[cfg(test)]
-const HEW_PRIORITY_NORMAL: i32 = 1;
-
-/// Priority: low (0.5x budget).
-const HEW_PRIORITY_LOW: i32 = 2;
+use crate::actor::HEW_PRIORITY_NORMAL;
+use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW};
+use crate::internal::types::HewActorState;
 
 #[inline]
 fn notify_actor_group_waiters(actor_id: u64) {
@@ -718,16 +703,12 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     }
 
     // Hibernation tracking.
-    let hib_thresh = a.hibernation_threshold.load(Ordering::Relaxed);
-    if msgs_processed == 0 && hib_thresh > 0 {
-        let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
-        if prev_idle + 1 >= hib_thresh {
-            a.hibernating.store(1, Ordering::Relaxed);
-        }
-    } else if msgs_processed > 0 {
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-    }
+    // SAFETY: HewActor (wasm) and crate::actor::HewActor have identical layouts,
+    // verified by the compile-time offset_of! assertions above.
+    crate::actor::update_hibernation_state(
+        unsafe { &*(actor.cast::<crate::actor::HewActor>()) },
+        msgs_processed,
+    );
 
     // Check for remaining messages.
     let has_more = if mailbox.is_null() {

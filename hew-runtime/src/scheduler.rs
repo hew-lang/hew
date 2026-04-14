@@ -876,17 +876,7 @@ fn activate_actor(actor: *mut HewActor) {
     }
 
     // Hibernation: track idle activations.
-    let hib_threshold = a.hibernation_threshold.load(Ordering::Relaxed);
-    if msgs_processed == 0 && hib_threshold > 0 {
-        let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
-        if prev_idle + 1 >= hib_threshold {
-            a.hibernating.store(1, Ordering::Relaxed);
-        }
-    } else if msgs_processed > 0 {
-        // Reset idle counter on any message processing.
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-    }
+    actor::update_hibernation_state(a, msgs_processed);
 
     #[cfg(test)]
     run_activate_pre_reenqueue_hook(actor);
@@ -1137,6 +1127,13 @@ mod tests {
     use std::ptr;
     use std::sync::atomic::AtomicI32;
 
+    /// Serialises all tests that read or write the module-level `SCHEDULER`
+    /// pointer or the `ACTIVE_WORKERS` counter.  When `-- scheduler` runs
+    /// tests in parallel those globals race, producing intermittent SIGSEGV /
+    /// SIGABRT.  Holding this lock for the duration of each such test is the
+    /// same pattern already used by `TICKER_TEST_MUTEX` in `timer_periodic.rs`.
+    static SCHED_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
     struct ActivatePreReenqueueHookGuard;
 
     impl ActivatePreReenqueueHookGuard {
@@ -1192,6 +1189,9 @@ mod tests {
 
     #[test]
     fn activate_transitions_runnable_to_idle() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let actor = stub_actor();
         let ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -1259,6 +1259,9 @@ mod tests {
 
     #[test]
     fn activate_records_dispatch_span_events() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tracing::hew_trace_reset();
         crate::tracing::hew_trace_enable(1);
 
@@ -1329,6 +1332,9 @@ mod tests {
 
     #[test]
     fn hew_sched_init_returns_zero_on_success() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // hew_sched_init is idempotent — second call is a no-op returning 0.
         let result = hew_sched_init();
         assert_eq!(result, 0);
@@ -1341,6 +1347,13 @@ mod tests {
     #[test]
     fn ticker_stops_during_runtime_cleanup() {
         use crate::timer_periodic::{TICKER_RUNNING, TICKER_TEST_MUTEX};
+
+        // Acquire SCHED_TEST_MUTEX first (consistent lock order: sched → ticker).
+        // hew_runtime_cleanup clears the global SCHEDULER pointer, so this test
+        // must be serialised relative to other scheduler tests.
+        let _sched_guard = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Hold the shared ticker mutex for the duration of this test so it
         // cannot race with timer_periodic tests that poll the same globals.
@@ -1371,6 +1384,9 @@ mod tests {
     fn shutdown_skips_self_join() {
         use std::sync::Arc;
         use std::time::Instant;
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let parker = Parker {
             mutex: Mutex::new(()),
@@ -1434,6 +1450,9 @@ mod tests {
 
     #[test]
     fn drain_is_idle_requires_empty_scheduler() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let parker = Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
@@ -1521,6 +1540,10 @@ mod tests {
                 "shutdown drain must not observe idle while activation still owns pending work"
             );
         }
+
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let _hook = ActivatePreReenqueueHookGuard::install(assert_pending_work_still_counts_active);
         HOOK_SEEN.store(false, Ordering::Release);

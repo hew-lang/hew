@@ -1624,7 +1624,25 @@ pub unsafe extern "C" fn hew_actor_wake(actor: *mut HewActor) {
     a.hibernating.store(0, Ordering::Relaxed);
 }
 
-/// Set the scheduling priority for an actor.
+/// Update hibernation tracking after an activation cycle.
+///
+/// - If no messages were processed and the threshold is set, increments the
+///   idle counter and sets the hibernating flag once the threshold is reached.
+/// - If messages were processed, resets both the idle counter and the flag.
+/// - If neither condition applies (threshold == 0 and msgs == 0), does nothing.
+#[inline]
+pub(crate) fn update_hibernation_state(a: &HewActor, msgs_processed: u32) {
+    let hib_threshold = a.hibernation_threshold.load(Ordering::Relaxed);
+    if msgs_processed == 0 && hib_threshold > 0 {
+        let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
+        if prev_idle + 1 >= hib_threshold {
+            a.hibernating.store(1, Ordering::Relaxed);
+        }
+    } else if msgs_processed > 0 {
+        a.idle_count.store(0, Ordering::Relaxed);
+        a.hibernating.store(0, Ordering::Relaxed);
+    }
+}
 ///
 /// - 0 = high priority (gets 2× message budget)
 /// - 1 = normal priority (default)

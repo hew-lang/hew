@@ -235,8 +235,10 @@ pub(super) enum WasmUnsupportedFeature {
     /// `channel.new`, `Sender<T>::*`, `Receiver<T>::*`: MPSC channels require
     /// OS mutexes/condvars unavailable on the wasm32 cooperative scheduler.
     /// All `hew_channel_*` C symbols trap via `unreachable!` on wasm32.
-    /// WASM-TODO: implement single-threaded channel queues backed by the actor
-    /// mailbox infrastructure.
+    /// WASM-TODO: wire in the `channel_wasm` groundwork module (bounded
+    /// `VecDeque` queue with correct Empty/Closed semantics) once
+    /// cooperative-scheduler recv yield/resume and send backpressure are
+    /// available.
     Channels,
     /// `sleep_ms`, `sleep`: the wasm32 shim returns immediately (no blocking),
     /// silently violating the expected delay semantics.

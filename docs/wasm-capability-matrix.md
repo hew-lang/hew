@@ -74,8 +74,10 @@ runtime stubs are **silent traps** or **silent no-ops**:
   `channel.new` compiles but traps immediately at runtime with an unhelpful
   `unreachable` instruction.  Making this a compile-time error gives a
   descriptive diagnostic at the right time.
-  - WASM-TODO: implement single-threaded channel queues backed by the actor
-    mailbox infrastructure.
+  - WASM-TODO: wire in the `channel_wasm` groundwork module (bounded
+    `VecDeque` queue with correct `Empty` vs `Closed` semantics) once
+    cooperative-scheduler `recv` yield/resume and `send` backpressure are
+    available.  See `hew-runtime/src/channel_wasm.rs`.
 
 - **Timers** (`sleep_ms`, `sleep`): The wasm32 shim for `hew_sleep_ms` returns
   immediately (intentional noop, see `wasm_stubs`).  Code that expects a delay
@@ -138,7 +140,7 @@ These gaps are explicitly deferred and tracked here:
 
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
-| Single-threaded MPSC channel queues | Actor mailbox integration | `WASM-TODO: channels` |
+| Single-threaded channel queues | Cooperative-scheduler recv yield/resume + send backpressure; groundwork queue in `channel_wasm.rs` | `WASM-TODO: channels` |
 | Host-driven timer rescheduling | WASI `clock_time_get` / `setTimeout` | `WASM-TODO: timers` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |

@@ -177,8 +177,7 @@ pub(super) struct DeferredHashSetAdmission {
 
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
-/// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` /
-/// `Sender<T>::clone` / `Sender<T>::close` / `Receiver<T>::close` call is
+/// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
 /// encountered but the inner type `T` is still an unresolved `Ty::Var` at the
 /// call site (for example `let v: int = rx.recv()` — the `int` annotation
 /// constrains `T` *after* the call is visited).
@@ -189,10 +188,12 @@ pub(super) struct DeferredHashSetAdmission {
 pub(super) struct DeferredChannelMethodRewrite {
     /// The built-in handle kind: `"Sender"` or `"Receiver"`.
     pub(super) handle_kind: String,
-    /// The method name: `"send"`, `"recv"`, `"try_recv"`, `"clone"`, or `"close"`.
+    /// The method name: `"send"`, `"recv"`, or `"try_recv"`.
     pub(super) method: String,
     /// The inner element type variable (still unresolved at record time).
     pub(super) inner_ty: Ty,
+    /// Module path where this rewrite was recorded (None = root module).
+    pub(super) source_module: Option<String>,
 }
 
 impl PendingLoweringFact {

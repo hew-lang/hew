@@ -262,7 +262,7 @@ impl Checker {
 
             // Still unresolved: inference did not converge on a concrete type.
             if let Ty::Var(_) = &resolved {
-                new_errors.push(crate::error::TypeError::new(
+                let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InferenceFailed,
                     span_key.start..span_key.end,
                     format!(
@@ -272,7 +272,11 @@ impl Checker {
                          `Sender<int>` or `Receiver<String>`",
                         entry.method, entry.handle_kind,
                     ),
-                ));
+                );
+                if let Some(module) = &entry.source_module {
+                    err = err.with_source_module(module.clone());
+                }
+                new_errors.push(err);
                 // Span intentionally absent from method_call_rewrites → codegen fails closed.
                 continue;
             }
@@ -281,14 +285,18 @@ impl Checker {
             // that escaped the inline validation because T was Var at visit time
             // but resolved to something unsupported, e.g. a user struct).
             if !matches!(resolved, Ty::String) && !resolved.is_integer() {
-                new_errors.push(crate::error::TypeError::new(
+                let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
                     format!(
                         "Channel<{resolved}> is not supported; \
                          only Channel<String> and Channel<int> are currently supported"
                     ),
-                ));
+                );
+                if let Some(module) = &entry.source_module {
+                    err = err.with_source_module(module.clone());
+                }
+                new_errors.push(err);
                 continue;
             }
 
@@ -393,6 +401,7 @@ impl Checker {
                 handle_kind: handle_kind.to_string(),
                 method: method.to_string(),
                 inner_ty,
+                source_module: self.current_module.clone(),
             },
         );
     }

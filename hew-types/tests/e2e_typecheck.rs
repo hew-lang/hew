@@ -4168,20 +4168,21 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
     );
 }
 
-/// `send()` on a `Sender<int>` where the channel pair is created without an
-/// explicit annotation and the type is first constrained by the sent value must
-/// select the int-specific send symbol.
+/// `send()` must defer when both the channel inner type and the sent value are
+/// still `Ty::Var` at the call site, then pick the int-specific symbol once a
+/// later `recv()` annotation constrains the shared channel type.
 #[test]
-fn deferred_channel_send_int_constrained_by_argument() {
+fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
 
-        fn produce() {
+        fn relay() {
             let (tx, rx) = channel.new(4);
-            tx.send(42);
-            tx.close();
-            rx.close();
+            if let Some(v) = rx.recv() {
+                tx.send(v);
+            }
+            let _: Option<int> = rx.recv();
         }
         ",
     );
@@ -4196,7 +4197,7 @@ fn deferred_channel_send_int_constrained_by_argument() {
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
                 if c_symbol == "hew_channel_send_int"
         )),
-        "expected hew_channel_send_int rewrite, got: {:?}",
+        "expected hew_channel_send_int rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }

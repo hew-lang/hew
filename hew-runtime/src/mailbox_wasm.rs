@@ -570,6 +570,9 @@ unsafe fn send_user_message(
 ) -> i32 {
     // SAFETY: caller guarantees all pointer invariants.
     let outcome = unsafe { send_user_message_inner(mb, msg_type, data, size, reply_channel) };
+    if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+        crate::scheduler_wasm::record_message_sent();
+    }
     send_outcome_to_hew_error(outcome)
 }
 
@@ -793,9 +796,13 @@ wasm_no_mangle! {
         // SAFETY: Caller guarantees `mb` is valid.
         let mbr = unsafe { &mut *mb };
         // SAFETY: Caller guarantees `data` points to `data_size` readable bytes.
-        match unsafe {
+        let outcome = unsafe {
             send_user_message_inner(mbr, msg_type, data, data_size, ptr::null_mut())
-        } {
+        };
+        if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+            crate::scheduler_wasm::record_message_sent();
+        }
+        match outcome {
             SendOutcome::Enqueued => 0,
             SendOutcome::Dropped => 1,
             SendOutcome::DroppedOld => 2,
@@ -841,6 +848,7 @@ wasm_no_mangle! {
             return;
         }
         mb.sys_queue.push_back(node);
+        crate::scheduler_wasm::record_message_sent();
     }
 }
 
@@ -878,6 +886,7 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool
 
     mb.stop_signal_sent = true;
     mb.sys_queue.push_back(node);
+    crate::scheduler_wasm::record_message_sent();
     true
 }
 
@@ -901,12 +910,14 @@ wasm_no_mangle! {
 
         // System messages have priority.
         if let Some(node) = mb.sys_queue.pop_front() {
+            crate::scheduler_wasm::record_message_received();
             return node;
         }
 
         // User messages.
         if let Some(node) = mb.user_queue.pop_front() {
             mb.count -= 1;
+            crate::scheduler_wasm::record_message_received();
             return node;
         }
 
@@ -930,6 +941,7 @@ wasm_no_mangle! {
         let mb = unsafe { &mut *mb };
 
         if let Some(node) = mb.sys_queue.pop_front() {
+            crate::scheduler_wasm::record_message_received();
             return node;
         }
 

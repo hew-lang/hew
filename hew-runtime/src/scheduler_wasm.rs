@@ -307,6 +307,20 @@ static mut TASKS_COMPLETED: u64 = 0;
 static mut MESSAGES_SENT: u64 = 0;
 static mut MESSAGES_RECEIVED: u64 = 0;
 
+pub(crate) fn record_message_sent() {
+    // SAFETY: Single-threaded on WASM.
+    unsafe {
+        MESSAGES_SENT += 1;
+    }
+}
+
+pub(crate) fn record_message_received() {
+    // SAFETY: Single-threaded on WASM.
+    unsafe {
+        MESSAGES_RECEIVED += 1;
+    }
+}
+
 // ── C ABI ───────────────────────────────────────────────────────────────
 
 /// Initialize the cooperative scheduler.
@@ -323,6 +337,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         RUN_QUEUE = Some(VecDeque::new());
         INITIALIZED = true;
     }
+    crate::bridge::bridge_init();
     0
 }
 
@@ -341,6 +356,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
 pub extern "C" fn hew_sched_shutdown() {
     // Process all pending messages before shutting down.
     hew_sched_run();
+    crate::bridge::bridge_shutdown();
 
     // SAFETY: Single-threaded on WASM.
     unsafe {
@@ -1311,6 +1327,77 @@ mod tests {
                 !ptr::addr_of!(ACTIVATING).read(),
                 "ACTIVATING must be false at re-init start"
             );
+        }
+
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn shutdown_clears_bridge_outbound_queue() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+
+        hew_sched_init();
+        // SAFETY: null payload with zero length is explicitly supported.
+        unsafe { crate::bridge::hew_wasm_emit(7, ptr::null(), 0) };
+        assert_eq!(crate::bridge::hew_wasm_outbound_len(), 1);
+
+        hew_sched_shutdown();
+
+        assert_eq!(
+            crate::bridge::hew_wasm_outbound_len(),
+            0,
+            "scheduler shutdown must drain bridge outbound state"
+        );
+    }
+
+    #[test]
+    fn mailbox_metrics_track_wasm_send_and_receive() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+
+        hew_sched_init();
+        // SAFETY: mailbox is created and used exclusively within this test.
+        unsafe {
+            let mb = crate::mailbox_wasm::hew_mailbox_new();
+            let payload: i32 = 42;
+            let payload_ptr = (&raw const payload).cast_mut().cast();
+
+            assert_eq!(hew_sched_metrics_messages_sent(), 0);
+            assert_eq!(hew_sched_metrics_messages_received(), 0);
+
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_send(
+                    mb,
+                    1,
+                    payload_ptr,
+                    std::mem::size_of::<i32>(),
+                ),
+                HewError::Ok as i32
+            );
+            crate::mailbox_wasm::hew_mailbox_send_sys(
+                mb,
+                2,
+                payload_ptr,
+                std::mem::size_of::<i32>(),
+            );
+
+            assert_eq!(hew_sched_metrics_messages_sent(), 2);
+            assert_eq!(hew_sched_metrics_messages_received(), 0);
+
+            let sys = crate::mailbox_wasm::hew_mailbox_try_recv_sys(mb);
+            assert!(!sys.is_null());
+            crate::mailbox_wasm::hew_msg_node_free(sys);
+
+            let user = crate::mailbox_wasm::hew_mailbox_try_recv(mb);
+            assert!(!user.is_null());
+            crate::mailbox_wasm::hew_msg_node_free(user);
+
+            assert_eq!(hew_sched_metrics_messages_received(), 2);
+
+            crate::mailbox_wasm::hew_mailbox_free(mb);
         }
 
         hew_sched_shutdown();

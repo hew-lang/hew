@@ -45,6 +45,38 @@ pub(crate) static MESSAGES_SENT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MESSAGES_RECEIVED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
 
+struct ActivationMetricsGuard;
+
+impl ActivationMetricsGuard {
+    fn new() -> Self {
+        ACTIVE_WORKERS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ActivationMetricsGuard {
+    fn drop(&mut self) {
+        ACTIVE_WORKERS.fetch_sub(1, Ordering::Relaxed);
+        TASKS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+static ACTIVATE_PRE_REENQUEUE_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+#[cfg(test)]
+fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
+    let hook = {
+        let guard = ACTIVATE_PRE_REENQUEUE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+
 // ── Per-worker thread-locals ───────────────────────────────────────────
 
 thread_local! {
@@ -604,7 +636,7 @@ fn activate_actor(actor: *mut HewActor) {
     // a dangling read.
     let actor_arena = a.arena;
 
-    ACTIVE_WORKERS.fetch_add(1, Ordering::Relaxed);
+    let _activation_metrics = ActivationMetricsGuard::new();
 
     // Set thread-local CURRENT_ACTOR so hew_actor_self() works during dispatch.
     let prev_actor = actor::set_current_actor(actor);
@@ -811,9 +843,6 @@ fn activate_actor(actor: *mut HewActor) {
         unsafe { crate::arena::hew_arena_reset(actor_arena) };
     }
 
-    ACTIVE_WORKERS.fetch_sub(1, Ordering::Relaxed);
-    TASKS_COMPLETED.fetch_add(1, Ordering::Relaxed);
-
     // After a crash, the actor may have been freed by a supervisor on
     // another worker — do not access `a` or `mailbox` from here on.
     if crashed {
@@ -858,6 +887,9 @@ fn activate_actor(actor: *mut HewActor) {
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
     }
+
+    #[cfg(test)]
+    run_activate_pre_reenqueue_hook(actor);
 
     // After processing: check for remaining messages.
     let has_more = if mailbox.is_null() {
@@ -1104,6 +1136,27 @@ mod tests {
     use super::*;
     use std::ptr;
     use std::sync::atomic::AtomicI32;
+
+    struct ActivatePreReenqueueHookGuard;
+
+    impl ActivatePreReenqueueHookGuard {
+        fn install(hook: fn(*mut HewActor)) -> Self {
+            let mut guard = ACTIVATE_PRE_REENQUEUE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(guard.replace(hook).is_none(), "test hook already installed");
+            Self
+        }
+    }
+
+    impl Drop for ActivatePreReenqueueHookGuard {
+        fn drop(&mut self) {
+            let mut guard = ACTIVATE_PRE_REENQUEUE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = None;
+        }
+    }
 
     /// Helper: build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
@@ -1443,6 +1496,121 @@ mod tests {
             drain_is_idle(),
             "scheduler should report drained after work clears"
         );
+
+        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn activate_keeps_worker_active_until_reenqueue_decision_finishes() {
+        static HOOK_SEEN: AtomicBool = AtomicBool::new(false);
+
+        fn assert_pending_work_still_counts_active(_actor: *mut HewActor) {
+            HOOK_SEEN.store(true, Ordering::Release);
+            assert_eq!(
+                ACTIVE_WORKERS.load(Ordering::Acquire),
+                1,
+                "worker must stay active until re-enqueue decision is resolved"
+            );
+            assert!(
+                !drain_is_idle(),
+                "shutdown drain must not observe idle while activation still owns pending work"
+            );
+        }
+
+        let _hook = ActivatePreReenqueueHookGuard::install(assert_pending_work_still_counts_active);
+        HOOK_SEEN.store(false, Ordering::Release);
+
+        let parker = Parker {
+            mutex: Mutex::new(()),
+            cond: Condvar::new(),
+        };
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![parker],
+            stealers: Vec::new(),
+            worker_handles: Mutex::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        // SAFETY: mailbox is created for this test and freed before exit.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is valid and owned by this test.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+        assert_eq!(
+            // SAFETY: mailbox is valid and owned by this test.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 2, ptr::null_mut(), 0) },
+            0
+        );
+
+        let actor = HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: 7,
+            pid: 0,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox: mailbox.cast(),
+            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
+            budget: AtomicI32::new(1),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+        };
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+        activate_actor(actor_ptr);
+
+        assert!(
+            HOOK_SEEN.load(Ordering::Acquire),
+            "test hook must run before the re-enqueue decision"
+        );
+        assert_eq!(ACTIVE_WORKERS.load(Ordering::Acquire), 0);
+        // SAFETY: sched_ptr remains valid until the cleanup swap below.
+        let sched = unsafe { &*sched_ptr };
+        assert!(
+            !sched.global_queue.is_empty(),
+            "pending mailbox work must be re-enqueued before the worker becomes idle"
+        );
+
+        // Drain the scheduled actor pointer so the scheduler can be dropped cleanly.
+        // SAFETY: single-threaded test cleanup; the deque lives for the rest of the test.
+        let (drain_deque, _drain_stealer) = unsafe { crate::deque::WorkDeque::new() };
+        assert_eq!(
+            sched.global_queue.steal_batch_and_pop(&drain_deque),
+            Some(actor_ptr.cast())
+        );
+        while drain_deque.pop().is_some() {}
+
+        // SAFETY: mailbox is owned by this test and no longer referenced after activation.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
 
         let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
         if !ptr.is_null() {

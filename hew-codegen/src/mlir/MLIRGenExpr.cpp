@@ -1478,6 +1478,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                       std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
+  // cooperate() is parsed as ExprCall{ function: ExprCooperate, args:[] } by the Hew parser
+  // (cooperate is a keyword, so the callee is not an ExprIdentifier).  Lower it directly here
+  // rather than falling through to the identifier-only guard below.
+  if (std::get_if<ast::ExprCooperate>(&call.function->value.kind)) {
+    hew::CooperateOp::create(builder, location);
+    return nullptr;
+  }
+
   // Check if the callee is a simple identifier (direct call)
   auto *calleeIdentExpr = std::get_if<ast::ExprIdentifier>(&call.function->value.kind);
   if (!calleeIdentExpr) {

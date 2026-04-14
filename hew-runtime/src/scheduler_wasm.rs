@@ -4414,9 +4414,6 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
-        // Use simulated time so we can control deadlines deterministically.
-        crate::deterministic::hew_simtime_enable(0);
-
         // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
         let mut a = stub_actor();
@@ -4450,27 +4447,32 @@ mod tests {
             "actor should be in sleep queue"
         );
 
-        // Advance simulated time to t=499: actor should NOT wake yet.
-        crate::deterministic::hew_simtime_advance_ms(499);
+        // Read back the parked deadline from the sleep queue so the wasm-target
+        // test can drive the real timer path without relying on native-only
+        // deterministic clock helpers.
+        // SAFETY: Single-threaded test; SLEEP_QUEUE is not mutated concurrently.
+        let deadline_ms = unsafe {
+            let q_ptr = ptr::addr_of!(SLEEP_QUEUE);
+            (*q_ptr)
+                .first()
+                .map(|&(deadline, _)| deadline)
+                .expect("sleep queue should contain the parked actor")
+        };
+
+        // One ms before the parked deadline: actor should NOT wake yet.
         // SAFETY: Single-threaded test.
-        let _ = unsafe { hew_wasm_sched_tick(1) };
+        let woken = unsafe { hew_wasm_timer_tick(deadline_ms.saturating_sub(1)) };
+        assert_eq!(woken, 0, "actor should not wake before its deadline");
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
             HewActorState::Sleeping as i32,
-            "actor should still be Sleeping at t=499"
+            "actor should still be Sleeping before its deadline"
         );
 
-        // Advance to t=500 (exactly the deadline): actor should wake.
-        crate::deterministic::hew_simtime_advance_ms(1);
-        let now_ms = crate::deterministic::hew_simtime_now_ms();
-        // `hew_simtime_now_ms` returns i64; non-negative after enable(0) + advance.
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "simtime starts at 0 and only advances forward; always non-negative"
-        )]
+        // At the exact parked deadline: actor should wake.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { hew_wasm_timer_tick(now_ms as u64) };
-        assert_eq!(woken, 1, "actor should wake at deadline t=500");
+        let woken = unsafe { hew_wasm_timer_tick(deadline_ms) };
+        assert_eq!(woken, 1, "actor should wake at its parked deadline");
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
             HewActorState::Runnable as i32,
@@ -4478,7 +4480,6 @@ mod tests {
         );
         assert_eq!(hew_wasm_sleeping_count(), 0, "sleep queue should be empty");
 
-        crate::deterministic::hew_simtime_disable();
         // SAFETY: mailbox was allocated by hew_mailbox_new above; free to avoid leak.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
         hew_sched_shutdown();
@@ -4819,7 +4820,6 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
-        crate::deterministic::hew_simtime_enable(0);
 
         // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
@@ -4867,7 +4867,7 @@ mod tests {
 
         // Advance time past deadline and drain: actor wakes, processes message.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { drain_expired_sleepers(1001) };
+        let woken = unsafe { hew_wasm_timer_tick(1001) };
         assert_eq!(woken, 1, "actor must wake when timer fires");
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
@@ -4896,7 +4896,6 @@ mod tests {
             "no stale sleep entry after message delivery"
         );
 
-        crate::deterministic::hew_simtime_disable();
         // SAFETY: mailbox was heap-allocated above.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
         hew_sched_shutdown();

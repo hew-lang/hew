@@ -36,6 +36,14 @@ fn copy_strings(v: Vec<String>) -> Vec<String> {
     out
 }
 
+fn copy_floats(v: Vec<f64>) -> Vec<f64> {
+    let out: Vec<f64> = Vec::new();
+    for i in 0..v.len() {
+        out.push(v.get(i));
+    }
+    out
+}
+
 fn swap_ints(v: Vec<int>, i: int, j: int) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
@@ -43,6 +51,12 @@ fn swap_ints(v: Vec<int>, i: int, j: int) {
 }
 
 fn swap_strings(v: Vec<String>, i: int, j: int) {
+    let tmp = v.get(i);
+    v.set(i, v.get(j));
+    v.set(j, tmp);
+}
+
+fn swap_floats(v: Vec<f64>, i: int, j: int) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
     v.set(j, tmp);
@@ -82,7 +96,7 @@ fn sort_strings_in_place(v: Vec<String>) {
     }
 }
 
-fn reverse_in_place(v: Vec<int>) {
+fn reverse_ints_in_place(v: Vec<int>) {
     let n = v.len();
     if n < 2 {
         return;
@@ -92,6 +106,36 @@ fn reverse_in_place(v: Vec<int>) {
     var right = n - 1;
     while left < right {
         swap_ints(v, left, right);
+        left = left + 1;
+        right = right - 1;
+    }
+}
+
+fn reverse_strings_in_place(v: Vec<String>) {
+    let n = v.len();
+    if n < 2 {
+        return;
+    }
+
+    var left = 0;
+    var right = n - 1;
+    while left < right {
+        swap_strings(v, left, right);
+        left = left + 1;
+        right = right - 1;
+    }
+}
+
+fn reverse_floats_in_place(v: Vec<f64>) {
+    let n = v.len();
+    if n < 2 {
+        return;
+    }
+
+    var left = 0;
+    var right = n - 1;
+    while left < right {
+        swap_floats(v, left, right);
         left = left + 1;
         right = right - 1;
     }
@@ -128,9 +172,27 @@ pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
 /// Reverse a vector of integers.
 ///
 /// Returns a new reversed vector; the original is unchanged.
-pub fn reverse(v: Vec<int>) -> Vec<int> {
+pub fn reverse_ints(v: Vec<int>) -> Vec<int> {
     let out = copy_ints(v);
-    reverse_in_place(out);
+    reverse_ints_in_place(out);
+    out
+}
+
+/// Reverse a vector of strings.
+///
+/// Returns a new reversed vector; the original is unchanged.
+pub fn reverse_strings(v: Vec<String>) -> Vec<String> {
+    let out = copy_strings(v);
+    reverse_strings_in_place(out);
+    out
+}
+
+/// Reverse a vector of floats.
+///
+/// Returns a new reversed vector; the original is unchanged.
+pub fn reverse_floats(v: Vec<f64>) -> Vec<f64> {
+    let out = copy_floats(v);
+    reverse_floats_in_place(out);
     out
 }
 

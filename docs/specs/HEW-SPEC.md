@@ -1998,7 +1998,7 @@ Important current details:
 - `std::iter` is presently specialised to `Vec<int>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
-  `sort_floats`, and `reverse`
+  `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`
 - `std::testing` is a pure-Hew assertion library layered on top of `panic()`
 
 #### 3.10.5 Printing, Formatting, and Strings

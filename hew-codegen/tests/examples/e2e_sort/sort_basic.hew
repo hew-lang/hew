@@ -1,57 +1,114 @@
 import std::sort;
 
+fn print_ints(v: Vec<int>) {
+    var i = 0;
+    while i < v.len() {
+        println(v.get(i));
+        i = i + 1;
+    }
+}
+
+fn print_strings(v: Vec<String>) {
+    var i = 0;
+    while i < v.len() {
+        println(v.get(i));
+        i = i + 1;
+    }
+}
+
+fn print_floats(v: Vec<float>) {
+    var i = 0;
+    while i < v.len() {
+        println(v.get(i));
+        i = i + 1;
+    }
+}
+
 fn main() {
-    // ── Sort integers ─────────────────────────────────────────────
+    // ── Sort integers: empty, singleton, ordering, original unchanged ─────
+    let empty_nums: Vec<int> = Vec::new();
+    println(sort.sort_ints(empty_nums).len());
+
+    let one_num: Vec<int> = Vec::new();
+    one_num.push(7);
+    print_ints(sort.sort_ints(one_num));
+
     let nums: Vec<int> = Vec::new();
     nums.push(3);
     nums.push(1);
     nums.push(4);
     nums.push(1);
     nums.push(5);
-    let sorted = sort.sort_ints(nums);
-    var i = 0;
-    while i < sorted.len() {
-        println(sorted.get(i));
-        i = i + 1;
-    }
+    print_ints(sort.sort_ints(nums));
 
-    // ── Sort strings ──────────────────────────────────────────────
-    let words: Vec<String> = Vec::new();
-    words.push("banana");
-    words.push("apple");
-    words.push("cherry");
-    let sorted_words = sort.sort_strings(words);
-    var j = 0;
-    while j < sorted_words.len() {
-        println(sorted_words.get(j));
-        j = j + 1;
-    }
+    // ── Reverse integers: empty, singleton, ordering, original unchanged ──
+    let empty_rev_nums: Vec<int> = Vec::new();
+    println(sort.reverse_ints(empty_rev_nums).len());
 
-    // ── Sort floats ───────────────────────────────────────────────
-    let vals: Vec<float> = Vec::new();
-    vals.push(3.14);
-    vals.push(1.0);
-    vals.push(2.71);
-    let sorted_vals = sort.sort_floats(vals);
-    var k = 0;
-    while k < sorted_vals.len() {
-        println(sorted_vals.get(k));
-        k = k + 1;
-    }
+    let one_rev_num: Vec<int> = Vec::new();
+    one_rev_num.push(9);
+    print_ints(sort.reverse_ints(one_rev_num));
 
-    // ── Reverse ───────────────────────────────────────────────────
     let to_rev: Vec<int> = Vec::new();
     to_rev.push(10);
     to_rev.push(20);
     to_rev.push(30);
-    let reversed = sort.reverse(to_rev);
-    var m = 0;
-    while m < reversed.len() {
-        println(reversed.get(m));
-        m = m + 1;
-    }
+    print_ints(sort.reverse_ints(to_rev));
 
-    // ── Original unchanged ────────────────────────────────────────
     println(nums.get(0));
     println(nums.get(1));
+
+    // ── Sort strings: empty, singleton, ordering, original unchanged ──────
+    let empty_words: Vec<String> = Vec::new();
+    println(sort.sort_strings(empty_words).len());
+
+    let one_word: Vec<String> = Vec::new();
+    one_word.push("solo");
+    print_strings(sort.sort_strings(one_word));
+
+    let words: Vec<String> = Vec::new();
+    words.push("banana");
+    words.push("apple");
+    words.push("cherry");
+    print_strings(sort.sort_strings(words));
+
+    // ── Reverse strings: empty, singleton, ordering, original unchanged ────
+    let empty_rev_words: Vec<String> = Vec::new();
+    println(sort.reverse_strings(empty_rev_words).len());
+
+    let one_rev_word: Vec<String> = Vec::new();
+    one_rev_word.push("solo");
+    print_strings(sort.reverse_strings(one_rev_word));
+
+    print_strings(sort.reverse_strings(words));
+
+    println(words.get(0));
+    println(words.get(1));
+
+    // ── Sort floats: empty, singleton, ordering, original unchanged ────────
+    let empty_vals: Vec<float> = Vec::new();
+    println(sort.sort_floats(empty_vals).len());
+
+    let one_val: Vec<float> = Vec::new();
+    one_val.push(2.5);
+    print_floats(sort.sort_floats(one_val));
+
+    let vals: Vec<float> = Vec::new();
+    vals.push(3.14);
+    vals.push(1.0);
+    vals.push(2.71);
+    print_floats(sort.sort_floats(vals));
+
+    // ── Reverse floats: empty, singleton, ordering, original unchanged ─────
+    let empty_rev_vals: Vec<float> = Vec::new();
+    println(sort.reverse_floats(empty_rev_vals).len());
+
+    let one_rev_val: Vec<float> = Vec::new();
+    one_rev_val.push(2.5);
+    print_floats(sort.reverse_floats(one_rev_val));
+
+    print_floats(sort.reverse_floats(vals));
+
+    println(vals.get(0));
+    println(vals.get(1));
 }

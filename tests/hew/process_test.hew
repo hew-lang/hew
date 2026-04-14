@@ -22,12 +22,13 @@ fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
 }
 
 #[test]
-fn test_try_run_args_rejects_mismatched_arg_count() {
+fn test_try_run_args_rejects_mismatched_arg_count_with_guidance() {
     match process.try_run_args("printf", "one two", 1) {
         Ok(_) => panic("expected arg_count mismatch"),
         Err(err) => match err {
             ProcessError::InvalidArguments(message) => {
                 testing.assert_true(message.contains("arg_count"));
+                testing.assert_true(message.contains("process.try_run_argv"));
             },
             _ => panic("expected ProcessError::InvalidArguments"),
         },
@@ -35,9 +36,16 @@ fn test_try_run_args_rejects_mismatched_arg_count() {
 }
 
 #[test]
-fn test_run_args_legacy_wrapper_still_executes() {
-    let output = process.run_args("printf", "<%s>|<%s> alpha beta", 3);
-    testing.assert_eq_str(output, "<alpha>|<beta>");
+fn test_run_argv_replaces_legacy_run_args_usage() {
+    let args: Vec<String> = Vec::new();
+    args.push("<%s>|<%s>");
+    args.push("alpha");
+    args.push("beta");
+
+    let output = process.run_argv("printf", args);
+    testing.assert_true(output.exit_code == 0);
+    testing.assert_eq_str(output.stdout, "<alpha>|<beta>");
+    testing.assert_eq_str(output.stderr, "");
 }
 
 #[test]

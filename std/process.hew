@@ -119,7 +119,11 @@ fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
     }
 }
 
-fn split_packed_args(args: String) -> Vec<String> {
+fn legacy_packed_args_note() -> String {
+    "legacy packed-string API; prefer process.try_run_argv(command, Vec<String>)"
+}
+
+fn split_legacy_packed_args(args: String) -> Vec<String> {
     let raw_parts = string.split(args, " ");
     let filtered: Vec<String> = Vec::new();
     for i in 0..raw_parts.len() {
@@ -187,10 +191,11 @@ pub fn run_argv(command: String, args: Vec<String>) -> CommandOutput {
     }
 }
 
-/// Run a command with a legacy space-delimited argument string.
+/// Legacy compatibility wrapper for a space-delimited argument string.
 ///
-/// This wrapper preserves the legacy API, but it cannot represent empty
-/// arguments or arguments containing spaces. Prefer `try_run_argv`.
+/// This packed-string surface cannot represent empty arguments, quoted
+/// segments, or arguments containing spaces. Prefer
+/// `try_run_argv(command, Vec<String>)`.
 pub fn try_run_args(
     command: String,
     args: String,
@@ -198,24 +203,23 @@ pub fn try_run_args(
 ) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
         return Err(ProcessError::InvalidArguments(
-            "process.try_run_args: arg_count must be non-negative",
+            f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})",
         ));
     }
 
-    let argv = split_packed_args(args);
+    let argv = split_legacy_packed_args(args);
     if argv.len() != arg_count {
         return Err(ProcessError::InvalidArguments(
-            f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()}",
+            f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})",
         ));
     }
 
     try_run_argv(command, argv)
 }
 
-/// Run a command with explicit packed arguments and return stdout.
+/// Legacy compatibility wrapper for `run_args(command, args, arg_count)`.
 ///
-/// This preserves the legacy `run_args(command, args, arg_count)` signature.
-/// Prefer `try_run_argv(command, Vec<String>)` for safe argument passing.
+/// Prefer `run_argv(command, Vec<String>)` for safe argument passing.
 pub fn run_args(command: String, args: String, arg_count: i32) -> String {
     match try_run_args(command, args, arg_count) {
         Ok(output) => output.stdout,

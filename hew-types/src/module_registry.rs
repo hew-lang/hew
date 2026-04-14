@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::stdlib_loader::{load_module, module_short_name, ModuleInfo};
+use crate::stdlib_loader::{load_module_checked, module_short_name, ModuleInfo};
 
 /// On-demand module loader and cache.
 ///
@@ -94,6 +94,9 @@ pub enum ModuleError {
     ParseError {
         module_path: String,
         file_path: PathBuf,
+        line: usize,
+        column: usize,
+        message: String,
     },
 }
 
@@ -115,11 +118,14 @@ impl std::fmt::Display for ModuleError {
             ModuleError::ParseError {
                 module_path,
                 file_path,
+                line,
+                column,
+                message,
             } => {
                 write!(
                     f,
-                    "error: module `{module_path}` has parse errors in {}",
-                    file_path.display()
+                    "error: module `{module_path}` has parse error in {}:{line}:{column}: {message}",
+                    file_path.display(),
                 )
             }
         }
@@ -162,7 +168,7 @@ impl ModuleRegistry {
 
         // Try each search path in order.
         for search_path in &self.search_paths {
-            if let Some(info) = load_module(module_path, search_path) {
+            if let Some(info) = load_module_checked(module_path, search_path)? {
                 // Accumulate handle types and drop types.
                 for ht in &info.handle_types {
                     self.handle_types.insert(ht.clone());
@@ -284,6 +290,8 @@ impl ModuleRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -294,6 +302,32 @@ mod tests {
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::new(vec![test_root()])
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("target/test-workdirs")
+                .join(format!("{prefix}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 
     #[test]
@@ -331,6 +365,49 @@ mod tests {
             }
             ModuleError::ParseError { .. } => panic!("expected NotFound, got ParseError"),
         }
+    }
+
+    #[test]
+    fn load_malformed_module_returns_parse_error() {
+        let broken_dir = TestDir::new("module-registry-broken");
+        let broken_std = broken_dir.root.join("std");
+        fs::create_dir_all(&broken_std).unwrap();
+        let broken_file = broken_std.join("broken.hew");
+        fs::write(&broken_file, "pub fn broken() {\n    @\n}\n").unwrap();
+
+        let fallback_dir = TestDir::new("module-registry-fallback");
+        let fallback_std = fallback_dir.root.join("std");
+        fs::create_dir_all(&fallback_std).unwrap();
+        fs::write(
+            fallback_std.join("broken.hew"),
+            "pub fn broken(value: i32) -> i32 { value }\n",
+        )
+        .unwrap();
+
+        let mut reg = ModuleRegistry::new(vec![broken_dir.root.clone(), fallback_dir.root.clone()]);
+        let err = reg.load("std::broken").unwrap_err();
+        match err {
+            ModuleError::ParseError {
+                module_path,
+                file_path,
+                line,
+                column,
+                message,
+            } => {
+                assert_eq!(module_path, "std::broken");
+                assert_eq!(file_path, broken_file);
+                assert_eq!((line, column), (2, 5));
+                assert!(
+                    !message.is_empty(),
+                    "parse error should preserve the parser message"
+                );
+            }
+            ModuleError::NotFound { .. } => panic!("expected ParseError, got NotFound"),
+        }
+        assert!(
+            reg.get("std::broken").is_none(),
+            "malformed modules must not be cached or loaded from later search paths"
+        );
     }
 
     #[test]

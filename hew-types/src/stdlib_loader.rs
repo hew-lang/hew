@@ -11,6 +11,7 @@ use hew_parser::ast::{
 use hew_parser::parse;
 
 use crate::check::admissibility::signature_contains_error_type;
+use crate::module_registry::ModuleError;
 use crate::ty::Ty;
 
 /// All type information extracted from a single `.hew` module file.
@@ -50,15 +51,35 @@ pub struct ModuleInfo {
 /// Returns `None` if the `.hew` file cannot be found or parsed.
 #[must_use]
 pub fn load_module(module_path: &str, root: &Path) -> Option<ModuleInfo> {
-    let hew_path = resolve_hew_path(module_path, root)?;
-    let source = std::fs::read_to_string(&hew_path).ok()?;
+    load_module_checked(module_path, root).ok().flatten()
+}
+
+/// Load type information for a module, preserving parse errors for callers
+/// that need to distinguish malformed modules from missing ones.
+pub(crate) fn load_module_checked(
+    module_path: &str,
+    root: &Path,
+) -> Result<Option<ModuleInfo>, ModuleError> {
+    let Some(hew_path) = resolve_hew_path(module_path, root) else {
+        return Ok(None);
+    };
+    let Ok(source) = std::fs::read_to_string(&hew_path) else {
+        return Ok(None);
+    };
     let result = parse(&source);
-    if !result.errors.is_empty() {
-        return None;
+    if let Some(parse_error) = result.errors.first() {
+        let (line, column) = offset_to_line_col(&source, parse_error.span.start);
+        return Err(ModuleError::ParseError {
+            module_path: module_path.to_string(),
+            file_path: hew_path,
+            line,
+            column,
+            message: parse_error.message.clone(),
+        });
     }
 
     let module_short = module_short_name(module_path);
-    Some(extract_module_info(&result.program, &module_short))
+    Ok(Some(extract_module_info(&result.program, &module_short)))
 }
 
 /// Resolve a module path to a `.hew` file on disk.
@@ -104,6 +125,28 @@ pub fn module_short_name(module_path: &str) -> String {
         .next()
         .unwrap_or(module_path)
         .to_string()
+}
+
+fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let mut line = 1;
+    let mut col = 1;
+    let bytes = source.as_bytes();
+
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else if ch == '\r' && bytes.get(i + 1) == Some(&b'\n') {
+        } else {
+            col += 1;
+        }
+    }
+
+    (line, col)
 }
 
 /// Extract all type information from a parsed `.hew` program.
@@ -443,7 +486,9 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> PathBuf {
         // Tests run from the workspace root
@@ -451,6 +496,32 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf()
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("target/test-workdirs")
+                .join(format!("{prefix}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 
     #[test]
@@ -506,6 +577,35 @@ mod tests {
         // Should have clean name mapping for "parse"
         let has_parse = info.clean_names.iter().any(|(clean, _)| clean == "parse");
         assert!(has_parse, "json module should have 'parse' clean name");
+    }
+
+    #[test]
+    fn load_module_checked_reports_parse_error_location() {
+        let dir = TestDir::new("stdlib-loader-parse-error");
+        let std_dir = dir.root.join("std");
+        fs::create_dir_all(&std_dir).unwrap();
+        let file_path = std_dir.join("broken.hew");
+        fs::write(&file_path, "pub fn broken() {\n    @\n}\n").unwrap();
+
+        let err = load_module_checked("std::broken", &dir.root).unwrap_err();
+        match err {
+            ModuleError::ParseError {
+                module_path,
+                file_path: err_path,
+                line,
+                column,
+                message,
+            } => {
+                assert_eq!(module_path, "std::broken");
+                assert_eq!(err_path, file_path);
+                assert_eq!((line, column), (2, 5));
+                assert!(
+                    !message.is_empty(),
+                    "parse error should preserve the parser message"
+                );
+            }
+            ModuleError::NotFound { .. } => panic!("expected ParseError, got NotFound"),
+        }
     }
 
     #[test]

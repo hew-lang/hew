@@ -2255,8 +2255,14 @@ impl Checker {
             Err(ModuleError::NotFound { .. }) => {
                 Some("module not found in any search path".to_string())
             }
-            Err(ModuleError::ParseError { ref file_path, .. }) => Some(format!(
-                "module file `{}` has parse errors",
+            Err(ModuleError::ParseError {
+                ref file_path,
+                line,
+                column,
+                ref message,
+                ..
+            }) => Some(format!(
+                "module file `{}` has parse error at {line}:{column}: {message}",
                 file_path.display()
             )),
         };

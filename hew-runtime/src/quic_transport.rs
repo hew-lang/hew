@@ -1443,23 +1443,38 @@ mod tests {
     /// poisoned, without panicking.
     ///
     /// Exercises the two `lock_or_recover()` sites inside `quic_destroy`.
+    ///
+    /// The *server* transport is used here because it is the side that calls
+    /// `quic_listen()` — which places a real `Receiver<QuicConn>` inside
+    /// `incoming_rx` — and it holds the accepted connection in slot `sc`.
+    /// The client's `incoming_rx` is always `None` (client never calls
+    /// `listen()`), so poisoning the client would not exercise the
+    /// populated-`incoming_rx` code path.
     #[test]
     #[expect(
         clippy::cast_sign_loss,
-        reason = "conn IDs are non-negative on success; test asserts cc >= 0 before use"
+        reason = "conn IDs are non-negative on success; test asserts sc >= 0 before use"
     )]
     fn destroy_drops_conn_in_poisoned_slot() {
-        let (server, client, _sc, cc) = setup_loopback();
+        let (server, client, sc, _cc) = setup_loopback();
 
-        // Poison the slot holding the live connection and incoming_rx.
-        poison_quic_slot(client.qt(), cc as usize);
-        poison_incoming_rx(client.qt());
+        // Precondition: the server's incoming_rx must hold a real Receiver
+        // (Some) because listen() was called on it.
+        assert!(
+            server.qt().incoming_rx.lock_or_recover().is_some(),
+            "precondition: server incoming_rx must be Some after listen()"
+        );
 
-        // Dropping client calls hew_transport_quic_free → quic_destroy.
-        // quic_destroy clears all slots and incoming_rx via lock_or_recover;
-        // it must complete without panicking.
-        drop(client);
+        // Poison the slot holding the live server-side connection and the
+        // populated incoming_rx.
+        poison_quic_slot(server.qt(), sc as usize);
+        poison_incoming_rx(server.qt());
 
+        // Dropping server calls hew_transport_quic_free → quic_destroy.
+        // quic_destroy clears the live connection slot (sc) and the populated
+        // incoming_rx Receiver via lock_or_recover; it must not panic.
         drop(server);
+
+        drop(client);
     }
 }

@@ -119,6 +119,29 @@ fn get_scheduler() -> Option<&'static Scheduler> {
     }
 }
 
+/// Return `true` when the native scheduler has no observable work left to drain.
+///
+/// This is used by graceful shutdown to stop waiting once the runtime is
+/// already idle, rather than always sleeping until the full wall-clock drain
+/// timeout expires.
+pub(crate) fn drain_is_idle() -> bool {
+    let Some(sched) = get_scheduler() else {
+        return true;
+    };
+
+    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 {
+        return false;
+    }
+    if !sched.global_queue.is_empty() {
+        return false;
+    }
+    if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
+        return false;
+    }
+
+    ACTIVE_WORKERS.load(Ordering::Acquire) == 0
+}
+
 /// The scheduler owns the shared global queue, per-worker stealers,
 /// shutdown flag, and condvar for worker parking.
 ///
@@ -1354,5 +1377,78 @@ mod tests {
             // other thread references it after the swap.
             drop(unsafe { Box::from_raw(ptr) });
         }
+    }
+
+    #[test]
+    fn drain_is_idle_requires_empty_scheduler() {
+        let parker = Parker {
+            mutex: Mutex::new(()),
+            cond: Condvar::new(),
+        };
+        // SAFETY: single-threaded test setup; the deque lives for the whole test.
+        let (queued_work, queued_stealer) = unsafe { crate::deque::WorkDeque::new() };
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![parker],
+            stealers: vec![queued_stealer],
+            worker_handles: Mutex::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+        assert!(
+            drain_is_idle(),
+            "empty scheduler should be considered drained"
+        );
+
+        ACTIVE_WORKERS.store(1, Ordering::Release);
+        assert!(
+            !drain_is_idle(),
+            "active worker must keep drain wait alive until dispatch completes"
+        );
+
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+        // SAFETY: sched_ptr was allocated above and remains owned by this test.
+        unsafe {
+            (&*sched_ptr)
+                .global_queue
+                .push(std::ptr::dangling_mut::<()>());
+        };
+        assert!(
+            !drain_is_idle(),
+            "global queue work must keep drain wait alive"
+        );
+        // SAFETY: sched_ptr remains valid until the cleanup swap below.
+        let drain_local = unsafe { &*sched_ptr };
+        assert!(
+            drain_local
+                .global_queue
+                .steal_batch_and_pop(&queued_work)
+                .is_some(),
+            "test setup must be able to drain injected work"
+        );
+        while queued_work.pop().is_some() {}
+
+        queued_work.push(std::ptr::dangling_mut::<()>());
+        assert!(
+            !drain_is_idle(),
+            "local worker deque work must keep drain wait alive"
+        );
+        assert_eq!(queued_work.pop(), Some(std::ptr::dangling_mut::<()>()));
+        assert!(
+            drain_is_idle(),
+            "scheduler should report drained after work clears"
+        );
+
+        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+        ACTIVE_WORKERS.store(0, Ordering::Release);
     }
 }

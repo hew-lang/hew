@@ -40,6 +40,8 @@ static SHUTDOWN_PHASE: AtomicI32 = AtomicI32::new(PHASE_RUNNING);
 
 /// Default drain timeout in milliseconds.
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5_000;
+/// Poll interval while waiting for the scheduler to drain existing work.
+const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Wrapper for `*mut HewSupervisor` to impl `Send`.
 ///
@@ -336,11 +338,22 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
 
     if !drain_timeout.is_zero() {
         let deadline = Instant::now() + drain_timeout;
+        let mut idle_polls = 0;
         while Instant::now() < deadline {
-            // Check if there are any runnable actors left.
-            // We approximate by checking global queue emptiness.
-            // Workers will naturally drain their local queues.
-            std::thread::sleep(Duration::from_millis(50));
+            if scheduler::drain_is_idle() {
+                idle_polls += 1;
+                if idle_polls >= 2 {
+                    break;
+                }
+            } else {
+                idle_polls = 0;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
         }
     }
 
@@ -841,6 +854,30 @@ mod tests {
         assert!(
             !is_supervisor_registered_for_test(sup),
             "supervisor must be drained by shutdown_orchestrate even after mutex poison"
+        );
+
+        reset_shutdown_state();
+    }
+
+    #[test]
+    fn shutdown_orchestrate_returns_early_when_drain_is_already_idle() {
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+
+        let timeout = Duration::from_millis(250);
+        let started = Instant::now();
+        shutdown_orchestrate(timeout);
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            PHASE_DONE,
+            "shutdown_orchestrate must still complete the shutdown sequence"
+        );
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "shutdown should exit early once the runtime is already drained; elapsed={elapsed:?}"
         );
 
         reset_shutdown_state();

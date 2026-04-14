@@ -2,6 +2,10 @@
 //!
 //! Read, write, and query files on the local file system.
 //!
+//! For path-only helpers prefer `std::path`, and for stdin/stdout prefer
+//! `std::io`. This module keeps `fs.exists` and `fs.read_line` as
+//! compatibility surfaces for existing code.
+//!
 //! # Error Handling
 //!
 //! `IoError` is the stable user-facing error enum for file-system failures.
@@ -27,6 +31,7 @@
 //! }
 //! ```
 
+import std::io;
 import std::path;
 
 // ── Error type ───────────────────────────────────────────────────────
@@ -178,6 +183,9 @@ pub fn try_append(file_path: String, content: String) -> Result<i32, IoError> {
 
 /// Check whether a file exists at the given path.
 ///
+/// Compatibility note: `std::path` also exposes existence predicates, but
+/// `fs.exists` remains the validated native existence probe on current main.
+///
 /// # Examples
 ///
 /// ```
@@ -212,15 +220,19 @@ pub fn size(path: String) -> i64 {
 /// Read a single line from standard input.
 ///
 /// Blocks until the user presses Enter.
+/// Prefer `io.read_line()` in new code; `fs.read_line()` remains as a
+/// compatibility alias.
 ///
 /// # Examples
 ///
 /// ```
+/// import std::io;
+///
 /// print("Name: ");
-/// let name = fs.read_line();
+/// let name = io.read_line();
 /// ```
 pub fn read_line() -> String {
-    unsafe { hew_stdin_read_line() }
+    io.read_line()
 }
 
 /// Read the raw bytes of a file into a `bytes` value.
@@ -390,7 +402,6 @@ extern "C" {
     fn hew_file_exists(path: String) -> bool;
     fn hew_file_delete(path: String) -> i32;
     fn hew_file_size(path: String) -> i64;
-    fn hew_stdin_read_line() -> String;
     fn hew_file_read_bytes(path: String) -> bytes;
     fn hew_file_write_bytes(path: String, data: bytes) -> i32;
     fn hew_fs_mkdir(path: String) -> i32;

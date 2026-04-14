@@ -711,12 +711,14 @@ When importing a standard library module, the **last segment** of the module pat
 ```hew
 import std::net::http;     // Available as "http", not "std::net::http"
 import std::fs;            // Available as "fs"
+import std::io;            // Available as "io"
 import std::text::regex;   // Available as "regex"
 
 // Call module functions with dot-syntax: module.function(args)
 let server = http.listen("0.0.0.0:8080");   // Uses short name "http"
 let content = fs.read("config.toml");
 let exists = fs.exists("output.txt");       // Returns bool
+let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
 let matched = regex.is_match(re, input);    // Returns bool
 ```
@@ -726,7 +728,8 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | Module             | Example functions                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `std::net::http`   | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
-| `std::fs`          | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`, `fs.read_line`                                                                      |
+| `std::fs`          | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                      |
+| `std::io`          | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                    |
 | `std::os`          | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                           |
 | `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`, `net.close`                                                                              |
 | `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
@@ -734,6 +737,10 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::process`     | `process.run`, `process.spawn`, `process.wait`, `process.kill`                                                                                               |
 
 Predicate functions (`fs.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
+
+`fs.read_line()` remains available as a compatibility alias, but `io.read_line()`
+is the canonical stdin helper on current main. `fs.exists()` remains the
+validated existence probe on current native builds.
 
 **Visibility modifiers:**
 

@@ -1,8 +1,7 @@
 import std::net;
 
+import std::io;
 import std::os;
-
-import std::fs;
 
 extern "C" {
     fn hew_bytes_to_string(data: bytes) -> String;
@@ -52,7 +51,7 @@ fn main() {
     reader.start(0);
     var running = true;
     while running {
-        let line = fs.read_line();
+        let line = io.read_line();
         if line.contains("/quit") {
             running = false;
             conn.close();

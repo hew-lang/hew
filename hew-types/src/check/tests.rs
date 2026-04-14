@@ -10087,11 +10087,25 @@ mod wasm_rejects {
             .any(|e| e.kind == TypeErrorKind::PlatformLimitation)
     }
 
+    fn has_platform_limitation_warning(output: &TypeCheckOutput) -> bool {
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::PlatformLimitation)
+    }
+
     fn platform_error_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
         output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(fragment))
+    }
+
+    fn platform_warning_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains(fragment))
     }
 
     // ── sleep_ms ─────────────────────────────────────────────────────────────
@@ -10100,13 +10114,18 @@ mod wasm_rejects {
     fn wasm_rejects_sleep_ms() {
         let output = check_wasm("fn main() { sleep_ms(100); }");
         assert!(
-            has_platform_limitation_error(&output),
-            "sleep_ms should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
+            has_platform_limitation_warning(&output),
+            "sleep_ms should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
         );
         assert!(
-            platform_error_contains(&output, "Timer"),
-            "error message should mention Timer feature; got: {:?}",
+            platform_warning_contains(&output, "Timer"),
+            "warning message should mention Timer feature; got: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "sleep_ms should NOT be a compile-time error on WASM (cooperative semantics); got errors: {:?}",
             output.errors
         );
     }
@@ -10115,8 +10134,13 @@ mod wasm_rejects {
     fn wasm_rejects_sleep() {
         let output = check_wasm("fn main() { sleep(1); }");
         assert!(
-            has_platform_limitation_error(&output),
-            "sleep should be a compile-time error on WASM; got errors: {:?}",
+            has_platform_limitation_warning(&output),
+            "sleep should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "sleep should NOT be a compile-time error on WASM (cooperative semantics); got errors: {:?}",
             output.errors
         );
     }
@@ -10248,17 +10272,17 @@ mod wasm_rejects {
     #[test]
     fn wasm_reject_deduplicates_same_span() {
         // Two consecutive calls at different call sites should produce two
-        // errors, not one (each span is unique).
+        // warnings, not one (each span is unique).
         let output = check_wasm("fn main() { sleep_ms(100); sleep_ms(200); }");
         let count = output
-            .errors
+            .warnings
             .iter()
-            .filter(|e| e.kind == TypeErrorKind::PlatformLimitation && e.message.contains("Timer"))
+            .filter(|w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Timer"))
             .count();
         assert_eq!(
             count, 2,
-            "two distinct sleep_ms call sites should produce two errors; got: {:?}",
-            output.errors
+            "two distinct sleep_ms call sites should produce two warnings; got: {:?}",
+            output.warnings
         );
     }
 

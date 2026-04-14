@@ -46,7 +46,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | ⚠️ Warn (`StructuredConcurrency`) | Diagnostic path | WASM-TODO |
 | Scope-spawned `Task` handles | ⚠️ Warn (`Tasks`) | Diagnostic path | WASM-TODO |
 | **`channel.new`, `Sender<T>::*`, `Receiver<T>::*`** | 🚫 Error (`Channels`) | `unreachable!()` trap | WASM-TODO |
-| **`sleep_ms`, `sleep`** | 🚫 Error (`Timers`) | Silent no-op shim | WASM-TODO |
+| **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
@@ -64,6 +64,12 @@ codegen produces grouped diagnostics if they reach lowering.
 These exist as warnings (not errors) to allow gradual migration: a program can
 be partially WASM-compatible and still get useful analysis feedback.
 
+This group includes `sleep_ms`/`sleep`, which now have cooperative semantics on
+WASM: the actor is parked at the **message boundary** (not mid-handler) and
+re-enqueued once the deadline passes.  The warning reminds callers that code
+after `sleep_ms` in the same receive handler still executes before the actor
+parks, which differs from the native OS-sleep behavior.
+
 ### 🚫 Error (compile-time reject)
 
 Features in the **Error** group are rejected at compile time because their
@@ -79,12 +85,13 @@ runtime stubs are **silent traps** or **silent no-ops**:
     cooperative-scheduler `recv` yield/resume and `send` backpressure are
     available.  See `hew-runtime/src/channel_wasm.rs`.
 
-- **Timers** (`sleep_ms`, `sleep`): The wasm32 shim for `hew_sleep_ms` returns
-  immediately (intentional noop, see `wasm_stubs`).  Code that expects a delay
-  silently runs without it.  Making this an error forces callers to use the
-  host-driven reschedule model instead.
-  - WASM-TODO: integrate with `wasi::clock_time_get(CLOCK_MONOTONIC)` or
-    `setTimeout` for host-driven rescheduling.
+- **Timers** (`sleep_ms`, `sleep`): The runtime now parks the actor at the
+  message boundary and re-enqueues it once the deadline passes.  The checker
+  emits a **warning** (not an error) to inform callers of the cooperative
+  semantics difference.  Code after `sleep_ms` in the same receive handler
+  still executes before the park.  Host embedders should call
+  `hew_wasm_timer_tick(now_ms)` on each event-loop iteration to advance
+  sleeping actors.
 
 - **Streams**: The `stream` runtime module is entirely gated out on wasm32
   (`#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`).  Any
@@ -123,11 +130,10 @@ reject_wasm_feature   → Severity::Error    → self.errors
 
 **Warn group** is wired in:
 - `hew-types/src/check/expressions.rs :: maybe_warn_wasm_expr` (scope/tasks)
-- `hew-types/src/check/calls.rs :: warn_if_wasm_incompatible_call` (link/monitor/supervisor)
+- `hew-types/src/check/calls.rs :: warn_if_wasm_incompatible_call` (link/monitor/supervisor, sleep_ms/sleep → Timers)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
 
 **Reject group** is wired in:
-- `hew-types/src/check/calls.rs :: warn_if_wasm_incompatible_call` (sleep_ms, sleep → Timers)
 - `hew-types/src/check/methods.rs :: check_method_call` (channel.* → Channels, stream.* → Streams)
 - `hew-types/src/check/methods.rs` Sender/Receiver match arms (Channels)
 - `hew-types/src/check/methods.rs` Stream match arm (Streams)
@@ -141,7 +147,6 @@ These gaps are explicitly deferred and tracked here:
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
 | Single-threaded channel queues | Cooperative-scheduler recv yield/resume + send backpressure; groundwork queue in `channel_wasm.rs` | `WASM-TODO: channels` |
-| Host-driven timer rescheduling | WASI `clock_time_get` / `setTimeout` | `WASM-TODO: timers` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |

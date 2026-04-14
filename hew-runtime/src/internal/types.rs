@@ -21,7 +21,7 @@ pub enum HewOverflowPolicy {
     Coalesce = 4,
 }
 
-/// Actor state (7-state CAS machine).
+/// Actor state (8-state CAS machine).
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HewActorState {
@@ -32,6 +32,11 @@ pub enum HewActorState {
     Stopping = 4,
     Crashed = 5,
     Stopped = 6,
+    /// Actor is parked in the WASM sleep queue (cooperative `sleep_ms` path).
+    /// Distinguished from `Idle` so that message sends do not wake the actor
+    /// early; messages queue in the mailbox and are processed when the timer
+    /// fires.  Only the cooperative WASM scheduler sets/clears this state.
+    Sleeping = 7,
 }
 
 /// Error codes returned by runtime functions.

@@ -513,6 +513,15 @@ pub(crate) unsafe fn cleanup_all_actors() {
             crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
         }
 
+        // Remove any SLEEP_QUEUE entry for this actor before freeing it.
+        // This prevents a use-after-free if hew_wasm_timer_tick is called after
+        // cleanup but before the queue entry is drained naturally.
+        // SAFETY: scheduler is shut down; no concurrent SLEEP_QUEUE access.
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
+        }
+
         // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
@@ -2645,9 +2654,10 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
             break;
         }
 
-        if remaining == 0 {
-            // No runnable work remains. Cancel the channel for both bounded and
-            // unbounded asks so any later replier skips allocating reply data.
+        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
+            // Both run queue and sleep queue are empty.  Cancel the channel
+            // for both bounded and unbounded asks so any later replier skips
+            // allocating reply data.
             // SAFETY: ch remains live until the caller-side reference is released below.
             unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
             // SAFETY: release the caller-side reference before returning without a reply.
@@ -2783,7 +2793,7 @@ pub unsafe extern "C" fn hew_actor_await(actor: *mut HewActor) -> i32 {
         if is_terminal(a.actor_state.load(Ordering::Acquire)) {
             return a.error_code.load(Ordering::Acquire);
         }
-        if remaining == 0 {
+        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
             return HewError::ErrTimeout as i32;
         }
     }
@@ -2857,6 +2867,25 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     {
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
+        return;
+    }
+
+    // If SLEEPING, cancel the sleep-queue entry and transition to STOPPED.
+    // Sleeping actors use a distinct state so message sends don't wake them
+    // early; closing one must still produce an immediate terminal transition.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Sleeping as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
+        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // SAFETY: actor just transitioned to Stopped.
+        unsafe { call_terminate_fn(actor) };
     }
 }
 
@@ -2885,6 +2914,23 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         .is_ok()
     {
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
+        unsafe { call_terminate_fn(actor) };
+        return;
+    }
+
+    // If SLEEPING, cancel the sleep-queue entry and stop immediately.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Sleeping as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
+        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
+        // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
         return;
     }

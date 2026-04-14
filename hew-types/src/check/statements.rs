@@ -721,6 +721,10 @@ impl Checker {
                         }
                         inner
                     }
+                    // Propagate already-errored or divergent iterable expressions
+                    // without adding a redundant "type is not iterable" diagnostic.
+                    Ty::Error => Ty::Error,
+                    Ty::Never => Ty::Never,
                     _ => {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,

@@ -10649,4 +10649,30 @@ mod for_loop_iterable_fail_closed {
             "Range<i64> iterable must not emit errors; got: {errors:?}",
         );
     }
+
+    // ── already-errored / divergent iterables must not get extra diagnostics ─
+
+    #[test]
+    fn error_typed_iterable_does_not_emit_extra_not_iterable_diagnostic() {
+        // Ty::Error propagates silently; no spurious "type is not iterable".
+        let errors = check_for_over(Ty::Error);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "Ty::Error iterable must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn never_typed_iterable_does_not_emit_not_iterable_diagnostic() {
+        // Ty::Never is divergent; no spurious "type is not iterable".
+        let errors = check_for_over(Ty::Never);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "Ty::Never iterable must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
 }

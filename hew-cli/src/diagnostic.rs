@@ -78,10 +78,20 @@ fn diagnostic_capture_active() -> bool {
     DIAG_CAPTURE.with(|c| c.borrow().is_some())
 }
 
-fn use_ansi_diagnostics() -> bool {
-    !diagnostic_capture_active()
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::io::stderr().is_terminal()
+fn should_use_ansi_output(
+    stderr_is_terminal: bool,
+    no_color_set: bool,
+    diagnostic_capture_active: bool,
+) -> bool {
+    !diagnostic_capture_active && !no_color_set && stderr_is_terminal
+}
+
+pub(crate) fn use_ansi_diagnostics() -> bool {
+    should_use_ansi_output(
+        std::io::stderr().is_terminal(),
+        std::env::var_os("NO_COLOR").is_some(),
+        diagnostic_capture_active(),
+    )
 }
 
 fn diagnostic_palette() -> DiagnosticPalette {
@@ -534,5 +544,13 @@ mod tests {
             "captured diagnostics must not contain ANSI escapes: {captured:?}"
         );
         assert!(captured.contains("main.hew:1:1: error: bad call"));
+    }
+
+    #[test]
+    fn ansi_output_requires_tty_without_no_color_or_capture() {
+        assert!(should_use_ansi_output(true, false, false));
+        assert!(!should_use_ansi_output(false, false, false));
+        assert!(!should_use_ansi_output(true, true, false));
+        assert!(!should_use_ansi_output(true, false, true));
     }
 }

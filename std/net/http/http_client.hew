@@ -9,6 +9,8 @@
 //!
 //! Response accessors: `status()`, `body()`, `header(name)`, `content_type()`,
 //! `headers()` (all headers as `Vec<(String, String)>`), and `free()`.
+//! The `_string` convenience helpers (`request_string`, `get_string`,
+//! `post_string`) return `Option<String>` — `None` on transport failure.
 //!
 //! # Examples
 //!
@@ -16,8 +18,10 @@
 //! import std::net::http::http_client;
 //!
 //! fn main() {
-//!     let body = http_client.get_string("https://example.com");
-//!     println(body);
+//!     match http_client.get_string("https://example.com") {
+//!         Some(body) => println(body),
+//!         None => println("request failed"),
+//!     }
 //!
 //!     let headers: Vec<(String, String)> = Vec::new();
 //!     headers.push(("Accept", "application/json"));
@@ -117,19 +121,29 @@ pub fn request(method: String, url: String, body: String, headers: Vec<(String, 
 /// Perform an HTTP request and return the response body as a string.
 ///
 /// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
-/// Returns `null` on transport or network failure. Non-2xx HTTP responses
-/// still return a non-null string (the body may be empty); use
-/// `http_client.request` to inspect the status code.
+/// Returns `None` on transport or network failure. Non-2xx HTTP responses
+/// still return `Some` (the body may be empty); use `http_client.request`
+/// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```
 /// let headers: Vec<(String, String)> = Vec::new();
-/// let body = http_client.request_string("GET", "https://example.com", "", headers);
-/// println(body);
+/// match http_client.request_string("GET", "https://example.com", "", headers) {
+///     Some(body) => println(body),
+///     None => println("request failed"),
+/// }
 /// ```
-pub fn request_string(method: String, url: String, body: String, headers: Vec<(String, String)>) -> String {
-    unsafe { hew_http_request_string_hew(method, url, body, headers) }
+pub fn request_string(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Option<String> {
+    let resp = unsafe { hew_http_request_hew(method, url, body, headers) };
+    let status = unsafe { hew_http_response_status(resp) };
+    if status < 0 {
+        unsafe { hew_http_response_free(resp) };
+        return None;
+    }
+    let result = unsafe { hew_http_response_body(resp) };
+    unsafe { hew_http_response_free(resp) };
+    Some(result)
 }
 
 /// Set the global timeout applied to subsequent outbound HTTP requests.
@@ -169,37 +183,41 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 /// This is a convenience function that combines the request and body
 /// extraction in a single call.
 ///
-/// Returns `null` on transport or network failure. Non-2xx HTTP responses
-/// still return a non-null string (the body may be empty); use
-/// `http_client.get` to inspect the status code.
+/// Returns `None` on transport or network failure. Non-2xx HTTP responses
+/// still return `Some` (the body may be empty); use `http_client.get`
+/// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```
-/// let body = http_client.get_string("https://example.com");
-/// println(body);
+/// match http_client.get_string("https://example.com") {
+///     Some(body) => println(body),
+///     None => println("request failed"),
+/// }
 /// ```
-pub fn get_string(url: String) -> String {
+pub fn get_string(url: String) -> Option<String> {
     request_string("GET", url, "", empty_headers())
 }
 
 /// Perform an HTTP POST request and return the response body as a string.
 ///
-/// Returns `null` on transport or network failure. Non-2xx HTTP responses
-/// still return a non-null string (the body may be empty); use
-/// `http_client.post` to inspect the status code.
+/// Returns `None` on transport or network failure. Non-2xx HTTP responses
+/// still return `Some` (the body may be empty); use `http_client.post`
+/// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```
-/// let body = http_client.post_string(
+/// match http_client.post_string(
 ///     "https://api.example.com/submit",
 ///     "application/json",
 ///     "{\"key\": \"value\"}",
-/// );
-/// println(body);
+/// ) {
+///     Some(body) => println(body),
+///     None => println("request failed"),
+/// }
 /// ```
-pub fn post_string(url: String, content_type: String, body: String) -> String {
+pub fn post_string(url: String, content_type: String, body: String) -> Option<String> {
     request_string("POST", url, body, content_type_headers(content_type))
 }
 
@@ -207,7 +225,6 @@ pub fn post_string(url: String, content_type: String, body: String) -> String {
 
 extern "C" {
     fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response;
-    fn hew_http_request_string_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> String;
     fn hew_http_set_timeout(timeout_ms: i32);
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;

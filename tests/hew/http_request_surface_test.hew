@@ -18,8 +18,12 @@ fn test_request_string_surface_is_importable_from_http_client() {
     let headers: Vec<(String, String)> = Vec::new();
     http_client.set_timeout(250);
 
-    let _body = http_client.request_string("TRACE", "http://example.com", "", headers);
-    testing.assert_true(true);
+    // TRACE is unsupported — returns None (transport/validation failure).
+    let result = http_client.request_string("TRACE", "http://example.com", "", headers);
+    match result {
+        Some(_) => testing.assert_true(true),
+        None => testing.assert_true(true),
+    }
 }
 
 #[test]

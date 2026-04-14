@@ -1661,4 +1661,41 @@ mod tests {
         assert_eq!(body, "hew request string");
         handle.join().unwrap();
     }
+
+    // -- primitive-chain success path (exercises the Hew-level request_string wrapper) --
+
+    #[test]
+    fn loopback_primitive_chain_some_path() {
+        // Verifies that the chain hew_http_request_hew → hew_http_response_status →
+        // hew_http_response_body → hew_http_response_free works end-to-end with a
+        // successful 200 response, matching the logic of the Hew-level `request_string`.
+        let (addr, handle) = start_echo_server(200, "primitive chain body");
+        let method = CString::new("GET").unwrap();
+        let url = CString::new(format!("{addr}/primitive-chain")).unwrap();
+        // SAFETY: make_tuple_vec returns a live, empty Vec<(String, String)> handle.
+        let headers = unsafe { make_tuple_vec(&[]) };
+        // SAFETY: method/url are valid C strings and headers is a valid tuple vec.
+        let resp =
+            unsafe { hew_http_request_hew(method.as_ptr(), url.as_ptr(), ptr::null(), headers) };
+        // SAFETY: headers was allocated by make_tuple_vec.
+        unsafe { hew_cabi::vec::hew_vec_free(headers) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid non-null HewHttpResponse.
+        let status = unsafe { hew_http_response_status(resp) };
+        assert!(status >= 0, "status must be ≥ 0 (Some path); got {status}");
+        // SAFETY: resp is still valid.
+        let body_ptr = unsafe { hew_http_response_body(resp) };
+        assert!(!body_ptr.is_null());
+        // SAFETY: body_ptr is a valid malloc'd C string from hew_http_response_body.
+        let body = unsafe { CStr::from_ptr(body_ptr) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: body_ptr was malloc'd by hew_http_response_body.
+        unsafe { libc::free(body_ptr.cast()) };
+        // SAFETY: resp is still valid; free it last.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(body, "primitive chain body");
+        handle.join().unwrap();
+    }
 }

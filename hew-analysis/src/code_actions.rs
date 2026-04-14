@@ -21,12 +21,26 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
     for diag in diagnostics {
         let kind = diag.kind.as_deref();
         match kind {
-            // Suggestion-based rename: replace the erroneous identifier with a
-            // known-good alternative from the type checker's suggestions list.
-            Some(
-                "UndefinedVariable" | "UndefinedFunction" | "UndefinedType" | "UndefinedField"
-                | "UndefinedMethod",
-            ) => {
+            // UndefinedFunction: the type checker spans the entire call expression
+            // (e.g. `fooo()`).  Trim to the callee identifier only so the edit
+            // rewrites the name and leaves the argument list intact.
+            Some("UndefinedFunction") => {
+                let callee_span = trim_to_callee_name(source, diag.span);
+                for suggestion in &diag.suggestions {
+                    let name = extract_suggestion_name(suggestion);
+                    actions.push(CodeAction {
+                        title: format!("Replace with `{name}`"),
+                        edits: vec![RenameEdit {
+                            span: callee_span,
+                            new_text: name,
+                        }],
+                    });
+                }
+            }
+
+            // Suggestion-based rename for spans that already cover exactly the
+            // erroneous identifier (variable, type, field, method).
+            Some("UndefinedVariable" | "UndefinedType" | "UndefinedField" | "UndefinedMethod") => {
                 for suggestion in &diag.suggestions {
                     let name = extract_suggestion_name(suggestion);
                     actions.push(CodeAction {
@@ -121,6 +135,44 @@ fn extract_suggestion_name(suggestion: &str) -> String {
         }
     }
     suggestion.to_string()
+}
+
+/// For an `UndefinedFunction` diagnostic whose span covers the full call
+/// expression, return a span covering only the callee path token.
+///
+/// Walks identifier bytes (`[A-Za-z0-9_]`) and `::` path separators, stopping
+/// at the first byte that is neither part of an identifier nor a `::` prefix.
+/// This correctly handles all call forms:
+/// - plain calls:                 `fooo()`              → `fooo`
+/// - qualified paths:             `Vec::neww()`         → `Vec::neww`
+/// - generic calls:               `fooo<T>()`           → `fooo`
+/// - trivia before type args:     `fooo /*c*/ <T>()`    → `fooo`
+/// - qualified generic calls:     `Vec::neww<T>()`      → `Vec::neww`
+fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
+    let region = source.get(span.start..span.end).unwrap_or("").as_bytes();
+    let mut pos = 0;
+    loop {
+        // Walk one identifier segment.
+        while pos < region.len() && (region[pos].is_ascii_alphanumeric() || region[pos] == b'_') {
+            pos += 1;
+        }
+        // Continue through `::` only when the next byte after `::` is also a
+        // valid identifier start — this prevents walking into `::` trailing
+        // separators or `::=` and similar tokens.
+        if pos + 2 < region.len()
+            && region[pos] == b':'
+            && region[pos + 1] == b':'
+            && (region[pos + 2].is_ascii_alphanumeric() || region[pos + 2] == b'_')
+        {
+            pos += 2;
+            continue;
+        }
+        break;
+    }
+    OffsetSpan {
+        start: span.start,
+        end: span.start + pos,
+    }
 }
 
 /// Search backwards from `diag_offset` for `keyword` (either `"let"` or
@@ -234,6 +286,114 @@ mod tests {
         assert_eq!(actions[0].title, "Replace with `food`");
         assert_eq!(actions[0].edits[0].new_text, "food");
         assert_eq!(actions[1].title, "Replace with `foobar`");
+    }
+
+    #[test]
+    fn undefined_function_action_trims_call_expr_to_callee() {
+        // The type checker spans the whole call expression `fooo()` (bytes 24–30).
+        // The edit must replace only `fooo` (bytes 24–28) so `()` is preserved.
+        let source = "fn foo() {} fn main() { fooo(); }";
+        //                                       ^   ^
+        //                                      24  28 = start of '('
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo()`
+            30, // end of `fooo()` — past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `foo`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the callee name, not the parentheses.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must yield valid, call-preserving source.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo(); }");
+    }
+
+    #[test]
+    fn undefined_function_generic_call_trims_to_callee_only() {
+        // Generic call `fooo<i64>()`: span covers `fooo<i64>()` (bytes 24–35).
+        // The edit must replace only `fooo` (bytes 24–28), leaving `<i64>()`
+        // intact so the corrected source becomes `foo<i64>()`.
+        let source = "fn foo() {} fn main() { fooo<i64>(); }";
+        //                                       ^   ^    ^
+        //                                      24  28   35 = end of ')'
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo<i64>()`
+            35, // end of `fooo<i64>()` — past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `foo`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the callee, not `<i64>()`.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must preserve the type-argument list.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo<i64>(); }");
+    }
+
+    #[test]
+    fn undefined_function_trivia_between_callee_and_type_args() {
+        // `fooo /*keep*/ <i64>()`: interstitial comment between callee and `<`.
+        // Trimming at `<` would produce `fooo /*keep*/ ` as the edit span;
+        // trimming by identifier bytes must produce only `fooo` (bytes 24–28).
+        let source = "fn foo() {} fn main() { fooo /*keep*/ <i64>(); }";
+        //                                       ^   ^          ^
+        //                                      24  28         45 = end of ')'
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `fooo`",
+            24, // start of `fooo /*keep*/ <i64>()`
+            45, // end past ')'
+            vec!["foo"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "foo");
+        // Edit must cover only the identifier token `fooo`, not the comment
+        // or type-argument list.
+        assert_eq!(edit.span, OffsetSpan { start: 24, end: 28 });
+        // Applying the edit must preserve the comment and type-argument list.
+        let corrected = format!("{}{}{}", &source[..24], "foo", &source[28..]);
+        assert_eq!(corrected, "fn foo() {} fn main() { foo /*keep*/ <i64>(); }");
+    }
+
+    #[test]
+    fn undefined_function_qualified_path_replaces_full_callee_path() {
+        // `Vec::neww()`: the callee is the qualified path `Vec::neww`.
+        // Trimming at the first `::` separator would leave only `Vec`; replacing
+        // `Vec` with the suggestion `Vec::new` would produce `Vec::new::neww()`.
+        // The correct edit span must cover the entire path `Vec::neww` (bytes 20–29).
+        let source = "fn main() { let _ = Vec::neww(); }";
+        //                                   ^       ^
+        //                                  20      29 = start of '('
+        let d = diag_with_suggestions(
+            "UndefinedFunction",
+            "undefined function `Vec::neww`",
+            20, // start of `Vec::neww()`
+            31, // end past ')'
+            vec!["Vec::new"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace with `Vec::new`");
+        let edit = &actions[0].edits[0];
+        assert_eq!(edit.new_text, "Vec::new");
+        // Edit span must cover the full callee path, not just the first segment.
+        assert_eq!(edit.span, OffsetSpan { start: 20, end: 29 });
+        // Applying the edit must yield the corrected call.
+        let corrected = format!("{}{}{}", &source[..20], "Vec::new", &source[29..]);
+        assert_eq!(corrected, "fn main() { let _ = Vec::new(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────

@@ -656,4 +656,514 @@ mod tests {
             }
         }
     }
+
+    /// Full `analyze()` → `code_actions()` round-trip through the browser-bridge seam.
+    ///
+    /// The browser playground calls `analyze()`, extracts diagnostics (which now
+    /// carry `suggestions`), converts the span shape (`start_offset`/`end_offset`
+    /// → `span: {start, end}`), then calls `code_actions()`.  This test
+    /// exercises that full path to prove suggestions produced by the type checker
+    /// survive in a form that yields real code actions with exact span fidelity.
+    #[test]
+    fn analyze_suggestions_flow_through_to_code_actions() {
+        // `fooo` is an undefined *variable* reference (not a call) so the
+        // diagnostic span covers exactly the identifier, not trailing parens.
+        // `foo` in scope has edit-distance 1 ≤ max_dist 1 and will be suggested.
+        let source = "fn main() { let foo = 1; let _y = fooo; }";
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedVariable"))
+            .unwrap_or_else(|| {
+                panic!("expected an UndefinedVariable diagnostic for `fooo`; got: {analyze_json}")
+            });
+
+        // The diagnostic span must cover exactly the undefined identifier.
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            &source[diag_start..diag_end],
+            "fooo",
+            "diagnostic span must cover exactly the undefined identifier `fooo`"
+        );
+
+        // The suggestion `foo` must be present (raw name, not backtick-wrapped).
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo`; got: {suggestions:?}"
+        );
+
+        // Reconstruct the DiagnosticInfo-format JSON that the browser bridge
+        // assembles: convert start_offset/end_offset → span.{start,end}.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) from analyze() suggestions; got: {actions_json}"
+        );
+
+        // The first action must be "Replace with `foo`" and its edit must cover
+        // the exact original diagnostic span with `foo` as the replacement text.
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+        let edits = action["edits"].as_array().unwrap();
+        assert!(!edits.is_empty(), "action must carry at least one edit");
+
+        let edit = &edits[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            edit_start, diag_start,
+            "edit span start must equal diagnostic start_offset"
+        );
+        assert_eq!(
+            edit_end, diag_end,
+            "edit span end must equal diagnostic end_offset"
+        );
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested name"
+        );
+
+        // Apply the edit and verify the corrected source replaces `fooo` with `foo`.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn main() { let foo = 1; let _y = foo; }",
+            "applying the edit must replace `fooo` with `foo` exactly"
+        );
+    }
+
+    /// Notes emitted by `analyze()` point at the intended previous-definition region.
+    ///
+    /// The browser uses `start_offset`/`end_offset` from `WasmNote` to render
+    /// secondary highlights.  This test verifies the offsets identify the first
+    /// `foo` definition in source and carry the canonical "previous definition here"
+    /// message.
+    #[test]
+    fn analyze_notes_carry_display_ready_spans() {
+        // Two `foo` definitions.  The DuplicateDefinition error fires on the second;
+        // its note must point back into the *first* `fn foo() {}` and must not
+        // reach into the second definition.
+        let source = "fn foo() {} fn foo() {}";
+        //            ^^^^^^^^^^^  ← first definition
+        //                         ^^^^^^^^^^^  ← second definition triggers the error
+
+        // The second `fn foo` starts at this byte offset; the note must end here
+        // or earlier so it points only at the first definition.
+        let second_def_start = source.rfind("fn foo").expect("second definition not found");
+
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let diag_with_notes = diags
+            .iter()
+            .find(|d| d["notes"].as_array().is_some_and(|a| !a.is_empty()))
+            .unwrap_or_else(|| {
+                panic!("expected a diagnostic with notes for duplicate fn foo; got: {analyze_json}")
+            });
+
+        let notes = diag_with_notes["notes"].as_array().unwrap();
+        assert_eq!(
+            notes.len(),
+            1,
+            "DuplicateDefinition must carry exactly one note; got: {analyze_json}"
+        );
+
+        let note = &notes[0];
+        let start = usize::try_from(
+            note["start_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `start_offset`: {note}")),
+        )
+        .expect("start_offset fits usize");
+        let end = usize::try_from(
+            note["end_offset"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("note missing `end_offset`: {note}")),
+        )
+        .expect("end_offset fits usize");
+
+        // Note span must not reach into the second definition.
+        assert!(
+            end <= second_def_start,
+            "note end={end} must not reach into the second definition \
+             (second `fn foo` starts at {second_def_start})"
+        );
+        assert!(
+            start < end,
+            "note span must be non-zero width (start={start}, end={end})"
+        );
+
+        // The sliced text must contain the duplicated name, confirming the note
+        // points at the right region.
+        let sliced = &source[start..end];
+        assert!(
+            sliced.contains("foo"),
+            "note span must cover text containing the first `foo` definition; sliced: {sliced:?}"
+        );
+
+        // The message must be exactly the canonical "previous definition here" label.
+        assert_eq!(
+            note["message"].as_str().unwrap_or(""),
+            "previous definition here",
+            "note must carry the canonical 'previous definition here' message"
+        );
+    }
+
+    /// End-to-end: `analyze()` → browser bridge → `code_actions()` for an
+    /// undefined *function call*.  The type checker spans the whole call
+    /// expression (`fooo()`), but the code-action edit must replace only the
+    /// callee name (`fooo`) so the argument list and parentheses are preserved.
+    #[test]
+    fn analyze_undefined_function_action_preserves_call_parens() {
+        // `fooo()` calls an undefined function; `foo` is defined and has
+        // edit-distance 1 ≤ max_dist 1 so it will appear as a suggestion.
+        let source = "fn foo() {} fn main() { fooo(); }";
+        //                                    ^   ^
+        //                                   24  28 = start of '('
+
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .unwrap_or_else(|| {
+                panic!("expected an UndefinedFunction diagnostic for `fooo()`; got: {analyze_json}")
+            });
+
+        // Confirm the type checker spans the full call expression (known behaviour).
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            &source[diag_start..diag_end],
+            "fooo()",
+            "UndefinedFunction diagnostic span must cover the full call expression"
+        );
+
+        // `foo` must be present in suggestions.
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo()`; got: {suggestions:?}"
+        );
+
+        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) for UndefinedFunction; got: {actions_json}"
+        );
+
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+
+        let edit = &action["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested callee name"
+        );
+
+        // The edit span must cover only `fooo` (the callee), not the `()`.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the argument list"
+        );
+
+        // Applying the edit must yield `foo()` — parentheses intact.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo(); }",
+            "applying the edit must replace `fooo()` with `foo()`, preserving the call syntax"
+        );
+    }
+
+    /// End-to-end: `analyze()` → browser bridge → `code_actions()` for an
+    /// undefined *generic* function call.  The span covers `fooo<i64>()`;
+    /// after `trim_to_callee_name` trims at `<`, the edit must replace only
+    /// `fooo` so the type argument list `<i64>()` is preserved.
+    #[test]
+    fn analyze_undefined_generic_function_preserves_type_args() {
+        // `fooo<i64>()` calls an undefined function; `foo` is in scope with
+        // edit-distance 1 ≤ max_dist 1 and will be suggested.
+        let source = "fn foo() {} fn main() { fooo<i64>(); }";
+
+        let analyze_json = analyze(source);
+        let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
+        let diags = analysis["diagnostics"].as_array().unwrap();
+
+        let undef_diag = diags
+            .iter()
+            .find(|d| d["kind"].as_str() == Some("UndefinedFunction"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an UndefinedFunction diagnostic for `fooo<i64>()`; \
+                     got: {analyze_json}"
+                )
+            });
+
+        // The type checker spans the entire call expression including type args.
+        let diag_start = usize::try_from(undef_diag["start_offset"].as_u64().unwrap()).unwrap();
+        let diag_end = usize::try_from(undef_diag["end_offset"].as_u64().unwrap()).unwrap();
+        let call_text = &source[diag_start..diag_end];
+        assert!(
+            call_text.starts_with("fooo") && call_text.contains('<'),
+            "UndefinedFunction span must cover generic call expression (starts with \
+             `fooo` and contains `<`); got: {call_text:?}"
+        );
+
+        // `foo` must be present in suggestions.
+        let suggestions = undef_diag["suggestions"].as_array().unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.as_str() == Some("foo")),
+            "expected `foo` in suggestions for `fooo<i64>()`; got: {suggestions:?}"
+        );
+
+        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
+        let diag_info_json = serde_json::json!([{
+            "kind":    undef_diag["kind"].as_str().unwrap(),
+            "message": undef_diag["message"].as_str().unwrap(),
+            "span": {
+                "start": undef_diag["start_offset"].as_u64().unwrap(),
+                "end":   undef_diag["end_offset"].as_u64().unwrap(),
+            },
+            "suggestions": suggestions,
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected code action(s) for undefined generic function; got: {actions_json}"
+        );
+
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `foo`",
+            "action title must name the suggested replacement; got: {actions_json}"
+        );
+
+        let edit = &action["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            new_text, "foo",
+            "replacement text must be the suggested callee name"
+        );
+
+        // The edit span must cover only `fooo` — not `fooo<i64>` or `fooo<i64>()`.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the type-argument list"
+        );
+        // Confirmed: `<` is at edit_end, not inside the edit.
+        assert_eq!(
+            source.as_bytes().get(edit_end).copied(),
+            Some(b'<'),
+            "character immediately after edit must be `<` (start of type-arg list)"
+        );
+
+        // Applying the edit must yield `foo<i64>()` — type arguments intact.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo<i64>(); }",
+            "applying the edit must replace `fooo<i64>()` with `foo<i64>()`, \
+             preserving the type-argument list"
+        );
+    }
+
+    /// Browser-bridge coverage for `UndefinedFunction` with interstitial trivia
+    /// between the callee and the type-argument list.
+    ///
+    /// A diagnostic spanning `fooo /*keep*/ <i64>()` must produce an edit that
+    /// covers only the identifier token `fooo`, leaving the comment and type args
+    /// untouched.  Tested via direct `code_actions()` call because producing
+    /// interstitial-comment generic calls through `analyze()` requires Hew
+    /// concrete syntax that may not preserve such trivia in the AST span.
+    #[test]
+    fn code_actions_preserves_trivia_between_callee_and_type_args() {
+        let source = "fn foo() {} fn main() { fooo /*keep*/ <i64>(); }";
+        //                                       ^   ^          ^
+        //                                      24  28         45 = end of ')'
+        let diag_info_json = serde_json::json!([{
+            "kind": "UndefinedFunction",
+            "message": "undefined function `fooo`",
+            "span": { "start": 24, "end": 45 },
+            "suggestions": ["foo"],
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert!(
+            !actions_arr.is_empty(),
+            "expected a code action for UndefinedFunction with trivia; got: {actions_json}"
+        );
+
+        let edit = &actions_arr[0]["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(new_text, "foo", "replacement must be the suggested name");
+
+        // The edit must cover only `fooo` — the identifier token, not the comment.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "fooo",
+            "edit span must cover only the callee identifier, not the interstitial comment"
+        );
+
+        // Applying the edit must preserve both the comment and the type-arg list.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn foo() {} fn main() { foo /*keep*/ <i64>(); }",
+            "applying the edit must replace only `fooo`, preserving `/*keep*/ <i64>()`"
+        );
+    }
+
+    /// Browser-bridge: `code_actions()` for a qualified-path typo
+    /// (`Vec::neww()` → `Vec::new()`).
+    ///
+    /// The old byte-walk stopped at `::` and extracted only `Vec`, so replacing
+    /// `Vec` with `Vec::new` produced `Vec::new::neww()`.  With path-separator
+    /// awareness the edit must span the full callee path `Vec::neww` and leave
+    /// the argument list untouched.
+    #[test]
+    fn code_actions_qualified_path_replaces_full_callee_path() {
+        let source = "fn main() { let _ = Vec::neww(); }";
+        //                                   ^       ^
+        //                                  20      29 = start of '('
+
+        // DiagnosticInfo as the browser bridge would construct it.
+        let diag_info_json = serde_json::json!([{
+            "kind":    "UndefinedFunction",
+            "message": "undefined function `Vec::neww`",
+            "span":    { "start": 20, "end": 31 },   // full Vec::neww() span
+            "suggestions": ["Vec::new"],
+        }])
+        .to_string();
+
+        let actions_json = code_actions(source, &diag_info_json);
+        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
+        let actions_arr = actions.as_array().unwrap();
+
+        assert_eq!(
+            actions_arr.len(),
+            1,
+            "expected exactly one action; got: {actions_json}"
+        );
+
+        let action = &actions_arr[0];
+        assert_eq!(
+            action["title"].as_str().unwrap(),
+            "Replace with `Vec::new`",
+            "action title must include the full suggested path"
+        );
+
+        let edit = &action["edits"].as_array().unwrap()[0];
+        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
+        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
+        let new_text = edit["new_text"].as_str().unwrap();
+
+        assert_eq!(
+            new_text, "Vec::new",
+            "replacement must be the full suggested path"
+        );
+        // The edit must cover `Vec::neww` (the full callee path), not just `Vec`.
+        assert_eq!(
+            &source[edit_start..edit_end],
+            "Vec::neww",
+            "edit span must cover the entire callee path, not just the first segment"
+        );
+
+        // Applying the edit must preserve the argument list.
+        let corrected = format!(
+            "{}{}{}",
+            &source[..edit_start],
+            new_text,
+            &source[edit_end..]
+        );
+        assert_eq!(
+            corrected, "fn main() { let _ = Vec::new(); }",
+            "applying the edit must yield Vec::new() with parentheses intact"
+        );
+    }
 }

@@ -170,6 +170,24 @@ fn take_detached_task_handles(scope: &mut HewTaskScope) -> Vec<std::thread::Join
     handles
 }
 
+fn reap_detached_scope_tasks(
+    mut scope_box: Box<HewTaskScope>,
+    detached_handles: Vec<std::thread::JoinHandle<()>>,
+) {
+    for handle in detached_handles {
+        let _ = handle.join();
+    }
+    // SAFETY: every detached worker has exited, so no task pointer can be
+    // observed again after this point.
+    unsafe { free_scope_tasks(&mut scope_box) };
+}
+
+type TaskReaperState = (Box<HewTaskScope>, Vec<std::thread::JoinHandle<()>>);
+
+fn take_reaper_state(state: &Mutex<Option<TaskReaperState>>) -> Option<TaskReaperState> {
+    state.lock_or_recover().take()
+}
+
 /// # Safety
 ///
 /// Callers must ensure no worker thread can access any task in `scope`.
@@ -745,11 +763,6 @@ pub unsafe extern "C" fn hew_task_scope_has_active_tasks(scope: *mut HewTaskScop
 /// `scope` must have been returned by [`hew_task_scope_new`] and must
 /// not be used after this call.
 ///
-/// # Panics
-///
-/// Panics if the OS fails to spawn the background reaper thread for any
-/// reason (e.g. exhausted thread limit, insufficient memory, or other
-/// OS-level resource failure).
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
     cabi_guard!(scope.is_null());
@@ -768,18 +781,44 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
 
     // WASM-TODO: task_scope uses OS threads throughout and has no WASM target;
     // the reaper thread below is likewise native-only.
-    let reaper = std::thread::Builder::new()
+    #[cfg(test)]
+    if should_fail_task_reaper_spawn() {
+        crate::set_last_error(
+            "hew_task_scope_destroy: failed to spawn hew-task-reaper thread; running cleanup synchronously",
+        );
+        reap_detached_scope_tasks(scope_box, detached_handles);
+        return;
+    }
+
+    let reaper_state = Arc::new(Mutex::new(Some((scope_box, detached_handles))));
+    let background_state = Arc::clone(&reaper_state);
+    if let Ok(reaper) = std::thread::Builder::new()
         .name("hew-task-reaper".into())
         .spawn(move || {
-            for handle in detached_handles {
-                let _ = handle.join();
+            if let Some((scope_box, detached_handles)) = take_reaper_state(&background_state) {
+                reap_detached_scope_tasks(scope_box, detached_handles);
             }
-            // SAFETY: every detached worker has exited, so no task pointer can be
-            // observed again after this point.
-            unsafe { free_scope_tasks(&mut scope_box) };
         })
-        .expect("failed to spawn hew-task-reaper thread");
-    drop(reaper);
+    {
+        drop(reaper);
+    } else {
+        crate::set_last_error(
+            "hew_task_scope_destroy: failed to spawn hew-task-reaper thread; running cleanup synchronously",
+        );
+        if let Some((scope_box, detached_handles)) = take_reaper_state(&reaper_state) {
+            reap_detached_scope_tasks(scope_box, detached_handles);
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_TASK_REAPER_SPAWN: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn should_fail_task_reaper_spawn() -> bool {
+    FAIL_TASK_REAPER_SPAWN.with(Cell::get)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -787,6 +826,7 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
 
     #[test]
     fn task_lifecycle() {
@@ -1533,5 +1573,85 @@ mod tests {
             N,
             "reaper did not reclaim all {N} task allocations"
         );
+    }
+
+    #[test]
+    fn destroy_reaper_spawn_failure_falls_back_to_sync_cleanup() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn blocking_worker(task: *mut HewTask) {
+            STARTED.store(true, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // SAFETY: `task` is the live task pointer owned by this worker.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        unsafe extern "C" fn count_env_drop(_: *mut u8) {
+            ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        STARTED.store(false, Ordering::SeqCst);
+        RELEASE.store(false, Ordering::SeqCst);
+        ENV_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            crate::hew_clear_error();
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, blocking_worker);
+
+            let started_deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < started_deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                STARTED.load(Ordering::SeqCst),
+                "worker thread never started"
+            );
+
+            hew_task_scope_cancel(scope);
+            FAIL_TASK_REAPER_SPAWN.with(|fail| fail.set(true));
+            let release_thread = std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(75));
+                RELEASE.store(true, Ordering::SeqCst);
+            });
+
+            let destroy_started = Instant::now();
+            hew_task_scope_destroy(scope);
+            let destroy_elapsed = destroy_started.elapsed();
+
+            FAIL_TASK_REAPER_SPAWN.with(|fail| fail.set(false));
+            release_thread.join().expect("release thread panicked");
+
+            assert!(
+                destroy_elapsed >= Duration::from_millis(50),
+                "sync fallback should wait for detached worker cleanup"
+            );
+            assert_eq!(
+                ENV_DROPS.load(Ordering::SeqCst),
+                1,
+                "sync fallback should reclaim task allocations exactly once"
+            );
+            let err = CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .expect("last error should be utf-8");
+            assert!(
+                err.contains("failed to spawn hew-task-reaper thread"),
+                "unexpected last error: {err}"
+            );
+        }
     }
 }

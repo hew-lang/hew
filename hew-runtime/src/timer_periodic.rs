@@ -43,22 +43,41 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
     if guard.0.is_null() {
         // SAFETY: hew_timer_wheel_new has no preconditions.
         let tw = unsafe { hew_timer_wheel_new() };
+        if tw.is_null() {
+            return ptr::null_mut();
+        }
         guard.0 = tw;
-        start_ticker_thread(tw);
+        if !start_ticker_thread(tw) {
+            guard.0 = ptr::null_mut();
+            // SAFETY: tw was just allocated above and no ticker thread started.
+            unsafe {
+                hew_timer_wheel_free(tw);
+            }
+        }
     } else if !TICKER_RUNNING.load(Ordering::SeqCst) {
         // Wheel exists but ticker was shut down - restart it
-        start_ticker_thread(guard.0);
+        if !start_ticker_thread(guard.0) {
+            return ptr::null_mut();
+        }
     }
     guard.0
 }
 
 /// Spawn a background thread that ticks the global timer wheel every 1 ms.
-fn start_ticker_thread(tw: *mut HewTimerWheel) {
+fn start_ticker_thread(tw: *mut HewTimerWheel) -> bool {
     if TICKER_RUNNING.swap(true, Ordering::SeqCst) {
-        return; // already running
+        return true; // already running
     }
+
+    #[cfg(test)]
+    if should_fail_ticker_spawn() {
+        TICKER_RUNNING.store(false, Ordering::SeqCst);
+        crate::set_last_error("hew_actor_schedule_periodic: failed to spawn timer ticker thread");
+        return false;
+    }
+
     let tw_addr = tw as usize;
-    let handle = std::thread::Builder::new()
+    let Ok(handle) = std::thread::Builder::new()
         .name("hew-timer-tick".into())
         .spawn(move || {
             let tw = tw_addr as *mut HewTimerWheel;
@@ -78,13 +97,18 @@ fn start_ticker_thread(tw: *mut HewTimerWheel) {
                 }
             }
         })
-        .expect("failed to spawn timer ticker thread");
+    else {
+        TICKER_RUNNING.store(false, Ordering::SeqCst);
+        crate::set_last_error("hew_actor_schedule_periodic: failed to spawn timer ticker thread");
+        return false;
+    };
 
     // Store the handle for later joining
     let handle_mutex = TICKER_HANDLE.get_or_init(|| Mutex::new(None));
     *handle_mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +300,9 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     }
 
     let tw = global_wheel();
+    if tw.is_null() {
+        return ptr::null_mut();
+    }
 
     let cancelled = Arc::new(AtomicBool::new(false));
     let in_flight = Arc::new(AtomicBool::new(false));
@@ -322,6 +349,16 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
 /// and acquire it without duplicating the guard.
 #[cfg(test)]
 pub(crate) static TICKER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_TICKER_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn should_fail_ticker_spawn() -> bool {
+    FAIL_TICKER_SPAWN.with(std::cell::Cell::get)
+}
 
 /// Gracefully stop the ticker thread.
 ///
@@ -378,6 +415,7 @@ pub unsafe extern "C" fn hew_periodic_shutdown() {
 mod tests {
     use super::*;
     use crate::internal::types::HewActorState;
+    use std::ffi::CStr;
     use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64};
     use std::time::{Duration, Instant};
 
@@ -637,5 +675,53 @@ mod tests {
         // Should be a no-op, not panic.
         cancel_all_timers_for_actor(actor_ptr);
         assert_eq!(timer_count_for_actor(actor_ptr), 0);
+    }
+
+    #[test]
+    fn schedule_periodic_spawn_failure_returns_null_without_leaking_wheel() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: test owns teardown of the process-wide wheel state.
+        unsafe {
+            hew_periodic_shutdown();
+        }
+        crate::hew_clear_error();
+
+        FAIL_TICKER_SPAWN.with(|fail| fail.set(true));
+        let mut actor = create_test_actor(50_300);
+        let actor_ptr = &raw mut actor;
+        // SAFETY: actor_ptr points to a valid test actor and interval is non-zero.
+        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 10) };
+        FAIL_TICKER_SPAWN.with(|fail| fail.set(false));
+
+        assert!(handle.is_null(), "spawn failure should fail closed");
+        assert_eq!(
+            timer_count_for_actor(actor_ptr),
+            0,
+            "failed start must not register a periodic timer"
+        );
+        assert!(
+            !TICKER_RUNNING.load(Ordering::SeqCst),
+            "ticker should not remain marked running after spawn failure"
+        );
+        let wheel_guard = GLOBAL_WHEEL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            wheel_guard.0.is_null(),
+            "newly created wheel should be freed when ticker spawn fails"
+        );
+        drop(wheel_guard);
+
+        // SAFETY: hew_last_error returns a valid C string pointer for the current thread.
+        let err = unsafe { CStr::from_ptr(crate::hew_last_error()) }
+            .to_str()
+            .expect("last error should be utf-8");
+        assert!(
+            err.contains("failed to spawn timer ticker thread"),
+            "unexpected last error: {err}"
+        );
     }
 }

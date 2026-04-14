@@ -1,0 +1,47 @@
+fn main() -> int {
+    let v: Vec<(int, int)> = Vec::new();
+    v.push((10, 20));
+    v.push((30, 40));
+
+    if v.len() != 2 {
+        println("FAIL: expected len 2 before pop");
+        return 1;
+    }
+
+    // LIFO: last pushed (30, 40) is first popped
+    let popped = v.pop();
+
+    if popped.0 != 30 {
+        println("FAIL: expected popped.0 == 30");
+        return 1;
+    }
+    if popped.1 != 40 {
+        println("FAIL: expected popped.1 == 40");
+        return 1;
+    }
+
+    // len() shrinks by 1
+    if v.len() != 1 {
+        println("FAIL: expected len 1 after pop");
+        return 1;
+    }
+
+    // Remaining element is the first pushed
+    let second = v.pop();
+    if second.0 != 10 {
+        println("FAIL: expected second.0 == 10");
+        return 1;
+    }
+    if second.1 != 20 {
+        println("FAIL: expected second.1 == 20");
+        return 1;
+    }
+
+    if v.len() != 0 {
+        println("FAIL: expected len 0 after second pop");
+        return 1;
+    }
+
+    println("PASS: vec_pop_tuple");
+    return 0;
+}

@@ -513,6 +513,15 @@ pub(crate) unsafe fn cleanup_all_actors() {
             crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
         }
 
+        // Remove any SLEEP_QUEUE entry for this actor before freeing it.
+        // This prevents a use-after-free if hew_wasm_timer_tick is called after
+        // cleanup but before the queue entry is drained naturally.
+        // SAFETY: scheduler is shut down; no concurrent SLEEP_QUEUE access.
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
+        }
+
         // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };

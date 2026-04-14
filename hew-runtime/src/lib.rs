@@ -241,8 +241,10 @@ pub mod wasm_stubs {
     //!   the single-threaded WASM cooperative scheduler. All `hew_channel_*`
     //!   entry points `unreachable!`-trap so that wasm32 programs that call them
     //!   produce an explicit runtime error instead of a linker gap.
-    //!   WASM-TODO: implement single-threaded channel queues backed by the actor
-    //!   mailbox infrastructure.
+    //!   WASM-TODO: integrate the `channel_wasm` groundwork module (bounded
+    //!   `VecDeque` queue with correct `TryRecvError::Empty` vs `Closed`
+    //!   semantics) once cooperative-scheduler `recv` yield/resume and
+    //!   `send` backpressure are available.
 
     use std::ffi::{c_char, c_int, c_void};
 
@@ -298,8 +300,10 @@ pub mod wasm_stubs {
     // `unreachable!` so that compiled programs that call them fail with an
     // explicit message rather than a silent linker error.
     //
-    // WASM-TODO: implement single-producer single-consumer queues backed by
-    // the actor mailbox infrastructure for full channel parity.
+    // WASM-TODO: wire in the `channel_wasm` groundwork module once
+    // cooperative-scheduler recv yield/resume and send backpressure are
+    // available. See `channel_wasm.rs` for the queue implementation and
+    // remaining gaps.
 
     /// WASM stub: channel creation is not supported.
     #[no_mangle]
@@ -488,6 +492,11 @@ pub mod arena;
 pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
+// WASM-TODO: channel_wasm is internal groundwork only — not wired to the
+// hew_channel_* ABI.  Needs cooperative-scheduler recv + send-backpressure
+// before it can replace the unreachable!() stubs.  See channel_wasm.rs header.
+#[cfg(test)]
+mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
 #[cfg(any(target_arch = "wasm32", test))]

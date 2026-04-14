@@ -241,14 +241,20 @@ static mut INITIALIZED: bool = false;
 static mut ACTIVATING: bool = false;
 
 /// Current depth of cooperative-tick reentrant calls. Incremented on
-/// entry to [`hew_wasm_sched_tick`], decremented on exit. When this
-/// reaches [`MAX_COOPERATIVE_TICK_DEPTH`] the tick is skipped to prevent
+/// entry to [`hew_wasm_sched_tick`], decremented on exit. Used by
+/// [`hew_actor_cooperate`] to suppress *cooperate-driven* recursion
+/// when the depth reaches [`MAX_COOPERATIVE_TICK_DEPTH`], preventing
 /// unbounded WASM stack growth (WASM has a fixed, non-growable stack).
+///
+/// **Important**: wait-loop callers (ask/await/reply) are *not* subject
+/// to this cap — they must always make forward progress to avoid
+/// no-progress spins.
 static mut COOPERATIVE_TICK_DEPTH: u32 = 0;
 
 /// Maximum allowed nesting depth for cooperative ticks. The WASM default
 /// stack is typically 64 KiB–1 MiB, and each activation frame is
-/// non-trivial, so we cap reentrancy at a conservative level.
+/// non-trivial, so we cap cooperate-driven reentrancy at a conservative
+/// level. Wait-loop reentry is not capped (see [`hew_actor_cooperate`]).
 const MAX_COOPERATIVE_TICK_DEPTH: u32 = 16;
 
 /// Saved arena pointer during activation.
@@ -476,10 +482,11 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 /// which runs to completion, this returns control to the host after a
 /// bounded amount of work.
 ///
-/// Reentrant calls (e.g. from `hew_actor_cooperate` → `hew_wasm_sched_tick`)
-/// are bounded by [`MAX_COOPERATIVE_TICK_DEPTH`]. When the depth limit is
-/// reached the call returns immediately with the current queue length,
-/// preventing unbounded WASM stack growth.
+/// This function always makes forward progress when the run queue is
+/// non-empty. Cooperate-driven recursion depth is bounded inside
+/// [`hew_actor_cooperate`], not here, so that wait-loop callers
+/// (ask/await/reply) never observe a non-zero return without actual work
+/// having been performed.
 ///
 /// # Safety
 ///
@@ -489,20 +496,6 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
-        // Guard against unbounded reentrancy. When cooperate calls tick
-        // which activates an actor whose cooperate calls tick again, etc.,
-        // we must cap the depth to avoid WASM stack overflow.
-        if COOPERATIVE_TICK_DEPTH >= MAX_COOPERATIVE_TICK_DEPTH {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "run queue length will not exceed i32::MAX"
-            )]
-            return match RUN_QUEUE {
-                Some(ref q) => q.len() as i32,
-                None => 0,
-            };
-        }
         COOPERATIVE_TICK_DEPTH += 1;
 
         for _ in 0..max_activations {
@@ -915,6 +908,12 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 /// reaches 0 the actor yields by driving one cooperative scheduler tick
 /// via [`hew_wasm_sched_tick`], and the counter is reset.
 ///
+/// The cooperative tick is *suppressed* when [`COOPERATIVE_TICK_DEPTH`]
+/// has reached [`MAX_COOPERATIVE_TICK_DEPTH`]. This prevents unbounded
+/// WASM stack growth from nested cooperate → tick → cooperate chains
+/// while still allowing wait-loop callers (ask/await/reply) to drive the
+/// scheduler to completion.
+///
 /// Returns 0 if the actor should continue, 1 if it yielded.
 ///
 /// # Safety
@@ -945,6 +944,21 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     // Budget exhausted — reset counter and yield via cooperative tick.
     a.reductions
         .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
+
+    // Guard against unbounded cooperate-driven reentrancy. When a
+    // cooperate call triggers hew_wasm_sched_tick which activates another
+    // actor whose cooperate also calls hew_wasm_sched_tick, the WASM
+    // stack grows with each level. If we are already at the maximum
+    // depth, skip the tick to prevent stack overflow. The actor simply
+    // continues without yielding — this is safe because the depth cap
+    // only suppresses voluntary yields, not scheduler progress needed by
+    // wait loops.
+    //
+    // SAFETY: Single-threaded on WASM.
+    let depth = unsafe { std::ptr::addr_of!(COOPERATIVE_TICK_DEPTH).read() };
+    if depth >= MAX_COOPERATIVE_TICK_DEPTH {
+        return 1;
+    }
 
     // Drive one cooperative scheduler tick so other actors can make
     // progress.  This is the WASM equivalent of the native
@@ -3620,13 +3634,71 @@ mod tests {
     // ── Cooperative tick recursion bound tests ──────────────────────────
 
     #[test]
-    fn tick_depth_is_bounded() {
+    fn cooperate_skips_tick_at_max_depth() {
+        // When COOPERATIVE_TICK_DEPTH is at the maximum, hew_actor_cooperate
+        // must NOT call hew_wasm_sched_tick (to avoid stack overflow), but
+        // must still return 1 to signal a yield.
         let _guard = crate::runtime_test_guard();
         // SAFETY: Serialized by TEST_LOCK.
         unsafe { reset_globals() };
         hew_sched_init();
 
-        // Simulate being at the maximum depth by directly writing the global.
+        let mut actor = stub_actor();
+        // Set reductions to 1 so the next cooperate exhausts the budget.
+        actor.reductions.store(1, Ordering::Relaxed);
+
+        let prev =
+            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+
+        // Simulate being at the maximum depth.
+        // SAFETY: Single-threaded test; ptr::addr_of_mut! avoids references.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(MAX_COOPERATIVE_TICK_DEPTH);
+        }
+
+        // Enqueue a second actor so the queue is non-empty (if the tick
+        // were called it would drain one).
+        let other = stub_actor();
+        let other_ptr: *mut HewActor = (&raw const other).cast_mut();
+        // SAFETY: valid actor, scheduler initialized.
+        unsafe { sched_enqueue(other_ptr) };
+
+        let result = hew_actor_cooperate();
+        assert_eq!(result, 1, "cooperate must return 1 (yielded) at max depth");
+
+        // The queued actor must NOT have been activated — cooperate skipped
+        // the tick entirely.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            assert_eq!(
+                read_queue_len(),
+                1,
+                "cooperate at max depth must not drive the scheduler"
+            );
+        }
+
+        // Reset depth so shutdown can drain properly.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
+        }
+
+        crate::actor::set_current_actor(prev);
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn sched_tick_makes_progress_at_high_depth() {
+        // Regression test for the depth-cap no-progress spin: even when
+        // COOPERATIVE_TICK_DEPTH is at MAX, hew_wasm_sched_tick must still
+        // run actors and make forward progress. Wait-loop callers
+        // (ask/await/reply) depend on this to avoid infinite spinning.
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Simulate being at the maximum depth.
         // SAFETY: Single-threaded test; ptr::addr_of_mut! avoids references.
         unsafe {
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(MAX_COOPERATIVE_TICK_DEPTH);
@@ -3635,28 +3707,73 @@ mod tests {
         // Enqueue an actor so the queue is non-empty.
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
-        // SAFETY: actor is valid, scheduler is initialized.
+        // SAFETY: valid actor, scheduler initialized.
         unsafe { sched_enqueue(actor_ptr) };
 
-        // hew_wasm_sched_tick must return early without running the actor.
+        // hew_wasm_sched_tick must still run the actor (queue drains to 0).
         // SAFETY: scheduler is initialized.
         let remaining = unsafe { hew_wasm_sched_tick(10) };
         assert_eq!(
-            remaining, 1,
-            "tick at max depth must return immediately with queue length"
+            remaining, 0,
+            "sched_tick must make progress regardless of depth (wait loops depend on this)"
         );
 
-        // Queue must still contain the actor (it was not activated).
+        // Queue must be empty — the actor was activated.
         // SAFETY: Single-threaded test.
         unsafe {
             assert_eq!(
                 read_queue_len(),
-                1,
-                "actor must not have been activated at max depth"
+                0,
+                "actor must have been activated even at max depth"
             );
         }
 
         // Reset depth so shutdown can drain properly.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
+        }
+
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn wait_loop_returns_zero_when_queue_drains_at_max_depth() {
+        // Simulates the exact scenario that caused the blocker: a wait-loop
+        // caller calls hew_wasm_sched_tick at max cooperate depth with a
+        // non-empty queue. The tick must drain the queue and return 0,
+        // allowing the wait loop to exit cleanly instead of spinning.
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Set depth to MAX to simulate deep cooperate nesting.
+        // SAFETY: Single-threaded test.
+        unsafe {
+            ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(MAX_COOPERATIVE_TICK_DEPTH);
+        }
+
+        // Enqueue one actor with no dispatch (will be dequeued and its
+        // mailbox check will find nothing, returning it to idle).
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        // SAFETY: valid actor, scheduler initialized.
+        unsafe { sched_enqueue(actor_ptr) };
+
+        // This mimics what a wait loop does: call tick, check return value.
+        // With the old bug, this would return 1 (queue length) without doing
+        // work, and the wait loop would spin forever.
+        // SAFETY: scheduler is initialized.
+        let remaining = unsafe { hew_wasm_sched_tick(1) };
+
+        // The tick must have consumed the actor, not returned early.
+        assert_eq!(
+            remaining, 0,
+            "tick must drain queue at max depth — returning nonzero without progress causes \
+             wait-loop spins"
+        );
+
         // SAFETY: Single-threaded test.
         unsafe {
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);

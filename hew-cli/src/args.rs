@@ -74,6 +74,27 @@ pub struct CommonBuildArgs {
     pub pkg_path: Option<PathBuf>,
 }
 
+impl CommonBuildArgs {
+    /// Build a base [`crate::compile::CompileOptions`] from the common flags.
+    ///
+    /// Per-command fields (`target`, `extra_libs`, `debug`, `codegen_mode`)
+    /// are left at their defaults; callers override with struct-update syntax:
+    ///
+    /// ```ignore
+    /// crate::compile::CompileOptions {
+    ///     debug: self.debug,
+    ///     ..self.common.base_compile_options()
+    /// }
+    /// ```
+    pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
+        crate::compile::CompileOptions {
+            no_typecheck: self.no_typecheck,
+            pkg_path: self.pkg_path.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------
@@ -142,13 +163,11 @@ impl BuildArgs {
 
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            no_typecheck: self.common.no_typecheck,
             codegen_mode: self.codegen_mode(),
             target: self.target.clone(),
             extra_libs: self.link_libs.clone(),
             debug: self.debug,
-            pkg_path: self.common.pkg_path.clone(),
-            project_dir: None,
+            ..self.common.base_compile_options()
         }
     }
 }
@@ -190,13 +209,10 @@ pub struct RunArgs {
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            no_typecheck: self.common.no_typecheck,
-            codegen_mode: crate::compile::CodegenMode::LinkExecutable,
             target: self.target.clone(),
             extra_libs: self.link_libs.clone(),
             debug: self.debug,
-            pkg_path: self.common.pkg_path.clone(),
-            project_dir: None,
+            ..self.common.base_compile_options()
         }
     }
 }
@@ -228,13 +244,10 @@ pub struct DebugArgs {
 impl DebugArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
-            no_typecheck: self.common.no_typecheck,
-            codegen_mode: crate::compile::CodegenMode::LinkExecutable,
             target: self.target.clone(),
             extra_libs: self.link_libs.clone(),
             debug: true,
-            pkg_path: self.common.pkg_path.clone(),
-            project_dir: None,
+            ..self.common.base_compile_options()
         }
     }
 }
@@ -253,11 +266,7 @@ pub struct CheckArgs {
 
 impl CheckArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        crate::compile::CompileOptions {
-            no_typecheck: self.common.no_typecheck,
-            pkg_path: self.common.pkg_path.clone(),
-            ..Default::default()
-        }
+        self.common.base_compile_options()
     }
 }
 
@@ -376,11 +385,7 @@ pub struct WatchArgs {
 
 impl WatchArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        crate::compile::CompileOptions {
-            no_typecheck: self.common.no_typecheck,
-            pkg_path: self.common.pkg_path.clone(),
-            ..Default::default()
-        }
+        self.common.base_compile_options()
     }
 }
 

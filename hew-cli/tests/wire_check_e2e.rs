@@ -1,15 +1,8 @@
-use std::path::{Path, PathBuf};
+mod support;
+
 use std::process::{Command, Output};
 
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, repo_root};
 
 fn run_wire_check(current: &str, baseline: &str) -> Output {
     let dir = tempfile::tempdir().unwrap();

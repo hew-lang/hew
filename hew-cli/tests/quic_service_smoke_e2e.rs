@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use support::{hew_binary, repo_root, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -121,14 +121,6 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<Output, String
             Err(e) => return Err(format!("cannot poll child process: {e}")),
         }
     }
-}
-
-fn describe_output(output: &Output) -> String {
-    format!(
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    )
 }
 
 struct RunningChild {

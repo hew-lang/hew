@@ -10,16 +10,7 @@ use object::{Architecture, BinaryFormat, Object};
 use std::os::unix::fs as unix_fs;
 #[cfg(target_os = "macos")]
 use support::require_codegen;
-
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-cli crate should live under the repo root")
-}
-
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::{hew_binary, repo_root};
 
 #[cfg(target_os = "macos")]
 static DARWIN_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();

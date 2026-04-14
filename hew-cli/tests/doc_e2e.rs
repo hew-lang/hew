@@ -1,9 +1,8 @@
-use std::path::PathBuf;
+mod support;
+
 use std::process::Command;
 
-fn hew_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hew"))
-}
+use support::hew_binary;
 
 fn run_doc(args: &[&str]) -> std::process::Output {
     Command::new(hew_binary())

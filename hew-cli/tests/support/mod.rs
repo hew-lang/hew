@@ -305,7 +305,7 @@ fn hew_lib_name() -> &'static str {
     }
 }
 
-fn describe_output(output: &Output) -> String {
+pub fn describe_output(output: &Output) -> String {
     format!(
         "stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),

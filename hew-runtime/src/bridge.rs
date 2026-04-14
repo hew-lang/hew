@@ -713,10 +713,15 @@ pub fn bridge_init() {
     });
 }
 
-/// Shut down the bridge, draining queues.
+/// Shut down the bridge, draining queues and clearing metadata.
+///
+/// After this call the outbound queue, metadata registry, and JSON cache are
+/// all empty.  A subsequent call to [`hew_wasm_query_meta`] will return an
+/// empty result, preventing stale actor metadata from leaking across sessions.
 pub fn bridge_shutdown() {
     outbound_queue().clear();
     let mut state = meta_state();
+    state.registry.clear();
     state.cache_all = None;
 }
 
@@ -1101,5 +1106,67 @@ mod tests {
         bridge_shutdown();
         // Queue still exists but is cleared.
         assert_eq!(hew_wasm_outbound_len(), 0);
+    }
+
+    /// Regression: `bridge_shutdown()` must clear the metadata registry so that
+    /// `hew_wasm_query_meta()` does not return stale actor metadata from a prior
+    /// session after the bridge has been shut down and reinitialised.
+    #[test]
+    fn bridge_shutdown_clears_meta_registry() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        // Register an actor so the registry is non-empty.
+        let handler = HewHandlerMeta {
+            name: c"ping".as_ptr().cast(),
+            msg_type: 1,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: c"void".as_ptr().cast(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: c"PingActor".as_ptr().cast(),
+            handler_count: 1,
+            handlers: &raw const handler,
+        };
+        // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        // Confirm the entry is visible before shutdown.
+        {
+            let state = meta_state();
+            assert!(
+                state.registry.contains_key("PingActor"),
+                "registry must contain actor before shutdown"
+            );
+        }
+
+        // Shutdown must clear the registry.
+        bridge_shutdown();
+
+        {
+            let state = meta_state();
+            assert!(
+                state.registry.is_empty(),
+                "registry must be empty after bridge_shutdown"
+            );
+        }
+
+        // hew_wasm_query_meta must return an empty result (no actors).
+        bridge_init();
+        let mut len: usize = 0;
+        // SAFETY: Null name queries all actors; len is a valid out-pointer.
+        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &raw mut len) };
+        // SAFETY: ptr/len are valid as returned by hew_wasm_query_meta.
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
+        };
+        assert_eq!(
+            json, "{\"actors\":{}}",
+            "query_meta must return empty actors after shutdown"
+        );
+        // SAFETY: ptr was allocated by hew_wasm_query_meta.
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 }

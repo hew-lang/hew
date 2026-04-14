@@ -364,6 +364,7 @@ jobs:
         run: >
           cargo llvm-cov nextest
           --workspace --exclude hew-wasm --exclude hew-cli
+          --profile ci
           --lcov --output-path lcov.info
 
       - name: Generate HTML report

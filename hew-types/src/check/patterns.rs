@@ -82,18 +82,34 @@ impl Checker {
                         if let Some(VariantDef::Struct(variant_fields)) =
                             td.variants.get(short_name).cloned()
                         {
+                            // Substitute the scrutinee's concrete type args into field types
+                            // so generic enum struct-variants bind with the concrete type.
+                            let type_params = td.type_params.clone();
+                            let type_args = if let Ty::Named { args, .. } = ty {
+                                args.clone()
+                            } else {
+                                vec![]
+                            };
+
                             for pf in fields {
-                                if let Some((_, field_ty)) = variant_fields
+                                if let Some((_, raw_field_ty)) = variant_fields
                                     .iter()
                                     .find(|(field_name, _)| field_name == &pf.name)
                                 {
+                                    // Apply type-param → concrete-arg substitution
+                                    let field_ty = type_params.iter().zip(type_args.iter()).fold(
+                                        raw_field_ty.clone(),
+                                        |acc, (tp, concrete)| {
+                                            acc.substitute_named_param(tp, concrete)
+                                        },
+                                    );
                                     if let Some((pat, ps)) = &pf.pattern {
-                                        self.bind_pattern(pat, field_ty, is_mutable, ps);
+                                        self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
                                         self.check_shadowing(&pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.clone(),
-                                            field_ty.clone(),
+                                            field_ty,
                                             is_mutable,
                                             span.clone(),
                                         );

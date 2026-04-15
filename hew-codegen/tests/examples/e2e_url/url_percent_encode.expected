@@ -1,0 +1,7 @@
+encode-empty=
+encode-space=hello%20world
+encode-utf8=caf%C3%A9
+decode-roundtrip=hello world
+decode-invalid=
+decode-nul=a
+query=name=hello%20world&page=1

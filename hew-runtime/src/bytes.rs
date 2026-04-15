@@ -615,6 +615,37 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_to_string(
+    vec: *mut crate::vec::HewVec,
+) -> *mut std::ffi::c_char {
+    if vec.is_null() {
+        return crate::cabi::str_to_malloc("");
+    }
+    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
+    let len = unsafe { crate::vec::hew_vec_len(vec) };
+    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "vec len fits in usize on all platforms"
+    )]
+    let mut bytes = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        // SAFETY: i < len, so index is in bounds.
+        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "byte values fit in u8"
+        )]
+        bytes.push(val as u8);
+    }
+    bytes.retain(|&b| b != 0);
+    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
+    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

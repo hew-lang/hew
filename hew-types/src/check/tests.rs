@@ -10044,7 +10044,7 @@ actor MyActor {
 //
 // Coverage:
 //  - channel.new / send / try_recv → allowed on wasm32 bounded subset
-//  - Receiver<T>::recv → BlockingChannelRecv error
+//  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
 //  - sleep_ms → Timers warning
 //  - sleep → Timers warning
 //  - Stream<T>::next → Streams error
@@ -10265,6 +10265,68 @@ mod wasm_rejects {
         assert!(
             platform_error_contains(&output, "Blocking channel receive"),
             "error message should mention blocking channel receive; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_for_await_receiver() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let (tx, rx) = channel.new(1);\n",
+            "    tx.send(\"hello\");\n",
+            "    tx.close();\n",
+            "    for await item in rx {\n",
+            "        println(item);\n",
+            "    }\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_platform_limitation_error(&output),
+            "`for await` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Blocking channel receive"),
+            "error message should mention blocking channel receive; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_for_await_receiver_no_platform_error() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let (tx, rx) = channel.new(1);\n",
+            "    tx.send(\"hello\");\n",
+            "    tx.close();\n",
+            "    for await item in rx {\n",
+            "        println(item);\n",
+            "    }\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "`for await` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }

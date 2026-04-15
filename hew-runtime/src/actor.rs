@@ -2502,7 +2502,6 @@ extern "C" {
     fn hew_mailbox_new_bounded(capacity: i32) -> *mut c_void;
     fn hew_mailbox_new_with_policy(capacity: usize, policy: HewOverflowPolicy) -> *mut c_void;
     fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
-    fn hew_mailbox_send_sys(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize);
     fn hew_mailbox_close(mb: *mut c_void);
     fn hew_wasm_sched_enqueue(actor: *mut c_void);
 }

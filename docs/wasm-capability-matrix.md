@@ -48,6 +48,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
 | **`Receiver<T>::recv`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
+| **`#[every(duration)]` periodic handlers** | ⚠️ Warn (`Timers`) | Cooperative periodic dispatch via host-driven timer queue | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
@@ -61,11 +62,16 @@ Features in the **Warn** group are architecturally different on the
 single-threaded cooperative WASM scheduler, but they still have a meaningful
 runtime implementation.
 
-This group currently contains only `sleep_ms`/`sleep`, which now have cooperative semantics on
-WASM: the actor is parked at the **message boundary** (not mid-handler) and
-re-enqueued once the deadline passes.  The warning reminds callers that code
+These exist as warnings (not errors) to allow gradual migration: a program can
+be partially WASM-compatible and still get useful analysis feedback.
+
+This group includes `sleep_ms`/`sleep` and `#[every(duration)]`, which now
+have cooperative semantics on WASM: `sleep_ms` parks the actor at the
+**message boundary** (not mid-handler), while periodic handlers are delivered
+when the host advances the timer queue.  The warning reminds callers that code
 after `sleep_ms` in the same receive handler still executes before the actor
-parks, which differs from the native OS-sleep behavior.
+parks, and that periodic dispatch depends on `hew_wasm_timer_tick` /
+`hew_wasm_sched_tick` driving the queue.
 
 ### 🚫 Error (compile-time reject)
 
@@ -92,13 +98,14 @@ would otherwise end in a trap or linker failure:
   channel is empty but still live. The checker rejects these calls at compile
   time with `BlockingChannelRecv`.
 
-- **Timers** (`sleep_ms`, `sleep`): The runtime now parks the actor at the
-  message boundary and re-enqueues it once the deadline passes.  The checker
-  emits a **warning** (not an error) to inform callers of the cooperative
-  semantics difference.  Code after `sleep_ms` in the same receive handler
-  still executes before the park.  Host embedders should call
-  `hew_wasm_timer_tick(now_ms)` on each event-loop iteration to advance
-  sleeping actors.
+- **Timers** (`sleep_ms`, `sleep`, `#[every(duration)]`): The runtime now
+  parks sleeping actors at the message boundary, re-enqueues them once the
+  deadline passes, and delivers periodic handler messages through the same
+  host-driven timer loop.  The checker emits a **warning** (not an error) to
+  inform callers of the cooperative semantics difference.  Code after
+  `sleep_ms` in the same receive handler still executes before the park, and
+  periodic dispatch depends on `hew_wasm_timer_tick(now_ms)` /
+  `hew_wasm_sched_tick(...)` advancing the timer queue.
 
 - **Streams**: The `stream` runtime module is entirely gated out on wasm32
   (`#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`).  Any

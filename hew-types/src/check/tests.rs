@@ -10154,6 +10154,38 @@ mod wasm_rejects {
         );
     }
 
+    #[test]
+    fn wasm_warns_on_every_attribute() {
+        let output =
+            check_wasm("actor Ticker { #[every(10ms)] receive fn tick() {} } fn main() {}");
+        assert!(
+            has_platform_limitation_warning(&output),
+            "#[every] should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            platform_warning_contains(&output, "Timer"),
+            "#[every] warning should mention Timer operations; got: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "#[every] should NOT be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_every_attribute_no_platform_error() {
+        let output =
+            check_native("actor Ticker { #[every(10ms)] receive fn tick() {} } fn main() {}");
+        assert!(
+            !has_platform_limitation_error(&output),
+            "#[every] should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── channel.new ──────────────────────────────────────────────────────────
 
     #[test]

@@ -317,6 +317,7 @@ impl Checker {
             return;
         }
 
+        let mut valid_every_duration = false;
         match &attr.args[0] {
             AttributeArg::Duration(ns) => {
                 if *ns <= 0 {
@@ -325,6 +326,8 @@ impl Checker {
                         attr.span.clone(),
                         "#[every] duration must be positive",
                     ));
+                } else {
+                    valid_every_duration = true;
                 }
             }
             _ => {
@@ -334,6 +337,10 @@ impl Checker {
                     "#[every] argument must be a duration literal, e.g. #[every(100ms)]",
                 ));
             }
+        }
+
+        if valid_every_duration {
+            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::Timers);
         }
 
         // Periodic handlers must not have parameters (they receive no message payload).

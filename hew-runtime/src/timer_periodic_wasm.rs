@@ -373,7 +373,7 @@ mod tests {
                 hibernating: AtomicI32::new(0),
                 prof_messages_processed: AtomicU64::new(0),
                 prof_processing_time_ns: AtomicU64::new(0),
-                arena,
+                arena: arena.cast(),
             }));
             Self { actor, counter }
         }
@@ -390,7 +390,7 @@ mod tests {
             unsafe {
                 cancel_all_timers_for_actor(self.actor);
                 crate::mailbox_wasm::hew_mailbox_free((*self.actor).mailbox.cast());
-                crate::arena::hew_arena_free_all((*self.actor).arena);
+                crate::arena::hew_arena_free_all((*self.actor).arena.cast());
                 let _ = Box::from_raw(self.counter);
                 let _ = Box::from_raw(self.actor);
             }

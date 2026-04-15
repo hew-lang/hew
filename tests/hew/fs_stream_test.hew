@@ -25,6 +25,20 @@ fn test_try_read_missing_returns_not_found() {
 }
 
 #[test]
+fn test_try_read_bytes_missing_returns_not_found() {
+    let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
+    cleanup_file(file_path);
+
+    match fs.try_read_bytes(file_path) {
+        Ok(_) => panic("expected missing file error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
 fn test_try_write_read_size_and_delete_roundtrip() {
     let file_path = "tests/hew/_fs_stream_roundtrip.txt";
     cleanup_file(file_path);
@@ -152,6 +166,32 @@ fn test_try_append_and_try_read_bytes() {
     match fs.try_read_bytes(file_path) {
         Ok(data) => testing.assert_true(data.len() == 11),
         Err(_) => panic("expected try_read_bytes to succeed"),
+    }
+
+    cleanup_file(file_path);
+}
+
+#[test]
+fn test_try_write_and_try_read_bytes_binary_roundtrip() {
+    let file_path = "tests/hew/_fs_stream_binary_bytes.bin";
+    cleanup_file(file_path);
+
+    let expected = bytes [0x00, 0x7f, 0x80, 0xc3, 0xff];
+    match fs.try_write_bytes(file_path, expected) {
+        Ok(_) => {},
+        Err(_) => panic("expected try_write_bytes to succeed"),
+    }
+
+    match fs.try_read_bytes(file_path) {
+        Ok(data) => {
+            testing.assert_eq(data.len(), expected.len());
+            testing.assert_eq(data.get(0), expected.get(0));
+            testing.assert_eq(data.get(1), expected.get(1));
+            testing.assert_eq(data.get(2), expected.get(2));
+            testing.assert_eq(data.get(3), expected.get(3));
+            testing.assert_eq(data.get(4), expected.get(4));
+        },
+        Err(_) => panic("expected try_read_bytes to preserve binary bytes"),
     }
 
     cleanup_file(file_path);

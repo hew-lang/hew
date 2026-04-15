@@ -117,6 +117,14 @@ fn move_copy_error(source: String, target: String) -> IoError {
     }
 }
 
+fn clone_bytes(data: bytes) -> bytes {
+    let out: bytes = bytes::new();
+    for i in 0..data.len() {
+        out.push(data.get(i));
+    }
+    out
+}
+
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Panics if the file does not exist or cannot be read.
@@ -249,13 +257,15 @@ pub fn read_bytes(path: String) -> bytes {
 /// Read the raw bytes of a file into a `bytes` value.
 ///
 /// Returns `Err(IoError)` instead of an ambiguous empty buffer on failure.
-/// This currently routes through `try_read` plus `hew_string_to_bytes`, so it
-/// is best suited to UTF-8 / text-friendly content while still surfacing
-/// structured open/read errors.
 pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
-    match try_read(file_path) {
-        Ok(contents) => Ok(unsafe { hew_string_to_bytes(contents) }),
-        Err(err) => Err(err),
+    unsafe {
+        let data = hew_file_read_bytes(file_path);
+        let error = hew_file_last_error();
+        if error != "" {
+            Err(io_error_from_message(error))
+        } else {
+            Ok(clone_bytes(data))
+        }
     }
 }
 
@@ -399,6 +409,7 @@ extern "C" {
     fn hew_file_delete(path: String) -> i32;
     fn hew_file_size(path: String) -> i64;
     fn hew_file_read_bytes(path: String) -> bytes;
+    fn hew_file_last_error() -> String;
     fn hew_file_write_bytes(path: String, data: bytes) -> i32;
     fn hew_fs_mkdir(path: String) -> i32;
     fn hew_fs_mkdir_all(path: String) -> i32;
@@ -410,5 +421,4 @@ extern "C" {
     fn hew_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_last_error() -> String;
     fn hew_stream_collect_string(stream: FileReadStream) -> String;
-    fn hew_string_to_bytes(s: String) -> bytes;
 }

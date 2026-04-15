@@ -231,26 +231,38 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
 /// `path` must be a valid, NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate::vec::HewVec {
-    if path.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { crate::vec::hew_vec_new() };
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+    // SAFETY: `path` is the caller-provided C string pointer for this ABI entrypoint.
+    let Some(rust_path) = (unsafe { crate::util::cstr_to_str(path, "hew_file_read_bytes") }) else {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { crate::vec::hew_vec_new() };
     };
     match std::fs::read(rust_path) {
         Ok(data) => {
+            crate::hew_clear_error();
             // SAFETY: data slice is valid.
             unsafe { crate::vec::u8_to_hwvec(&data) }
         }
-        Err(_) => {
+        Err(error) => {
+            crate::set_last_error(format!("hew_file_read_bytes: {error}"));
             // SAFETY: hew_vec_new allocates a valid empty HewVec.
             unsafe { crate::vec::hew_vec_new() }
         }
     }
+}
+
+/// Return a malloc-owned copy of the current thread's last file I/O error.
+// WASM-TODO: confirm whether file-I/O error reporting needs a dedicated wasm-visible contract.
+#[no_mangle]
+pub extern "C" fn hew_file_last_error() -> *mut c_char {
+    let ptr = crate::hew_last_error();
+    if ptr.is_null() {
+        return str_to_malloc("");
+    }
+    // SAFETY: `ptr` comes from thread-local last-error storage and remains valid for this read.
+    let Some(text) = (unsafe { crate::util::cstr_to_str(ptr, "hew_file_last_error") }) else {
+        return str_to_malloc("");
+    };
+    str_to_malloc(text)
 }
 
 /// Write a `bytes` `HewVec` to a file, overwriting any existing content.
@@ -880,14 +892,21 @@ mod tests {
 
     #[test]
     fn read_bytes_nonexistent_file_returns_empty_vec() {
-        let p = CString::new("/tmp/hew_fio_bytes_ghost.bin").unwrap();
+        let dir = test_dir("bytes_missing");
+        let file = dir.join("ghost.bin");
+        let p = cpath(&file);
         // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
         unsafe {
             let v = hew_file_read_bytes(p.as_ptr());
             assert!(!v.is_null());
             assert_eq!(crate::vec::hew_vec_len(v), 0);
             crate::vec::hew_vec_free(v);
+
+            let error = read_and_free(hew_file_last_error());
+            assert!(!error.is_empty());
+            assert!(error.contains("hew_file_read_bytes"));
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

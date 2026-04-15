@@ -96,7 +96,7 @@ pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
 /// This stage only freezes constructor/open errors; read-time failures after a
 /// stream is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
-/// Use `try_from_file` for a structured `Result<Stream<String>, fs.IoError>`.
+/// Prefer `try_from_file` for a structured `Result<Stream<String>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
@@ -135,7 +135,7 @@ pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
 /// This stage only freezes constructor/open errors; write-time failures after a
 /// sink is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
-/// Use `try_to_file` for a structured `Result<Sink<String>, fs.IoError>`.
+/// Prefer `try_to_file` for a structured `Result<Sink<String>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples

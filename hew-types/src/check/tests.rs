@@ -10408,10 +10408,8 @@ mod wasm_rejects {
 
     // ── Reject-level features now fail closed on WASM ────────────────────────
 
-    #[test]
-    fn wasm_rejects_supervisor_calls() {
-        let output = check_wasm(
-            r"
+    fn supervisor_calls_source() -> &'static str {
+        r"
             actor Worker {
                 receive fn ping() {}
             }
@@ -10429,8 +10427,45 @@ mod wasm_rejects {
                 supervisor_stop(pool);
                 worker.ping();
             }
-        ",
-        );
+        "
+    }
+
+    fn link_monitor_calls_source() -> &'static str {
+        r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+                let ref_id = monitor(worker);
+                link(worker);
+                demonitor(ref_id);
+            }
+        "
+    }
+
+    fn structured_concurrency_scope_source() -> &'static str {
+        "fn main() { let result = scope { 1 + 2 }; println(result); }"
+    }
+
+    fn scope_tasks_source() -> &'static str {
+        r"
+            fn main() {
+                let result = scope |s| {
+                    let task = s.launch {
+                        42
+                    };
+                    await task
+                };
+                println(result);
+            }
+        "
+    }
+
+    #[test]
+    fn wasm_rejects_supervisor_calls() {
+        let output = check_wasm(supervisor_calls_source());
         assert!(
             output
                 .errors
@@ -10442,6 +10477,16 @@ mod wasm_rejects {
         assert!(
             platform_error_contains(&output, "Supervision tree"),
             "error message should mention Supervision tree feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_supervisor_calls_no_platform_error() {
+        let output = check_native(supervisor_calls_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "supervision operations should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }
@@ -10478,20 +10523,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_link_monitor_calls() {
-        let output = check_wasm(
-            r"
-            actor Worker {
-                receive fn ping() {}
-            }
-
-            fn main() {
-                let worker = spawn Worker;
-                let ref_id = monitor(worker);
-                link(worker);
-                demonitor(ref_id);
-            }
-        ",
-        );
+        let output = check_wasm(link_monitor_calls_source());
         assert!(
             has_platform_limitation_error(&output),
             "link/monitor operations should be a WASM error; got errors: {:?}",
@@ -10505,8 +10537,18 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn native_link_monitor_no_platform_error() {
+        let output = check_native(link_monitor_calls_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "link/monitor operations should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn wasm_rejects_structured_concurrency_scope() {
-        let output = check_wasm("fn main() { let result = scope { 1 + 2 }; println(result); }");
+        let output = check_wasm(structured_concurrency_scope_source());
         assert!(
             has_platform_limitation_error(&output),
             "scope expressions should be a WASM error; got errors: {:?}",
@@ -10520,20 +10562,18 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_scope_tasks() {
-        let output = check_wasm(
-            r"
-            fn main() {
-                let result = scope |s| {
-                    let task = s.launch {
-                        42
-                    };
-                    await task
-                };
-                println(result);
-            }
-        ",
+    fn native_scope_no_platform_error() {
+        let output = check_native(structured_concurrency_scope_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "scope expressions should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
         );
+    }
+
+    #[test]
+    fn wasm_rejects_scope_tasks() {
+        let output = check_wasm(scope_tasks_source());
         assert!(
             has_platform_limitation_error(&output),
             "scope tasks should be a WASM error; got errors: {:?}",
@@ -10542,6 +10582,16 @@ mod wasm_rejects {
         assert!(
             platform_error_contains(&output, "Task handles"),
             "error message should mention Task feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_scope_tasks_no_platform_error() {
+        let output = check_native(scope_tasks_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "scope tasks should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }

@@ -2,6 +2,7 @@
 actor Responder {
     let value: int;
     receive fn get() -> int {
+        sleep_ms(50);
         value
     }
 }
@@ -19,7 +20,7 @@ fn main() {
     println(result);
 
     let fast = spawn Responder(value: 42);
-    let timeout_later = 50ms + 50ms;
+    let timeout_later = 250ms + 250ms;
     let result2 = select {
         x from fast.get() => x,
         after timeout_later => -1,

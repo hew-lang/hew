@@ -1,0 +1,14 @@
+import std::net::smtp;
+
+fn main() {
+    let _ = smtp.send(
+        "smtp.example.com",
+        587,
+        "user",
+        "pass",
+        "from@example.com",
+        "to@example.com",
+        "Subject",
+        "Body",
+    );
+}

@@ -1,0 +1,6 @@
+import std::net::http::http_client;
+
+fn main() {
+    let headers: Vec<(String, String)> = Vec::new();
+    let _ = http_client.request_string("GET", "https://example.com", "", headers);
+}

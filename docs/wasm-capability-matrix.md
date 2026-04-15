@@ -50,6 +50,8 @@ The **Checker disposition** column documents what the type checker emits when
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`#[every(duration)]` periodic handlers** | ⚠️ Warn (`Timers`) | Cooperative periodic dispatch via host-driven timer queue | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
+| **`std::net::http::http_client.*`, `http_client.Response.*`** | 🚫 Error (`HttpClient`) | Native-only wrapper module | WASM-TODO |
+| **`std::net::smtp.*`, `smtp.Conn.*`** | 🚫 Error (`Smtp`) | Native-only transport wrapper | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---
@@ -113,6 +115,12 @@ would otherwise end in a trap or linker failure:
   undefined symbol.  Rejecting at compile time gives a clear diagnostic.
   - WASM-TODO: implement I/O stream adapters over WASI fd/socket APIs.
 
+- **`std::net::http::http_client` / `std::net::smtp`**: these stdlib wrappers
+  are still native-only today (`WASM-TODO` in the module sources).  Letting
+  them through type checking on wasm32 only defers the failure to link time.
+  The checker now rejects both the module helper calls and their handle methods
+  (`http_client.Response.*`, `smtp.Conn.*`) with feature-specific diagnostics.
+
 ---
 
 ## Generators on WASM — note
@@ -149,7 +157,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
 - `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
-- `hew-types/src/check/methods.rs :: check_method_call` (stream.* → Streams)
+- `hew-types/src/check/methods.rs :: check_method_call` (stream.* → Streams, `http_client.*`/`smtp.*` → reject)
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` Stream match arm (Streams)
 

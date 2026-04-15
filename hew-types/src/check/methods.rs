@@ -440,6 +440,36 @@ impl Checker {
         }
     }
 
+    fn reject_if_wasm_native_only_network_module_call(&mut self, module_name: &str, span: &Span) {
+        if self.user_modules.contains(module_name) {
+            return;
+        }
+        match module_name {
+            "http_client" => self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient),
+            "smtp" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
+            _ => {}
+        }
+    }
+
+    fn reject_if_wasm_native_only_network_handle(&mut self, receiver_ty: &Ty, span: &Span) {
+        let Ty::Named { name, .. } = receiver_ty else {
+            return;
+        };
+        let Some(module_name) = name.split('.').next() else {
+            return;
+        };
+        if self.user_modules.contains(module_name) {
+            return;
+        }
+        match name.as_str() {
+            "http_client.Response" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
+            }
+            "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
+            _ => {}
+        }
+    }
+
     fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
         match ty {
             Ty::String => Some("String"),
@@ -1265,9 +1295,10 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.require_unsafe(&key, span);
+                self.reject_if_wasm_native_only_network_module_call(name, span);
                 // Stream module calls are rejected on wasm32 because the runtime
                 // module is not compiled there.
-                if name == "stream" {
+                if !self.user_modules.contains(name) && name == "stream" {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
@@ -1381,6 +1412,7 @@ impl Checker {
 
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         let resolved = self.subst.resolve(&receiver_ty);
+        self.reject_if_wasm_native_only_network_handle(&resolved, span);
 
         match (&resolved, method) {
             // Vec methods

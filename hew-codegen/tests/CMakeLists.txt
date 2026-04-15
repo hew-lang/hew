@@ -1001,6 +1001,7 @@ add_wasm_file_test(timeout              e2e_timeout timeout)
 add_wasm_file_test(json_try_parse      e2e_json json_try_parse)
 add_wasm_file_test(toml_try_parse      e2e_toml toml_try_parse)
 add_wasm_file_test(yaml_try_parse      e2e_yaml yaml_try_parse)
+add_wasm_file_test(url_percent_encode   e2e_url          url_percent_encode)
 
 # Algorithms (all pure computation — ideal WASM tests)
 add_wasm_file_test(binary_search        e2e_algorithms binary_search)

@@ -1,0 +1,24 @@
+import std::net::url;
+
+fn main() {
+    print("encode-empty=");
+    println(url.encode(""));
+
+    print("encode-space=");
+    println(url.encode("hello world"));
+
+    print("encode-utf8=");
+    println(url.encode("café"));
+
+    print("decode-roundtrip=");
+    println(url.decode(url.encode("hello world")));
+
+    print("decode-invalid=");
+    println(url.decode("%FF%FE"));
+
+    print("decode-nul=");
+    println(url.decode("a%00b"));
+
+    print("query=");
+    println(url.encode_query("name=hello world\npage=1"));
+}

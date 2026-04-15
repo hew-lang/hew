@@ -1,0 +1,5 @@
+import std::process;
+
+fn main() {
+    let _ = process.run("echo hi");
+}

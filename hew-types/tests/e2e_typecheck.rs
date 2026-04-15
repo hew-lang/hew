@@ -41,6 +41,15 @@ fn typecheck_inline_wasm(source: &str) -> hew_types::TypeCheckOutput {
     checker.check_program(&parse_result.program)
 }
 
+fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment: &str) -> usize {
+    output
+        .errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::PlatformLimitation && error.message.contains(fragment)
+        })
+        .count()
+}
 #[test]
 fn typecheck_all_examples() {
     let examples_dir = repo_root().join("examples");
@@ -1464,6 +1473,82 @@ fn http_respond_four_arg_rejected() {
     assert!(
         !output.errors.is_empty(),
         "http respond with 4 args (old content_length form) should produce a type error"
+    );
+}
+
+#[test]
+fn wasm_http_server_surface_rejected_before_codegen() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::http;
+
+        fn inspect(server: http.Server, req: http.Request) -> String {
+            let _next = server.accept();
+            req.respond_text(200, "ok");
+            server.close();
+            req.path()
+        }
+
+        fn main() {
+            let _ = http.listen(":8080");
+        }
+        "#,
+    );
+    let count = platform_limitation_error_count(&output, "HTTP server operations");
+    assert!(
+        count >= 4,
+        "expected http server module and handle surfaces to be rejected on WASM, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn wasm_tcp_networking_surface_rejected_before_codegen() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net;
+
+        fn tune(listener: net.Listener, conn: net.Connection) -> int {
+            let _accepted = listener.accept();
+            conn.set_read_timeout(10);
+            conn.close()
+        }
+
+        fn main() {
+            let _ = net.listen(":9000");
+            let _ = net.connect("127.0.0.1:9000");
+        }
+        "#,
+    );
+    let count = platform_limitation_error_count(&output, "TCP networking operations");
+    assert!(
+        count >= 4,
+        "expected tcp networking module and handle surfaces to be rejected on WASM, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn wasm_process_execution_surface_rejected_before_codegen() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::process;
+
+        fn await_child(child: process.Child) -> int {
+            child.wait()
+        }
+
+        fn main() {
+            let _ = process.run("echo hi");
+            let _ = process.start("sleep 1");
+        }
+        "#,
+    );
+    let count = platform_limitation_error_count(&output, "Process execution operations");
+    assert!(
+        count >= 3,
+        "expected process module and child surfaces to be rejected on WASM, got: {:#?}",
+        output.errors
     );
 }
 

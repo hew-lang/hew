@@ -211,7 +211,8 @@ impl PendingLoweringFact {
 /// warning severity because wasm32 has a degraded-but-implemented runtime path.
 ///
 /// Variants in the **reject group** (`SupervisionTrees`, `LinkMonitor`,
-/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`, `Streams`) are emitted as
+/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`, `Streams`,
+/// `HttpServer`, `TcpNetworking`, `ProcessExecution`) are emitted as
 /// compile-time **errors**. Their runtime support is absent on wasm32: some
 /// entry points trap via `unreachable!`, while native-only modules such as
 /// scope/task/supervisor/link-monitor are gated out of `hew-runtime` entirely.
@@ -253,6 +254,20 @@ pub(super) enum WasmUnsupportedFeature {
     /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
     /// WASM-TODO: implement I/O-stream adapters over WASI fd/socket APIs.
     Streams,
+    /// `http.listen` and `http.Server` / `http.Request` methods: the HTTP
+    /// server runtime is backed by native sockets and `tiny_http`, and is not
+    /// compiled for wasm32.
+    /// WASM-TODO: design a cooperative WASI-hosted HTTP server surface.
+    HttpServer,
+    /// `net.*` constructors and `net.Listener` / `net.Connection` methods: the
+    /// TCP transport runtime module is not compiled for wasm32.
+    /// WASM-TODO: expose socket-backed listener/connection adapters over WASI.
+    TcpNetworking,
+    /// `process.*` helpers and `process.Child::*` methods: the process runtime
+    /// module depends on the native OS process model and is not compiled for
+    /// wasm32.
+    /// WASM-TODO: define a host capability model for subprocess execution.
+    ProcessExecution,
 }
 
 impl WasmUnsupportedFeature {
@@ -267,6 +282,9 @@ impl WasmUnsupportedFeature {
             Self::BlockingChannelRecv => "Blocking channel receive operations",
             Self::Timers => "Timer operations",
             Self::Streams => "Stream operations",
+            Self::HttpServer => "HTTP server operations",
+            Self::TcpNetworking => "TCP networking operations",
+            Self::ProcessExecution => "Process execution operations",
         }
     }
 
@@ -299,6 +317,18 @@ impl WasmUnsupportedFeature {
             Self::Streams => {
                 "I/O streams require the OS threading and networking stack; \
                  the stream runtime module is not compiled for wasm32"
+            }
+            Self::HttpServer => {
+                "the std::net::http server is backed by native sockets and tiny_http; \
+                 no cooperative wasm32 server implementation exists yet"
+            }
+            Self::TcpNetworking => {
+                "hew_tcp_listen / hew_tcp_connect require the native OS socket layer; \
+                 the transport runtime module is not compiled for wasm32"
+            }
+            Self::ProcessExecution => {
+                "hew_process_run / hew_process_spawn require the native OS process model; \
+                 the process runtime module is not compiled for wasm32"
             }
         }
     }

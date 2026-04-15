@@ -133,8 +133,12 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
         "expected unsupported WASM diagnostic\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("hew.supervisor.new"),
-        "expected explicit supervisor lowering failure\nstderr:\n{stderr}",
+        stderr.contains("type errors found"),
+        "expected checker-phase failure before lowering\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("hew.supervisor.new"),
+        "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
     );
 }
 

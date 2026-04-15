@@ -682,9 +682,11 @@ pub extern "C" fn hew_sched_run() {
 }
 
 /// Drain both periodic-timer and sleep-queue entries whose deadlines have passed.
-/// Returns (periodic_count, sleeper_count).
+/// Returns (`periodic_count`, `sleeper_count`).
 unsafe fn drain_timed_work(now_ms: u64) -> (u32, u32) {
+    // SAFETY: Single-threaded cooperative scheduler; timer queues are not mutated concurrently.
     let periodic = unsafe { crate::timer_periodic_wasm::drain_ready_periodic(now_ms) };
+    // SAFETY: Single-threaded cooperative scheduler; sleep queue is not mutated concurrently.
     let sleepers = unsafe { drain_expired_sleepers(now_ms) };
     (periodic, sleepers)
 }

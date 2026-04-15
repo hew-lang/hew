@@ -1,0 +1,4 @@
+fn main() {
+    sleep_ms(10);
+    println("timers warn on wasm");
+}

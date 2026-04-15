@@ -164,16 +164,16 @@ impl Checker {
         }
     }
 
-    pub(super) fn warn_if_wasm_incompatible_call(&mut self, func_name: &str, span: &Span) {
+    pub(super) fn reject_if_wasm_incompatible_call(&mut self, func_name: &str, span: &Span) {
         if !self.wasm_target {
             return;
         }
         match func_name {
             "link" | "unlink" | "monitor" | "demonitor" => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::LinkMonitor);
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
             }
             "supervisor_child" | "supervisor_stop" => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
             }
             // sleep_ms / sleep: the wasm32 scheduler now parks the calling actor
             // at the message boundary and re-enqueues it once the deadline passes
@@ -255,7 +255,7 @@ impl Checker {
         };
 
         self.require_unsafe(&func_name, span);
-        self.warn_if_wasm_incompatible_call(&func_name, span);
+        self.reject_if_wasm_incompatible_call(&func_name, span);
 
         // Check if name is a user-defined enum variant constructor first.
         // Separate lookup (immutable borrow) from processing (mutable borrow)

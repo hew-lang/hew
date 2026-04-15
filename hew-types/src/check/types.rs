@@ -207,17 +207,16 @@ impl PendingLoweringFact {
 
 /// WASM-unsupported feature classes.
 ///
-/// Variants in the **warning group** (`SupervisionTrees`, `LinkMonitor`,
-/// `StructuredConcurrency`, `Tasks`, `Select`) are emitted as diagnostics at
-/// warning severity.  They reach codegen via a controlled path where codegen
-/// can emit grouped diagnostics.
+/// Variants in the **warning group** (`Timers`) are emitted as diagnostics at
+/// warning severity because wasm32 has a degraded-but-implemented runtime path.
 ///
-/// Variants in the **reject group** (`Channels`, `Streams`) are emitted as
-/// compile-time **errors**.  Their runtime entry points trap via `unreachable!`
-/// on wasm32 (see `hew-runtime/src/lib.rs` `wasm_stubs`), so allowing them
-/// through type checking would produce a program that traps silently at runtime.
+/// Variants in the **reject group** (`SupervisionTrees`, `LinkMonitor`,
+/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`, `Streams`) are emitted as
+/// compile-time **errors**. Their runtime support is absent on wasm32: some
+/// entry points trap via `unreachable!`, while native-only modules such as
+/// scope/task/supervisor/link-monitor are gated out of `hew-runtime` entirely.
 /// Making them errors ensures WASM programs fail loudly at check time rather
-/// than at the first use at runtime.
+/// than at link time or the first use at runtime.
 ///
 /// `Timers` is now in the **warning group**: `sleep_ms`/`sleep` are implemented
 /// with cooperative semantics on wasm32 (park at message boundary rather than
@@ -231,11 +230,12 @@ impl PendingLoweringFact {
 /// capability split and feature disposition table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum WasmUnsupportedFeature {
-    // ── Warning group (diagnostic path; codegen groups these) ──────────────
+    // ── Reject group (no coherent wasm32 runtime support; compile-time error) ─
     SupervisionTrees,
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
+    // ── Warning group (implemented with degraded semantics) ─────────────────
     /// `sleep_ms`, `sleep`: sleep is cooperative on wasm32 — it takes effect
     /// at the *message boundary*, not mid-handler.  Code after `sleep_ms` in
     /// the same receive handler still executes before the park happens.

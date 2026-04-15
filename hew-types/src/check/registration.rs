@@ -368,7 +368,7 @@ impl Checker {
                     }
                 }
                 Item::Supervisor(sd) => {
-                    self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     let children: Vec<(String, String)> = sd
                         .children
                         .iter()

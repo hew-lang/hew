@@ -10312,28 +10312,142 @@ mod wasm_rejects {
         );
     }
 
-    // ── Existing warning-level features still warn (not error) on WASM ──────
+    // ── Reject-level features now fail closed on WASM ────────────────────────
 
     #[test]
-    fn wasm_supervisor_is_warning_not_error() {
-        // supervisor_child / supervisor_stop are warning-level (diagnostic
-        // path), not error-level.  Verify they remain warnings.
-        let output = check_wasm("fn main() { supervisor_child(); }");
-        assert!(
-            output
-                .warnings
-                .iter()
-                .any(|w| w.kind == TypeErrorKind::PlatformLimitation),
-            "supervisor_child should be a WASM warning; got warnings: {:?}, errors: {:?}",
-            output.warnings,
-            output.errors
+    fn wasm_rejects_supervisor_calls() {
+        let output = check_wasm(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            supervisor WorkerPool {
+                strategy: one_for_one,
+                max_restarts: 1,
+                window: 10,
+                child w1: Worker
+            }
+
+            fn main() {
+                let pool = spawn WorkerPool;
+                let worker = supervisor_child(pool, 0);
+                supervisor_stop(pool);
+                worker.ping();
+            }
+        ",
         );
         assert!(
-            !output
+            output
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "supervisor_child should NOT be a WASM error; got errors: {:?}",
+            "supervision operations should be WASM errors; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Supervision tree"),
+            "error message should mention Supervision tree feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_supervisor_declaration() {
+        let output = check_wasm(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            supervisor WorkerPool {
+                strategy: one_for_one,
+                max_restarts: 1,
+                window: 10,
+                child w1: Worker
+            }
+
+            fn main() {}
+        ",
+        );
+        assert!(
+            has_platform_limitation_error(&output),
+            "supervisor declarations should be a WASM error; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Supervision tree"),
+            "error message should mention Supervision tree feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_link_monitor_calls() {
+        let output = check_wasm(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+                let ref_id = monitor(worker);
+                link(worker);
+                demonitor(ref_id);
+            }
+        ",
+        );
+        assert!(
+            has_platform_limitation_error(&output),
+            "link/monitor operations should be a WASM error; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Link/monitor"),
+            "error message should mention Link/monitor feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_structured_concurrency_scope() {
+        let output = check_wasm("fn main() { let result = scope { 1 + 2 }; println(result); }");
+        assert!(
+            has_platform_limitation_error(&output),
+            "scope expressions should be a WASM error; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Structured concurrency"),
+            "error message should mention Structured concurrency feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_scope_tasks() {
+        let output = check_wasm(
+            r"
+            fn main() {
+                let result = scope |s| {
+                    let task = s.launch {
+                        42
+                    };
+                    await task
+                };
+                println(result);
+            }
+        ",
+        );
+        assert!(
+            has_platform_limitation_error(&output),
+            "scope tasks should be a WASM error; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Task handles"),
+            "error message should mention Task feature; got: {:?}",
             output.errors
         );
     }

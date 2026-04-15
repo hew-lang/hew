@@ -41,10 +41,10 @@ The **Checker disposition** column documents what the type checker emits when
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | WASI socket I/O (HTTP/TCP clients) | ✅ Pass | Implemented via WASI | — |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
-| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | ⚠️ Warn (`SupervisionTrees`) | Diagnostic path | WASM-TODO |
-| Actor `link` / `unlink` / `monitor` / `demonitor` | ⚠️ Warn (`LinkMonitor`) | Diagnostic path | WASM-TODO |
-| Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | ⚠️ Warn (`StructuredConcurrency`) | Diagnostic path | WASM-TODO |
-| Scope-spawned `Task` handles | ⚠️ Warn (`Tasks`) | Diagnostic path | WASM-TODO |
+| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Native-only runtime module | WASM-TODO |
+| Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Native-only runtime module | WASM-TODO |
+| Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native-only runtime module | WASM-TODO |
+| Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
 | **`Receiver<T>::recv`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
@@ -57,15 +57,11 @@ The **Checker disposition** column documents what the type checker emits when
 
 ### ⚠️ Warn (warning-level)
 
-Features in the **Warn** group are architecturally incompatible with the
-single-threaded cooperative WASM scheduler, but they have a controlled
-diagnostic path: the type checker emits a `PlatformLimitation` warning, and
-codegen produces grouped diagnostics if they reach lowering.
+Features in the **Warn** group are architecturally different on the
+single-threaded cooperative WASM scheduler, but they still have a meaningful
+runtime implementation.
 
-These exist as warnings (not errors) to allow gradual migration: a program can
-be partially WASM-compatible and still get useful analysis feedback.
-
-This group includes `sleep_ms`/`sleep`, which now have cooperative semantics on
+This group currently contains only `sleep_ms`/`sleep`, which now have cooperative semantics on
 WASM: the actor is parked at the **message boundary** (not mid-handler) and
 re-enqueued once the deadline passes.  The warning reminds callers that code
 after `sleep_ms` in the same receive handler still executes before the actor
@@ -73,8 +69,16 @@ parks, which differs from the native OS-sleep behavior.
 
 ### 🚫 Error (compile-time reject)
 
-Features in the **Error** group are rejected at compile time because their
-runtime stubs are **silent traps** or **silent no-ops**:
+Features in the **Error** group are rejected at compile time because wasm32 has
+no coherent runtime support for them and allowing them through the checker
+would otherwise end in a trap or linker failure:
+
+- **Supervision trees / link-monitor / structured concurrency / tasks**: the
+  corresponding runtime modules are gated behind
+  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  Codegen
+  still lowers these operations, so warning-only checker behavior leaks through
+  to undefined-symbol linker failures.  Rejecting at check time gives users a
+  direct, feature-specific diagnostic instead.
 
 - **Channels (bounded subset)**: `channel.new`, sender clone/close,
   `Receiver::try_recv`, and typed `send` are available on wasm32 via the
@@ -132,13 +136,14 @@ reject_wasm_feature   → Severity::Error    → self.errors
 ```
 
 **Warn group** is wired in:
-- `hew-types/src/check/expressions.rs :: maybe_warn_wasm_expr` (scope/tasks)
-- `hew-types/src/check/calls.rs :: warn_if_wasm_incompatible_call` (link/monitor/supervisor, sleep_ms/sleep → Timers)
-- `hew-types/src/check/registration.rs` (supervisor actor declarations)
+- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (`sleep_ms`/`sleep` → `Timers` warning arm)
 
 **Reject group** is wired in:
-- `hew-types/src/check/methods.rs :: check_method_call` (channel.* → Channels, stream.* → Streams)
-- `hew-types/src/check/methods.rs` Sender/Receiver match arms (Channels)
+- `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
+- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor)
+- `hew-types/src/check/registration.rs` (supervisor actor declarations)
+- `hew-types/src/check/methods.rs :: check_method_call` (stream.* → Streams)
+- `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` Stream match arm (Streams)
 
 ---
@@ -188,7 +193,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `concurrency/actor_pipeline` | `runnable` | Basic actors supported |
 | `concurrency/async_await` | `runnable` | Async/await supported |
 | `concurrency/counter_actor` | `runnable` | Basic actors supported |
-| `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Warn disposition |
+| `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Reject disposition |
 | `types/*` (3 entries) | `runnable` | No WASM-limited features |
 
 The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the

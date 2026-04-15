@@ -1579,7 +1579,7 @@ mod tests {
 
         // SAFETY: FFI calls use valid vec pointer and stack-allocated payloads.
         unsafe {
-            let v = hew_vec_new_generic(core::mem::size_of::<Payload>() as i64, 0);
+            let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<Payload>()).unwrap(), 0);
             let payload = Payload {
                 a: 0x0123_4567_89ab_cdef,
                 b: 0xfedc_ba98_7654_3210,
@@ -1624,7 +1624,7 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore]
+    #[ignore = "helper for test_vec_get_generic_oob — must panic"]
     fn _helper_vec_get_generic_oob() {
         #[repr(C)]
         struct Payload {
@@ -1634,7 +1634,7 @@ mod tests {
 
         // SAFETY: FFI calls use valid vec pointer and stack-allocated payload.
         unsafe {
-            let v = hew_vec_new_generic(core::mem::size_of::<Payload>() as i64, 0);
+            let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<Payload>()).unwrap(), 0);
             let payload = Payload { a: 1, b: 2 };
             hew_vec_push_generic(v, (&raw const payload).cast());
             let _ = hew_vec_get_generic(v, 1);

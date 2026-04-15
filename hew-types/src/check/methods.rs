@@ -1296,10 +1296,18 @@ impl Checker {
                 }
                 self.require_unsafe(&key, span);
                 self.reject_if_wasm_native_only_network_module_call(name, span);
-                // Stream module calls are rejected on wasm32 because the runtime
-                // module is not compiled there.
-                if !self.user_modules.contains(name) && name == "stream" {
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
+                // Native-only stdlib modules are rejected on wasm32 because
+                // their runtime implementations are not compiled there.
+                if !self.user_modules.contains(name) {
+                    match name.as_str() {
+                        "stream" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams),
+                        "http" => self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer),
+                        "net" => self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking),
+                        "process" => {
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
+                        }
+                        _ => {}
+                    }
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     if let Some(caller) = &self.current_function {
@@ -1641,124 +1649,150 @@ impl Checker {
             // String methods
             (Ty::String, _) => self.check_string_method(method, args, span),
             // http.Server methods
-            (Ty::Named { name, .. }, _) if name == "http.Server" => match method {
-                "accept" => {
-                    self.warn_if_blocking_in_receive_fn("http.Server::accept", span);
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Named {
-                        name: "http.Request".to_string(),
-                        args: vec![],
+            (Ty::Named { name, .. }, _) if name == "http.Server" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
+                match method {
+                    "accept" => {
+                        self.warn_if_blocking_in_receive_fn("http.Server::accept", span);
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Named {
+                            name: "http.Request".to_string(),
+                            args: vec![],
+                        }
                     }
+                    "close" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Unit
+                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "http.Server",
+                    ),
                 }
-                "close" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Unit
-                }
-                _ => self.check_named_method_fallback(&resolved, method, args, span, "http.Server"),
-            },
+            }
             // http.Request methods/properties
-            (Ty::Named { name, .. }, _) if name == "http.Request" => match method {
-                "path" | "method" | "body" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::String
-                }
-                "header" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
+            (Ty::Named { name, .. }, _) if name == "http.Request" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
+                match method {
+                    "path" | "method" | "body" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::String
                     }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::String
-                }
-                "respond" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                    "header" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::String);
+                        }
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::String
                     }
-                    if let Some(arg) = args.get(1) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
+                    "respond" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I32);
+                        }
+                        if let Some(arg) = args.get(1) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::String);
+                        }
+                        if let Some(arg) = args.get(2) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::String);
+                        }
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
                     }
-                    if let Some(arg) = args.get(2) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
+                    "respond_text" | "respond_json" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I32);
+                        }
+                        if let Some(arg) = args.get(1) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::String);
+                        }
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
                     }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
-                }
-                "respond_text" | "respond_json" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                    "free" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Unit
                     }
-                    if let Some(arg) = args.get(1) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "http.Request",
+                    ),
                 }
-                "free" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Unit
-                }
-                _ => {
-                    self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
-                }
-            },
+            }
             // net.Listener methods
-            (Ty::Named { name, .. }, _) if name == "net.Listener" => match method {
-                "accept" => {
-                    self.warn_if_blocking_in_receive_fn("net.Listener::accept", span);
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Named {
-                        name: "net.Connection".to_string(),
-                        args: vec![],
+            (Ty::Named { name, .. }, _) if name == "net.Listener" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
+                match method {
+                    "accept" => {
+                        self.warn_if_blocking_in_receive_fn("net.Listener::accept", span);
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Named {
+                            name: "net.Connection".to_string(),
+                            args: vec![],
+                        }
                     }
+                    "close" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Unit
+                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "net.Listener",
+                    ),
                 }
-                "close" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Unit
-                }
-                _ => {
-                    self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
-                }
-            },
+            }
             // net.Connection methods
-            (Ty::Named { name, .. }, _) if name == "net.Connection" => match method {
-                "read" => {
-                    self.warn_if_blocking_in_receive_fn("net.Connection::read", span);
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Bytes
-                }
-                "write" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::Bytes);
+            (Ty::Named { name, .. }, _) if name == "net.Connection" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
+                match method {
+                    "read" => {
+                        self.warn_if_blocking_in_receive_fn("net.Connection::read", span);
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Bytes
                     }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
-                }
-                "close" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
-                }
-                "set_read_timeout" | "set_write_timeout" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                    "write" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::Bytes);
+                        }
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
                     }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
+                    "close" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
+                    }
+                    "set_read_timeout" | "set_write_timeout" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I32);
+                        }
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
+                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "net.Connection",
+                    ),
                 }
-                _ => self.check_named_method_fallback(
-                    &resolved,
-                    method,
-                    args,
-                    span,
-                    "net.Connection",
-                ),
-            },
+            }
             // regex.Pattern methods
             (Ty::Named { name, .. }, _) if name == "regex.Pattern" => match method {
                 "is_match" => {
@@ -1805,19 +1839,26 @@ impl Checker {
                 }
             },
             // process.Child methods
-            (Ty::Named { name, .. }, _) if name == "process.Child" => match method {
-                "wait" | "kill" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::I32
+            (Ty::Named { name, .. }, _) if name == "process.Child" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
+                match method {
+                    "wait" | "kill" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::I32
+                    }
+                    "free" => {
+                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                        Ty::Unit
+                    }
+                    _ => self.check_named_method_fallback(
+                        &resolved,
+                        method,
+                        args,
+                        span,
+                        "process.Child",
+                    ),
                 }
-                "free" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Unit
-                }
-                _ => {
-                    self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
-                }
-            },
+            }
             // Generator methods: .next() returns the yielded type
             (
                 Ty::Named {

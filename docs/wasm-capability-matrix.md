@@ -52,6 +52,9 @@ The **Checker disposition** column documents what the type checker emits when
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | **`std::net::http::http_client.*`, `http_client.Response.*`** | 🚫 Error (`HttpClient`) | Native-only wrapper module | WASM-TODO |
 | **`std::net::smtp.*`, `smtp.Conn.*`** | 🚫 Error (`Smtp`) | Native-only transport wrapper | WASM-TODO |
+| **`http.listen`, `http.Server.*`, `http.Request.*`** | 🚫 Error (`HttpServer`) | Native-only runtime module | WASM-TODO |
+| **`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`** | 🚫 Error (`TcpNetworking`) | Native-only runtime module | WASM-TODO |
+| **`process.run`, `process.start`, `process.*`, `process.Child.*`** | 🚫 Error (`ProcessExecution`) | Native-only runtime module | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---
@@ -121,6 +124,24 @@ would otherwise end in a trap or linker failure:
   The checker now rejects both the module helper calls and their handle methods
   (`http_client.Response.*`, `smtp.Conn.*`) with feature-specific diagnostics.
 
+- **HTTP server**: The `std::net::http` server surface is backed by native
+  sockets and `tiny_http`. Its runtime symbols are unavailable on wasm32, so
+  `http.listen` plus `http.Server` / `http.Request` methods are rejected at
+  compile time instead of failing later in codegen or at link time.
+  - WASM-TODO: design a cooperative WASI-hosted HTTP server surface.
+
+- **TCP networking**: The `std::net` listener/connection runtime lives in the
+  native transport module, which is gated out on wasm32. Rejecting `net.*`
+  constructors and `net.Listener` / `net.Connection` methods keeps the checker
+  fail-closed instead of leaking to undefined-symbol linker failures.
+  - WASM-TODO: expose socket-backed listener/connection adapters over WASI.
+
+- **Process execution**: The `std::process` module depends on the host OS
+  process model, and its runtime module is not compiled for wasm32. Rejecting
+  `process.*` helpers and `process.Child` methods at check time gives a
+  feature-specific diagnostic rather than a native-symbol failure downstream.
+  - WASM-TODO: define a host capability model for subprocess execution.
+
 ---
 
 ## Generators on WASM — note
@@ -157,9 +178,9 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
 - `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
-- `hew-types/src/check/methods.rs :: check_method_call` (stream.* → Streams, `http_client.*`/`smtp.*` → reject)
+- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* module calls)
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
-- `hew-types/src/check/methods.rs` Stream match arm (Streams)
+- `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child match arms
 
 ---
 
@@ -171,6 +192,9 @@ These gaps are explicitly deferred and tracked here:
 |-----|---------|----------------|
 | Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO: channels` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
+| HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO: http-server` |
+| TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO: tcp-networking` |
+| Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO: process-execution` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |

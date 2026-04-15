@@ -1399,6 +1399,9 @@ add_wasm_reject_test(blocking_recv e2e_actors wasm_reject_blocking_recv "Blockin
 add_wasm_reject_test(streams       e2e_actors wasm_reject_streams       "Stream operations")
 add_wasm_reject_test(http_client   e2e_negative wasm_reject_http_client   "std::net::http::http_client operations are not supported on WASM32")
 add_wasm_reject_test(smtp          e2e_negative wasm_reject_smtp          "std::net::smtp operations are not supported on WASM32")
+add_wasm_reject_test(http_server   e2e_actors wasm_reject_http_server   "HTTP server operations")
+add_wasm_reject_test(tcp_networking e2e_actors wasm_reject_tcp_networking "TCP networking operations")
+add_wasm_reject_test(process_execution e2e_actors wasm_reject_process_execution "Process execution operations")
 # Select is now supported on WASM via the cooperative scheduler, including
 # computed timeout expressions. Register the infinite-wait parity and the
 # timeout/reply winner paths.

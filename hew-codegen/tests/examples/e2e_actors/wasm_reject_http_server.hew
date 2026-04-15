@@ -1,0 +1,5 @@
+import std::net::http;
+
+fn main() {
+    let _ = http.listen(":8080");
+}

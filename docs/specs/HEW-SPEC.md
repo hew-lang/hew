@@ -4129,7 +4129,7 @@ These constructors currently return the wire type directly rather than
 
 ## 8. Compilation model
 
-The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to Hew's embedded C++ codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Actor and concurrency operations produce clear compile-time errors on WASM targets.
+The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to Hew's embedded C++ codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Depending on the feature, the WASM checker passes supported code through, emits warnings for semantic differences, or rejects unsupported operations; see §8.0 and the capability matrix for the full tier contract.
 
 ### 8.0 WASM32 target capabilities
 
@@ -4142,28 +4142,16 @@ There are two WASM target tiers:
 - **Tier 1** (`hew-wasm`, `wasm32-unknown-unknown` via `wasm-bindgen`): analysis-only browser surface — lexer, parser, and type checker only.  Powers the online playground and editor tooling.
 - **Tier 2** (`hew-runtime`, `wasm32-wasip1`): WASI execution runtime with a single-threaded cooperative actor scheduler.
 
-**Works on wasm32-wasi (Tier 2):**
+Tier 1 is intentionally **browser analysis-only**: it does not execute Hew programs, and only exposes diagnostics/editor services.
 
-- Basic actors (`spawn`, `send`, `receive`, `ask/await`) and message passing
-- Generators (purely computational; generators that use blocking I/O hit the stream/channel restrictions below)
-- Pattern matching and algebraic data types
-- Arithmetic, collections, and general-purpose stdlib modules
-- HTTP/TCP clients and servers routed through WASI sockets
-- `select {}` including computed timeout durations
+Tier 2 uses checker disposition categories instead of a single "supported vs unsupported" split:
 
-**Compile-time errors on wasm32-wasi (runtime traps → rejected at check time):**
+- **Pass** — the surface works on WASI as implemented today (for example, basic actors such as `spawn` / `send` / `ask`).
+- **Warn** — the surface exists on WASI but with important cooperative-semantics differences (for example, `sleep_ms` / `sleep`).
+- **Error** — the checker rejects the surface at compile time on WASI because Hew does not yet provide a coherent runtime path there (for example, structured concurrency scopes).
+- **WASM-TODO** — the surface remains a documented backlog item and is not yet checker-gated with a dedicated Pass / Warn / Error disposition (for example, `std::net::tls`).
 
-- `channel.new`, `Sender<T>::*`, `Receiver<T>::*` — MPSC channels require OS mutexes/condvars; all `hew_channel_*` C symbols `unreachable!()`-trap on wasm32.  WASM-TODO: single-threaded channel queues backed by the actor mailbox.
-- `sleep_ms`, `sleep` — the wasm32 shim returns immediately (silent no-op), violating expected delay semantics.  WASM-TODO: integrate with host timer / WASI `clock_nanosleep`.
-- `stream.*` constructors and `Stream<T>::*` methods — the stream runtime module is not compiled for wasm32.  WASM-TODO: I/O stream adapters over WASI fd/socket APIs.
-
-**Diagnostic warnings on wasm32-wasi (architectural limits; codegen diagnostic path):**
-
-- Supervision trees (`supervisor` declarations and `supervisor_*` helpers)
-- Actor `link` / `unlink` / `monitor` / `demonitor` fault-propagation APIs
-- Structured concurrency scopes (`scope {}`, `scope.launch`, `scope.await`, `scope.cancel`)
-- Scope-spawned `Task` handles that rely on scoped schedulers
-When you compile with `--target=wasm32-wasi`, the type checker emits errors for the first group (preventing silent runtime traps) and warnings for the second group (preserving the diagnostic path through codegen).  Prefer the basic actor primitives above or run the program on a native target when advanced supervision is required.
+For the authoritative full feature table — including the current bounded non-blocking channel subset, timer warnings, compile-time networking rejects, and the remaining WASM-TODO backlog — see [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md).
 
 ### 8.1 Pipeline Overview
 

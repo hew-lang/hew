@@ -747,6 +747,9 @@ impl Checker {
                      only Channel<String> and Channel<int> are currently supported"
                 ),
             );
+            return;
         }
+
+        self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingChannelRecv);
     }
 }

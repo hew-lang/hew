@@ -46,7 +46,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native-only runtime module | WASM-TODO |
 | Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
-| **`Receiver<T>::recv`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
+| **`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
@@ -87,10 +87,10 @@ would otherwise end in a trap or linker failure:
   closed), while `send` fails closed by trapping with an explicit message when
   the bounded queue is full rather than silently dropping or spin-polling.
 
-- **Blocking channel recv**: `Receiver<T>::recv` and `recv_int` still trap on
-  wasm32 because the cooperative scheduler does not yet yield and resume when a
-  channel is empty but still live. The checker rejects these calls at compile
-  time with `BlockingChannelRecv`.
+- **Blocking channel recv**: `Receiver<T>::recv`, `recv_int`, and `for await`
+  over `Receiver<T>` still trap on wasm32 because the cooperative scheduler
+  does not yet yield and resume when a channel is empty but still live. The
+  checker rejects these operations at compile time with `BlockingChannelRecv`.
 
 - **Timers** (`sleep_ms`, `sleep`): The runtime now parks the actor at the
   message boundary and re-enqueues it once the deadline passes.  The checker

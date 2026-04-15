@@ -1026,6 +1026,37 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
     );
 }
 
+/// `hew eval --target wasm32-wasi -f -` must reject `for await item in rx`
+/// over a channel receiver during the fast typecheck pass, before codegen can
+/// lower it to the blocking runtime recv that traps on wasm32.
+#[test]
+fn eval_wasm_fast_typecheck_rejects_for_await_receiver() {
+    let output = run_eval_with_stdin(
+        &["eval", "--target", "wasm32-wasi", "-f", "-"],
+        concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let (tx, rx) = channel.new(1);\n",
+            "    tx.send(\"hello\");\n",
+            "    tx.close();\n",
+            "    for await item in rx {\n",
+            "        println(item);\n",
+            "    }\n",
+            "}\n",
+        ),
+    );
+
+    assert!(
+        !output.status.success(),
+        "expected failure for `for await` over Receiver<T> on WASM target"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Blocking channel receive"),
+        "expected blocking channel receive diagnostic from fast typecheck, stderr: {stderr}"
+    );
+}
+
 // ── Runtime-failure output contract ──────────────────────────────────────────
 //
 // When a compiled Hew program exits non-zero, `hew eval` must:

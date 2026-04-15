@@ -25,6 +25,11 @@ executes Hew programs; it only provides diagnostics.
 single-threaded cooperative actor scheduler and provides a meaningful subset of
 the native runtime capabilities.
 
+For CLI eval, `hew eval --target wasm32-wasi <expr>` and
+`hew eval --target wasm32-wasi -f <file>` run through Tier 2. Interactive REPL
+mode (`hew eval --target wasm32-wasi` with no file or expression) is rejected,
+and `--json` is supported only for those non-interactive eval modes.
+
 ---
 
 ## Feature disposition table

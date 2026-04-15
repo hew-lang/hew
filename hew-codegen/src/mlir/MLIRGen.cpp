@@ -4712,10 +4712,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // of emitting an illegal func.return inside an scf.if.
   initReturnFlagAndSlot(resultTypes, location);
 
-  // DROP-TODO: param drops for trait default methods.  generateFunction now
-  // handles this via pendingFunctionParamDrops + collectExcludeVarsFromBlock
-  // pre-scan.  This path lacks the pre-scan infrastructure; enabling it here
-  // requires the same return-exclusion setup first.
+  // DROP-TODO(D1): BLOCKED — collectExcludeVarsFromBlock is not factored into a
+  // reusable member function; cannot populate pendingFunctionParamDrops here
+  // without the return-exclusion pre-scan (double-free on return paths).
+  // Prerequisite: extract collectExcludeVarsFromBlock into a member function.
 
   mlir::Value bodyValue = generateBlock(*method.body, /*statementPosition=*/resultTypes.empty(),
                                         /*isFunctionBodyBlock=*/true);
@@ -5176,18 +5176,34 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   // Deliberately excluded:
   //  • __auto_field_drop structs (structs without user Drop but with owned
   //    fields): without alias-tracking we cannot tell whether an owned field is
-  //    aliased in the return value.  DROP-TODO: enable after alias-tracking lands.
+  //    aliased in the return value.
+  // DROP-TODO(D2): BLOCKED — no alias-tracking infrastructure exists in the
+  // codebase. Enabling __auto_field_drop struct params here without alias
+  // tracking would cause double-free of returned fields. Prerequisite:
+  // alias-tracking pass or IR annotation.
   //  • Handle types (Stream/Sink/Pair): these need closeAlloca RAII, not a
-  //    plain drop call.  DROP-TODO: closeAlloca RAII for handle params.
+  //    plain drop call.
+  // DROP-TODO(D3): BLOCKED — stream ownership convention is ambiguous per call
+  // site. A callee-side close-alloca would double-close handles that were
+  // consumed by downstream calls (e.g., hew_stream_pipe). Prerequisite: stream
+  // handle ownership model.
   //  • Vec, HashMap, HashSet, Rc, bytes: these use borrow semantics at call
   //    boundaries — the caller retains ownership and drops at scope exit.
   //    Registering callee-side drops would cause double-frees whenever the
   //    caller reuses the variable after the call (e.g. passing the same Vec
-  //    to multiple functions).  DROP-TODO: enable after move-checker lands.
+  //    to multiple functions).
+  // DROP-TODO(D4): BLOCKED — no move-checker infrastructure exists.
+  // Borrow-semantics types (Vec, HashMap, HashSet, Rc, bytes) are reused after
+  // calls; enabling callee-side drops without single-use proof would cause
+  // use-after-free. Prerequisite: type-system move semantics.
   //  • String: field aliases (e.g. `a.pre_release` passed to a fn) share the
   //    heap buffer with the owning struct.  Callee-side drops would free that
   //    buffer, and the owning struct's __auto_field_drop would free it again
-  //    → double-free.  DROP-TODO: enable after alias-tracking lands.
+  //    → double-free.
+  // DROP-TODO(D5): BLOCKED — String params may alias struct fields (e.g.,
+  // a.pre_release shares buffer with struct a). No alias-tracking
+  // infrastructure exists to detect field aliasing. Prerequisite: same
+  // alias-tracking as D2.
   //  • Indirect enum drops (`__hew_drop_*`): these functions are RECURSIVE —
   //    they free the entire subtree.  When a pattern match passes children to
   //    recursive callee calls that drop them, the parent's param drop would
@@ -5793,9 +5809,11 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
       builder.restoreInsertionPoint(savedIP2);
     }
 
-    // DROP-TODO: param drops for generator functions.  Generators yield values
-    // across suspension points; param drop semantics require yield-site
-    // exclusion analysis (mirroring collectYieldExpr) before enabling.
+    // DROP-TODO(D6): BLOCKED — generator coroutines suspend/resume across yield
+    // points. A param registered for drop at scope exit but referenced after
+    // resume would be use-after-free. funcLevelDropExcludeVars covers yielded
+    // params, but coroutine-aware drop timing is unproven. Prerequisite:
+    // coroutine-aware heap-tracking test harness.
 
     // Pre-scan the generator body for yield expressions and populate
     // funcLevelDropExcludeVars / funcLevelReturnVarNames before body

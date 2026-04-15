@@ -2586,12 +2586,17 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     // out temp allocas for anonymous (non-identifier) args.
     //
     // Exempted types (borrow semantics — caller retains ownership):
-    //   Vec, HashMap, HashSet, bytes, Rc — frequently reused after calls and
-    //     lack a move-checker to enforce single-use (DROP-TODO).
+    //   Vec, HashMap, HashSet, bytes, Rc — frequently reused after calls.
+    // DROP-TODO(D7): BLOCKED — no move-checker infrastructure exists. Current
+    // borrow-semantics exemption is the correct conservative behavior because
+    // there is no single-use proof. Prerequisite: type-system move semantics.
     //   String — field aliases (e.g. `v.pre_release` passed as String arg)
     //     share the heap buffer with the owning struct; callee-side drops would
     //     free the buffer, then __auto_field_drop would free it again
-    //     → double-free (DROP-TODO: enable after alias-tracking lands).
+    //     → double-free.
+    // DROP-TODO(D8): BLOCKED — String in closure env may alias an outer struct
+    // field. No alias-tracking infrastructure exists to detect field aliasing.
+    // Prerequisite: same alias-tracking infrastructure as D2/D5.
     //   __hew_drop_* (indirect enum drops) — these recursive drop functions
     //     free entire subtrees; when pattern match arms pass children to
     //     recursive callees, the parent param drop would re-free children.

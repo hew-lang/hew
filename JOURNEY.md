@@ -1,5 +1,19 @@
 # Journey
 
+## 2026-04-15 — wasm parity wave closeout
+
+- Closed the WASM parity lane with checker/runtime rejects for native-only
+  supervision trees, link monitors, structured concurrency, tasks, `for await`
+  on `Receiver<T>`, native-only HTTP/SMTP wrappers, native-only services, and
+  blocking semaphore operations (#1054, #1056, #1058, #1062, #1063).
+- Landed runtime parity for wasm32 periodic `#[every]` handlers plus the
+  validation sweep that locked the surface down with reject E2Es, refreshed
+  reject text, bounded-channel parity coverage, and native proofs for WASM-only
+  platform limits (#1055, #1057, #1059, #1060, #1061).
+- Audited the public docs surface in the WASM capability matrix (#1064) and, in
+  the same landing window, aligned builtin `string_to_int` with
+  `std::string.to_int` semantics and its `i32` return type (#1048).
+
 ## 2026-04-12 — fix/llvm22-coro-end-return-contract
 
 - Grounded `coro_generator`/`coro_fib_generator` test failures to the test harness, not `transformCoroutineGenerators()`: `run_coro_test.cmake` searched for `clang-21` (absent) then fell back to PATH `clang`, which on macOS resolved to Apple clang 21.0.0. Apple clang retains the pre-LLVM-13 `i1`-return convention for `llvm.coro.end`; the `.ll` fixtures declare `declare void @llvm.coro.end(ptr, i1, token)` matching upstream LLVM 22, producing `invalid LLVM IR input: Intrinsic has incorrect return type! ptr @llvm.coro.end`.

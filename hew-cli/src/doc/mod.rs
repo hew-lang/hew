@@ -136,11 +136,22 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
 
         let result = hew_parser::parse(&source);
         if !result.errors.is_empty() {
+            let mut has_parse_error = false;
             for err in &result.errors {
-                eprintln!("Error: {}: {}", file_path.display(), err.message);
+                match err.severity {
+                    hew_parser::Severity::Warning => {
+                        eprintln!("Warning: {}: {}", file_path.display(), err.message);
+                    }
+                    hew_parser::Severity::Error => {
+                        eprintln!("Error: {}: {}", file_path.display(), err.message);
+                        has_parse_error = true;
+                    }
+                }
             }
-            had_errors = true;
-            continue;
+            if has_parse_error {
+                had_errors = true;
+                continue;
+            }
         }
 
         let module = extract_docs(&result.program, module_name);

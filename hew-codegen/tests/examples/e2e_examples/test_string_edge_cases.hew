@@ -129,10 +129,56 @@ fn test_int_string_roundtrip() -> int {
     }
 }
 
+fn test_string_to_int_strict_parse() -> int {
+    let malformed = string_to_int("42abc");
+    let leading_ws = string_to_int(" 42");
+    let trailing_ws = string_to_int("42 ");
+    let negative = string_to_int("-7");
+    if malformed == 0 {
+        if leading_ws == 0 {
+            if trailing_ws == 0 {
+                if negative == -7 {
+                    println("PASS: string_to_int_strict_parse");
+                    1
+                } else {
+                    println("FAIL: string_to_int_strict_parse");
+                    0
+                }
+            } else {
+                println("FAIL: string_to_int_strict_parse");
+                0
+            }
+        } else {
+            println("FAIL: string_to_int_strict_parse");
+            0
+        }
+    } else {
+        println("FAIL: string_to_int_strict_parse");
+        0
+    }
+}
+
+fn test_string_to_int_wraps() -> int {
+    let wrapped_zero = string_to_int("4294967296");
+    let wrapped_negative = string_to_int("2147483648");
+    if wrapped_zero == 0 {
+        if wrapped_negative == -2147483648 {
+            println("PASS: string_to_int_wraps");
+            1
+        } else {
+            println("FAIL: string_to_int_wraps");
+            0
+        }
+    } else {
+        println("FAIL: string_to_int_wraps");
+        0
+    }
+}
+
 fn main() -> int {
     println("=== Test: String Edge Cases ===");
     var passed = 0;
-    let total = 9;
+    let total = 11;
     passed = passed + test_empty_string_length();
     passed = passed + test_empty_string_concat();
     passed = passed + test_string_find_not_found();
@@ -142,6 +188,8 @@ fn main() -> int {
     passed = passed + test_string_trim();
     passed = passed + test_string_replace();
     passed = passed + test_int_string_roundtrip();
+    passed = passed + test_string_to_int_strict_parse();
+    passed = passed + test_string_to_int_wraps();
     println("");
     print("Passed: ");
     print(passed);

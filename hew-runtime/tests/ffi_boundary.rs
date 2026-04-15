@@ -425,6 +425,44 @@ fn string_conversions() {
 }
 
 #[test]
+fn string_to_int_strict_semantics() {
+    unsafe {
+        let negative = cstr("-7");
+        assert_eq!(hew_string_to_int(negative.as_ptr()), -7);
+
+        let positive = cstr("+7");
+        assert_eq!(hew_string_to_int(positive.as_ptr()), 7);
+
+        let leading_space = cstr(" 42");
+        assert_eq!(hew_string_to_int(leading_space.as_ptr()), 0);
+
+        let trailing_space = cstr("42 ");
+        assert_eq!(hew_string_to_int(trailing_space.as_ptr()), 0);
+
+        let partial = cstr("42abc");
+        assert_eq!(hew_string_to_int(partial.as_ptr()), 0);
+
+        let empty = cstr("");
+        assert_eq!(hew_string_to_int(empty.as_ptr()), 0);
+
+        let sign_only = cstr("-");
+        assert_eq!(hew_string_to_int(sign_only.as_ptr()), 0);
+
+        let max = cstr("2147483647");
+        assert_eq!(hew_string_to_int(max.as_ptr()), i32::MAX);
+
+        let min = cstr("-2147483648");
+        assert_eq!(hew_string_to_int(min.as_ptr()), i32::MIN);
+
+        let wrapped_zero = cstr("4294967296");
+        assert_eq!(hew_string_to_int(wrapped_zero.as_ptr()), 0);
+
+        let wrapped_negative = cstr("2147483648");
+        assert_eq!(hew_string_to_int(wrapped_negative.as_ptr()), i32::MIN);
+    }
+}
+
+#[test]
 fn string_trim() {
     unsafe {
         let s = cstr("  hello  ");

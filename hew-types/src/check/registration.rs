@@ -173,7 +173,7 @@ impl Checker {
             Ty::String,
         );
         self.register_builtin_fn("string_trim", vec![Ty::String], Ty::String);
-        self.register_builtin_fn("string_to_int", vec![Ty::String], Ty::I64);
+        self.register_builtin_fn("string_to_int", vec![Ty::String], Ty::I32);
         self.register_builtin_fn("string_find", vec![Ty::String, Ty::String], Ty::I64);
         self.register_builtin_fn(
             "string_replace",

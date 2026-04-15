@@ -763,9 +763,6 @@ fn find_cross_file_definition_impl(
         let Ok(target_uri) = Url::from_file_path(&path) else {
             continue;
         };
-        if !seen.insert(target_uri.clone()) {
-            continue;
-        }
 
         // Determine which name to search for in the target file, based on
         // what this import makes visible in the current scope.
@@ -793,6 +790,9 @@ fn find_cross_file_definition_impl(
                 continue;
             }
         };
+        if !seen.insert(target_uri.clone()) {
+            continue;
+        }
 
         let result = load_navigation_target(&target_uri, &path, documents).and_then(
             |(source, line_offsets, parse_result)| {

@@ -3279,6 +3279,29 @@ impl Worker {
         );
     }
 
+    #[test]
+    fn cross_file_goto_multiple_imports_from_same_file_do_not_leak_seen() {
+        let main_source = "import middle::{ Timer };\nimport middle::{ Counter };\nfn main() {}";
+        let middle_source = "type Counter { value: i32 }\ntype Timer { ticks: i32 }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let middle_uri = make_test_uri("/project/middle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(middle_uri.clone(), make_doc(middle_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
+
+        assert!(
+            result.is_some(),
+            "later imports from the same file should still be evaluated"
+        );
+        let (uri, _range) = result.unwrap();
+        assert_eq!(uri, middle_uri, "should still point to middle.hew");
+    }
+
     // ── In-memory module parity tests ───────────────────────────────
 
     /// `populate_user_module_imports` prefers the in-memory buffer for an open

@@ -47,6 +47,8 @@ The **Checker disposition** column documents what the type checker emits when
 | Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
 | **`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
+| **`semaphore.new`, `Semaphore::try_acquire/release/count/free`** | ✅ Pass | Non-blocking semaphore subset only | — |
+| **`Semaphore::acquire`, `Semaphore::acquire_timeout`** | 🚫 Error (`BlockingSemaphoreAcquire`) | No cooperative blocking wait implementation | WASM-TODO |
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`#[every(duration)]` periodic handlers** | ⚠️ Warn (`Timers`) | Cooperative periodic dispatch via host-driven timer queue | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
@@ -102,6 +104,13 @@ would otherwise end in a trap or linker failure:
   over `Receiver<T>` still trap on wasm32 because the cooperative scheduler
   does not yet yield and resume when a channel is empty but still live. The
   checker rejects these operations at compile time with `BlockingChannelRecv`.
+
+- **Blocking semaphore acquire**: `Semaphore::acquire` and
+  `Semaphore::acquire_timeout` can block waiting for a permit. Native builds do
+  that with condvar-style parking, but wasm32 has no cooperative permit-wait
+  path yet. The checker rejects only those blocking methods and still allows
+  the non-blocking semaphore subset (`new`, `try_acquire`, `release`, `count`,
+  `free`).
 
 - **Timers** (`sleep_ms`, `sleep`, `#[every(duration)]`): The runtime now
   parks sleeping actors at the message boundary, re-enqueues them once the
@@ -180,6 +189,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
 - `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* module calls)
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
+- `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child match arms
 
 ---
@@ -191,6 +201,7 @@ These gaps are explicitly deferred and tracked here:
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
 | Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO: channels` |
+| Blocking semaphore acquire parity | Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32 | `WASM-TODO: semaphore` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO: http-server` |
 | TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO: tcp-networking` |

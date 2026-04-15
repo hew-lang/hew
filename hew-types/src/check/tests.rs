@@ -10037,7 +10037,7 @@ actor MyActor {
 
 // ── WASM compile-time reject tests ──────────────────────────────────────────
 //
-// These tests verify that `Channels`, `Timers`, and `Streams` features are
+// These tests verify that `Channels`, `Semaphore`, `Timers`, and `Streams` features are
 // rejected as compile-time errors (not warnings) when the WASM target is
 // enabled.  The reject path is exercised by setting `checker.enable_wasm_target()`
 // before calling `check_program`.
@@ -10045,6 +10045,8 @@ actor MyActor {
 // Coverage:
 //  - channel.new / send / try_recv → allowed on wasm32 bounded subset
 //  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
+//  - semaphore.new / try_acquire / release / count / free → allowed on wasm32
+//  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
 //  - sleep_ms → Timers warning
 //  - sleep → Timers warning
 //  - Stream<T>::next → Streams error
@@ -10327,6 +10329,96 @@ mod wasm_rejects {
         assert!(
             !has_platform_limitation_error(&output),
             "`for await` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_allows_non_blocking_semaphore_subset() {
+        let source = concat!(
+            "import std::semaphore;\n",
+            "fn main() {\n",
+            "    let sem = semaphore.new(1);\n",
+            "    let _ = sem.count();\n",
+            "    let _ = sem.try_acquire();\n",
+            "    sem.release();\n",
+            "    sem.free();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "non-blocking semaphore subset should be allowed on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_blocking_semaphore_methods() {
+        let source = concat!(
+            "import std::semaphore;\n",
+            "fn main() {\n",
+            "    let sem = semaphore.new(1);\n",
+            "    sem.acquire();\n",
+            "    let _ = sem.acquire_timeout(10);\n",
+            "    sem.free();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        let reject_count = output
+            .errors
+            .iter()
+            .filter(|error| {
+                error.kind == TypeErrorKind::PlatformLimitation
+                    && error.message.contains("Blocking semaphore acquire")
+            })
+            .count();
+        assert!(
+            reject_count >= 2,
+            "blocking semaphore methods should be rejected on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_blocking_semaphore_methods_no_platform_error() {
+        let source = concat!(
+            "import std::semaphore;\n",
+            "fn main() {\n",
+            "    let sem = semaphore.new(1);\n",
+            "    sem.acquire();\n",
+            "    let _ = sem.acquire_timeout(10);\n",
+            "    sem.release();\n",
+            "    sem.free();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "blocking semaphore methods should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }

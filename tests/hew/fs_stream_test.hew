@@ -158,6 +158,32 @@ fn test_try_append_and_try_read_bytes() {
 }
 
 #[test]
+fn test_try_write_and_try_read_bytes_binary_roundtrip() {
+    let file_path = "tests/hew/_fs_stream_binary_bytes.bin";
+    cleanup_file(file_path);
+
+    let expected = bytes [0x00, 0x7f, 0x80, 0xc3, 0xff];
+    match fs.try_write_bytes(file_path, expected) {
+        Ok(_) => {},
+        Err(_) => panic("expected try_write_bytes to succeed"),
+    }
+
+    match fs.try_read_bytes(file_path) {
+        Ok(data) => {
+            testing.assert_eq(data.len(), expected.len());
+            testing.assert_eq(data.get(0), expected.get(0));
+            testing.assert_eq(data.get(1), expected.get(1));
+            testing.assert_eq(data.get(2), expected.get(2));
+            testing.assert_eq(data.get(3), expected.get(3));
+            testing.assert_eq(data.get(4), expected.get(4));
+        },
+        Err(_) => panic("expected try_read_bytes to preserve binary bytes"),
+    }
+
+    cleanup_file(file_path);
+}
+
+#[test]
 fn test_try_list_dir_handles_success_and_missing_paths() {
     match fs.try_list_dir("tests/hew") {
         Ok(entries) => testing.assert_true(entries.len() > 0),

@@ -30,7 +30,8 @@ the native runtime capabilities.
 ## Feature disposition table
 
 The **Checker disposition** column documents what the type checker emits when
-`enable_wasm_target()` is set (i.e., when compiling for Tier 2).
+`enable_wasm_target()` is set (i.e., when compiling for Tier 2), or
+`WASM-TODO` when a surface is documented as unresolved / not yet checker-gated.
 
 | Feature | Checker disposition | Runtime status | Tracking |
 |---------|-------------------|----------------|----------|
@@ -39,7 +40,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |
 | Standard collections, arithmetic | ✅ Pass | Implemented | — |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
-| WASI socket I/O (HTTP/TCP clients) | ✅ Pass | Implemented via WASI | — |
+| Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | ⚠️ WASM-TODO (not checker-gated) | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
 | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Native-only runtime module | WASM-TODO |
 | Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Native-only runtime module | WASM-TODO |
@@ -57,6 +58,11 @@ The **Checker disposition** column documents what the type checker emits when
 | **`http.listen`, `http.Server.*`, `http.Request.*`** | 🚫 Error (`HttpServer`) | Native-only runtime module | WASM-TODO |
 | **`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`** | 🚫 Error (`TcpNetworking`) | Native-only runtime module | WASM-TODO |
 | **`process.run`, `process.start`, `process.*`, `process.Child.*`** | 🚫 Error (`ProcessExecution`) | Native-only runtime module | WASM-TODO |
+| **`std::net::tls.connect/read/write/close`, `TlsStream.*`** | ⚠️ WASM-TODO (not checker-gated) | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO |
+| **`std::net::quic.*`, `QUICEndpoint/Connection/Stream/Event.*`** | ⚠️ WASM-TODO (not checker-gated) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
+| **`std::net::dns.resolve`, `dns.lookup_host`** | ⚠️ WASM-TODO (not checker-gated) | `wasm32-wasip1` resolver behavior still needs runtime confirmation | WASM-TODO |
+| **`std::os.*`** | ⚠️ WASM-TODO (not checker-gated) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
+| **`std::crypto::crypto.random_bytes`** | ⚠️ WASM-TODO (not checker-gated) | wasm32 secure-entropy story is unresolved; do not assume cryptographic randomness | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---
@@ -132,6 +138,9 @@ would otherwise end in a trap or linker failure:
   them through type checking on wasm32 only defers the failure to link time.
   The checker now rejects both the module helper calls and their handle methods
   (`http_client.Response.*`, `smtp.Conn.*`) with feature-specific diagnostics.
+  This is distinct from any raw WASI socket support a host runtime may expose:
+  Hew does not currently treat those low-level capabilities as a supported,
+  portable stdlib networking surface.
 
 - **HTTP server**: The `std::net::http` server surface is backed by native
   sockets and `tiny_http`. Its runtime symbols are unavailable on wasm32, so
@@ -150,6 +159,37 @@ would otherwise end in a trap or linker failure:
   `process.*` helpers and `process.Child` methods at check time gives a
   feature-specific diagnostic rather than a native-symbol failure downstream.
   - WASM-TODO: define a host capability model for subprocess execution.
+
+### ⚠️ WASM-TODO (documented gap / not yet checker-gated)
+
+Rows whose **Checker disposition** is **WASM-TODO** are intentionally *not*
+claimed as supported. They remain in the matrix because the current wasm32
+story is either unresolved or native-only, but Hew does not yet emit a
+dedicated checker warning/error for them.
+
+- **Raw WASI socket capability**: some WASI hosts may expose socket APIs, but
+  Hew does not yet provide a stable socket abstraction that spans browser Tier 1,
+  WASI Tier 2, and native builds. That is why the matrix rejects Hew's current
+  high-level networking modules while keeping raw host socket capability in the
+  backlog instead of marking it ✅ Pass.
+
+- **`std::net::tls` / `std::net::quic`**: these modules sit on top of native
+  transport stacks today. `quic_transport` is explicitly gated out on wasm32,
+  and the TLS surface has no documented wasm32 runtime path yet.
+
+- **`std::net::dns`**: scout work found the resolver path needs a direct
+  `wasm32-wasip1` runtime probe before Hew can claim either support or an
+  explicit reject.
+
+- **`std::os`**: the current Hew `args`/`env`/cwd/home/hostname/pid/temp-dir`
+  helpers route through native runtime shims, even though parts of WASI may
+  expose analogous host data. Until Hew ships WASI-backed shims, this surface
+  stays in the backlog.
+
+- **`std::crypto::crypto.random_bytes`**: the wasm32 secure-entropy path is not
+  yet grounded well enough to claim support. Separately, the non-crypto runtime
+  PRNG in `hew-runtime/src/random.rs` uses a fixed seed on wasm32, so callers
+  should not infer native entropy guarantees from the current runtime.
 
 ---
 
@@ -192,6 +232,11 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child match arms
 
+Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
+`WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
+socket capability, `std::net::tls`, `std::net::quic`, `std::net::dns`,
+`std::os`, and `std::crypto::crypto.random_bytes`.
+
 ---
 
 ## WASM-TODO backlog
@@ -202,9 +247,15 @@ These gaps are explicitly deferred and tracked here:
 |-----|---------|----------------|
 | Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO: channels` |
 | Blocking semaphore acquire parity | Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32 | `WASM-TODO: semaphore` |
+| Raw socket-backed Hew networking surface | Stable cross-host socket abstraction above host-provided WASI sockets | `WASM-TODO: wasi-sockets` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO: http-server` |
 | TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO: tcp-networking` |
+| TLS client parity | wasm-capable TLS-over-sockets design plus checker/runtime classification | `WASM-TODO: tls` |
+| QUIC parity | wasm-capable UDP/QUIC transport plus feature-gated runtime support | `WASM-TODO: quic` |
+| DNS resolution classification | Confirm actual `wasm32-wasip1` resolver behavior before declaring pass vs reject | `WASM-TODO: dns` |
+| `std::os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO: os` |
+| `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO: crypto-random` |
 | Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO: process-execution` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
@@ -233,7 +284,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 |-------|-------|---------|
 | `browser` | `"analysis-only"` | The entry can be analysed (lex/parse/typecheck) in-browser via `hew-wasm`, but no in-browser program execution is available yet. This value is invariant for all curated entries. |
 | `wasi` | `"runnable"` | The example compiles and executes correctly under `hew build --target=wasm32-wasi` (Tier 2). |
-| `wasi` | `"unsupported"` | The example triggers a Warn or Reject disposition in the type checker when targeting WASM32 (see the feature table above). It will produce a non-zero exit code or a diagnostic under WASI. |
+| `wasi` | `"unsupported"` | The example uses a Warn / Reject surface or relies on a documented `WASM-TODO` capability that Hew does not currently treat as runnable on WASM32. |
 
 ### Current WASI capability summary
 

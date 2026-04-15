@@ -118,17 +118,6 @@ impl Checker {
             if can_implicitly_coerce_integer(&actual_resolved, &expected_resolved) {
                 return;
             }
-            // Allow handle types to coerce to/from string (both are !llvm.ptr at runtime)
-            if let Ty::Named { name, .. } = &actual_resolved {
-                if self.module_registry.is_handle_type(name) && expected_resolved == Ty::String {
-                    return;
-                }
-            }
-            if let Ty::Named { name, .. } = &expected_resolved {
-                if self.module_registry.is_handle_type(name) && actual_resolved == Ty::String {
-                    return;
-                }
-            }
             // Allow concrete type → dyn Trait coercion when the type implements all traits
             if let Ty::TraitObject { traits } = &expected_resolved {
                 if let Ty::Named {

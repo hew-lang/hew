@@ -107,9 +107,10 @@ fn bootstrap_codegen() -> Result<(), String> {
 }
 
 fn bootstrap_wasi_runner() -> Result<(), String> {
-    if !tool_available("wasmtime") {
+    if find_wasmtime().is_none() {
         return Err(
-            "failed to bootstrap WASI runner prerequisites: `wasmtime` not found in PATH"
+            "failed to bootstrap WASI runner prerequisites: `wasmtime` not found \
+             (checked PATH and ~/.wasmtime/bin)"
                 .to_string(),
         );
     }
@@ -318,6 +319,20 @@ fn tool_available(name: &str) -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success())
+}
+
+fn find_wasmtime() -> Option<PathBuf> {
+    if tool_available("wasmtime") {
+        return Some(PathBuf::from("wasmtime"));
+    }
+
+    let binary_name = format!("wasmtime{}", std::env::consts::EXE_SUFFIX);
+    [std::env::var_os("HOME"), std::env::var_os("USERPROFILE")]
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        .map(|home| home.join(".wasmtime").join("bin").join(&binary_name))
+        .find(|candidate| candidate.exists())
 }
 
 pub fn strip_ansi(input: &str) -> String {

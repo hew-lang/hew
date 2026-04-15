@@ -45,7 +45,8 @@ The **Checker disposition** column documents what the type checker emits when
 | Actor `link` / `unlink` / `monitor` / `demonitor` | ⚠️ Warn (`LinkMonitor`) | Diagnostic path | WASM-TODO |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | ⚠️ Warn (`StructuredConcurrency`) | Diagnostic path | WASM-TODO |
 | Scope-spawned `Task` handles | ⚠️ Warn (`Tasks`) | Diagnostic path | WASM-TODO |
-| **`channel.new`, `Sender<T>::*`, `Receiver<T>::*`** | 🚫 Error (`Channels`) | `unreachable!()` trap | WASM-TODO |
+| **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
+| **`Receiver<T>::recv`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
@@ -75,15 +76,17 @@ parks, which differs from the native OS-sleep behavior.
 Features in the **Error** group are rejected at compile time because their
 runtime stubs are **silent traps** or **silent no-ops**:
 
-- **Channels**: All `hew_channel_*` C symbols call `unreachable!()` on wasm32
-  (see `hew-runtime/src/lib.rs :: wasm_stubs`).  A WASM program that calls
-  `channel.new` compiles but traps immediately at runtime with an unhelpful
-  `unreachable` instruction.  Making this a compile-time error gives a
-  descriptive diagnostic at the right time.
-  - WASM-TODO: wire in the `channel_wasm` groundwork module (bounded
-    `VecDeque` queue with correct `Empty` vs `Closed` semantics) once
-    cooperative-scheduler `recv` yield/resume and `send` backpressure are
-    available.  See `hew-runtime/src/channel_wasm.rs`.
+- **Channels (bounded subset)**: `channel.new`, sender clone/close,
+  `Receiver::try_recv`, and typed `send` are available on wasm32 via the
+  single-threaded queue in `hew-runtime/src/channel_wasm.rs`.
+  `try_recv` preserves the native ABI contract (`None` on both empty and
+  closed), while `send` fails closed by trapping with an explicit message when
+  the bounded queue is full rather than silently dropping or spin-polling.
+
+- **Blocking channel recv**: `Receiver<T>::recv` and `recv_int` still trap on
+  wasm32 because the cooperative scheduler does not yet yield and resume when a
+  channel is empty but still live. The checker rejects these calls at compile
+  time with `BlockingChannelRecv`.
 
 - **Timers** (`sleep_ms`, `sleep`): The runtime now parks the actor at the
   message boundary and re-enqueues it once the deadline passes.  The checker
@@ -146,7 +149,7 @@ These gaps are explicitly deferred and tracked here:
 
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
-| Single-threaded channel queues | Cooperative-scheduler recv yield/resume + send backpressure; groundwork queue in `channel_wasm.rs` | `WASM-TODO: channels` |
+| Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO: channels` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |

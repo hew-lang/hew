@@ -10043,11 +10043,10 @@ actor MyActor {
 // before calling `check_program`.
 //
 // Coverage:
-//  - channel.new → Channels error
-//  - Sender<T>::send → Channels error
-//  - Receiver<T>::recv → Channels error
-//  - sleep_ms → Timers error
-//  - sleep → Timers error
+//  - channel.new / send / try_recv → allowed on wasm32 bounded subset
+//  - Receiver<T>::recv → BlockingChannelRecv error
+//  - sleep_ms → Timers warning
+//  - sleep → Timers warning
 //  - Stream<T>::next → Streams error
 //  - stream.* module constructor call → Streams error
 //  - Non-wasm target: none of the above fire
@@ -10158,13 +10157,15 @@ mod wasm_rejects {
     // ── channel.new ──────────────────────────────────────────────────────────
 
     #[test]
-    fn wasm_rejects_channel_new() {
-        // `channel.new` is a module-qualified call; the checker resolves it
-        // when the `channel` module is imported and registered in fn_sigs.
+    fn wasm_allows_bounded_channel_subset() {
         let source = concat!(
             "import std::channel::channel;\n",
             "fn main() {\n",
-            "    let pair = channel.new(0);\n",
+            "    let (tx, rx) = channel.new(1);\n",
+            "    tx.send(\"hello\");\n",
+            "    let _ = rx.try_recv();\n",
+            "    tx.close();\n",
+            "    rx.close();\n",
             "}\n",
         );
         let result = hew_parser::parse(source);
@@ -10177,13 +10178,8 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            has_platform_limitation_error(&output),
-            "channel.new should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Channel"),
-            "error message should mention Channel feature; got: {:?}",
+            !has_platform_limitation_error(&output),
+            "bounded channel.new/send/try_recv subset should be allowed on WASM; got errors: {:?}",
             output.errors
         );
     }
@@ -10207,6 +10203,36 @@ mod wasm_rejects {
         assert!(
             !has_platform_limitation_error(&output),
             "channel.new should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_blocking_channel_recv() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "fn main() {\n",
+            "    let (_tx, rx) = channel.new(1);\n",
+            "    let _ = rx.recv();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_platform_limitation_error(&output),
+            "blocking recv should still be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Blocking channel receive"),
+            "error message should mention blocking channel receive; got: {:?}",
             output.errors
         );
     }

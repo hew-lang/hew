@@ -237,14 +237,11 @@ pub mod wasm_stubs {
     //!   process-relative clock so timeout comparisons stay consistent on
     //!   `wasm32-wasip1`.
     //!
-    //! - **Channels**: MPSC channels require OS threads and are unsupported on
-    //!   the single-threaded WASM cooperative scheduler. All `hew_channel_*`
-    //!   entry points `unreachable!`-trap so that wasm32 programs that call them
-    //!   produce an explicit runtime error instead of a linker gap.
-    //!   WASM-TODO: integrate the `channel_wasm` groundwork module (bounded
-    //!   `VecDeque` queue with correct `TryRecvError::Empty` vs `Closed`
-    //!   semantics) once cooperative-scheduler `recv` yield/resume and
-    //!   `send` backpressure are available.
+    //! - **Channels**: the bounded non-blocking slice is implemented in
+    //!   [`crate::channel_wasm`] (`channel.new`, `send`, `send_int`,
+    //!   `try_recv`, `try_recv_int`, clone/close helpers). Blocking
+    //!   `hew_channel_recv*` remains an explicit trap until cooperative
+    //!   scheduler yield/resume parity exists.
 
     use std::ffi::{c_char, c_int, c_void};
 
@@ -306,76 +303,11 @@ pub mod wasm_stubs {
         }
     }
 
-    // ── Channels (unsupported on wasm32) ─────────────────────────────────────
+    // ── Channels (blocking recv still deferred on wasm32) ────────────────────
     //
-    // MPSC channels use OS mutexes and condvars which are not available on the
-    // single-threaded WASM cooperative scheduler. All entry points trap via
-    // `unreachable!` so that compiled programs that call them fail with an
-    // explicit message rather than a silent linker error.
-    //
-    // WASM-TODO: wire in the `channel_wasm` groundwork module once
-    // cooperative-scheduler recv yield/resume and send backpressure are
-    // available. See `channel_wasm.rs` for the queue implementation and
-    // remaining gaps.
-
-    /// WASM stub: channel creation is not supported.
-    #[no_mangle]
-    pub extern "C" fn hew_channel_new(_capacity: i64) -> *mut c_void {
-        unreachable!(
-            "hew_channel_new: MPSC channels are not supported on wasm32 — \
-             use the actor ask pattern instead"
-        )
-    }
-
-    /// WASM stub: channel pair sender extraction is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_pair_sender(_pair: *mut c_void) -> *mut c_void {
-        unreachable!("hew_channel_pair_sender: not supported on wasm32")
-    }
-
-    /// WASM stub: channel pair receiver extraction is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_pair_receiver(_pair: *mut c_void) -> *mut c_void {
-        unreachable!("hew_channel_pair_receiver: not supported on wasm32")
-    }
-
-    /// WASM stub: channel pair free is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_pair_free(_pair: *mut c_void) {
-        unreachable!("hew_channel_pair_free: not supported on wasm32")
-    }
-
-    /// WASM stub: channel send is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_send(_sender: *mut c_void, _data: *const c_char) {
-        unreachable!("hew_channel_send: not supported on wasm32")
-    }
-
-    /// WASM stub: channel send_int is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_send_int(_sender: *mut c_void, _value: i64) {
-        unreachable!("hew_channel_send_int: not supported on wasm32")
-    }
+    // The non-blocking channel ABI surface lives in `channel_wasm.rs`.
+    // Blocking recv still needs cooperative yield/resume when the queue is
+    // empty but live senders remain, so those entry points keep trapping.
 
     /// WASM stub: blocking channel recv is not supported.
     ///
@@ -385,16 +317,6 @@ pub mod wasm_stubs {
     #[no_mangle]
     pub unsafe extern "C" fn hew_channel_recv(_receiver: *mut c_void) -> *mut c_char {
         unreachable!("hew_channel_recv: not supported on wasm32")
-    }
-
-    /// WASM stub: non-blocking channel try_recv is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_try_recv(_receiver: *mut c_void) -> *mut c_char {
-        unreachable!("hew_channel_try_recv: not supported on wasm32")
     }
 
     /// WASM stub: blocking integer channel recv is not supported.
@@ -408,49 +330,6 @@ pub mod wasm_stubs {
         _out_valid: *mut i32,
     ) -> i64 {
         unreachable!("hew_channel_recv_int: not supported on wasm32")
-    }
-
-    /// WASM stub: non-blocking integer channel try_recv is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_try_recv_int(
-        _receiver: *mut c_void,
-        _out_valid: *mut i32,
-    ) -> i64 {
-        unreachable!("hew_channel_try_recv_int: not supported on wasm32")
-    }
-
-    /// WASM stub: channel sender clone is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_sender_clone(_sender: *mut c_void) -> *mut c_void {
-        unreachable!("hew_channel_sender_clone: not supported on wasm32")
-    }
-
-    /// WASM stub: channel sender close is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_sender_close(_sender: *mut c_void) {
-        unreachable!("hew_channel_sender_close: not supported on wasm32")
-    }
-
-    /// WASM stub: channel receiver close is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_receiver_close(_receiver: *mut c_void) {
-        unreachable!("hew_channel_receiver_close: not supported on wasm32")
     }
 }
 
@@ -505,10 +384,7 @@ pub mod arena;
 pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
-// WASM-TODO: channel_wasm is internal groundwork only — not wired to the
-// hew_channel_* ABI.  Needs cooperative-scheduler recv + send-backpressure
-// before it can replace the unreachable!() stubs.  See channel_wasm.rs header.
-#[cfg(test)]
+#[cfg(any(target_arch = "wasm32", test))]
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;

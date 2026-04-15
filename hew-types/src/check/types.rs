@@ -243,14 +243,10 @@ pub(super) enum WasmUnsupportedFeature {
     /// to advance the timer queue.
     Timers,
     // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
-    /// `channel.new`, `Sender<T>::*`, `Receiver<T>::*`: MPSC channels require
-    /// OS mutexes/condvars unavailable on the wasm32 cooperative scheduler.
-    /// All `hew_channel_*` C symbols trap via `unreachable!` on wasm32.
-    /// WASM-TODO: wire in the `channel_wasm` groundwork module (bounded
-    /// `VecDeque` queue with correct Empty/Closed semantics) once
-    /// cooperative-scheduler recv yield/resume and send backpressure are
-    /// available.
-    Channels,
+    /// `Receiver<T>::recv`: blocking receive still traps on wasm32 because the
+    /// cooperative scheduler does not yet yield and resume on an empty channel
+    /// with live senders.
+    BlockingChannelRecv,
     /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
     /// runtime module is not compiled for wasm32
     /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
@@ -265,7 +261,7 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "Link/monitor operations",
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
-            Self::Channels => "Channel operations",
+            Self::BlockingChannelRecv => "Blocking channel receive operations",
             Self::Timers => "Timer/sleep operations",
             Self::Streams => "Stream operations",
         }
@@ -281,9 +277,9 @@ impl WasmUnsupportedFeature {
             }
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
-            Self::Channels => {
-                "MPSC channels require OS mutexes/condvars not available on wasm32; \
-                 use the actor ask pattern instead"
+            Self::BlockingChannelRecv => {
+                "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; \
+                 use try_recv or the actor ask pattern instead"
             }
             Self::Timers => {
                 "sleep is cooperative on wasm32: it parks the actor at the message boundary \

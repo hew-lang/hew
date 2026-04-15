@@ -1265,12 +1265,9 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.require_unsafe(&key, span);
-                // Channel and stream module calls are rejected on wasm32:
-                // - channel.* : all hew_channel_* C symbols trap via unreachable!
-                // - stream.*  : stream runtime module not compiled for wasm32
-                if name == "channel" {
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::Channels);
-                } else if name == "stream" {
+                // Stream module calls are rejected on wasm32 because the runtime
+                // module is not compiled there.
+                if name == "stream" {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
@@ -1903,10 +1900,6 @@ impl Checker {
                 },
                 _,
             ) if builtin_named_type(name) == Some(BuiltinNamedType::Sender) => {
-                // Sender<T> methods are not supported on wasm32: MPSC channels
-                // require OS mutexes/condvars unavailable on the wasm32
-                // cooperative scheduler.
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Channels);
                 let inner = type_args
                     .first()
                     .cloned()
@@ -1995,9 +1988,6 @@ impl Checker {
                 },
                 _,
             ) if builtin_named_type(name) == Some(BuiltinNamedType::Receiver) => {
-                // Receiver<T> methods are not supported on wasm32: same reason
-                // as Sender<T> — MPSC channels require OS mutexes/condvars.
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Channels);
                 let inner = type_args
                     .first()
                     .cloned()
@@ -2019,6 +2009,7 @@ impl Checker {
                 }
                 match method {
                     "recv" => {
+                        self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingChannelRecv);
                         let sig =
                             lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
                                 unreachable!("builtin Receiver::recv signature missing")

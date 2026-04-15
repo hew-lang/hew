@@ -1,0 +1,10 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(1);
+    tx.send("hello");
+    tx.close();
+    for await item in rx {
+        println(item);
+    }
+}

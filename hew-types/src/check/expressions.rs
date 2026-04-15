@@ -18,16 +18,16 @@ impl Checker {
         })
     }
 
-    pub(super) fn maybe_warn_wasm_expr(&mut self, expr: &Expr, span: &Span) {
+    pub(super) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
         if !self.wasm_target {
             return;
         }
         match expr {
             Expr::Scope { .. } | Expr::Join(_) => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::StructuredConcurrency);
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::Tasks);
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
             }
             _ => {}
         }
@@ -38,7 +38,7 @@ impl Checker {
         reason = "expression check covers all AST variants"
     )]
     pub(super) fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
-        self.maybe_warn_wasm_expr(expr, span);
+        self.reject_if_wasm_incompatible_expr(expr, span);
         let ty = match expr {
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::FloatLiteral,

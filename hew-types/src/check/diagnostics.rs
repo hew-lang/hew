@@ -86,10 +86,11 @@ impl Checker {
 
     /// Emit a compile-time **error** for a WASM-incompatible feature.
     ///
-    /// Used for features whose runtime stubs `unreachable!`-trap on wasm32
-    /// (channels, timers, streams).  Unlike [`warn_wasm_limitation`], this
-    /// makes the program fail at check time rather than silently compiling to a
-    /// program that traps at first use.
+    /// Used for features whose runtime support is absent on wasm32, either
+    /// because the runtime stubs `unreachable!`-trap or because the native-only
+    /// modules are not compiled at all. Unlike [`warn_wasm_limitation`], this
+    /// makes the program fail at check time rather than silently compiling to an
+    /// unhelpful trap or linker failure.
     ///
     /// See `docs/wasm-capability-matrix.md` for the full disposition table.
     pub(super) fn reject_wasm_feature(&mut self, span: &Span, feature: WasmUnsupportedFeature) {

@@ -1522,6 +1522,126 @@ mod tests {
     }
 
     #[test]
+    fn test_vec_pop_str() {
+        // SAFETY: FFI calls use valid vec pointer and valid C strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let s1 = CString::new("hello").unwrap();
+            let s2 = CString::new("world").unwrap();
+            hew_vec_push_str(v, s1.as_ptr());
+            hew_vec_push_str(v, s2.as_ptr());
+            let popped = hew_vec_pop_str(v);
+            assert!(!popped.is_null());
+            assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "world");
+            assert_eq!(hew_vec_len(v), 1);
+            libc::free(popped.cast_mut().cast());
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn test_vec_pop_f64() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_f64.
+        unsafe {
+            let v = hew_vec_new_f64();
+            hew_vec_push_f64(v, 1.5);
+            hew_vec_push_f64(v, 2.5);
+            let popped = hew_vec_pop_f64(v);
+            assert!((popped - 2.5).abs() < f64::EPSILON);
+            assert_eq!(hew_vec_len(v), 1);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn test_vec_pop_ptr() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_ptr.
+        unsafe {
+            let v = hew_vec_new_ptr();
+            let ptr1 = 0x1234usize as *mut core::ffi::c_void;
+            let ptr2 = 0x5678usize as *mut core::ffi::c_void;
+            hew_vec_push_ptr(v, ptr1);
+            hew_vec_push_ptr(v, ptr2);
+            let popped = hew_vec_pop_ptr(v);
+            assert_eq!(popped, ptr2);
+            assert_eq!(hew_vec_len(v), 1);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn test_vec_push_get_generic() {
+        #[repr(C)]
+        struct Payload {
+            a: u64,
+            b: u64,
+        }
+
+        // SAFETY: FFI calls use valid vec pointer and stack-allocated payloads.
+        unsafe {
+            let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<Payload>()).unwrap(), 0);
+            let payload = Payload {
+                a: 0x0123_4567_89ab_cdef,
+                b: 0xfedc_ba98_7654_3210,
+            };
+            hew_vec_push_generic(v, (&raw const payload).cast());
+
+            let raw = hew_vec_get_generic(v, 0);
+            assert!(!raw.is_null());
+
+            let expected = core::slice::from_raw_parts(
+                (&raw const payload).cast::<u8>(),
+                core::mem::size_of::<Payload>(),
+            );
+            let mut out = [0u8; core::mem::size_of::<Payload>()];
+            core::ptr::copy_nonoverlapping(raw.cast::<u8>(), out.as_mut_ptr(), out.len());
+            assert_eq!(out.as_slice(), expected);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_vec_get_generic_oob() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::tests::_helper_vec_get_generic_oob",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "out-of-bounds get must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr).contains("PANIC: Vec index out of bounds"),
+            "out-of-bounds get must report the vec bounds panic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for test_vec_get_generic_oob — must panic"]
+    fn _helper_vec_get_generic_oob() {
+        #[repr(C)]
+        struct Payload {
+            a: u64,
+            b: u64,
+        }
+
+        // SAFETY: FFI calls use valid vec pointer and stack-allocated payload.
+        unsafe {
+            let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<Payload>()).unwrap(), 0);
+            let payload = Payload { a: 1, b: 2 };
+            hew_vec_push_generic(v, (&raw const payload).cast());
+            let _ = hew_vec_get_generic(v, 1);
+        }
+    }
+
+    #[test]
     fn test_vec_clear() {
         // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {

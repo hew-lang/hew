@@ -1,0 +1,9 @@
+actor Ticker {
+    #[every(10ms)]
+    receive fn tick() {}
+}
+
+fn main() {
+    let _ticker = spawn Ticker();
+    println("periodic timers warn on wasm");
+}

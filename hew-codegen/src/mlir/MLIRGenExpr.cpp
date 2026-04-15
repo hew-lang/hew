@@ -1883,6 +1883,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                    "string_length",
                                                    "string_equals",
                                                    "sleep_ms",
+                                                   "sleep",
                                                    "string_char_at",
                                                    "string_slice",
                                                    "read_file",

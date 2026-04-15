@@ -350,6 +350,25 @@ function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
   )
 endfunction()
 
+function(add_wasm_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
+  if(NOT WASMTIME)
+    return()
+  endif()
+  set(HEW_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.hew)
+  add_test(
+    NAME wasm_warn_${TEST_NAME}
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DHEW_FILE=${HEW_FILE}
+      -DEXPECTED_WARNING=${EXPECTED_WARNING}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/wasm_warn_${TEST_NAME}.wasm
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_warn_test.cmake
+  )
+  set_tests_properties(wasm_warn_${TEST_NAME} PROPERTIES
+    LABELS "wasm"
+  )
+endfunction()
+
 if(HEW_DWARFDUMP)
   # Keep these expectations on declaration lines that differ from the first
   # executable statement so the smoke test proves decl-line fallback behavior.
@@ -706,6 +725,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_memory/rc_string"
   "e2e_memory/rc_pass_to_fn"
   "e2e_concurrency/channel_for_await_typed_receiver_param"
+  "e2e_actors/actor_periodic_timer"
 )
 
 file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
@@ -960,6 +980,7 @@ add_wasm_test(labeled_break test_labeled_break.hew "2\n1\n")
 add_wasm_test(labeled_continue test_labeled_continue.hew "15\n")
 add_wasm_test(break_with_value test_break_with_value.hew "7\n")
 add_wasm_panic_test(vec_pop_generic_empty e2e_panic vec_pop_generic_empty "PANIC: Vec pop on empty vector")
+add_wasm_panic_test(channel_send_full e2e_panic wasm_channel_send_full "hew_channel_send: wasm32 channels trap on full queues")
 
 # File-based WASM tests (category/name with .expected file)
 add_wasm_file_test(type_aliases         e2e_type_aliases type_aliases)
@@ -1370,6 +1391,7 @@ add_wasm_file_test(lambda_actor_patterns      e2e_actors       lambda_actor_patt
 add_wasm_file_test(ping_pong                  e2e_actors       ping_pong)
 add_wasm_file_test(actor_terminate            e2e_actors       actor_terminate)
 add_wasm_file_test(actor_terminate_fields     e2e_actors       actor_terminate_fields)
+add_wasm_file_test(actor_periodic_timer       e2e_actors       actor_periodic_timer)
 add_wasm_file_test(actor_ask_ownership_unregister  e2e_actor_drop   actor_ask_ownership_unregister)
 add_wasm_file_test(actor_ask_hashset_drop          e2e_actor_drop   actor_ask_hashset_drop)
 add_wasm_file_test(actor_ask_vec_string_drop       e2e_actor_drop   actor_ask_vec_string_drop)
@@ -1395,6 +1417,8 @@ add_wasm_file_test(actor_capture       e2e_actors wasm_actor_capture)
 add_wasm_file_test(actor_struct_message          e2e_actors wasm_actor_struct_message)
 add_wasm_file_test(actor_nested_struct_message   e2e_actors wasm_actor_nested_struct_message)
 add_wasm_file_test(actor_closure_struct_message  e2e_actors wasm_actor_closure_struct_message)
+add_wasm_warn_test(timer_sleep e2e_actors wasm_sleep_warn "timers are cooperative on wasm32")
+add_wasm_warn_test(timer_every e2e_actors wasm_every_warn "timers are cooperative on wasm32")
 
 # WASM reject tests (verify unsupported ops produce compile errors)
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "are not supported on WASM32")

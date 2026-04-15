@@ -1922,17 +1922,22 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         .getResult();
   }
 
-  // sleep_ms(ms) -> void
-  if (name == "sleep_ms") {
+  // sleep_ms(ms) / sleep(seconds) -> void
+  if (name == "sleep_ms" || name == "sleep") {
     if (args.empty()) {
       ++errorCount_;
       emitError(location) << name << " requires at least 1 argument";
       return nullptr;
     }
-    auto ms = generateExpression(ast::callArgExpr(args[0]).value);
-    if (!ms)
+    auto duration = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!duration)
       return nullptr;
-    hew::SleepOp::create(builder, location, ms);
+    if (name == "sleep") {
+      auto unitScale =
+          mlir::arith::ConstantIntOp::create(builder, location, duration.getType(), 1000);
+      duration = mlir::arith::MulIOp::create(builder, location, duration, unitScale).getResult();
+    }
+    hew::SleepOp::create(builder, location, duration);
     return nullptr;
   }
 

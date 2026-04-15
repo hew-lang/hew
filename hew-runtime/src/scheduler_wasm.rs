@@ -661,8 +661,7 @@ pub extern "C" fn hew_sched_run() {
         let now = unsafe { hew_now_ms() };
         // SAFETY: Single-threaded; timer queues are owned by the cooperative scheduler.
         unsafe {
-            crate::timer_periodic_wasm::drain_ready_periodic(now);
-            drain_expired_sleepers(now);
+            let _ = drain_timed_work(now);
         };
 
         // SAFETY: Single-threaded on WASM.
@@ -680,6 +679,16 @@ pub extern "C" fn hew_sched_run() {
             // This is a cooperative spin; in WASI the OS may preempt us.
         }
     }
+}
+
+/// Drain both periodic-timer and sleep-queue entries whose deadlines have passed.
+/// Returns (`periodic_count`, `sleeper_count`).
+unsafe fn drain_timed_work(now_ms: u64) -> (u32, u32) {
+    // SAFETY: Single-threaded cooperative scheduler; timer queues are not mutated concurrently.
+    let periodic = unsafe { crate::timer_periodic_wasm::drain_ready_periodic(now_ms) };
+    // SAFETY: Single-threaded cooperative scheduler; sleep queue is not mutated concurrently.
+    let sleepers = unsafe { drain_expired_sleepers(now_ms) };
+    (periodic, sleepers)
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -779,8 +788,7 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 
         // Drain any sleeping actors whose deadline has now passed.
         let now = hew_now_ms();
-        crate::timer_periodic_wasm::drain_ready_periodic(now);
-        drain_expired_sleepers(now);
+        let _ = drain_timed_work(now);
 
         for _ in 0..max_activations {
             if !step_one_actor() {
@@ -827,8 +835,7 @@ pub unsafe extern "C" fn hew_wasm_timer_tick(now_ms: u64) -> i32 {
     )]
     // SAFETY: caller upholds single-threaded cooperative scheduler invariant.
     unsafe {
-        let periodic = crate::timer_periodic_wasm::drain_ready_periodic(now_ms);
-        let sleepers = drain_expired_sleepers(now_ms);
+        let (periodic, sleepers) = drain_timed_work(now_ms);
         periodic.saturating_add(sleepers) as i32
     }
 }

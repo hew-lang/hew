@@ -470,6 +470,23 @@ impl Checker {
         }
     }
 
+    fn reject_if_wasm_blocking_semaphore_method(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        span: &Span,
+    ) {
+        let Ty::Named { name, .. } = receiver_ty else {
+            return;
+        };
+        if name != "semaphore.Semaphore" || self.user_modules.contains("semaphore") {
+            return;
+        }
+        if matches!(method, "acquire" | "acquire_timeout") {
+            self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingSemaphoreAcquire);
+        }
+    }
+
     fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
         match ty {
             Ty::String => Some("String"),
@@ -1428,6 +1445,7 @@ impl Checker {
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         let resolved = self.subst.resolve(&receiver_ty);
         self.reject_if_wasm_native_only_network_handle(&resolved, span);
+        self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
 
         match (&resolved, method) {
             // Vec methods

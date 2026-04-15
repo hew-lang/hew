@@ -211,13 +211,14 @@ impl PendingLoweringFact {
 /// warning severity because wasm32 has a degraded-but-implemented runtime path.
 ///
 /// Variants in the **reject group** (`SupervisionTrees`, `LinkMonitor`,
-/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`, `Streams`,
-/// `HttpServer`, `TcpNetworking`, `ProcessExecution`) are emitted as
-/// compile-time **errors**. Their runtime support is absent on wasm32: some
-/// entry points trap via `unreachable!`, while native-only modules such as
-/// scope/task/supervisor/link-monitor are gated out of `hew-runtime` entirely.
-/// Making them errors ensures WASM programs fail loudly at check time rather
-/// than at link time or the first use at runtime.
+/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`,
+/// `BlockingSemaphoreAcquire`, `Streams`, `HttpServer`, `TcpNetworking`,
+/// `ProcessExecution`) are emitted as compile-time **errors**. Their runtime
+/// support is absent on wasm32: some entry points trap via `unreachable!`,
+/// while native-only modules such as scope/task/supervisor/link-monitor are
+/// gated out of `hew-runtime` entirely. Making them errors ensures WASM
+/// programs fail loudly at check time rather than at link time or the first
+/// use at runtime.
 ///
 /// `Timers` is now in the **warning group**: `sleep_ms`/`sleep` are implemented
 /// with cooperative semantics on wasm32 (park at message boundary rather than
@@ -249,6 +250,10 @@ pub(super) enum WasmUnsupportedFeature {
     /// cooperative scheduler does not yet yield and resume on an empty channel
     /// with live senders.
     BlockingChannelRecv,
+    /// `Semaphore::acquire` / `Semaphore::acquire_timeout`: blocking permit
+    /// waits still depend on native condvar-style parking and have no
+    /// cooperative wasm32 scheduler implementation yet.
+    BlockingSemaphoreAcquire,
     /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
     /// runtime module is not compiled for wasm32
     /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
@@ -280,6 +285,7 @@ impl WasmUnsupportedFeature {
             Self::HttpClient => "std::net::http::http_client operations",
             Self::Smtp => "std::net::smtp operations",
             Self::BlockingChannelRecv => "Blocking channel receive operations",
+            Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::Streams => "Stream operations",
             Self::HttpServer => "HTTP server operations",
@@ -309,6 +315,11 @@ impl WasmUnsupportedFeature {
             Self::BlockingChannelRecv => {
                 "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; \
                  use try_recv or the actor ask pattern instead"
+            }
+            Self::BlockingSemaphoreAcquire => {
+                "Semaphore::acquire and Semaphore::acquire_timeout still require a blocking \
+                 permit wait that has no cooperative wasm32 implementation; use try_acquire \
+                 or actor coordination instead"
             }
             Self::Timers => {
                 "timers are cooperative on wasm32: sleep parks at the message boundary, \

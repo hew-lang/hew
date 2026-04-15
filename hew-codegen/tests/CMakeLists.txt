@@ -1399,6 +1399,7 @@ add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "are not supp
 add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "are not supported on WASM32")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "are not supported on WASM32")
 add_wasm_reject_test(blocking_recv e2e_actors wasm_reject_blocking_recv "Blocking channel receive operations")
+add_wasm_reject_test(blocking_semaphore e2e_actors wasm_reject_semaphore "Blocking semaphore acquire operations")
 add_wasm_reject_test(for_await_receiver e2e_actors wasm_reject_for_await_receiver "Blocking channel receive operations")
 add_wasm_reject_test(streams       e2e_actors wasm_reject_streams       "Stream operations")
 add_wasm_reject_test(http_client   e2e_negative wasm_reject_http_client   "std::net::http::http_client operations are not supported on WASM32")

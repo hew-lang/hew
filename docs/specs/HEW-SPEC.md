@@ -819,6 +819,32 @@ statements.
 A working example is at
 [`examples/directory_module_demo/`](../../examples/directory_module_demo/README.md).
 
+#### 3.5.2 Module search-path resolution
+
+For imports outside the current source tree, Hew builds an ordered search-path
+list and uses the first matching module root. The search order is:
+
+1. `HEWPATH` — a colon-separated list of module roots, where each entry is the
+   parent directory that contains `std/`
+2. `HEW_STD` — a direct path to the `std/` directory; Hew uses its parent as the
+   module root
+3. The installed FHS-style location `<prefix>/share/hew` relative to the `hew`
+   binary
+4. A development fallback to the repo root when `std/` exists two levels above
+   the binary
+
+`HEWPATH` and `HEW_STD` are the supported user overrides. `hew.toml` does not
+configure module search paths.
+
+For stdlib discovery, the recommended workflow is to generate docs for the
+stdlib tree itself:
+
+```sh
+hew doc std/
+```
+
+This produces an index plus per-module pages for the shipped `std/` sources.
+
 ---
 
 ### 3.6 Trait System

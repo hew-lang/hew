@@ -121,6 +121,30 @@ of `.hew` files to document.
   [`examples/multifile/README.md`](examples/multifile/README.md) for selective
   imports and nested module hierarchies.
 
+### Module search paths & stdlib discovery
+
+Hew resolves imported modules in this order, and the first match wins:
+
+1. `HEWPATH` (colon-separated entries; each entry is the parent directory that
+   contains `std/`)
+2. `HEW_STD` (the path to the `std/` directory itself; Hew uses its parent as a
+   search root)
+3. The installed `<prefix>/share/hew` tree beside the `hew` binary
+4. A development fallback to the repo root when `std/` exists two levels above
+   the binary
+
+`hew.toml` does not configure module search paths. Use `HEWPATH` or `HEW_STD`
+when you need Hew to search a non-default stdlib or module root.
+
+To browse shipped stdlib modules, generate docs for the stdlib tree:
+
+```bash
+hew doc std/ --output-dir doc/std
+```
+
+This writes a browsable index page for the modules under `std/`. The canonical
+module list also lives in [`std/README.md`](std/README.md).
+
 For the current wildcard-import warning caveat, see
 [`docs/troubleshooting.md`](docs/troubleshooting.md).
 

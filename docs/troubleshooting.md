@@ -96,6 +96,16 @@ What to check:
   example `import text_stats::words;`.
 - Standard library imports are available under the last path segment:
   `import std::fs;` gives `fs`, and `import std::encoding::json;` gives `json`.
+- Search roots are tried in this exact order, first match wins:
+  1. `HEWPATH` (colon-separated entries; each entry is the parent directory of
+     `std/`)
+  2. `HEW_STD` (the path to `std/` itself; Hew uses its parent as the search
+     root)
+  3. the installed `<prefix>/share/hew` tree relative to the `hew` binary
+  4. a development fallback to the repo root when `std/` exists two levels
+     above the binary
+- `hew.toml` does not configure module search paths. Use `HEWPATH` or
+  `HEW_STD` when you need Hew to look in a non-default module root.
 - If the missing module is a package dependency, run `adze install`. If it is
   undeclared in project metadata, add it with `adze add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew
@@ -104,6 +114,14 @@ What to check:
   false-positive `unused import` warning when the module is only used through
   type references. Prefer bare (`import mod;`) or selective
   (`import mod::{Name}`) imports while reorganizing modules.
+- To browse the shipped stdlib, generate docs for it directly:
+
+  ```sh
+  hew doc std/ --output-dir doc/std
+  ```
+
+  This is the recommended discovery workflow today; `hew doc --list` does not
+  exist.
 
 See also:
 [`../examples/directory_module_demo/README.md`](../examples/directory_module_demo/README.md),
@@ -223,6 +241,8 @@ What to check:
 - If no output is written and there are no parse errors, confirm that the input
   path exists and contains `.hew` files. `hew doc` does not fall back to the
   current directory — pass at least one file or directory explicitly.
+- To browse the stdlib, point `hew doc` at the shipped stdlib tree itself
+  (`hew doc std/` from a repo checkout or install tree root).
 - `--open` only opens `index.html` after HTML generation. It is silently
   ignored when `--format markdown` is set.
 - The output directory (default `./doc`) is created automatically. If creation

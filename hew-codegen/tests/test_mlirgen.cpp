@@ -2971,6 +2971,50 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Parenthesized if-expressions nested in discarded scope wrappers lower
+//       through the statement/no-result path
+// ============================================================================
+static void test_discarded_scope_if_expr_no_extra_results() {
+  TEST(discarded_scope_if_expr_no_extra_results);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn scope_if_expr(flag: bool) -> int {
+    scope {
+        (if flag { 1 } else { 2 })
+    };
+    0
+}
+
+fn main() -> int {
+    scope_if_expr(true)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto testFn = lookupFuncBySuffix(module, "scope_if_expr");
+  if (!testFn) {
+    FAIL("discarded scope if-expression test function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countResultfulIfOps(testFn) != 1) {
+    FAIL("discarded scope if-expression should produce exactly one resultful scf.if");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Discarded scope expression must keep tail match lowering in
 //       statement mode
 // ============================================================================
@@ -3141,6 +3185,70 @@ fn main() -> int {
 
   if (countDropOpsByDropFn(nestedScopeStringFn, "hew_string_drop", false) < 2) {
     FAIL("nested discarded scope if-expression should materialize and drop selected String branch "
+         "temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Discarded if-expressions still materialize owned branch temporaries
+// ============================================================================
+static void test_discarded_if_expr_branch_temporaries_drop() {
+  TEST(discarded_if_expr_branch_temporaries_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn make_vec(n: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(n);
+    v
+}
+
+fn scope_vec_temp(flag: bool) -> int {
+    scope {
+        (if flag { make_vec(1) } else { make_vec(2) });
+    };
+    0
+}
+
+fn scope_string_temp(flag: bool) -> int {
+    scope {
+        (if flag { "x" } else { "y" });
+    };
+    0
+}
+
+fn main() -> int {
+    scope_vec_temp(true) + scope_string_temp(false)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto vecFn = lookupFuncBySuffix(module, "scope_vec_temp");
+  auto stringFn = lookupFuncBySuffix(module, "scope_string_temp");
+  if (!vecFn || !stringFn) {
+    FAIL("discarded if-expression temporary-drop test functions not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(vecFn, "hew_vec_free", false) < 2) {
+    FAIL("discarded scope if-expression should materialize and drop owned Vec branch temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(stringFn, "hew_string_drop", false) < 2) {
+    FAIL("discarded scope if-expression should materialize and drop selected String branch "
          "temporaries");
     module.getOperation()->destroy();
     return;
@@ -10914,9 +11022,11 @@ int main() {
   test_discarded_scope_expr_tail_if_no_extra_results();
   test_nested_discarded_scope_expr_tail_if_no_extra_results();
   test_discarded_scope_wrapper_tail_if_no_extra_results();
+  test_discarded_scope_if_expr_no_extra_results();
   test_discarded_scope_expr_tail_match_no_extra_results();
   test_nested_discarded_scope_expr_tail_match_no_extra_results();
   test_if_expr_branch_temporaries_drop();
+  test_discarded_if_expr_branch_temporaries_drop();
   test_if_stmt_branch_temporaries_drop();
   test_collection_builtin_hint_does_not_leak_to_sibling_literals();
   test_declared_collection_hints_lower_array_and_empty_hashmap_literals();

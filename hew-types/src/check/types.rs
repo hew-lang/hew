@@ -235,6 +235,8 @@ pub(super) enum WasmUnsupportedFeature {
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
+    HttpClient,
+    Smtp,
     // ── Warning group (implemented with degraded semantics) ─────────────────
     /// `sleep_ms`, `sleep`, `#[every(duration)]`: timers are cooperative on
     /// wasm32. Sleep parks at the *message boundary*, and periodic handlers are
@@ -260,6 +262,8 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "Link/monitor operations",
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
+            Self::HttpClient => "std::net::http::http_client operations",
+            Self::Smtp => "std::net::smtp operations",
             Self::BlockingChannelRecv => "Blocking channel receive operations",
             Self::Timers => "Timer operations",
             Self::Streams => "Stream operations",
@@ -276,6 +280,14 @@ impl WasmUnsupportedFeature {
             }
             Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
             Self::Tasks => "they need OS threads to drive scope completions",
+            Self::HttpClient => {
+                "the std::net::http::http_client wrappers are still native-only; \
+                 no wasm32 networking bridge exists yet"
+            }
+            Self::Smtp => {
+                "the std::net::smtp transport is still native-only; \
+                 no wasm32 SMTP bridge exists yet"
+            }
             Self::BlockingChannelRecv => {
                 "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; \
                  use try_recv or the actor ask pattern instead"

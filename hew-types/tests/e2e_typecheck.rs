@@ -29,6 +29,18 @@ fn typecheck_inline(source: &str) -> hew_types::TypeCheckOutput {
     checker.check_program(&parse_result.program)
 }
 
+fn typecheck_inline_wasm(source: &str) -> hew_types::TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = new_networking_demo_checker();
+    checker.enable_wasm_target();
+    checker.check_program(&parse_result.program)
+}
+
 #[test]
 fn typecheck_all_examples() {
     let examples_dir = repo_root().join("examples");
@@ -1492,6 +1504,142 @@ fn smtp_one_shot_helpers_typecheck() {
     assert!(
         output.errors.is_empty(),
         "smtp one-shot helpers should typecheck without errors, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn http_client_module_helpers_typecheck_natively() {
+    let output = typecheck_inline(
+        r#"
+        import std::net::http::http_client;
+
+        fn main() {
+            let headers: Vec<(String, String)> = Vec::new();
+            http_client.set_timeout(250);
+            let _body = http_client.request_string("GET", "https://example.com", "", headers);
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "http_client helper calls should typecheck natively, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn http_client_module_helpers_rejected_on_wasm() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::http::http_client;
+
+        fn main() {
+            let headers: Vec<(String, String)> = Vec::new();
+            http_client.set_timeout(250);
+            let _body = http_client.request_string("GET", "https://example.com", "", headers);
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation
+                && e.message
+                    .contains("std::net::http::http_client operations are not supported on WASM32")
+        }),
+        "expected http_client wasm rejection, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn http_client_response_methods_rejected_on_wasm() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::http::http_client;
+
+        extern "C" {
+            fn fake_response() -> http_client.Response;
+        }
+
+        fn main() {
+            let resp = unsafe { fake_response() };
+            let _status = resp.status();
+            resp.free();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation
+                && e.message
+                    .contains("std::net::http::http_client operations are not supported on WASM32")
+        }),
+        "expected http_client.Response wasm rejection, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn smtp_module_helpers_rejected_on_wasm() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::smtp;
+
+        fn main() {
+            smtp.send(
+                "smtp.example.com",
+                587,
+                "user",
+                "pass",
+                "from@example.com",
+                "to@example.com",
+                "Subject",
+                "Body",
+            );
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation
+                && e.message
+                    .contains("std::net::smtp operations are not supported on WASM32")
+        }),
+        "expected smtp wasm rejection, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn smtp_conn_methods_rejected_on_wasm() {
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::smtp;
+
+        extern "C" {
+            fn fake_conn() -> smtp.Conn;
+        }
+
+        fn main() {
+            let conn = unsafe { fake_conn() };
+            let _ = conn.send(
+                "from@example.com",
+                "to@example.com",
+                "Subject",
+                "Body",
+            );
+            conn.close();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation
+                && e.message
+                    .contains("std::net::smtp operations are not supported on WASM32")
+        }),
+        "expected smtp.Conn wasm rejection, got: {:#?}",
         output.errors
     );
 }

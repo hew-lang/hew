@@ -1395,6 +1395,8 @@ add_wasm_file_test(actor_closure_struct_message  e2e_actors wasm_actor_closure_s
 add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "is not supported on WASM")
 add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "is not supported on WASM")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "is not supported on WASM")
+add_wasm_reject_test(blocking_recv e2e_actors wasm_reject_blocking_recv "Blocking channel receive operations")
+add_wasm_reject_test(streams       e2e_actors wasm_reject_streams       "Stream operations")
 # Select is now supported on WASM via the cooperative scheduler, including
 # computed timeout expressions. Register the infinite-wait parity and the
 # timeout/reply winner paths.

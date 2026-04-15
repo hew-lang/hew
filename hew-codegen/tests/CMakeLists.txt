@@ -705,6 +705,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_memory/rc_outlive"
   "e2e_memory/rc_string"
   "e2e_memory/rc_pass_to_fn"
+  "e2e_concurrency/channel_for_await_typed_receiver_param"
 )
 
 file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
@@ -731,6 +732,8 @@ foreach(_cat ${_E2E_CATEGORIES})
     endif()
   endforeach()
 endforeach()
+
+add_e2e_file_test(for_await_typed_receiver_param e2e_concurrency channel_for_await_typed_receiver_param)
 
 # quic_string_loopback uses send_string/recv_string which are only present in
 # this branch's std/net/quic/quic.hew.  Point HEW_STD at the worktree std so

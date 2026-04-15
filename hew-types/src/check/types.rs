@@ -236,11 +236,10 @@ pub(super) enum WasmUnsupportedFeature {
     StructuredConcurrency,
     Tasks,
     // ── Warning group (implemented with degraded semantics) ─────────────────
-    /// `sleep_ms`, `sleep`: sleep is cooperative on wasm32 — it takes effect
-    /// at the *message boundary*, not mid-handler.  Code after `sleep_ms` in
-    /// the same receive handler still executes before the park happens.
-    /// Use `hew_wasm_timer_tick` (host) or `hew_wasm_sched_tick` (scheduler)
-    /// to advance the timer queue.
+    /// `sleep_ms`, `sleep`, `#[every(duration)]`: timers are cooperative on
+    /// wasm32. Sleep parks at the *message boundary*, and periodic handlers are
+    /// delivered only when the host drives the timer queue via
+    /// `hew_wasm_timer_tick` / `hew_wasm_sched_tick`.
     Timers,
     // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
     /// `Receiver<T>::recv`: blocking receive still traps on wasm32 because the
@@ -262,7 +261,7 @@ impl WasmUnsupportedFeature {
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
             Self::BlockingChannelRecv => "Blocking channel receive operations",
-            Self::Timers => "Timer/sleep operations",
+            Self::Timers => "Timer operations",
             Self::Streams => "Stream operations",
         }
     }
@@ -282,9 +281,8 @@ impl WasmUnsupportedFeature {
                  use try_recv or the actor ask pattern instead"
             }
             Self::Timers => {
-                "sleep is cooperative on wasm32: it parks the actor at the message boundary \
-                 rather than mid-handler; code after sleep_ms in the same handler still \
-                 executes before the park takes effect"
+                "timers are cooperative on wasm32: sleep parks at the message boundary, \
+                 and #[every(duration)] handlers fire only when the host drives the timer queue"
             }
             Self::Streams => {
                 "I/O streams require the OS threading and networking stack; \

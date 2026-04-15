@@ -547,6 +547,7 @@ pub extern "C" fn hew_sched_shutdown() {
     )]
     // SAFETY: Single-threaded; no concurrent sleep-queue access during shutdown.
     unsafe {
+        crate::timer_periodic_wasm::hew_periodic_shutdown();
         SLEEP_QUEUE.clear();
         PENDING_SLEEP_DEADLINE_MS = 0;
     }
@@ -564,6 +565,7 @@ pub extern "C" fn hew_sched_shutdown() {
     )]
     // SAFETY: Single-threaded; drain_run_queue_for_shutdown has returned.
     unsafe {
+        crate::timer_periodic_wasm::hew_periodic_shutdown();
         SLEEP_QUEUE.clear();
         PENDING_SLEEP_DEADLINE_MS = 0;
     }
@@ -657,16 +659,21 @@ pub extern "C" fn hew_sched_run() {
     loop {
         // SAFETY: hew_now_ms is safe on all targets; drain is single-threaded.
         let now = unsafe { hew_now_ms() };
-        // SAFETY: Single-threaded; SLEEP_QUEUE accessed from cooperative scheduler only.
-        unsafe { drain_expired_sleepers(now) };
+        // SAFETY: Single-threaded; timer queues are owned by the cooperative scheduler.
+        unsafe {
+            crate::timer_periodic_wasm::drain_ready_periodic(now);
+            drain_expired_sleepers(now);
+        };
 
         // SAFETY: Single-threaded on WASM.
         if !unsafe { step_one_actor() } {
             // Run queue empty. Stop only when the sleep queue is also empty.
             // SAFETY: Single-threaded on WASM.
             #[expect(static_mut_refs, reason = "single-threaded cooperative scheduler")]
-            let sleeping = unsafe { SLEEP_QUEUE.is_empty() };
-            if sleeping {
+            let timed_work_pending = unsafe {
+                !SLEEP_QUEUE.is_empty() || crate::timer_periodic_wasm::pending_periodic_count() > 0
+            };
+            if !timed_work_pending {
                 break;
             }
             // Sleeping actors remain: spin-poll until the next deadline passes.
@@ -772,6 +779,7 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 
         // Drain any sleeping actors whose deadline has now passed.
         let now = hew_now_ms();
+        crate::timer_periodic_wasm::drain_ready_periodic(now);
         drain_expired_sleepers(now);
 
         for _ in 0..max_activations {
@@ -795,8 +803,8 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     }
 }
 
-/// Advance the WASM timer: re-enqueue all sleeping actors whose
-/// deadline ≤ `now_ms`.
+/// Advance the WASM timer queues: deliver due periodic messages and
+/// re-enqueue all sleeping actors whose deadline ≤ `now_ms`.
 ///
 /// Host-driven alternative to relying on the clock inside
 /// [`hew_wasm_sched_tick`].  Useful for JS hosts that receive
@@ -815,15 +823,17 @@ pub unsafe extern "C" fn hew_wasm_timer_tick(now_ms: u64) -> i32 {
     // SAFETY: Single-threaded on WASM.
     #[expect(
         clippy::cast_possible_wrap,
-        reason = "number of woken actors will not exceed i32::MAX"
+        reason = "number of timer events will not exceed i32::MAX"
     )]
     // SAFETY: caller upholds single-threaded cooperative scheduler invariant.
     unsafe {
-        drain_expired_sleepers(now_ms) as i32
+        let periodic = crate::timer_periodic_wasm::drain_ready_periodic(now_ms);
+        let sleepers = drain_expired_sleepers(now_ms);
+        periodic.saturating_add(sleepers) as i32
     }
 }
 
-/// Return the number of actors currently parked in the sleep queue.
+/// Return the number of pending timed work items (sleeping actors + active periodic timers).
 ///
 /// Hosts can use this together with the run-queue length returned by
 /// [`hew_wasm_sched_tick`] to decide whether to schedule a future
@@ -843,7 +853,7 @@ pub extern "C" fn hew_wasm_sleeping_count() -> i32 {
     )]
     // SAFETY: Single-threaded cooperative scheduler; SLEEP_QUEUE not mutated concurrently.
     unsafe {
-        SLEEP_QUEUE.len() as i32
+        (SLEEP_QUEUE.len() + crate::timer_periodic_wasm::pending_periodic_count()) as i32
     }
 }
 
@@ -1574,6 +1584,7 @@ mod tests {
             ptr::drop_in_place(ptr::addr_of_mut!(SLEEP_QUEUE));
             ptr::addr_of_mut!(SLEEP_QUEUE).write(Vec::new());
             ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0);
+            crate::timer_periodic_wasm::hew_periodic_shutdown();
             // Clear the thread-local current arena so arena lifecycle tests
             // start from a clean slate regardless of test ordering.
             crate::arena::set_current_arena(ptr::null_mut());

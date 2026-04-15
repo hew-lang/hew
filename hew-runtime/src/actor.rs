@@ -519,6 +519,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // SAFETY: scheduler is shut down; no concurrent SLEEP_QUEUE access.
         #[cfg(target_arch = "wasm32")]
         unsafe {
+            crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor);
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
         }
 
@@ -2989,6 +2990,9 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     if !actor_free_state_is_quiescent(state) {
         return -2;
     }
+
+    // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
+    unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
 
     if !untrack_actor(actor) {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");

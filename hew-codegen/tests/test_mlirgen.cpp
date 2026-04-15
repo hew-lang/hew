@@ -8914,6 +8914,231 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: duration method calls stay green with resolved receiver metadata.
+// ============================================================================
+
+static void test_duration_method_dispatch_uses_resolved_type() {
+  TEST(duration_method_dispatch_uses_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn nanos_of(d: Duration) -> i64 {
+    d.nanos()
+}
+
+fn secs_of(d: Duration) -> i64 {
+    d.secs()
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run duration dispatch positive test");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected codegen to succeed for duration method dispatch");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for duration method dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto secsFn = lookupFuncBySuffix(module, "secs_of");
+  if (!secsFn) {
+    FAIL("secs_of function not found for duration dispatch test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasDivSI = false;
+  secsFn.walk([&](mlir::arith::DivSIOp) { hasDivSI = true; });
+  if (!hasDivSI) {
+    FAIL("expected duration secs() lowering to emit signed division");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: duration method calls fail closed without resolved receiver metadata.
+// ============================================================================
+
+static void test_duration_method_dispatch_requires_resolved_type() {
+  TEST(duration_method_dispatch_requires_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn secs_of(d: Duration) -> i64 {
+    d.secs()
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run duration dispatch negative test");
+    return;
+  }
+
+  auto *secsFn = findFunctionDecl(program, "secs_of");
+  if (!secsFn) {
+    FAIL("failed to find secs_of function for duration dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*secsFn, "secs");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove duration receiver expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for duration method dispatch without resolved type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for duration method call receiver") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for duration method dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: Rc method calls stay green with resolved receiver metadata.
+// ============================================================================
+
+static void test_rc_method_dispatch_uses_resolved_type() {
+  TEST(rc_method_dispatch_uses_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn count_refs() -> i64 {
+    let data: Rc<String> = Rc::new("hi");
+    let alias: Rc<String> = data.clone();
+    alias.strong_count()
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run Rc dispatch positive test");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected codegen to succeed for Rc method dispatch");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for Rc method dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto countFn = lookupFuncBySuffix(module, "count_refs");
+  if (!countFn) {
+    FAIL("count_refs function not found for Rc dispatch test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasRcClone = false;
+  countFn.walk([&](hew::RcCloneOp) { hasRcClone = true; });
+  if (!hasRcClone || countCallsByCallee(countFn.getOperation(), "hew_rc_count") != 1) {
+    FAIL("expected Rc dispatch to emit Rc clone and hew_rc_count");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Rc method calls fail closed without resolved receiver metadata.
+// ============================================================================
+
+static void test_rc_method_dispatch_requires_resolved_type() {
+  TEST(rc_method_dispatch_requires_resolved_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn count_refs() -> i64 {
+    let data: Rc<String> = Rc::new("hi");
+    data.strong_count()
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run Rc dispatch negative test");
+    return;
+  }
+
+  auto *countFn = findFunctionDecl(program, "count_refs");
+  if (!countFn) {
+    FAIL("failed to find count_refs function for Rc dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*countFn, "strong_count");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove Rc receiver expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for Rc method dispatch without resolved type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for Rc method call receiver") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for Rc method dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: trait dispatch requires a checker-carried receiver-kind entry.
 //
 // The checker now records trait-object method dispatch in
@@ -11107,6 +11332,10 @@ int main() {
   test_handle_dispatch_uses_receiver_kind_metadata();
   test_handle_dispatch_requires_receiver_kind();
   test_actor_dispatch_requires_resolved_type();
+  test_duration_method_dispatch_uses_resolved_type();
+  test_duration_method_dispatch_requires_resolved_type();
+  test_rc_method_dispatch_uses_resolved_type();
+  test_rc_method_dispatch_requires_resolved_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_requires_receiver_kind();
   test_generic_handle_impl_dispatch_requires_receiver_kind();

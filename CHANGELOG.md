@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-15
+
+### Added
+
+- **LSP transitive goto-definition:** `find_cross_file_definition` now follows
+  one import hop with a cycle guard, so goto-definition works through re-export
+  and glob chains (#1073).
+- **Module search-path documentation:** `HEWPATH`, `HEW_STD`, the four-step
+  resolution order, and the `hew.toml` non-role are documented across the
+  user-facing module discovery docs (#1074).
+- **Eval WASM + `--json` ok-path coverage:** integration coverage now exercises
+  `hew eval --json --target wasm32-wasi` on the success path, and the WASM
+  capability matrix documents the non-interactive eval contract (#1075).
+- **stdlib URL percent-encoding proof surface:** `url.encode`, `url.decode`,
+  and `url.encode_query` are now confirmed end-to-end on native and WASM, and
+  `hew-runtime` exports bounded `hew_bytes_to_string` support so `url.decode`
+  works correctly under `wasm32-wasip1` (#1077).
+
+### Fixed
+
+- **`fs.try_read_bytes` binary-safety:** `try_read_bytes` now calls
+  `hew_file_read_bytes` directly with proper `hew_file_last_error` handling
+  instead of routing through the UTF-8 string path, so non-UTF-8 and
+  NUL-containing binary files round-trip correctly (#1076).
+
 ## [0.3.0] - 2026-04-06
 
 ### Added

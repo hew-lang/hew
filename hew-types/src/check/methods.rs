@@ -1301,10 +1301,17 @@ impl Checker {
                 if !self.user_modules.contains(name) {
                     match name.as_str() {
                         "stream" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams),
-                        "http" => self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer),
-                        "net" => self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking),
+                        "http" => {
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
+                        }
+                        "net" => {
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
+                        }
                         "process" => {
-                            self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
+                            self.reject_wasm_feature(
+                                span,
+                                WasmUnsupportedFeature::ProcessExecution,
+                            );
                         }
                         _ => {}
                     }

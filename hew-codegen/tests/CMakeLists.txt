@@ -1348,6 +1348,9 @@ add_wasm_file_test(string_bench                   e2e_performance  string_concat
 
 # Concurrency (cooperative — no OS threads)
 add_wasm_file_test(async_sequential               e2e_concurrency  async_sequential)
+add_wasm_file_test(channel_try_recv               e2e_concurrency  channel_try_recv)
+add_wasm_file_test(channel_try_recv_option        e2e_concurrency  channel_try_recv_option)
+add_wasm_file_test(channel_try_recv_int_option    e2e_concurrency  channel_try_recv_int_option)
 
 # Actors (native tests that also pass under WASM single-threaded scheduler)
 add_wasm_file_test(actor_counter              e2e_actors       actor_counter)
@@ -1396,6 +1399,7 @@ add_wasm_reject_test(supervisor  e2e_actors wasm_reject_supervisor "are not supp
 add_wasm_reject_test(scope       e2e_actors wasm_reject_scope      "are not supported on WASM32")
 add_wasm_reject_test(link        e2e_actors wasm_reject_link       "are not supported on WASM32")
 add_wasm_reject_test(blocking_recv e2e_actors wasm_reject_blocking_recv "Blocking channel receive operations")
+add_wasm_reject_test(for_await_receiver e2e_actors wasm_reject_for_await_receiver "Blocking channel receive operations")
 add_wasm_reject_test(streams       e2e_actors wasm_reject_streams       "Stream operations")
 add_wasm_reject_test(http_client   e2e_negative wasm_reject_http_client   "std::net::http::http_client operations are not supported on WASM32")
 add_wasm_reject_test(smtp          e2e_negative wasm_reject_smtp          "std::net::smtp operations are not supported on WASM32")

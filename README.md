@@ -32,10 +32,25 @@ hew run main.hew
 hew eval
 ```
 
-Inside `hew eval`, top-level items and `let`/`var` bindings stay in session across
-inputs. Use `:session` to see what is remembered, `:items` / `:bindings` to
-inspect it, `:load path/to/file.hew` to bring a file into the session, and
-`:clear` (or `:reset`) to start over.
+### Evaluation & REPL
+
+`hew eval` can run as an interactive REPL, evaluate a file in REPL context, or
+evaluate a one-off inline expression. The REPL remembers top-level items and
+`let`/`var` bindings across inputs.
+
+```bash
+hew eval
+hew eval -f script.hew
+hew eval "1 + 2"
+hew eval --json -f script.hew
+```
+
+For non-interactive runs, `-f -` reads from stdin and `--target wasm32-wasi`
+uses the WASI eval path.
+
+Use `:help` inside the REPL to see the command list. Common commands include
+`:help` / `:h`, `:session` / `:show`, `:items`, `:bindings`, `:type <expr>`,
+`:load <file>`, `:clear` / `:reset`, and `:quit` / `:q`.
 
 `hew init` is the source-only scaffold: it writes `main.hew` +
 `README.md`, but no `hew.toml`.

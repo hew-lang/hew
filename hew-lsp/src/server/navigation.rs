@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
@@ -735,6 +735,27 @@ pub(super) fn find_cross_file_definition(
     word: &str,
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<(Url, Range)> {
+    const MAX_TRANSITIVE_IMPORT_HOPS: usize = 1;
+
+    let mut seen = HashSet::from([current_uri.clone()]);
+    find_cross_file_definition_impl(
+        current_uri,
+        imports,
+        word,
+        documents,
+        &mut seen,
+        MAX_TRANSITIVE_IMPORT_HOPS,
+    )
+}
+
+fn find_cross_file_definition_impl(
+    current_uri: &Url,
+    imports: &[hew_parser::ast::ImportDecl],
+    word: &str,
+    documents: &DashMap<Url, DocumentState>,
+    seen: &mut HashSet<Url>,
+    remaining_hops: usize,
+) -> Option<(Url, Range)> {
     for import in imports {
         let Some(path) = compute_import_path(current_uri, import) else {
             continue;
@@ -769,32 +790,67 @@ pub(super) fn find_cross_file_definition(
                 continue;
             }
         };
-
-        // Search in an already-open document first (no I/O).
-        if let Some(doc) = documents.get(&target_uri) {
-            if let Some(range) = find_definition_in_ast(
-                &doc.source,
-                &doc.line_offsets,
-                &doc.parse_result,
-                search_name,
-            ) {
-                return Some((target_uri, range));
-            }
-            // File is open but name not found there — don't fall through to disk.
+        if !seen.insert(target_uri.clone()) {
             continue;
         }
 
-        // Fall back: read and parse the file from disk.
-        if path.exists() {
-            if let Ok(source) = std::fs::read_to_string(&path) {
-                let pr = hew_parser::parse(&source);
-                let lo = compute_line_offsets(&source);
-                if let Some(range) = find_definition_in_ast(&source, &lo, &pr, search_name) {
-                    return Some((target_uri, range));
+        let result = load_navigation_target(&target_uri, &path, documents).and_then(
+            |(source, line_offsets, parse_result)| {
+                if let Some(range) =
+                    find_definition_in_ast(&source, &line_offsets, &parse_result, search_name)
+                {
+                    return Some((target_uri.clone(), range));
                 }
-            }
+
+                if remaining_hops == 0 {
+                    return None;
+                }
+
+                let nested_imports = collect_import_items(&parse_result)
+                    .into_iter()
+                    .map(|(import, _)| import)
+                    .collect::<Vec<_>>();
+
+                find_cross_file_definition_impl(
+                    &target_uri,
+                    &nested_imports,
+                    search_name,
+                    documents,
+                    seen,
+                    remaining_hops - 1,
+                )
+            },
+        );
+
+        seen.remove(&target_uri);
+
+        if result.is_some() {
+            return result;
         }
     }
+    None
+}
+
+fn load_navigation_target(
+    target_uri: &Url,
+    path: &std::path::Path,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<(String, Vec<usize>, ParseResult)> {
+    if let Some(doc) = documents.get(target_uri) {
+        let source = doc.source.clone();
+        let line_offsets = doc.line_offsets.clone();
+        let parse_result = hew_parser::parse(&source);
+        return Some((source, line_offsets, parse_result));
+    }
+
+    if path.exists() {
+        if let Ok(source) = std::fs::read_to_string(path) {
+            let parse_result = hew_parser::parse(&source);
+            let line_offsets = compute_line_offsets(&source);
+            return Some((source, line_offsets, parse_result));
+        }
+    }
+
     None
 }
 

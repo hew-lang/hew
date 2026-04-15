@@ -465,7 +465,6 @@ fn active_handle_count() -> usize {
 mod tests {
     use super::*;
     use std::ffi::CString;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[test]
     fn create_and_drop() {
@@ -728,8 +727,16 @@ mod tests {
         assert_eq!(active_handle_count(), 0);
     }
 
+    // On wasm32-wasip1 panics abort the test binary, so the explicit panic
+    // wrapper must be asserted on host targets where unwinding is available.
+    // The fail-closed queue-full path itself is still covered everywhere by
+    // `bounded_capacity_returns_full`, which exercises the underlying
+    // fallible send helper.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn abi_send_traps_explicitly_when_queue_is_full() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
         let _guard = crate::runtime_test_guard();
         let pair = hew_channel_new(1);
         // SAFETY: extracted handles are used only within this test and are

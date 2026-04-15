@@ -1,0 +1,6 @@
+import std::stream;
+
+fn main() {
+    let (_sink, input) = stream.pipe(1);
+    let _ = input.next();
+}

@@ -1,0 +1,6 @@
+import std::channel::channel;
+
+fn main() {
+    let (_tx, rx) = channel.new(1);
+    let _ = rx.recv();
+}

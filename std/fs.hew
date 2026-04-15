@@ -117,6 +117,14 @@ fn move_copy_error(source: String, target: String) -> IoError {
     }
 }
 
+fn clone_bytes(data: bytes) -> bytes {
+    let out: bytes = bytes::new();
+    for i in 0..data.len() {
+        out.push(data.get(i));
+    }
+    out
+}
+
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Panics if the file does not exist or cannot be read.
@@ -251,12 +259,12 @@ pub fn read_bytes(path: String) -> bytes {
 /// Returns `Err(IoError)` instead of an ambiguous empty buffer on failure.
 pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
     unsafe {
-        hew_file_read_bytes(file_path);
+        let data = hew_file_read_bytes(file_path);
         let error = hew_file_last_error();
         if error != "" {
             Err(io_error_from_message(error))
         } else {
-            Ok(read_bytes(file_path))
+            Ok(clone_bytes(data))
         }
     }
 }

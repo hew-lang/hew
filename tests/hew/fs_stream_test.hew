@@ -25,6 +25,20 @@ fn test_try_read_missing_returns_not_found() {
 }
 
 #[test]
+fn test_try_read_bytes_missing_returns_not_found() {
+    let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
+    cleanup_file(file_path);
+
+    match fs.try_read_bytes(file_path) {
+        Ok(_) => panic("expected missing file error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
 fn test_try_write_read_size_and_delete_roundtrip() {
     let file_path = "tests/hew/_fs_stream_roundtrip.txt";
     cleanup_file(file_path);

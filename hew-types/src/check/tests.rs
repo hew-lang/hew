@@ -2053,6 +2053,18 @@ fn parse_and_check(source: &str) -> (Vec<TypeError>, Vec<TypeError>) {
     (output.errors, output.warnings)
 }
 
+fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>) {
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    (output.errors, output.warnings)
+}
+
 // ---- unused variable ----
 
 #[test]
@@ -4895,6 +4907,91 @@ fn typecheck_integer_literal_coerces_in_arithmetic() {
         output.errors.is_empty(),
         "integer literal should coerce in arithmetic: {:?}",
         output.errors
+    );
+}
+
+#[test]
+fn i32_coerces_to_bool_in_condition_position() {
+    let (errors, _warnings) =
+        parse_and_check("fn foo(flag: i32) -> i32 { if flag { 1 } else { 0 } }");
+    assert!(
+        errors.is_empty(),
+        "i32 in bool position must be allowed: {errors:?}"
+    );
+}
+
+#[test]
+fn bool_does_not_coerce_to_i32() {
+    let (errors, _warnings) = parse_and_check("fn foo(flag: bool) -> i32 { flag }");
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "bool where i32 expected must be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn handle_type_does_not_coerce_to_string() {
+    let (errors, _warnings) = parse_and_check_with_stdlib(
+        "import std::encoding::json;\nfn foo(value: json.Value) -> String { value }",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "json.Value where String expected must be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn string_does_not_coerce_to_handle_type() {
+    let (errors, _warnings) = parse_and_check_with_stdlib(
+        "import std::encoding::json;\nfn foo(text: String) -> json.Value { text }",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "String where json.Value expected must be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn unconstrained_range_defaults_to_i64() {
+    let source = "fn main() { for i in 0..10 { println(i); } }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let main_fn = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function should exist");
+    let Stmt::For { iterable, .. } = &main_fn.body.stmts[0].0 else {
+        panic!("expected for statement");
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unconstrained range should type-check: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(&iterable.1)),
+        Some(&Ty::range(Ty::I64)),
+        "unconstrained range literal should default to Range<i64>: {:?}",
+        output.expr_types
     );
 }
 

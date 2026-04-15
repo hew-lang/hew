@@ -2374,6 +2374,7 @@ impl<'src> Parser<'src> {
         let mut field_meta = Vec::new();
         let mut reserved_numbers: Vec<u32> = Vec::new();
         let mut explicit_numbers: Vec<u32> = Vec::new();
+        let mut seen_explicit_numbers = std::collections::HashSet::new();
 
         while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
             // Check for `reserved @N, @M, ...;`
@@ -2410,6 +2411,12 @@ impl<'src> Parser<'src> {
             let parsed_field =
                 self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct)?;
             if let Some(explicit_num) = parsed_field.explicit_number {
+                if reserved_numbers.contains(&explicit_num) {
+                    self.error(format!("wire field number @{explicit_num} is reserved"));
+                }
+                if !seen_explicit_numbers.insert(explicit_num) {
+                    self.error(format!("duplicate wire field number @{explicit_num}"));
+                }
                 explicit_numbers.push(explicit_num);
             }
 

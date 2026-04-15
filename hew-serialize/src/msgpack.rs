@@ -1012,10 +1012,59 @@ pub fn build_method_call_receiver_kind_entries(
 mod tests {
     use super::*;
     use hew_parser::ast::{
-        FnDecl, IntRadix, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition,
-        Program, Visibility,
+        ChildSpec, FnDecl, IntRadix, Literal, MachineDecl, MachineEvent, MachineState,
+        MachineTransition, NamingCase, Program, RestartPolicy, SupervisorDecl, SupervisorStrategy,
+        TypeAliasDecl, TypeDecl, TypeDeclKind, VariantDecl, VariantKind, Visibility, WireDecl,
+        WireDeclKind, WireFieldDecl,
     };
     use std::collections::HashSet;
+
+    fn round_trip_program(program: &Program) {
+        let bytes = serialize_to_msgpack(
+            program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        assert!(!bytes.is_empty());
+
+        let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
+        assert_eq!(program.clone(), restored);
+    }
+
+    fn serialize_to_value(program: &Program, expr_types: Vec<ExprTypeEntry>) -> serde_json::Value {
+        let bytes = serialize_to_msgpack(
+            program,
+            expr_types,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload")
+    }
+
+    fn named_type(name: &str) -> Spanned<TypeExpr> {
+        (
+            TypeExpr::Named {
+                name: name.to_string(),
+                type_args: None,
+            },
+            0..0,
+        )
+    }
 
     /// Round-trip: serialize → deserialize should produce an identical AST.
     #[test]
@@ -2531,5 +2580,362 @@ mod tests {
         assert_eq!(line_map[0].as_u64(), Some(0));
         assert_eq!(line_map[1].as_u64(), Some(17));
         assert_eq!(line_map[2].as_u64(), Some(42));
+    }
+
+    #[test]
+    fn round_trip_empty_string_literal() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Literal(Literal::String(String::new())),
+                            10..12,
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_char_literal() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((Expr::Literal(Literal::Char('x')), 10..13))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_duration_literal() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Literal(Literal::Duration(5_000_000_000)),
+                            10..12,
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn expr_types_integer_width_names_serialize_to_wire() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+        let expr_types = [
+            "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| ExprTypeEntry {
+            start: index * 10,
+            end: index * 10 + 2,
+            ty: named_type(name),
+        })
+        .collect();
+
+        let json = serde_json::to_string(&serialize_to_value(&program, expr_types))
+            .expect("value should serialize to json");
+        for name in [
+            "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
+        ] {
+            assert!(
+                json.contains(&format!("\"name\":\"{name}\"")),
+                "missing {name}: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_enum_with_tuple_variant() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::TypeDecl(TypeDecl {
+                    visibility: Visibility::Private,
+                    kind: TypeDeclKind::Enum,
+                    name: "Message".into(),
+                    type_params: None,
+                    where_clause: None,
+                    body: vec![TypeBodyItem::Variant(VariantDecl {
+                        name: "Data".into(),
+                        kind: VariantKind::Tuple(vec![named_type("i32"), named_type("String")]),
+                    })],
+                    doc_comment: None,
+                    wire: None,
+                    is_indirect: false,
+                }),
+                0..30,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_wire_decl() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Wire(WireDecl {
+                    visibility: Visibility::Private,
+                    kind: WireDeclKind::Struct,
+                    name: "Envelope".into(),
+                    fields: vec![
+                        WireFieldDecl {
+                            name: "id".into(),
+                            ty: "i32".into(),
+                            field_number: 1,
+                            is_optional: false,
+                            is_repeated: false,
+                            is_reserved: false,
+                            is_deprecated: false,
+                            json_name: None,
+                            yaml_name: None,
+                            since: None,
+                        },
+                        WireFieldDecl {
+                            name: "payload".into(),
+                            ty: "String".into(),
+                            field_number: 2,
+                            is_optional: true,
+                            is_repeated: false,
+                            is_reserved: false,
+                            is_deprecated: false,
+                            json_name: Some("body".into()),
+                            yaml_name: None,
+                            since: Some(2),
+                        },
+                    ],
+                    variants: vec![],
+                    json_case: Some(NamingCase::CamelCase),
+                    yaml_case: None,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_type_alias_decl() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::TypeAlias(TypeAliasDecl {
+                    visibility: Visibility::Pub,
+                    name: "UserId".into(),
+                    ty: named_type("i64"),
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_supervisor_decl() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Supervisor(SupervisorDecl {
+                    visibility: Visibility::Pub,
+                    name: "Pool".into(),
+                    strategy: Some(SupervisorStrategy::OneForOne),
+                    max_restarts: Some(3),
+                    window: Some("30".into()),
+                    children: vec![ChildSpec {
+                        name: "worker".into(),
+                        actor_type: "Worker".into(),
+                        args: vec![(
+                            Expr::Literal(Literal::Integer {
+                                value: 1,
+                                radix: IntRadix::Decimal,
+                            }),
+                            0..0,
+                        )],
+                        restart: Some(RestartPolicy::Permanent),
+                    }],
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn expr_types_generic_container_serialize_to_wire() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+        let expr_types = vec![
+            ExprTypeEntry {
+                start: 0,
+                end: 10,
+                ty: (
+                    TypeExpr::Named {
+                        name: "Vec".into(),
+                        type_args: Some(vec![named_type("i32")]),
+                    },
+                    0..0,
+                ),
+            },
+            ExprTypeEntry {
+                start: 11,
+                end: 22,
+                ty: (
+                    TypeExpr::Named {
+                        name: "Option".into(),
+                        type_args: Some(vec![named_type("String")]),
+                    },
+                    0..0,
+                ),
+            },
+        ];
+
+        let json = serde_json::to_string(&serialize_to_value(&program, expr_types))
+            .expect("value should serialize to json");
+        for name in ["Vec", "Option", "i32", "String"] {
+            assert!(
+                json.contains(&format!("\"name\":\"{name}\"")),
+                "missing {name}: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_empty_byte_string_expr() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((Expr::ByteStringLiteral(vec![]), 10..12))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_nested_struct_type_decls() {
+        round_trip_program(&Program {
+            items: vec![
+                (
+                    Item::TypeDecl(TypeDecl {
+                        visibility: Visibility::Private,
+                        kind: TypeDeclKind::Struct,
+                        name: "Inner".into(),
+                        type_params: None,
+                        where_clause: None,
+                        body: vec![TypeBodyItem::Field {
+                            name: "value".into(),
+                            ty: named_type("i32"),
+                            attributes: vec![],
+                        }],
+                        doc_comment: None,
+                        wire: None,
+                        is_indirect: false,
+                    }),
+                    0..20,
+                ),
+                (
+                    Item::TypeDecl(TypeDecl {
+                        visibility: Visibility::Private,
+                        kind: TypeDeclKind::Struct,
+                        name: "Outer".into(),
+                        type_params: None,
+                        where_clause: None,
+                        body: vec![TypeBodyItem::Field {
+                            name: "inner".into(),
+                            ty: named_type("Inner"),
+                            attributes: vec![],
+                        }],
+                        doc_comment: None,
+                        wire: None,
+                        is_indirect: false,
+                    }),
+                    21..40,
+                ),
+            ],
+            module_doc: None,
+            module_graph: None,
+        });
     }
 }

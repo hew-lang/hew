@@ -68,6 +68,18 @@ fn roundtrip_no_comments(source: &str) -> String {
     formatted
 }
 
+fn exact_roundtrip(source: &str) {
+    let formatted = roundtrip_no_comments(source);
+    assert_eq!(
+        formatted, source,
+        "Formatter output changed.
+Expected:
+{source}
+Actual:
+{formatted}",
+    );
+}
+
 // -----------------------------------------------------------------------
 // Functions
 // -----------------------------------------------------------------------
@@ -1143,4 +1155,146 @@ fn fmt_where_clause() {
 }";
     let out = roundtrip(src);
     assert!(out.contains("where T: Display"), "output: {out}");
+}
+
+#[test]
+fn fmt_map_literal_roundtrip() {
+    exact_roundtrip("fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n}\n");
+}
+
+#[test]
+fn fmt_array_repeat_roundtrip() {
+    exact_roundtrip("fn main() {\n    let values = [0; 10];\n}\n");
+}
+
+#[test]
+fn fmt_scope_launch_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    scope |s| {\n        let task = s.launch {\n            1\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_spawn_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    scope |s| {\n        s.spawn {\n            println(1);\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_cancel_roundtrip() {
+    exact_roundtrip("fn main() {\n    scope |s| {\n        s.cancel();\n    };\n}\n");
+}
+
+#[test]
+fn fmt_cooperate_roundtrip() {
+    exact_roundtrip("fn main() {\n    cooperate;\n}\n");
+}
+
+#[test]
+fn fmt_spawn_lambda_actor_roundtrip() {
+    exact_roundtrip("fn main() {\n    let worker = spawn (x: int) => x + 1;\n}\n");
+}
+
+#[test]
+fn fmt_postfix_try_roundtrip() {
+    exact_roundtrip("fn main() {\n    let value = result?;\n}\n");
+}
+
+#[test]
+fn fmt_select_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let value = select {\n        msg from inbox.recv() => msg,\n        after 100ms => -1,\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_join_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let pair = join {\n        left(),\n        right(),\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_timeout_roundtrip() {
+    exact_roundtrip("fn main() {\n    let value = await task | after 5s;\n}\n");
+}
+
+#[test]
+fn fmt_send_roundtrip() {
+    exact_roundtrip("fn main() {\n    worker <- 42;\n}\n");
+}
+
+#[test]
+fn fmt_while_let_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    while let Some(x) = iter.next() {\n        println(x);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_type_alias_roundtrip() {
+    exact_roundtrip("type Alias = i32;\n");
+}
+
+#[test]
+fn fmt_wire_declarations_roundtrip() {
+    exact_roundtrip(
+        "#[wire]\nstruct Message {\n    id: i32 @1,\n}\n\nwire enum Command {\n    Start;\n    Stop;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_decl_roundtrip() {
+    exact_roundtrip(
+        "machine Light {\n    state Off;\n    state On;\n\n    event Toggle;\n\n    on Toggle: Off -> On;\n    on Toggle: On -> Off;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_decl_roundtrip() {
+    exact_roundtrip(
+        "supervisor Pool {\n    strategy: one_for_one;\n    max_restarts: 5;\n    window: 30;\n\n    child worker: Worker(1);\n}\n",
+    );
+}
+
+#[test]
+fn fmt_duration_literals_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let short = 100ms;\n    let medium = 5s;\n    let long = 1m;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_integer_radix_literals_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let hex = 0xFF;\n    let octal = 0o77;\n    let binary = 0b1010;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_type_infer_roundtrip() {
+    exact_roundtrip("fn main() {\n    let x: _ = 42;\n}\n");
+}
+
+#[test]
+fn fmt_pattern_or_roundtrip() {
+    exact_roundtrip("fn main() {\n    match x {\n        1 | 2 => 3,\n        _ => 0,\n    }\n}\n");
+}
+
+#[test]
+fn fmt_for_await_roundtrip() {
+    exact_roundtrip("fn main() {\n    for await x in stream {\n        println(x);\n    }\n}\n");
+}
+
+#[test]
+fn fmt_const_decl_roundtrip() {
+    exact_roundtrip("const X: i32 = 42;\n");
+}
+
+#[test]
+fn fmt_contextual_keywords_as_identifiers_roundtrip() {
+    exact_roundtrip(
+        "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",
+    );
 }

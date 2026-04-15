@@ -3232,6 +3232,53 @@ impl Worker {
         );
     }
 
+    #[test]
+    fn cross_file_goto_transitive_import_resolves_one_hop_deeper() {
+        let main_source = "import middle::{ Counter };\nfn main() {}";
+        let middle_source = "import leaf::{ Counter };\nfn helper() {}";
+        let leaf_source = "type Counter { value: i32 }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let middle_uri = make_test_uri("/project/middle.hew");
+        let leaf_uri = make_test_uri("/project/leaf.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(middle_uri, make_doc(middle_source));
+        documents.insert(leaf_uri.clone(), make_doc(leaf_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
+
+        assert!(
+            result.is_some(),
+            "transitive import should resolve Counter through middle.hew"
+        );
+        let (uri, _range) = result.unwrap();
+        assert_eq!(uri, leaf_uri, "should point to leaf.hew");
+    }
+
+    #[test]
+    fn cross_file_goto_transitive_cycle_returns_none() {
+        let main_source = "import middle::{ Counter };\nfn main() {}";
+        let middle_source = "import main::{ Counter };\nfn helper() {}";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let middle_uri = make_test_uri("/project/middle.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_source));
+        documents.insert(middle_uri, make_doc(middle_source));
+
+        let imports = collect_imports(main_source);
+        let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
+
+        assert!(
+            result.is_none(),
+            "cycle should terminate and report no definition"
+        );
+    }
+
     // ── In-memory module parity tests ───────────────────────────────
 
     /// `populate_user_module_imports` prefers the in-memory buffer for an open

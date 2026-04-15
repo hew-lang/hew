@@ -646,12 +646,16 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     // blocking, so it is safe to call even from within an async context.
     match Arc::try_unwrap(rt_arc) {
         Ok(rt) => rt.shutdown_background(),
-        Err(_arc) => {
+        Err(arc) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[hew-runtime] quic_destroy: Arc::try_unwrap failed, runtime leaked (another reference exists)"
+            );
             // JUSTIFIED: A second strong reference to the runtime should
             // not exist after dropping QuicTransport; if one somehow does
             // (e.g. a test holds a clone for inspection), silently forget
             // rather than shutting down a runtime we do not fully own.
-            // DROP-TODO: investigate if this path is ever reached.
+            std::mem::forget(arc);
         }
     }
 }

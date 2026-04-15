@@ -20,10 +20,12 @@ echo 'fn main() { println("Hello from Hew!"); }' > hello.hew
 hew run hello.hew
 
 # Start a new project
-adze init my_project
+hew init my_project
 cd my_project
-# adze init creates hew.toml, main.hew, and .gitignore
+# hew init creates main.hew + README.md (no hew.toml)
 hew check main.hew
+hew fmt --check main.hew
+hew doc main.hew --output-dir doc
 hew run main.hew
 
 # Interactive REPL
@@ -35,8 +37,8 @@ inputs. Use `:session` to see what is remembered, `:items` / `:bindings` to
 inspect it, `:load path/to/file.hew` to bring a file into the session, and
 `:clear` (or `:reset`) to start over.
 
-Need a lighter source-only scaffold instead? `hew init my_project` writes
-`main.hew` + `README.md`, but no `hew.toml`.
+`hew init` is the source-only scaffold: it writes `main.hew` +
+`README.md`, but no `hew.toml`.
 
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
@@ -88,6 +90,9 @@ When you compile or typecheck a multi-file program with `hew check`,
 `hew build`, or `hew run`, pass one entry `.hew` file. Imports and
 directory-form modules pull in the rest, so pass `main.hew`, not every file in
 the tree.
+
+`hew doc` is different: it accepts either one `.hew` file or a directory tree
+of `.hew` files to document.
 
 - `import foo;` prefers the directory-form module at `foo/foo.hew`, then falls
   back to `foo.hew` beside the importer.

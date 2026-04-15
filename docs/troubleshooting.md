@@ -218,6 +218,8 @@ What to check:
   `hew doc` exits 1 after generation if any file had parse errors. Run
   `hew check <file.hew>` on each source file first to identify and fix parse
   errors so all modules appear in the output.
+- Parse **warnings** are also printed to stderr, but they do not block
+  generation or force a non-zero exit on their own.
 - If no output is written and there are no parse errors, confirm that the input
   path exists and contains `.hew` files. `hew doc` does not fall back to the
   current directory — pass at least one file or directory explicitly.

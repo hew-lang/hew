@@ -7013,6 +7013,33 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     return ifOp.getResult(0);
   }
 
+  // Evaluate the timeout before arming any asks so a computed deadline starts
+  // at select entry instead of after replies are already in flight.
+  mlir::Value timeoutVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, -1);
+  if (sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->duration) {
+    auto timeoutDurationVal = generateExpression((*sel.timeout)->duration->value);
+    if (!timeoutDurationVal)
+      return nullptr;
+    if (timeoutDurationVal.getType() != i64Type) {
+      timeoutDurationVal = coerceType(timeoutDurationVal, i64Type, location);
+      if (!timeoutDurationVal)
+        return nullptr;
+    }
+    auto nanosPerMs = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1'000'000);
+    auto timeoutMs64 =
+        mlir::arith::DivSIOp::create(builder, location, timeoutDurationVal, nanosPerMs);
+    auto zero64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 0);
+    auto maxI32Ms64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type,
+                                                         std::numeric_limits<int32_t>::max());
+    auto boundedTimeoutMs64 =
+        mlir::arith::MinSIOp::create(builder, location, timeoutMs64, maxI32Ms64);
+    auto clampedTimeoutMs64 =
+        mlir::arith::MaxSIOp::create(builder, location, zero64, boundedTimeoutMs64);
+    timeoutVal = coerceType(clampedTimeoutMs64, i32Type, location);
+    if (!timeoutVal)
+      return nullptr;
+  }
+
   llvm::SmallVector<mlir::Value, 4> channels;
   llvm::SmallVector<mlir::Type, 4> resultTypes;
 
@@ -7092,35 +7119,6 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
         mlir::LLVM::GEPOp::create(builder, location, ptrType, ptrType, channelArray,
                                   llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(i)});
     mlir::LLVM::StoreOp::create(builder, location, channels[i], gep);
-  }
-
-  // Default to -1 (infinite wait) for no-timeout select. Duration values are
-  // nanoseconds; the runtime expects a millisecond deadline. Clamp finite
-  // values into the i32 ABI range so computed durations fail closed instead of
-  // silently wrapping.
-  mlir::Value timeoutVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, -1);
-  if (sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->duration) {
-    auto timeoutDurationVal = generateExpression((*sel.timeout)->duration->value);
-    if (!timeoutDurationVal)
-      return nullptr;
-    if (timeoutDurationVal.getType() != i64Type) {
-      timeoutDurationVal = coerceType(timeoutDurationVal, i64Type, location);
-      if (!timeoutDurationVal)
-        return nullptr;
-    }
-    auto nanosPerMs = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1'000'000);
-    auto timeoutMs64 =
-        mlir::arith::DivSIOp::create(builder, location, timeoutDurationVal, nanosPerMs);
-    auto zero64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 0);
-    auto maxI32Ms64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type,
-                                                         std::numeric_limits<int32_t>::max());
-    auto boundedTimeoutMs64 =
-        mlir::arith::MinSIOp::create(builder, location, timeoutMs64, maxI32Ms64);
-    auto clampedTimeoutMs64 =
-        mlir::arith::MaxSIOp::create(builder, location, zero64, boundedTimeoutMs64);
-    timeoutVal = coerceType(clampedTimeoutMs64, i32Type, location);
-    if (!timeoutVal)
-      return nullptr;
   }
 
   auto countVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,

@@ -7,15 +7,19 @@ actor Responder {
     }
 }
 
+fn delayed_zero_timeout() -> duration {
+    sleep_ms(250);
+    0ms + 0ms
+}
+
 fn main() {
     let first = spawn Responder(value: 1);
     let second = spawn Responder(value: 2);
-    let timeout_now = 0ms + 0ms;
 
     let result = select {
         x from first.get() => x,
         y from second.get() => y,
-        after timeout_now => -1,
+        after delayed_zero_timeout() => -1,
     };
     println(result);
 

@@ -7540,6 +7540,79 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: computed select timeout is evaluated before asks are armed
+// ============================================================================
+static void test_select_computed_timeout_evaluates_before_arming_asks() {
+  TEST(select_computed_timeout_evaluates_before_arming_asks);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+actor Responder {
+    receive fn get() -> int {
+        sleep_ms(50);
+        1
+    }
+}
+
+fn delayed_zero_timeout() -> duration {
+    sleep_ms(250);
+    0ms + 0ms
+}
+
+fn main() -> int {
+    let responder = spawn Responder();
+    select {
+        x from responder.get() => x,
+        after delayed_zero_timeout() => -1,
+    }
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("main function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int timeoutCallIndex = -1;
+  int firstSelectAddIndex = -1;
+  int opIndex = 0;
+  mainFn.walk([&](mlir::Operation *op) {
+    if (timeoutCallIndex < 0) {
+      if (auto call = llvm::dyn_cast<mlir::func::CallOp>(op);
+          call && !call.getCallee().starts_with("hew_")) {
+        timeoutCallIndex = opIndex;
+      }
+    }
+    if (firstSelectAddIndex < 0 && llvm::isa<hew::SelectAddOp>(op))
+      firstSelectAddIndex = opIndex;
+    ++opIndex;
+  });
+
+  if (timeoutCallIndex < 0 || firstSelectAddIndex < 0) {
+    FAIL("expected computed-timeout call and select.add in main");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (timeoutCallIndex >= firstSelectAddIndex) {
+    FAIL("computed timeout must be evaluated before any select.add arms are sent");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Join emits explicit send-failure cleanup and preserves destroy paths
 // ============================================================================
 static void test_join_emits_send_failure_cleanup() {
@@ -11090,6 +11163,7 @@ int main() {
   test_unresolved_generic_substitution_type_fails();
   test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();
+  test_select_computed_timeout_evaluates_before_arming_asks();
   test_join_emits_send_failure_cleanup();
   test_scoped_spawn_panics_on_scope_overflow();
   test_generator_wrapped_yield_drop_exclusion();

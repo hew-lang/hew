@@ -1370,6 +1370,34 @@ fn eval_json_runtime_failure_preserves_stdout() {
 }
 
 #[test]
+fn eval_wasm_json_ok_inline_expression() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "--target", "wasm32-wasi", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --json, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_eq!(v["status"], "ok", "unexpected status: {v}");
+    assert_eq!(v["stdout"], "3\n", "unexpected stdout: {v}");
+    assert_eq!(v["stderr"], "", "stderr must be empty on ok: {v}");
+    assert_eq!(v["exit_code"], 0, "unexpected exit_code: {v}");
+    assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
+}
+
+#[test]
 fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
     require_codegen();
     support::require_wasi_runner();

@@ -13,28 +13,26 @@
 
 import std::net::smtp;
 
-fn send_plain(host: String, port: i32, username: String, password: String,
+fn send_plain(host: String, port: int, username: String, password: String,
               from: String, to: String) -> Result<int, String> {
     let conn = smtp.connect(host, port, username, password);
-    let rc = conn.send(from, to, "Hello from Hew", "This is a plain-text test email.");
+    let result = conn.try_send(from, to, "Hello from Hew", "This is a plain-text test email.");
     conn.close();
-    if rc == 0 {
-        Ok(0)
-    } else {
-        Err("smtp.send returned non-zero exit code")
+    match result {
+        Ok(()) => Ok(0),
+        Err(msg) => Err(msg),
     }
 }
 
-fn send_html(host: String, port: i32, username: String, password: String,
-             from: String, to: String) -> Result<int, String> {
+fn send_html(host: String, port: int, username: String, password: String,
+              from: String, to: String) -> Result<int, String> {
     let conn = smtp.connect_tls(host, port, username, password);
     let body = "<h1>Hello</h1><p>This is an <b>HTML</b> test email sent from Hew.</p>";
-    let rc = conn.send_html(from, to, "HTML email from Hew", body);
+    let result = conn.try_send_html(from, to, "HTML email from Hew", body);
     conn.close();
-    if rc == 0 {
-        Ok(0)
-    } else {
-        Err("smtp.send_html returned non-zero exit code")
+    match result {
+        Ok(()) => Ok(0),
+        Err(msg) => Err(msg),
     }
 }
 

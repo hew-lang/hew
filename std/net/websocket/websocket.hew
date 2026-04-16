@@ -52,6 +52,9 @@ trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
     fn send_text(conn: Conn, msg: String) -> i32;
 
+    /// Send a text message over the connection.
+    fn try_send_text(conn: Conn, msg: String) -> Result<(), String>;
+
     /// Block until a message is received and return it.
     fn recv(conn: Conn) -> Message;
 
@@ -72,6 +75,10 @@ trait ConnMethods {
 
 impl ConnMethods for Conn {
     fn send_text(conn: Conn, msg: String) -> i32 { unsafe { hew_ws_send_text(conn, msg) } }
+    fn try_send_text(conn: Conn, msg: String) -> Result<(), String> {
+        let n: i32 = unsafe { hew_ws_send_text(conn, msg) };
+        if n < 0 { Err("websocket send_text failed") } else { Ok(()) }
+    }
     fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
     fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }
     fn attach(conn: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32) {

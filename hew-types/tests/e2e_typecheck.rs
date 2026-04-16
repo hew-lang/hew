@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hew_parser::ast::{Expr, Item, Stmt};
+use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
 
 fn repo_root() -> PathBuf {
@@ -29,6 +31,20 @@ fn typecheck_inline(source: &str) -> hew_types::TypeCheckOutput {
     checker.check_program(&parse_result.program)
 }
 
+fn parse_and_typecheck_inline(
+    source: &str,
+) -> (hew_parser::ast::Program, hew_types::TypeCheckOutput) {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = new_networking_demo_checker();
+    let output = checker.check_program(&parse_result.program);
+    (parse_result.program, output)
+}
+
 fn typecheck_inline_wasm(source: &str) -> hew_types::TypeCheckOutput {
     let parse_result = hew_parser::parse(source);
     assert!(
@@ -50,6 +66,54 @@ fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment
         })
         .count()
 }
+
+fn main_call_spans(program: &hew_parser::ast::Program) -> Vec<hew_parser::ast::Span> {
+    let main_fn = program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(fd) if fd.name == "main" => Some(fd),
+            _ => None,
+        })
+        .expect("main function should exist");
+
+    main_fn
+        .body
+        .stmts
+        .iter()
+        .filter_map(|(stmt, _)| match stmt {
+            Stmt::Let {
+                value: Some((Expr::Call { .. }, span)),
+                ..
+            }
+            | Stmt::Expression((Expr::Call { .. }, span)) => Some(span.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_single_unknown_return_error(
+    output: &hew_types::TypeCheckOutput,
+    context: &str,
+    actual: &str,
+) {
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "{context}: expected exactly one error, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual: found }
+                if expected == "UnknownType" && found == actual
+        )),
+        "{context}: expected a single UnknownType/{actual} mismatch, got: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 fn typecheck_all_examples() {
     let examples_dir = repo_root().join("examples");
@@ -4505,6 +4569,73 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
         !widget.methods.contains_key("broken"),
         "methods with Ty::Error returns must be pruned from type_defs: {:#?}",
         widget.methods
+    );
+}
+
+#[test]
+fn fn_unknown_return_annotation_single_error() {
+    let output = typecheck_inline("fn f() -> UnknownType {}");
+    assert_single_unknown_return_error(&output, "unknown fn return annotation", "()");
+}
+
+#[test]
+fn lambda_unknown_return_annotation_single_error() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let _f = () -> UnknownType => 1;
+        }
+        ",
+    );
+    assert_single_unknown_return_error(&output, "unknown lambda return annotation", "int");
+}
+
+#[test]
+fn receive_fn_unknown_return_annotation_single_error() {
+    let output = typecheck_inline(
+        r"
+        actor Worker {
+            receive fn run() -> UnknownType {}
+        }
+
+        fn main() {}
+        ",
+    );
+    assert_single_unknown_return_error(&output, "unknown receive-fn return annotation", "()");
+}
+
+#[test]
+fn call_type_args_failed_generic_call_pruned_at_boundary() {
+    let source = r"
+        fn id<T>(x: T) -> T { x }
+
+        fn main() {
+            let _ = id(None);
+        }
+    ";
+
+    let (program, output) = parse_and_typecheck_inline(source);
+    let call_spans = main_call_spans(&program);
+    assert_eq!(call_spans.len(), 1, "expected one call site in main");
+    let call_key = SpanKey::from(&call_spans[0]);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected generic call inference failure, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.expr_types.contains_key(&call_key),
+        "failed generic call span must be pruned from expr_types: {:#?}",
+        output.expr_types
+    );
+    assert!(
+        !output.call_type_args.contains_key(&call_key),
+        "failed generic call span must be pruned from call_type_args: {:#?}",
+        output.call_type_args
     );
 }
 

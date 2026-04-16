@@ -287,7 +287,7 @@ pub struct HewActor {
     pub terminate_called: AtomicBool,
 
     /// Set to `true` after the terminate callback returns (or was skipped).
-    /// Free paths spin-wait on this to avoid freeing state while terminate
+    /// Free paths wait on this to avoid freeing state while terminate
     /// is still running on another thread.
     pub terminate_finished: AtomicBool,
 
@@ -387,8 +387,27 @@ unsafe impl Send for ActorPtr {}
 static LIVE_ACTORS: Mutex<Option<HashMap<u64, ActorPtr>>> = Mutex::new(None);
 
 #[cfg(not(target_arch = "wasm32"))]
+const TERMINATE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(not(target_arch = "wasm32"))]
+const TERMINATE_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+
+#[cfg(not(target_arch = "wasm32"))]
 static DEFERRED_ACTOR_FREE_THREADS: Mutex<Vec<std::thread::JoinHandle<()>>> =
     Mutex::new(Vec::new());
+
+#[cfg(test)]
+static TERMINATE_WAIT_POLL_TICKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+#[inline]
+fn record_terminate_wait_poll_tick() {
+    TERMINATE_WAIT_POLL_TICKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline]
+fn record_terminate_wait_poll_tick() {}
 
 /// Register an actor in the live tracking map.
 ///
@@ -554,7 +573,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
     }
 }
 
-/// Free an actor's resources without spin-waiting or untracking.
+/// Free an actor's resources without untracking.
 ///
 /// This is the internal implementation shared by [`hew_actor_free`] and
 /// [`cleanup_all_actors`].
@@ -577,12 +596,13 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // Wait for any in-progress terminate callback to complete. This
     // prevents freeing state while another thread is running terminate.
     // Bounded to 5 seconds to avoid hanging forever if terminate blocks.
-    let terminate_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminate_deadline = std::time::Instant::now() + TERMINATE_WAIT_TIMEOUT;
     let mut terminate_timed_out = false;
     while a.terminate_called.load(Ordering::Acquire)
         && !a.terminate_finished.load(Ordering::Acquire)
     {
-        if std::time::Instant::now() >= terminate_deadline {
+        let now = std::time::Instant::now();
+        if now >= terminate_deadline {
             eprintln!(
                 "hew: warning: actor {} terminate callback did not finish within 5s, quarantining actor",
                 a.id
@@ -590,7 +610,8 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
             terminate_timed_out = true;
             break;
         }
-        std::hint::spin_loop();
+        record_terminate_wait_poll_tick();
+        std::thread::sleep(TERMINATE_WAIT_POLL_INTERVAL.min(terminate_deadline - now));
     }
 
     // If the terminate callback is still running, the state pointer is in
@@ -1240,12 +1261,15 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 
 /// Send a message to an actor by actor ID.
 ///
-/// Returns 0 on success, -1 if the actor ID is not currently live.
+/// Returns 0 on success, -1 if the actor ID is not currently live on this
+/// node or the local send fails.
 ///
 /// # Safety
 ///
 /// `data` must point to at least `size` readable bytes, or be null when
-/// `size` is 0.
+/// `size` is 0. For local actors, callers must only send to actor IDs whose
+/// lifetime they still coordinate; once the live lookup succeeds, this path
+/// shares the same liveness contract as [`hew_actor_send`].
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_by_id(
@@ -1254,27 +1278,24 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let sent_local = {
+    let local_actor = {
         let guard = LIVE_ACTORS.lock_or_recover();
-        guard.as_ref().is_some_and(|map| {
-            if let Some(entry) = map.get(&actor_id) {
-                let actor = entry.0;
-                if actor.is_null() {
-                    return false;
-                }
-                // SAFETY: actor pointer was discovered while LIVE_ACTORS is
-                // locked, so it cannot be concurrently untracked/freed
-                // during this send.
-                unsafe { actor_send_internal(actor, msg_type, data, size) };
-                true
-            } else {
-                false
-            }
-        })
+        guard
+            .as_ref()
+            .and_then(|map| map.get(&actor_id).map(|entry| entry.0))
+            .filter(|actor| !actor.is_null())
     };
 
-    if sent_local {
-        return 0;
+    if let Some(actor) = local_actor {
+        // SAFETY: `LIVE_ACTORS` only proves that the pointer was live at
+        // lookup time. After we drop the mutex, this path intentionally
+        // matches `hew_actor_send`: callers that route by actor ID must
+        // uphold the same liveness invariant as direct-pointer sends and
+        // only race with frees they coordinate. If a free wins before the
+        // lookup, the ID is absent and we fall through below.
+        if unsafe { actor_send_internal(actor, msg_type, data, size) } {
+            return 0;
+        }
     }
 
     // Actor not found locally. If the PID belongs to a remote node,
@@ -3047,6 +3068,8 @@ mod tests {
 
     static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
         AtomicPtr::new(ptr::null_mut());
+    static SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     struct NativeSchedulerGuard;
 
@@ -3070,6 +3093,15 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
     ) {
+    }
+
+    unsafe extern "C" fn count_send_by_id_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
     }
 
     fn wait_for_condition(
@@ -3252,6 +3284,78 @@ mod tests {
         }));
         track_actor(actor);
         actor
+    }
+
+    #[test]
+    fn send_by_id_concurrent_no_deadlock() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+        SEND_BY_ID_DISPATCH_COUNT.store(0, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor =
+            unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(count_send_by_id_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is live for the duration of the test.
+        let actor_id = unsafe { (*actor).id };
+        let thread_count = 8usize;
+        let sends_per_thread = 32usize;
+        let start = std::sync::Arc::new(std::sync::Barrier::new(thread_count));
+        let mut handles = Vec::with_capacity(thread_count);
+
+        for _ in 0..thread_count {
+            let start = start.clone();
+            handles.push(std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..sends_per_thread {
+                    // SAFETY: actor remains live until all sender threads join.
+                    let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+                    assert_eq!(rc, 0);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("send thread must not panic");
+        }
+
+        let expected = thread_count * sends_per_thread;
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(2), || {
+                SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) == expected
+            }),
+            "scheduler should drain all by-id sends without deadlocking"
+        );
+
+        // SAFETY: actor remains live until teardown below.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+    }
+
+    #[test]
+    fn send_by_id_after_free_returns_not_live() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid until the free below.
+        let actor_id = unsafe { (*actor).id };
+
+        // SAFETY: actor is quiescent after close and fully owned by this test.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+
+        // SAFETY: caller only provides message bytes; the runtime should reject
+        // the now-untracked actor ID instead of crashing.
+        let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+        assert_eq!(rc, -1);
     }
 
     #[test]
@@ -3998,6 +4102,53 @@ mod tests {
     }
 
     #[test]
+    fn terminate_long_does_not_spin() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null state, valid dispatch.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is valid for the duration of the wait below.
+        let a = unsafe { &*actor };
+        a.terminate_called.store(true, Ordering::Release);
+        a.terminate_finished.store(false, Ordering::Release);
+        a.actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+
+        TERMINATE_WAIT_POLL_TICKS.store(0, Ordering::Release);
+        let actor_addr = actor as usize;
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // SAFETY: free waits for this store before reclaiming the actor.
+            unsafe {
+                (*(actor_addr as *mut HewActor))
+                    .terminate_finished
+                    .store(true, Ordering::Release);
+            }
+        });
+
+        let start = std::time::Instant::now();
+        // SAFETY: actor is valid and waits for terminate_finished before free.
+        let rc = unsafe { hew_actor_free(actor) };
+        let elapsed = start.elapsed();
+        finisher.join().unwrap();
+
+        assert_eq!(rc, 0);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(150),
+            "free should wait for the long terminate path, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "sleep-based polling should still finish promptly once terminate completes, took {elapsed:?}"
+        );
+        assert!(
+            TERMINATE_WAIT_POLL_TICKS.load(Ordering::Acquire) < 400,
+            "terminate wait should sleep between polls instead of busy-spinning"
+        );
+    }
+
+    #[test]
     fn free_current_actor_from_dispatch_is_deferred() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: this test fully owns the spawned actor and only mutates its
@@ -4148,7 +4299,7 @@ mod tests {
     fn free_actor_resources_times_out_on_hanging_terminate() {
         let _guard = crate::runtime_test_guard();
         // Simulate an actor whose terminate_called is true but
-        // terminate_finished never becomes true. The bounded spin-wait in
+        // terminate_finished never becomes true. The bounded wait in
         // free_actor_resources should time out after ~5s and proceed.
         // SAFETY: null state, valid dispatch.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };

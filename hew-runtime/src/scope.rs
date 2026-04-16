@@ -3,6 +3,11 @@
 //! [`HewScope`] is a `#[repr(C)]` actor container allocated on the stack in
 //! generated code. It holds up to [`HEW_SCOPE_MAX_ACTORS`] actor pointers
 //! and a pthread mutex for thread-safe access.
+//!
+//! New structured-concurrency integrations should target
+//! [`super::actor_group::HewActorGroup`]. [`HewScope`] remains in place for
+//! existing compiler-generated stack ABI until codegen can migrate without
+//! breaking the fixed-size by-value layout.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,12 +91,20 @@ unsafe fn mutex_destroy(m: *mut PlatformMutex) {
 }
 
 /// Maximum number of actors a scope can hold.
+///
+/// This fixed limit is part of the legacy stack ABI. New call sites should
+/// migrate to [`super::actor_group::HewActorGroup`] instead of raising it.
 pub const HEW_SCOPE_MAX_ACTORS: usize = 64;
 
 /// Structured concurrency scope — fixed-capacity actor container.
 ///
 /// **Must be `#[repr(C)]`** because it is created on the stack in
 /// compiler-generated code and returned by value from [`hew_scope_new`].
+///
+/// DEPRECATED for new runtime integrations: preserve this type for existing
+/// compiler output, but prefer [`super::actor_group::HewActorGroup`] for new
+/// structured-concurrency entry points and any path that may exceed
+/// [`HEW_SCOPE_MAX_ACTORS`].
 #[repr(C)]
 pub struct HewScope {
     /// Pointers to owned actors (`*mut HewActor`).

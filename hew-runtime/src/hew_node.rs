@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
+use crate::env::ENV_LOCK;
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -1291,7 +1292,10 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     if node.transport.is_null() {
         // Check HEW_TRANSPORT env var for transport selection.
         #[cfg(feature = "quic")]
-        let use_quic = std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"));
+        let use_quic = {
+            let _guard = ENV_LOCK.read_or_recover();
+            std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"))
+        };
         #[cfg(not(feature = "quic"))]
         let use_quic = false;
 
@@ -1982,11 +1986,15 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     };
     match s {
         "tcp" => {
-            std::env::set_var("HEW_TRANSPORT", "tcp");
+            let _guard = ENV_LOCK.write_or_recover();
+            // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+            unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") };
             0
         }
         "quic" => {
-            std::env::set_var("HEW_TRANSPORT", "quic");
+            let _guard = ENV_LOCK.write_or_recover();
+            // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
+            unsafe { std::env::set_var("HEW_TRANSPORT", "quic") };
             0
         }
         _ => {

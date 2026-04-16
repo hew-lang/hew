@@ -975,6 +975,27 @@ static bool eraseMethodCallReceiverKindEntryForSpan(hew::ast::Program &program,
   return program.method_call_receiver_kinds.size() != oldSize;
 }
 
+static bool replaceStreamMethodReceiverKindForSpan(hew::ast::Program &program,
+                                                   const hew::ast::Span &span,
+                                                   llvm::StringRef elementKind) {
+  for (auto &entry : program.method_call_receiver_kinds) {
+    if (entry.start != span.start || entry.end != span.end)
+      continue;
+    entry.kind = hew::ast::MethodCallReceiverKindStreamInstance{elementKind.str()};
+    return true;
+  }
+  for (auto &entry : program.method_call_receiver_kinds) {
+    if (!std::holds_alternative<hew::ast::MethodCallReceiverKindStreamInstance>(entry.kind))
+      continue;
+    entry.kind = hew::ast::MethodCallReceiverKindStreamInstance{elementKind.str()};
+    return true;
+  }
+  program.method_call_receiver_kinds.push_back(hew::ast::MethodCallReceiverKindEntry{
+      static_cast<uint64_t>(span.start), static_cast<uint64_t>(span.end),
+      hew::ast::MethodCallReceiverKindStreamInstance{elementKind.str()}});
+  return true;
+}
+
 static bool eraseAssignTargetKindEntryForSpan(hew::ast::Program &program,
                                               const hew::ast::Span &span) {
   auto oldSize = program.assign_target_kinds.size();
@@ -6583,6 +6604,68 @@ fn main() -> int {
   }
   if (vecFreeCount < 1) {
     FAIL("expected bytes-stream inline filter fallback to register hew_vec_free");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: stream method receiver metadata overrides heuristic ABI selection.
+// ============================================================================
+static void test_stream_method_dispatch_prefers_receiver_kind_annotation() {
+  TEST(stream_method_dispatch_prefers_receiver_kind_annotation);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main(s: Stream<String>) {
+    s.filter((item) => true);
+}
+  )",
+                             program)) {
+    FAIL("failed to load stream receiver-kind override test program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("main function missing in stream receiver-kind override test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*fn, "filter");
+  if (!methodCallSpan ||
+      !replaceStreamMethodReceiverKindForSpan(program, *methodCallSpan, "bytes")) {
+    FAIL("failed to rewrite stream receiver-kind annotation");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  auto module = mlirGen.generate(program);
+  if (!module) {
+    FAIL("expected MLIR generation success with stream receiver-kind override");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found in stream receiver-kind override test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_filter_bytes") != 1) {
+    FAIL("expected receiver-kind annotation to lower filter via hew_stream_filter_bytes");
+    module.getOperation()->destroy();
+    return;
+  }
+  if (countRuntimeCallsByCallee(mainFn.getOperation(), "hew_stream_filter_string") != 0) {
+    FAIL("unexpected string-stream filter runtime call with bytes receiver-kind annotation");
     module.getOperation()->destroy();
     return;
   }
@@ -13545,6 +13628,7 @@ int main() {
   test_for_await_bytes_stream_binding_fallback_uses_bytes_abi();
   test_for_await_bytes_stream_binding_fallback_overrides_conflicting_expr_type();
   test_for_await_bytes_stream_inline_filter_fallback_uses_bytes_abi();
+  test_stream_method_dispatch_prefers_receiver_kind_annotation();
   test_for_await_bytes_stream_known_call_name_abi_no_expr_types();
   test_function_signature_type_infer_fails_closed();
   test_return_stmt();

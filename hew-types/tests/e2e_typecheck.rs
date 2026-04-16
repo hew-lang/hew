@@ -384,6 +384,62 @@ fn consume(s: Stream<bytes>) {
 }
 
 #[test]
+fn method_call_receiver_kinds_record_string_stream_dispatch() {
+    let output = typecheck_inline(
+        r"
+fn consume(s: Stream<String>) {
+    let _ = s.map((item) => item);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_receiver_kinds
+            .values()
+            .any(|kind| matches!(
+                kind,
+                hew_types::MethodCallReceiverKind::StreamInstance { element_kind }
+                    if element_kind == "string"
+            )),
+        "expected string stream receiver metadata, got: {:?}",
+        output.method_call_receiver_kinds
+    );
+}
+
+#[test]
+fn method_call_receiver_kinds_record_bytes_stream_dispatch() {
+    let output = typecheck_inline(
+        r"
+fn consume(s: Stream<bytes>) {
+    let _ = s.filter((item) => item.len() > 0);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_receiver_kinds
+            .values()
+            .any(|kind| matches!(
+                kind,
+                hew_types::MethodCallReceiverKind::StreamInstance { element_kind }
+                    if element_kind == "bytes"
+            )),
+        "expected bytes stream receiver metadata, got: {:?}",
+        output.method_call_receiver_kinds
+    );
+}
+
+#[test]
 fn method_call_rewrites_record_handle_runtime_dispatch() {
     let output = typecheck_inline(
         r#"

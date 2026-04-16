@@ -1856,6 +1856,12 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
     entry.kind = std::move(data);
     return entry;
   }
+  if (kind == "stream_instance") {
+    ast::MethodCallReceiverKindStreamInstance data;
+    data.element_kind = getString(mapReq(obj, "element_kind"));
+    entry.kind = std::move(data);
+    return entry;
+  }
   fail("unknown method_call_receiver_kinds kind '" + kind + "'");
 }
 

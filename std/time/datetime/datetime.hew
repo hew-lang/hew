@@ -73,47 +73,47 @@ pub fn try_parse(s: String, fmt: String) -> Result<i64, String> {
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.
-pub fn year(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_year(epoch_ms) }
+pub fn year(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_year(epoch_ms) as int }
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
-pub fn month(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_month(epoch_ms) }
+pub fn month(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_month(epoch_ms) as int }
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
-pub fn day(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_day(epoch_ms) }
+pub fn day(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_day(epoch_ms) as int }
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
-pub fn hour(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_hour(epoch_ms) }
+pub fn hour(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_hour(epoch_ms) as int }
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
-pub fn minute(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_minute(epoch_ms) }
+pub fn minute(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_minute(epoch_ms) as int }
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
-pub fn second(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_second(epoch_ms) }
+pub fn second(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_second(epoch_ms) as int }
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
-pub fn weekday(epoch_ms: i64) -> i32 {
-    unsafe { hew_datetime_weekday(epoch_ms) }
+pub fn weekday(epoch_ms: i64) -> int {
+    unsafe { hew_datetime_weekday(epoch_ms) as int }
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.
-pub fn add_days(epoch_ms: i64, days: i32) -> i64 {
+pub fn add_days(epoch_ms: i64, days: int) -> i64 {
     epoch_ms + (days as i64) * 86_400_000
 }
 
 /// Add a number of hours to an epoch-millisecond timestamp.
-pub fn add_hours(epoch_ms: i64, hours: i32) -> i64 {
+pub fn add_hours(epoch_ms: i64, hours: int) -> i64 {
     epoch_ms + (hours as i64) * 3_600_000
 }
 

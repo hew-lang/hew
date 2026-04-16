@@ -1,0 +1,19 @@
+// Regression: non-wire u32 fields at the sign bit boundary must serialize as
+// positive YAML integers and round-trip through from_yaml().
+type Counter {
+    value: u32;
+}
+
+fn main() {
+    let counter = Counter { value: 2147483648 };
+    let yaml1 = counter.to_yaml();
+    print(yaml1);
+
+    match Counter.from_yaml(yaml1) {
+        Ok(decoded) => {
+            println(decoded.value);
+            print(decoded.to_yaml());
+        },
+        Err(_) => println("unexpected error"),
+    }
+}

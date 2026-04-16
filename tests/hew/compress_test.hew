@@ -1,0 +1,61 @@
+//! Round-trip tests for std::encoding::compress.
+
+import std::encoding::compress;
+import std::testing;
+
+// WASM-TODO: Add wasm coverage once std::encoding::compress is verified on wasm32-wasip1.
+
+fn assert_bytes_eq(actual: bytes, expected: bytes) {
+    testing.assert_eq(actual.len(), expected.len());
+    for i in 0 .. expected.len() {
+        testing.assert_eq(actual.get(i), expected.get(i));
+    }
+}
+
+#[test]
+fn test_gzip_round_trip() {
+    let input = bytes [72, 101, 108, 108, 111];
+    let compressed = compress.gzip_compress(input);
+    let decompressed = compress.gzip_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}
+
+#[test]
+fn test_gzip_round_trip_empty() {
+    let input = bytes [];
+    let compressed = compress.gzip_compress(input);
+    let decompressed = compress.gzip_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}
+
+#[test]
+fn test_deflate_round_trip() {
+    let input = bytes [0, 1, 2, 3, 255];
+    let compressed = compress.deflate_compress(input);
+    let decompressed = compress.deflate_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}
+
+#[test]
+fn test_deflate_round_trip_empty() {
+    let input = bytes [];
+    let compressed = compress.deflate_compress(input);
+    let decompressed = compress.deflate_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}
+
+#[test]
+fn test_zlib_round_trip() {
+    let input = bytes [120, 121, 122];
+    let compressed = compress.zlib_compress(input);
+    let decompressed = compress.zlib_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}
+
+#[test]
+fn test_zlib_round_trip_empty() {
+    let input = bytes [];
+    let compressed = compress.zlib_compress(input);
+    let decompressed = compress.zlib_decompress(compressed);
+    assert_bytes_eq(decompressed, input);
+}

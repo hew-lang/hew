@@ -2,12 +2,26 @@
 
 Language Server Protocol implementation for Hew.
 
-Core IDE features for Hew source files include:
+Shipped IDE/LSP features for Hew source files include:
 
 - Real-time diagnostics (parse errors, type errors)
-- Go-to-definition
+- Completions
 - Hover information
+- Go-to-definition, including struct field accesses at use sites
+- Find references
+- Rename (with prepare support)
 - Document symbols
+- Workspace symbols
+- Signature help
+- Inlay hints
+- Semantic tokens for syntax highlighting
+- Code actions / quick-fixes
+- Call hierarchy
+- Type hierarchy (supertypes / subtypes)
+- Document links for imports
+- Folding ranges
+- Code lenses for reference counts and test execution
+- Execute command support for running Hew tests (`hew.runTest`)
 
 ## Usage
 

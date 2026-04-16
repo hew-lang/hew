@@ -1085,8 +1085,17 @@ fn collect_refs_in_expr(source: &str, expr: &Expr, span: &Span, name: &str, span
             collect_refs_in_expr(source, &index.0, &index.1, name, spans);
         }
         Expr::StructInit { fields, .. } => {
-            for (_, val) in fields {
+            let mut search_from = span.start;
+            for (field, val) in fields {
+                if field == name {
+                    if let Some(field_span) =
+                        struct_init_field_name_span(source, span, search_from, field, &val.1)
+                    {
+                        spans.push(field_span);
+                    }
+                }
                 collect_refs_in_expr(source, &val.0, &val.1, name, spans);
+                search_from = val.1.end;
             }
         }
         Expr::Spawn { target, args } => {
@@ -1235,6 +1244,45 @@ fn field_access_name_span(source: &str, span: &Span, field: &str) -> Span {
         start: end.saturating_sub(field.len()),
         end,
     }
+}
+
+fn struct_init_field_name_span(
+    source: &str,
+    span: &Span,
+    search_from: usize,
+    field: &str,
+    value_span: &Span,
+) -> Option<Span> {
+    let bytes = source.as_bytes();
+    let mut cursor = search_from.max(span.start);
+
+    while cursor < value_span.start {
+        let field_span = crate::util::find_name_span(source, cursor, field);
+        if field_span.end > value_span.start || field_span.start >= span.end {
+            return None;
+        }
+
+        let mut separator = field_span.end;
+        while separator < value_span.start && bytes[separator].is_ascii_whitespace() {
+            separator += 1;
+        }
+        if separator < value_span.start && bytes[separator] == b':' {
+            separator += 1;
+            while separator < value_span.start && bytes[separator].is_ascii_whitespace() {
+                separator += 1;
+            }
+            if separator == value_span.start {
+                return Some(Span {
+                    start: field_span.start,
+                    end: field_span.end,
+                });
+            }
+        }
+
+        cursor = field_span.end;
+    }
+
+    None
 }
 
 // ── Identifier-count analysis ────────────────────────────────────────
@@ -1686,11 +1734,19 @@ mod tests {
         let (name, spans) = result;
         assert_eq!(name, "x");
 
-        assert_eq!(spans.len(), 2);
+        assert_eq!(spans.len(), 4);
+        let mut access_refs = 0;
+        let mut init_refs = 0;
         for span in spans {
             assert_eq!(&source[span.start..span.end], "x");
-            assert_eq!(source.as_bytes()[span.start - 1], b'.');
+            if source.as_bytes()[span.start - 1] == b'.' {
+                access_refs += 1;
+            } else if source[span.end..].trim_start().starts_with(':') {
+                init_refs += 1;
+            }
         }
+        assert_eq!(access_refs, 2);
+        assert_eq!(init_refs, 2);
     }
 
     #[test]
@@ -1703,10 +1759,18 @@ mod tests {
         let (name, spans) = result;
         assert_eq!(name, "x");
 
-        assert_eq!(spans.len(), 2);
+        assert_eq!(spans.len(), 4);
+        let mut access_refs = 0;
+        let mut init_refs = 0;
         for span in spans {
             assert_eq!(&source[span.start..span.end], "x");
-            assert_eq!(source.as_bytes()[span.start - 1], b'.');
+            if source.as_bytes()[span.start - 1] == b'.' {
+                access_refs += 1;
+            } else if source[span.end..].trim_start().starts_with(':') {
+                init_refs += 1;
+            }
         }
+        assert_eq!(access_refs, 2);
+        assert_eq!(init_refs, 2);
     }
 }

@@ -4660,6 +4660,114 @@ fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
     );
 }
 
+#[test]
+fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
+    let source = r"
+        trait Transform {
+            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+        }
+
+        type Holder { value: int }
+
+        impl Transform for Holder {
+            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+                f(item.value)
+            }
+        }
+
+        fn double(x: int) -> int { x * 2 }
+        fn is_odd(x: int) -> bool { x % 2 != 0 }
+
+        fn run<T: Transform>(item: T) {
+            let doubled = item.apply(double);
+            let odd = item.apply(is_odd);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.len(),
+        2,
+        "expected one entry per trait-bound method call"
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::I64]),
+        "expected one trait-bound call to infer U=int, got {:?}",
+        output.call_type_args
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::Bool]),
+        "expected one trait-bound call to infer U=bool, got {:?}",
+        output.call_type_args
+    );
+}
+
+#[test]
+fn trait_method_type_params_do_not_unify_across_calls() {
+    let source = r"
+        trait Transform {
+            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+        }
+
+        type Holder { value: int }
+
+        impl Transform for Holder {
+            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+                f(item.value)
+            }
+        }
+
+        fn double(x: int) -> int { x * 2 }
+        fn is_odd(x: int) -> bool { x % 2 != 0 }
+
+        fn run<T: Transform>(item: T) {
+            let doubled = item.apply(double);
+            let odd = item.apply(is_odd);
+            println(doubled);
+            println(odd);
+        }
+
+        fn main() {
+            let h = Holder { value: 21 };
+            run(h);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "trait-bound method calls should infer independently, got {:?}",
+        output.errors
+    );
+}
+
 /// Regression: a generic lambda passed as a function *argument* (not
 /// directly bound to `let`) must not leak its `TypeVar` pairs into the
 /// scratch field and then be picked up by the *next* unrelated let-binding.

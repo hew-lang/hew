@@ -5380,30 +5380,38 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       args.push_back(val);
     }
 
-    auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-    if (!callee)
-      callee = lookupImportedFunc(resolvedTypeName, methodName);
-    if (!callee && structType) {
+    std::string baseName = resolvedTypeName;
+    std::vector<std::string> implTypeArgs;
+    if (structType) {
       auto originIt = structTypeOrigin.find(resolvedTypeName);
       if (originIt != structTypeOrigin.end()) {
-        const auto &[baseName, implTypeArgs] = originIt->second;
-        std::vector<std::string> methodTypeArgs;
-        if (auto implIt = genericImplMethods.find(baseName); implIt != genericImplMethods.end()) {
-          for (const auto *candidate : implIt->second.methods) {
-            if (candidate->name != methodName)
-              continue;
-            if (candidate->type_params && !candidate->type_params->empty()) {
-              auto inferred = inferGenericImplMethodTypeArgs(*candidate, mc, exprSpan);
-              if (!inferred)
-                return nullptr;
-              methodTypeArgs = std::move(*inferred);
-            }
-            break;
-          }
-        }
-        callee = specializeGenericImplMethod(baseName, implTypeArgs, methodTypeArgs, methodName);
+        baseName = originIt->second.first;
+        implTypeArgs = originIt->second.second;
       }
     }
+
+    mlir::func::FuncOp callee;
+    if (auto implIt = genericImplMethods.find(baseName); implIt != genericImplMethods.end()) {
+      for (const auto *candidate : implIt->second.methods) {
+        if (candidate->name != methodName)
+          continue;
+        std::vector<std::string> methodTypeArgs;
+        if (candidate->type_params && !candidate->type_params->empty()) {
+          auto inferred = inferGenericImplMethodTypeArgs(*candidate, mc, exprSpan);
+          if (!inferred)
+            return nullptr;
+          methodTypeArgs = std::move(*inferred);
+        }
+        if (!implTypeArgs.empty() || !methodTypeArgs.empty()) {
+          callee = specializeGenericImplMethod(baseName, implTypeArgs, methodTypeArgs, methodName);
+        }
+        break;
+      }
+    }
+    if (!callee)
+      callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    if (!callee)
+      callee = lookupImportedFunc(resolvedTypeName, methodName);
     if (!callee) {
       if (encodeEligibleStructs_.count(resolvedTypeName)) {
         static const std::unordered_map<std::string, std::pair<bool, std::string>>

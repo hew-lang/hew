@@ -1,0 +1,24 @@
+trait Transform {
+    fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+}
+
+type Holder { value: int }
+
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+        f(item.value)
+    }
+}
+
+fn double(x: int) -> int { x * 2 }
+fn is_odd(x: int) -> bool { x % 2 != 0 }
+
+fn run<T: Transform>(item: T) {
+    println(item.apply(double));
+    println(item.apply(is_odd));
+}
+
+fn main() {
+    let h = Holder { value: 21 };
+    run(h);
+}

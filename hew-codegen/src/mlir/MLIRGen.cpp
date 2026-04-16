@@ -3410,7 +3410,13 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     auto *impl = std::get_if<ast::ImplDecl>(&item.kind);
-    if (!impl || !impl->type_params || impl->type_params->empty())
+    if (!impl)
+      return;
+    const bool hasImplTypeParams = impl->type_params && !impl->type_params->empty();
+    const bool hasMethodTypeParams = llvm::any_of(impl->methods, [](const ast::FnDecl &method) {
+      return method.type_params && !method.type_params->empty();
+    });
+    if (!hasImplTypeParams && !hasMethodTypeParams)
       return;
     std::string typeName;
     if (auto *named = std::get_if<ast::TypeNamed>(&impl->target_type.value.kind))
@@ -3418,7 +3424,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (typeName.empty())
       return;
     GenericImplInfo info;
-    info.typeParams = &*impl->type_params;
+    info.typeParams = hasImplTypeParams ? &*impl->type_params : nullptr;
     for (const auto &method : impl->methods)
       info.methods.push_back(&method);
     genericImplMethods[typeName] = std::move(info);
@@ -4533,6 +4539,9 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   // with the trait so both bodies coexist in the module.
   std::set<std::string> overriddenMethods;
   for (const auto &method : decl.methods) {
+    if (method.type_params && !method.type_params->empty()) {
+      continue;
+    }
     std::string mangledMethod = resolveTraitImplBodyName(
         typeName, traitName, method.name, TraitImplBodyNameMode::QualifyOnBaseCollision);
     generateFunction(method, mangledMethod, fallbackLoc);
@@ -4546,6 +4555,9 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   if (traitIt != traitRegistry.end()) {
     for (const auto *tm : traitIt->second.methods) {
       if (tm->body && overriddenMethods.find(tm->name) == overriddenMethods.end()) {
+        if (tm->type_params && !tm->type_params->empty()) {
+          continue;
+        }
         std::string mangledDefault = resolveTraitImplBodyName(
             typeName, traitName, tm->name, TraitImplBodyNameMode::QualifyOnBaseCollision);
         generateTraitDefaultMethod(*tm, typeName, mangledDefault, fallbackLoc);
@@ -4779,6 +4791,10 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
   // generate each shim body.
   llvm::SmallVector<std::string> updatedShims;
   for (const auto *tm : traitIt->second.methods) {
+    if (tm->type_params && !tm->type_params->empty()) {
+      // CODEGEN-TODO: dyn-trait vtables do not yet thread per-method type args.
+      continue;
+    }
     std::string implFuncName = resolveTraitImplBodyName(
         typeName, traitName, tm->name, TraitImplBodyNameMode::PreferQualifiedIfGenerated);
     generateDynDispatchShim(implFuncName);
@@ -6247,6 +6263,7 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
     return nullptr;
 
   const auto &implInfo = implIt->second;
+  const size_t implTypeParamCount = implInfo.typeParams ? implInfo.typeParams->size() : 0;
 
   // Build the monomorphized type name (e.g. "Box_int")
   std::string mangledTypeName = baseTypeName;
@@ -6278,10 +6295,10 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
   if (specializedFunctions.count(mangledMethod))
     return module.lookupSymbol<mlir::func::FuncOp>(mangledMethod);
 
-  if (implTypeArgs.size() != implInfo.typeParams->size()) {
+  if (implTypeArgs.size() != implTypeParamCount) {
     ++errorCount_;
     emitError(builder.getUnknownLoc())
-        << "generic impl for '" << baseTypeName << "' expects " << implInfo.typeParams->size()
+        << "generic impl for '" << baseTypeName << "' expects " << implTypeParamCount
         << " impl type arguments, got " << implTypeArgs.size();
     return nullptr;
   }
@@ -6296,8 +6313,10 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
   // Set up type parameter substitutions (T→int, U→string, …)
   auto prevSubstitutions = std::move(typeParamSubstitutions);
   typeParamSubstitutions.clear();
-  for (size_t i = 0; i < implInfo.typeParams->size(); ++i)
-    typeParamSubstitutions[(*implInfo.typeParams)[i].name] = implTypeArgs[i];
+  if (implInfo.typeParams) {
+    for (size_t i = 0; i < implInfo.typeParams->size(); ++i)
+      typeParamSubstitutions[(*implInfo.typeParams)[i].name] = implTypeArgs[i];
+  }
   if (fn->type_params) {
     for (size_t i = 0; i < fn->type_params->size(); ++i)
       typeParamSubstitutions[(*fn->type_params)[i].name] = methodTypeArgs[i];

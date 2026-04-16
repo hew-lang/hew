@@ -2083,18 +2083,24 @@ impl Checker {
                             trait_sig.return_type = trait_sig
                                 .return_type
                                 .substitute_named_param("Self", &self_ty);
+                            let (freshened_params, freshened_ret, resolved_type_args) =
+                                self.instantiate_fn_sig_for_call(&trait_sig, None, span);
 
                             self.check_arity(
                                 args,
-                                trait_sig.params.len(),
+                                freshened_params.len(),
                                 &format!("method '{method}'"),
                                 span,
                             );
                             for (i, arg) in args.iter().enumerate() {
-                                if let Some(param_ty) = trait_sig.params.get(i) {
+                                if let Some(param_ty) = freshened_params.get(i) {
                                     let (expr, sp) = arg.expr();
                                     self.check_against(expr, sp, param_ty);
                                 }
+                            }
+                            self.enforce_type_param_bounds(&trait_sig, &resolved_type_args, span);
+                            if !trait_sig.type_params.is_empty() {
+                                self.record_concrete_call_type_args(span, &resolved_type_args);
                             }
                             self.record_method_call_receiver_kind(
                                 span,
@@ -2102,7 +2108,7 @@ impl Checker {
                                     type_name: name.clone(),
                                 },
                             );
-                            return trait_sig.return_type;
+                            return freshened_ret;
                         }
                     }
                 }
@@ -2162,15 +2168,28 @@ impl Checker {
                             }
                         }
                     }
+                    let (freshened_params, freshened_ret, resolved_type_args) =
+                        self.instantiate_fn_sig_for_call(&sig, None, span);
 
-                    self.check_arity(args, sig.params.len(), &format!("method '{method}'"), span);
+                    self.check_arity(
+                        args,
+                        freshened_params.len(),
+                        &format!("method '{method}'"),
+                        span,
+                    );
                     for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = sig.params.get(i) {
+                        if let Some(param_ty) = freshened_params.get(i) {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, param_ty);
                         }
                     }
-                    sig.return_type
+                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
+                    if !sig.type_params.is_empty() {
+                        // CODEGEN-TODO: TraitDispatchOp does not yet thread per-method type args;
+                        // vtable ABI extension needed for generic trait-object method dispatch.
+                        self.record_concrete_call_type_args(span, &resolved_type_args);
+                    }
+                    freshened_ret
                 } else {
                     for arg in args {
                         let (expr, sp) = arg.expr();

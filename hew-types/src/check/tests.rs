@@ -1773,6 +1773,87 @@ fn typecheck_bool_scrutinee_constructor_pattern_errors() {
 }
 
 #[test]
+fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Point { x: int }\n",
+        "fn main() {\n",
+        "    let _ = match 42 {\n",
+        "        Point { x } => {\n",
+        "            let _ = x;\n",
+        "            0\n",
+        "        },\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected only the struct-pattern mismatch, got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "int" && actual == "Point"
+        )),
+        "expected struct-pattern mismatch on int scrutinee, got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("struct pattern `Point` cannot match non-struct type `int`")),
+        "expected fail-closed struct-pattern diagnostic, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::UndefinedVariable)),
+        "struct-pattern mismatch must not cascade into undefined-variable errors: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_bool_scrutinee_tuple_pattern_errors_without_binding_cascade() {
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let _ = match true {\n",
+        "        (left, right) => {\n",
+        "            let _ = left;\n",
+        "            let _ = right;\n",
+        "            0\n",
+        "        },\n",
+        "        _ => 0,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected only the tuple-pattern mismatch, got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "bool" && actual == "tuple"
+        )),
+        "expected tuple-pattern mismatch on bool scrutinee, got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("tuple pattern cannot match non-tuple type `bool`")),
+        "expected fail-closed tuple-pattern diagnostic, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::UndefinedVariable)),
+        "tuple-pattern mismatch must not cascade into undefined-variable errors: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
     let (errors, warnings) = parse_and_check(concat!(
         "fn main() {\n",

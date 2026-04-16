@@ -1307,6 +1307,23 @@ fn fmt_const_decl_roundtrip() {
 }
 
 #[test]
+fn fmt_extern_immutable_pointer_type_roundtrip() {
+    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *u8;\n}\n");
+}
+
+#[test]
+fn fmt_extern_mutable_pointer_type_roundtrip() {
+    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *var u8);\n}\n");
+}
+
+#[test]
+fn fmt_trait_multi_item_blank_lines_roundtrip() {
+    exact_roundtrip(
+        "trait Describable {\n    fn describe() -> i32 {\n        42\n    }\n\n    fn reset();\n}\n",
+    );
+}
+
+#[test]
 fn fmt_contextual_keywords_as_identifiers_roundtrip() {
     exact_roundtrip(
         "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",

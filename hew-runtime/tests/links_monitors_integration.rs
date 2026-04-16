@@ -1,11 +1,11 @@
 //! Integration tests for actor links and monitors.
 
-use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
+use hew_runtime::actor::{hew_actor_free, hew_actor_get_error, hew_actor_send, hew_actor_spawn};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::internal::types::HewActorState;
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
 use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
-use hew_runtime::supervisor::SYS_MSG_DOWN;
+use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex, Once};
@@ -32,6 +32,18 @@ struct DownMessageView {
 #[derive(Clone, Debug, Default)]
 struct MonitorDispatchState {
     down_messages: Vec<DownMessageView>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+struct ExitMessageView {
+    crashed_actor_id: u64,
+    reason: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExitDispatchState {
+    exit_messages: Vec<ExitMessageView>,
 }
 
 struct MonitorDispatchSignal {
@@ -91,6 +103,63 @@ impl MonitorDispatchSignal {
 
 static MONITOR_DISPATCH_SIGNAL: MonitorDispatchSignal = MonitorDispatchSignal::new();
 
+struct ExitDispatchSignal {
+    state: Mutex<ExitDispatchState>,
+    cond: Condvar,
+}
+
+impl ExitDispatchSignal {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(ExitDispatchState {
+                exit_messages: Vec::new(),
+            }),
+            cond: Condvar::new(),
+        }
+    }
+
+    fn reset(&self) {
+        *self.state.lock().unwrap() = ExitDispatchState::default();
+    }
+
+    fn record_dispatch(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+        let mut state = self.state.lock().unwrap();
+        if msg_type == SYS_MSG_EXIT
+            && !data.is_null()
+            && data_size == std::mem::size_of::<ExitMessageView>()
+        {
+            // SAFETY: The runtime sent a SYS_MSG_EXIT payload with the exact
+            // expected size, so reading the packed value is valid here.
+            let exit = unsafe { (data.cast::<ExitMessageView>().cast_const()).read_unaligned() };
+            state.exit_messages.push(exit);
+            self.cond.notify_all();
+        }
+    }
+
+    fn wait_for_exit_count(
+        &self,
+        expected: usize,
+        timeout: Duration,
+    ) -> Option<Vec<ExitMessageView>> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap();
+        while state.exit_messages.len() < expected {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (guard, result) = self.cond.wait_timeout(state, remaining).unwrap();
+            state = guard;
+            if result.timed_out() && state.exit_messages.len() < expected {
+                return None;
+            }
+        }
+        Some(state.exit_messages.clone())
+    }
+}
+
+static EXIT_DISPATCH_SIGNAL: ExitDispatchSignal = ExitDispatchSignal::new();
+
 unsafe extern "C" fn test_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
@@ -107,6 +176,15 @@ unsafe extern "C" fn monitor_dispatch(
     data_size: usize,
 ) {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+}
+
+unsafe extern "C" fn exit_dispatch(
+    _state: *mut c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    EXIT_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }
 
 fn wait_for_actor_state(
@@ -226,6 +304,53 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
 
         hew_actor_demonitor(ref_id);
         hew_actor_free(watcher);
+        hew_actor_free(target);
+        hew_deterministic_reset();
+    }
+}
+
+#[test]
+fn test_link_after_crash_delivers_exit_without_stale_registration() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    EXIT_DISPATCH_SIGNAL.reset();
+
+    // SAFETY: This test owns the spawned actors, waits for the crash state
+    // before late registration, and frees each actor exactly once.
+    unsafe {
+        let survivor = hew_actor_spawn(std::ptr::null_mut(), 0, Some(exit_dispatch));
+        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(test_dispatch));
+        assert!(!survivor.is_null());
+        assert!(!target.is_null());
+
+        let target_id = (*target).id;
+        hew_fault_inject_crash(target_id, 1);
+        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+
+        assert!(
+            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
+            "target should enter Crashed state"
+        );
+        let exit_reason = hew_actor_get_error(target);
+
+        hew_actor_link(survivor, target);
+
+        let exit_messages = EXIT_DISPATCH_SIGNAL
+            .wait_for_exit_count(1, Duration::from_secs(5))
+            .expect("late link registration should deliver EXIT immediately");
+        assert_eq!(
+            exit_messages.last().copied(),
+            Some(ExitMessageView {
+                crashed_actor_id: target_id,
+                reason: exit_reason,
+            })
+        );
+
+        hew_actor_unlink(survivor, target);
+        hew_actor_free(survivor);
         hew_actor_free(target);
         hew_deterministic_reset();
     }

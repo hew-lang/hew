@@ -288,8 +288,7 @@ inline std::string typeExprStreamElement(const ast::TypeExpr &te,
   auto inner = classifyResolvedType((*classified.named->type_args)[0].value, resolveAlias);
   if (!inner.named)
     return "";
-  if (inner.canonicalName == "String" || inner.canonicalName == "string" ||
-      inner.canonicalName == "str")
+  if (inner.canonicalName == "string")
     return "string";
   return inner.canonicalName; // e.g. "bytes", "string"
 }

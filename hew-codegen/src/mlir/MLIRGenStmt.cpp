@@ -1140,7 +1140,7 @@ void MLIRGen::registerDropsForVariable(const std::string &varName, mlir::Value v
         }
         if (isRcCtor || isCloneCall)
           registerDroppable(varName, "hew_rc_drop");
-      } else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
+      } else if (canonicalPrimitiveTypeName(typeName) == "string" &&
                  !handleVarTypes.count(varName) && !lookupTrackedStreamHandleInfo(varName)) {
         bool isBorrowed = isBorrowedGetString;
         if (stmtValue && *stmtValue) {
@@ -3217,9 +3217,8 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     return;
   }
 
-  bool isStringCollection = collType == "bytes" || collType == "string" || collType == "String" ||
-                            collType == "str" ||
-                            mlir::isa<hew::StringRefType>(collection.getType());
+  bool isStringCollection =
+      collType == "bytes" || mlir::isa<hew::StringRefType>(collection.getType());
   if (isStringCollection) {
     generateForString(stmt, collection, collType);
     return;

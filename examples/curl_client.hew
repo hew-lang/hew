@@ -104,10 +104,12 @@ fn main() {
     let connect_timeout_sec: i32 = 5;
     let connect_timeout_usec: i32 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
-    let read_timeout_result = conn.set_read_timeout(-1);
-    if read_timeout_result < 0 {
-        let err = f"  Error: failed to set read timeout on connection to {addr}";
-        panic(err);
+    match conn.set_read_timeout(-1) {
+        Ok(_) => {},
+        Err(_) => {
+            let err = f"  Error: failed to set read timeout on connection to {addr}";
+            panic(err);
+        },
     }
     // Build and send HTTP request
     let request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";

@@ -55,6 +55,12 @@ fn test_try_listen_address_in_use_returns_address_in_use() {
     }
 }
 
+#[test]
+fn test_listener_close_surface_returns_unit() {
+    let listener = net.listen(":0");
+    listener.close();
+}
+
 // ── NetError variant coverage ─────────────────────────────────────────
 
 #[test]

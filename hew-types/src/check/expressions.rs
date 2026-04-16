@@ -208,8 +208,12 @@ impl Checker {
 
             // Tuple
             Expr::Tuple(elems) => {
-                let tys: Vec<_> = elems.iter().map(|(e, s)| self.synthesize(e, s)).collect();
-                Ty::Tuple(tys)
+                if elems.is_empty() {
+                    Ty::Unit
+                } else {
+                    let tys: Vec<_> = elems.iter().map(|(e, s)| self.synthesize(e, s)).collect();
+                    Ty::Tuple(tys)
+                }
             }
 
             // Array
@@ -1295,6 +1299,12 @@ impl Checker {
                 } else {
                     actual
                 }
+            }
+
+            // Unit literal coercion
+            (Expr::Tuple(elems), Ty::Unit) if elems.is_empty() => {
+                self.record_type(span, expected);
+                expected.clone()
             }
 
             // Tuple literal coercion: propagate expected element types

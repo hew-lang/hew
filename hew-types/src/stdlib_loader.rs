@@ -364,6 +364,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
             type_expr_to_ty(&ok.0, module_short),
             type_expr_to_ty(&err.0, module_short),
         ),
+        TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
@@ -754,7 +755,7 @@ mod tests {
             .expect("net.Listener.close should be extracted");
         assert_eq!(close.1, "hew_tcp_listener_close");
         assert_eq!(close.2, Vec::<Ty>::new());
-        assert_eq!(close.3, Ty::I32);
+        assert_eq!(close.3, Ty::Unit);
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");

@@ -560,7 +560,7 @@ mod tests {
             .expect("net.Listener.close should resolve");
         assert_eq!(listener_close.0, "hew_tcp_listener_close");
         assert_eq!(listener_close.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(listener_close.2, crate::ty::Ty::I32);
+        assert_eq!(listener_close.2, crate::ty::Ty::Unit);
 
         let request_free = reg
             .resolve_handle_method_sig("http.Request", "free")

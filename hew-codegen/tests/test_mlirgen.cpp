@@ -3919,6 +3919,58 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Result constructors preserve unit payload hints
+// ============================================================================
+static void test_result_constructor_unit_payload_hints_lower() {
+  TEST(result_constructor_unit_payload_hints_lower);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn ok_unit() -> Result<(), int> {
+    Ok(())
+}
+
+fn err_unit() -> Result<int, ()> {
+    Err(())
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for unit Result constructor hints");
+    return;
+  }
+
+  bool okUsesUnitPayload = false;
+  bool errUsesUnitPayload = false;
+  module.walk([&](hew::EnumConstructOp op) {
+    if (op.getEnumName() != "__Result")
+      return;
+    auto resultType = mlir::dyn_cast<hew::ResultEnumType>(op.getType());
+    if (!resultType)
+      return;
+    if (op.getVariantIndex() == 0) {
+      if (auto okType = mlir::dyn_cast<hew::HewTupleType>(resultType.getOkType()))
+        okUsesUnitPayload |=
+            okType.getElementTypes().empty() && resultType.getErrType().isInteger(64);
+    } else if (op.getVariantIndex() == 1) {
+      if (auto errType = mlir::dyn_cast<hew::HewTupleType>(resultType.getErrType()))
+        errUsesUnitPayload |=
+            errType.getElementTypes().empty() && resultType.getOkType().isInteger(64);
+    }
+  });
+
+  if (!okUsesUnitPayload || !errUsesUnitPayload) {
+    FAIL("expected Result constructor hints to preserve unit payload types");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: nested None does not inherit outer constructor hints
 // ============================================================================
 static void test_nested_none_does_not_inherit_outer_constructor_hints() {
@@ -13588,6 +13640,7 @@ int main() {
   test_array_repeat_missing_expr_type_fails_closed();
   test_nested_vec_new_does_not_capture_outer_array_hint();
   test_direct_constructor_type_hints_lower_builtins();
+  test_result_constructor_unit_payload_hints_lower();
   test_nested_none_does_not_inherit_outer_constructor_hints();
   test_none_without_type_context_fails_closed();
   test_match_arm_direct_none_uses_match_result_type_hint();

@@ -1943,6 +1943,28 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
 }
 
 #[test]
+fn result_constructors_accept_unit_payloads() {
+    let source = concat!(
+        "fn ok_unit() -> Result<(), int> { Ok(()) }\n",
+        "fn err_unit() -> Result<int, ()> { Err(()) }\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     let source = concat!(
         "fn main() -> int {\n",

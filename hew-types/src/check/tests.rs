@@ -5387,6 +5387,150 @@ fn let_bound_literal_overflow() {
 }
 
 #[test]
+fn derived_intliteral_identifier_coerces_without_const_values() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let source_stmt = Stmt::Let {
+        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        ty: None,
+        value: Some((
+            Expr::Binary {
+                left: Box::new(make_int_literal(1, 8..9)),
+                op: BinaryOp::Add,
+                right: Box::new(make_int_literal(2, 12..13)),
+            },
+            8..13,
+        )),
+    };
+    checker.check_stmt(&source_stmt, &(0..14));
+
+    assert!(
+        !checker.const_values.contains_key("n"),
+        "derived literals should not register const_values"
+    );
+
+    let target_stmt = Stmt::Let {
+        pattern: (Pattern::Identifier("y".to_string()), 20..21),
+        ty: Some((
+            TypeExpr::Named {
+                name: "i32".to_string(),
+                type_args: None,
+            },
+            23..26,
+        )),
+        value: Some((Expr::Identifier("n".to_string()), 29..30)),
+    };
+    checker.check_stmt(&target_stmt, &(20..30));
+
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn negated_literal_let_binding_coerces_signed() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let let_stmt = Stmt::Let {
+        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        ty: None,
+        value: Some((
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand: Box::new(make_int_literal(5, 9..10)),
+            },
+            8..10,
+        )),
+    };
+    checker.check_stmt(&let_stmt, &(0..11));
+
+    let ident = (Expr::Identifier("n".to_string()), 16..17);
+    let ty = checker.check_against(&ident.0, &ident.1, &Ty::I8);
+    assert_eq!(ty, Ty::I8);
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn const_default_width_registers_in_const_values() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let decl = ConstDecl {
+        visibility: Visibility::Private,
+        name: "N".to_string(),
+        ty: (
+            TypeExpr::Named {
+                name: "int".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        value: make_int_literal(100, 0..3),
+    };
+    checker.check_const(&decl, &(0..3));
+
+    assert!(matches!(
+        checker.const_values.get("N"),
+        Some(ConstValue::Integer(100))
+    ));
+
+    let ident = (Expr::Identifier("N".to_string()), 10..11);
+    let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
+    assert_eq!(ty, Ty::I32);
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn const_explicit_width_not_in_const_values_widening_ok() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let decl = ConstDecl {
+        visibility: Visibility::Private,
+        name: "N".to_string(),
+        ty: (
+            TypeExpr::Named {
+                name: "i32".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        value: make_int_literal(100, 0..3),
+    };
+    checker.check_const(&decl, &(0..3));
+
+    assert!(
+        !checker.const_values.contains_key("N"),
+        "explicit-width consts should not register const_values"
+    );
+
+    let target_stmt = Stmt::Let {
+        pattern: (Pattern::Identifier("y".to_string()), 10..11),
+        ty: Some((
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            14..17,
+        )),
+        value: Some((Expr::Identifier("N".to_string()), 20..21)),
+    };
+    checker.check_stmt(&target_stmt, &(10..21));
+
+    let binding = checker.env.lookup_ref("N").expect("N should be defined");
+    assert_eq!(binding.ty, Ty::I32);
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
 fn mutable_var_initializer_materializes_literal_default() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let var_stmt = Stmt::Var {

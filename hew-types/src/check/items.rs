@@ -478,10 +478,8 @@ impl Checker {
         // Store compile-time values for default-width numeric consts so later
         // coercion sites can reuse the original literal kind/value instead of
         // depending on synthesis-time i64/f64 defaults.
-        let is_default_int = expected == Ty::I64
-            && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Int" || name == "int" || name == "i64");
-        let is_default_float = expected == Ty::F64
-            && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Float" || name == "float" || name == "f64");
+        let is_default_int = expected == Ty::I64;
+        let is_default_float = expected == Ty::F64;
         if is_default_int {
             if let Some(v) = extract_integer_literal_value(&cd.value.0) {
                 self.const_values

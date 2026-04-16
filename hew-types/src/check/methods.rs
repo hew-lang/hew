@@ -1464,6 +1464,9 @@ impl Checker {
         let resolved = self.subst.resolve(&receiver_ty);
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
+        if let Ty::Named { name, .. } = &resolved {
+            self.warn_if_blocking_handle_method(name, method, span);
+        }
 
         match (&resolved, method) {
             // Vec methods
@@ -1691,35 +1694,6 @@ impl Checker {
             }
             // String methods
             (Ty::String, _) => self.check_string_method(method, args, span),
-            // http.Server methods
-            (Ty::Named { name, .. }, _) if name == "http.Server" => {
-                self.reject_if_wasm_native_only_handle(&resolved, span);
-                self.warn_if_blocking_handle_method("http.Server", method, span);
-                self.check_named_method_fallback(&resolved, method, args, span, "http.Server")
-            }
-            // http.Request methods/properties
-            (Ty::Named { name, .. }, _) if name == "http.Request" => {
-                self.reject_if_wasm_native_only_handle(&resolved, span);
-                self.check_named_method_fallback(&resolved, method, args, span, "http.Request")
-            }
-            // net.Listener methods
-            (Ty::Named { name, .. }, _) if name == "net.Listener" => {
-                self.reject_if_wasm_native_only_handle(&resolved, span);
-                self.warn_if_blocking_handle_method("net.Listener", method, span);
-                self.check_named_method_fallback(&resolved, method, args, span, "net.Listener")
-            }
-            // net.Connection methods
-            (Ty::Named { name, .. }, _) if name == "net.Connection" => {
-                self.reject_if_wasm_native_only_handle(&resolved, span);
-                self.warn_if_blocking_handle_method("net.Connection", method, span);
-                self.check_named_method_fallback(&resolved, method, args, span, "net.Connection")
-            }
-            (Ty::Named { name, .. }, _) if name == "regex.Pattern" => {
-                self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
-            }
-            (Ty::Named { name, .. }, _) if name == "process.Child" => {
-                self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
-            }
             // Generator methods: .next() returns the yielded type
             (
                 Ty::Named {

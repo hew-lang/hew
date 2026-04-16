@@ -610,6 +610,8 @@ private:
   /// Lookup map from lowering site span → checker-owned lowering facts.
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::LoweringFactEntry *, SpanHash>
       loweringFactMap;
+  /// Span of the active direct let/var initializer expression, if any.
+  std::optional<std::pair<uint64_t, uint64_t>> directBindingInitializerSpan;
 
   /// Look up the resolved type for an expression by its source span.
   const ast::TypeExpr *resolvedTypeOf(const ast::Span &span) const {
@@ -617,6 +619,10 @@ private:
     if (it != exprTypeMap.end())
       return it->second;
     return nullptr;
+  }
+  bool isDirectBindingInitializer(const ast::Span &span) const {
+    return directBindingInitializerSpan && directBindingInitializerSpan->first == span.start &&
+           directBindingInitializerSpan->second == span.end;
   }
   const ast::MethodCallReceiverKindEntry *methodCallReceiverKindOf(const ast::Span &span) const {
     auto it = methodCallReceiverKindMap.find({span.start, span.end});

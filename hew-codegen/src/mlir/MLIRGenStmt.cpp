@@ -641,7 +641,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   mlir::Value value = nullptr;
   lastScopeLaunchResultType.reset();
   if (stmt.value) {
+    auto prevDirectBindingInitializerSpan = directBindingInitializerSpan;
+    directBindingInitializerSpan = {
+        std::pair<uint64_t, uint64_t>{stmt.value->value.span.start, stmt.value->value.span.end}};
     value = generateExpression(stmt.value->value, typeHint);
+    directBindingInitializerSpan = prevDirectBindingInitializerSpan;
   }
   if (!value)
     return;
@@ -899,7 +903,11 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   mlir::Value initValue = nullptr;
 
   if (stmt.value) {
+    auto prevDirectBindingInitializerSpan = directBindingInitializerSpan;
+    directBindingInitializerSpan = {
+        std::pair<uint64_t, uint64_t>{stmt.value->value.span.start, stmt.value->value.span.end}};
     initValue = generateExpression(stmt.value->value, typeHint);
+    directBindingInitializerSpan = prevDirectBindingInitializerSpan;
     if (!initValue)
       return;
     varType = initValue.getType();

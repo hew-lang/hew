@@ -1719,10 +1719,12 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
   auto resolveBuiltinTypeHint = [&](auto &&matches) -> mlir::Type {
     if (typeHint && matches(typeHint))
       return typeHint;
-    if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-      auto resolvedMlirType = convertType(*resolvedType);
-      if (resolvedMlirType && matches(resolvedMlirType))
-        return resolvedMlirType;
+    if (isDirectBindingInitializer(exprSpan)) {
+      if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+        auto resolvedMlirType = convertType(*resolvedType);
+        if (resolvedMlirType && matches(resolvedMlirType))
+          return resolvedMlirType;
+      }
     }
     return {};
   };

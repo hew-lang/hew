@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use dashmap::DashMap;
+use hew_analysis::definition::{find_local_binding_definition, find_param_definition};
 #[cfg(test)]
 use hew_analysis::references::count_all_references;
 #[cfg(test)]
@@ -527,6 +528,13 @@ impl LanguageServer for HewLanguageServer {
         if let Some(range) =
             find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
         {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range,
+            })));
+        }
+
+        if let Some(range) = resolve_local_or_param_definition(doc.value(), &word, offset) {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range,
@@ -1038,6 +1046,21 @@ impl LanguageServer for HewLanguageServer {
     }
 }
 
+fn resolve_local_or_param_definition(
+    doc: &DocumentState,
+    word: &str,
+    offset: usize,
+) -> Option<Range> {
+    let span = find_local_binding_definition(&doc.source, &doc.parse_result, word, offset)
+        .or_else(|| find_param_definition(&doc.parse_result, word, offset))?;
+    Some(offset_range_to_lsp(
+        &doc.source,
+        &doc.line_offsets,
+        span.start,
+        span.end,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,8 +1313,7 @@ mod tests {
 
     #[test]
     fn semantic_tokens_mark_function_and_type_declarations() {
-        let source =
-            "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
+        let source = "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
         let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
@@ -1659,6 +1681,52 @@ impl Worker {
             found.is_some(),
             "should find receive method definition via :: fallback"
         );
+    }
+
+    #[test]
+    fn goto_def_resolves_local_binding_fallback() {
+        let source = "fn main() {\n    let result = 41;\n    result + 1\n}";
+        let doc = make_doc(source);
+        let offset = source.rfind("result + 1").unwrap();
+        let word = word_at_offset(source, offset).unwrap();
+
+        assert!(
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
+        );
+
+        let range = resolve_local_or_param_definition(&doc, &word, offset)
+            .expect("should resolve local binding");
+        let expected_start = source.find("let result").unwrap() + 4;
+        let expected = offset_range_to_lsp(
+            source,
+            &doc.line_offsets,
+            expected_start,
+            expected_start + "result".len(),
+        );
+        assert_eq!(range, expected);
+    }
+
+    #[test]
+    fn goto_def_resolves_param_fallback() {
+        let source = "fn add(value: i32) -> i32 {\n    value + 1\n}";
+        let doc = make_doc(source);
+        let offset = source.rfind("value + 1").unwrap();
+        let word = word_at_offset(source, offset).unwrap();
+
+        assert!(
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
+        );
+
+        let range = resolve_local_or_param_definition(&doc, &word, offset)
+            .expect("should resolve parameter definition");
+        let expected_start = source.find("value: i32").unwrap();
+        let expected = offset_range_to_lsp(
+            source,
+            &doc.line_offsets,
+            expected_start,
+            expected_start + "value".len(),
+        );
+        assert_eq!(range, expected);
     }
 
     #[test]
@@ -3016,8 +3084,7 @@ impl Worker {
 
     #[test]
     fn cross_file_references_include_named_importer_and_imported_open_document() {
-        let main_source =
-            "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3056,8 +3123,7 @@ impl Worker {
 
     #[test]
     fn cross_file_references_from_named_import_usage_include_imported_open_document() {
-        let main_source =
-            "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3146,8 +3212,7 @@ impl Worker {
 
     #[test]
     fn cross_file_rename_updates_named_importer_and_imported_open_document() {
-        let main_source =
-            "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3240,8 +3305,7 @@ impl Worker {
 
     #[test]
     fn cross_file_rename_from_imported_definition_updates_open_importer() {
-        let main_source =
-            "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");

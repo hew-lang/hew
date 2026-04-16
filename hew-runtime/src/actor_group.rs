@@ -3,6 +3,9 @@
 //! [`HewActorGroup`] is a heap-allocated, dynamically-growing actor
 //! container. Unlike the legacy [`HewScope`](super::scope::HewScope), it
 //! has no fixed capacity limit and uses a condvar for efficient waiting.
+//! This is the intended migration target for new structured-concurrency
+//! runtime/codegen paths while [`HewScope`](super::scope::HewScope) remains
+//! as the stable stack-allocated ABI for already-generated code.
 
 use std::collections::HashMap;
 use std::ffi::c_void;

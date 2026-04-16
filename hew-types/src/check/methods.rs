@@ -451,7 +451,7 @@ impl Checker {
         }
     }
 
-    fn reject_if_wasm_native_only_network_handle(&mut self, receiver_ty: &Ty, span: &Span) {
+    fn reject_if_wasm_native_only_handle(&mut self, receiver_ty: &Ty, span: &Span) {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
@@ -466,6 +466,9 @@ impl Checker {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
             "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
+            "process.Child" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
+            }
             _ => {}
         }
     }
@@ -532,6 +535,15 @@ impl Checker {
         method: &str,
     ) -> Option<FnSig> {
         shared_lookup_named_method_sig(&self.type_defs, &self.fn_sigs, type_name, type_args, method)
+            .or_else(|| {
+                self.module_registry
+                    .resolve_handle_method_sig(type_name, method)
+                    .map(|(_c_symbol, params, return_type)| FnSig {
+                        params,
+                        return_type,
+                        ..FnSig::default()
+                    })
+            })
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -1444,7 +1456,7 @@ impl Checker {
 
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         let resolved = self.subst.resolve(&receiver_ty);
-        self.reject_if_wasm_native_only_network_handle(&resolved, span);
+        self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
 
         match (&resolved, method) {
@@ -1863,26 +1875,8 @@ impl Checker {
                     self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
                 }
             },
-            // process.Child methods
             (Ty::Named { name, .. }, _) if name == "process.Child" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
-                match method {
-                    "wait" | "kill" => {
-                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                        Ty::I32
-                    }
-                    "free" => {
-                        self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                        Ty::Unit
-                    }
-                    _ => self.check_named_method_fallback(
-                        &resolved,
-                        method,
-                        args,
-                        span,
-                        "process.Child",
-                    ),
-                }
+                self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
             }
             // Generator methods: .next() returns the yielded type
             (

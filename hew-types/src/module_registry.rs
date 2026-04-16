@@ -275,15 +275,29 @@ impl ModuleRegistry {
     /// qualify with its existing short-name lookup.
     #[must_use]
     pub fn resolve_handle_method(&self, handle_type: &str, method: &str) -> Option<String> {
+        self.resolve_handle_method_sig(handle_type, method)
+            .map(|(c_sym, _, _)| c_sym)
+    }
+
+    /// Resolve a handle method to its C symbol and extracted signature.
+    ///
+    /// Returns `(c_symbol, param_types, return_type)` for trivial extracted
+    /// handle methods.
+    #[must_use]
+    pub fn resolve_handle_method_sig(
+        &self,
+        handle_type: &str,
+        method: &str,
+    ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty)> {
         for info in self.modules.values() {
-            for ((ty, m), c_sym) in &info.handle_methods {
+            for ((ty, m), c_sym, params, ret) in &info.handle_methods {
                 if ty == handle_type && m == method {
-                    return Some(c_sym.clone());
+                    return Some((c_sym.clone(), params.clone(), ret.clone()));
                 }
             }
         }
         self.qualify_handle_type(handle_type)
-            .and_then(|qualified| self.resolve_handle_method(&qualified, method))
+            .and_then(|qualified| self.resolve_handle_method_sig(&qualified, method))
     }
 }
 
@@ -490,7 +504,7 @@ mod tests {
         // json.Value should have handle methods from its impl block.
         let info = reg.get("std::encoding::json").unwrap();
         if !info.handle_methods.is_empty() {
-            let ((ty, method), _) = &info.handle_methods[0];
+            let ((ty, method), _, _, _) = &info.handle_methods[0];
             let c_sym = reg.resolve_handle_method(ty, method);
             assert!(c_sym.is_some(), "should resolve handle method");
         }
@@ -501,7 +515,7 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         let info = reg.get("std::encoding::json").unwrap();
-        if let Some(((qualified, method), expected)) = info.handle_methods.first() {
+        if let Some(((qualified, method), expected, _, _)) = info.handle_methods.first() {
             let short = qualified
                 .rsplit('.')
                 .next()
@@ -513,6 +527,26 @@ mod tests {
                 "short handle name should resolve to the same C symbol"
             );
         }
+    }
+
+    #[test]
+    fn resolve_handle_method_sig_returns_process_child_signature() {
+        let mut reg = registry();
+        reg.load("std::process").unwrap();
+
+        let sig = reg
+            .resolve_handle_method_sig("process.Child", "wait")
+            .expect("process.Child.wait should resolve");
+        assert_eq!(sig.0, "hew_process_wait");
+        assert_eq!(sig.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(sig.2, crate::ty::Ty::I32);
+
+        let short_sig = reg
+            .resolve_handle_method_sig("Child", "kill")
+            .expect("short handle name should resolve");
+        assert_eq!(short_sig.0, "hew_process_kill");
+        assert_eq!(short_sig.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(short_sig.2, crate::ty::Ty::I32);
     }
 
     #[test]

@@ -23,8 +23,9 @@ pub struct ModuleInfo {
     pub clean_names: Vec<(String, String)>,
     /// Handle type names, e.g. `"json.Value"`.
     pub handle_types: Vec<String>,
-    /// Handle method mappings: ((`type_name`, `method_name`), `c_symbol`).
-    pub handle_methods: Vec<((String, String), String)>,
+    /// Handle method mappings:
+    /// ((`type_name`, `method_name`), `c_symbol`, `param_types`, `return_type`).
+    pub handle_methods: Vec<HandleMethodInfo>,
     /// Wrapper `pub fn` signatures: (`method_name`, `param_types`, `return_type`).
     pub wrapper_fns: Vec<(String, Vec<Ty>, Ty)>,
     /// Types with `impl Drop` — move-only, not Copy.
@@ -41,6 +42,8 @@ pub struct ModuleInfo {
     /// signatures must be rejected before they are registered with the checker.
     pub unsupported_type_signatures: Vec<String>,
 }
+
+pub type HandleMethodInfo = ((String, String), String, Vec<Ty>, Ty);
 
 /// Load type information for a module from its `.hew` file.
 ///
@@ -477,8 +480,22 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
     for method in &impl_decl.methods {
         // Skip the `self` parameter when matching — it's not part of the call
         if let Some((c_symbol, _arg_count)) = extract_call_target(&method.body) {
-            info.handle_methods
-                .push(((type_name.clone(), method.name.clone()), c_symbol));
+            let params = method
+                .params
+                .iter()
+                .skip(1)
+                .map(|param| type_expr_to_ty(&param.ty.0, module_short))
+                .collect();
+            let ret = method
+                .return_type
+                .as_ref()
+                .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+            info.handle_methods.push((
+                (type_name.clone(), method.name.clone()),
+                c_symbol,
+                params,
+                ret,
+            ));
         }
     }
 }
@@ -625,7 +642,7 @@ mod tests {
         let has_acquire = info
             .handle_methods
             .iter()
-            .any(|((ty, method), _)| ty == "semaphore.Semaphore" && method == "acquire");
+            .any(|((ty, method), _, _, _)| ty == "semaphore.Semaphore" && method == "acquire");
         assert!(
             has_acquire,
             "semaphore.Semaphore should have acquire method"
@@ -642,7 +659,7 @@ mod tests {
         assert!(info.is_some(), "should load net module");
         let info = info.unwrap();
 
-        let has_read = info.handle_methods.iter().any(|((ty, method), sym)| {
+        let has_read = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
             ty == "net.Connection" && method == "read" && sym == "hew_tcp_read"
         });
         assert!(
@@ -650,7 +667,7 @@ mod tests {
             "net.Connection.read should rewrite to hew_tcp_read"
         );
 
-        let rewrites_read_string = info.handle_methods.iter().any(|((ty, method), sym)| {
+        let rewrites_read_string = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
             ty == "net.Connection" && method == "read_string" && sym == "hew_bytes_to_string"
         });
         assert!(
@@ -658,7 +675,7 @@ mod tests {
             "net.Connection.read_string should remain a Hew wrapper, not alias hew_bytes_to_string"
         );
 
-        let rewrites_write_string = info.handle_methods.iter().any(|((ty, method), sym)| {
+        let rewrites_write_string = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
             ty == "net.Connection" && method == "write_string" && sym == "hew_tcp_write"
         });
         assert!(
@@ -701,6 +718,29 @@ mod tests {
                 "process module should retain legacy `{name}` wrapper for compatibility"
             );
         }
+    }
+
+    #[test]
+    fn load_process_child_handle_methods_include_signatures() {
+        let info = load_module("std::process", &test_root()).expect("should load process module");
+
+        let wait = info
+            .handle_methods
+            .iter()
+            .find(|((ty, method), _, _, _)| ty == "process.Child" && method == "wait")
+            .expect("process.Child.wait should be extracted");
+        assert_eq!(wait.1, "hew_process_wait");
+        assert_eq!(wait.2, Vec::<Ty>::new());
+        assert_eq!(wait.3, Ty::I32);
+
+        let kill = info
+            .handle_methods
+            .iter()
+            .find(|((ty, method), _, _, _)| ty == "process.Child" && method == "kill")
+            .expect("process.Child.kill should be extracted");
+        assert_eq!(kill.1, "hew_process_kill");
+        assert_eq!(kill.2, Vec::<Ty>::new());
+        assert_eq!(kill.3, Ty::I32);
     }
 
     #[test]

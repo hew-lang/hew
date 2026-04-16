@@ -1552,6 +1552,43 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
     );
 }
 
+#[test]
+fn process_child_methods_typecheck_and_preserve_rewrite_path() {
+    let output = typecheck_inline(
+        r"
+        import std::process;
+
+        fn manage(child: process.Child) -> int {
+            let waited: int = child.wait();
+            waited + child.kill()
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_process_wait"
+        )),
+        "expected process.Child.wait rewrite, got: {:?}",
+        output.method_call_rewrites
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_process_kill"
+        )),
+        "expected process.Child.kill rewrite, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
 // ── SMTP send() ergonomics ───────────────────────────────────────────────────
 
 /// `smtp.send(...)` and `smtp.send_html(...)` should typecheck as one-shot

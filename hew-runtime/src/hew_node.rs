@@ -1198,9 +1198,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     if node.transport.is_null() {
         // Check HEW_TRANSPORT env var for transport selection.
         #[cfg(feature = "quic")]
-        let use_quic = std::env::var("HEW_TRANSPORT")
-            .map(|v| v.eq_ignore_ascii_case("quic"))
-            .unwrap_or(false);
+        let use_quic = std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"));
         #[cfg(not(feature = "quic"))]
         let use_quic = false;
 

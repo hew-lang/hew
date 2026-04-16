@@ -695,6 +695,29 @@ pub fn enrich_program(
     Ok(EnrichProgramDiagnostics { diagnostics })
 }
 
+/// Enrich a standalone item list with inferred types from the type checker.
+///
+/// Mirrors the per-item enrichment and normalization performed by
+/// [`enrich_program`] for module bodies that live outside `Program::items`.
+///
+/// # Errors
+///
+/// Returns an error when a required serialized `TypeExpr` contract cannot be
+/// produced. Best-effort inferred-type insertions are reported via returned
+/// diagnostics instead of silently disappearing.
+pub fn enrich_items(
+    items: &mut [Spanned<Item>],
+    tco: &TypeCheckOutput,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
+    let mut diagnostics = Vec::new();
+    for (item, _span) in items.iter_mut() {
+        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
+    }
+    normalize_items_types(items, registry);
+    Ok(EnrichProgramDiagnostics { diagnostics })
+}
+
 /// Normalize `TypeExpr::Named("Result", [T, E])` → `TypeExpr::Result { ok, err }`
 /// and `TypeExpr::Named("Option", [T])` → `TypeExpr::Option(T)`.
 ///

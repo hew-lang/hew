@@ -449,7 +449,7 @@ pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────
 
-#[cfg(feature = "encryption")]
+#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
 pub mod encryption;
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]

@@ -380,9 +380,7 @@ impl ReplSession {
 
     fn is_wasm_target(&self) -> bool {
         self.eval_target.as_deref().is_some_and(|t| {
-            crate::target::TargetSpec::from_requested(Some(t))
-                .map(|spec| spec.is_wasm())
-                .unwrap_or(false)
+            crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
         })
     }
 
@@ -1142,9 +1140,7 @@ fn run_eval_compiled(
     target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let is_wasm = target.is_some_and(|t| {
-        crate::target::TargetSpec::from_requested(Some(t))
-            .map(|spec| spec.is_wasm())
-            .unwrap_or(false)
+        crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
     });
 
     if is_wasm {

@@ -498,7 +498,13 @@ fn push_parameter_hints(
         let Some(arg_text) = source.get(expr.1.start..expr.1.end) else {
             continue;
         };
-        if arg_text.trim_start().starts_with(param_name) {
+        let trimmed = arg_text.trim_start();
+        let is_same_ident = trimmed.starts_with(param_name.as_str())
+            && trimmed[param_name.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        if is_same_ident {
             continue;
         }
         hints.push(InlayHint {
@@ -637,6 +643,23 @@ fn main() {
         let hints = build_inlay_hints(source, &pr, &tc);
 
         assert_eq!(parameter_hint_labels(&hints), vec!["age:"]);
+    }
+
+    #[test]
+    fn parameter_hints_do_not_skip_prefix_matches() {
+        let source = r#"
+fn limit(max: int, key: String) {}
+fn main() {
+    let maximum_count = 10;
+    let key_path = "/tmp";
+    limit(maximum_count, key_path);
+}
+"#;
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+
+        assert_eq!(parameter_hint_labels(&hints), vec!["max:", "key:"]);
     }
 
     #[test]

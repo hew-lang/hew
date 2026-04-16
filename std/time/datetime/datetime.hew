@@ -74,37 +74,37 @@ pub fn try_parse(s: String, fmt: String) -> Result<i64, String> {
 
 /// Extract the year component from an epoch-millisecond timestamp.
 pub fn year(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_year(epoch_ms) as int }
+    unsafe { hew_datetime_year(epoch_ms) }
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
 pub fn month(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_month(epoch_ms) as int }
+    unsafe { hew_datetime_month(epoch_ms) }
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
 pub fn day(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_day(epoch_ms) as int }
+    unsafe { hew_datetime_day(epoch_ms) }
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
 pub fn hour(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_hour(epoch_ms) as int }
+    unsafe { hew_datetime_hour(epoch_ms) }
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
 pub fn minute(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_minute(epoch_ms) as int }
+    unsafe { hew_datetime_minute(epoch_ms) }
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
 pub fn second(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_second(epoch_ms) as int }
+    unsafe { hew_datetime_second(epoch_ms) }
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
 pub fn weekday(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_weekday(epoch_ms) as int }
+    unsafe { hew_datetime_weekday(epoch_ms) }
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.
@@ -150,11 +150,11 @@ extern "C" {
     fn hew_datetime_format(epoch_ms: i64, fmt: String) -> String;
     fn hew_datetime_parse(s: String, fmt: String) -> i64;
     fn hew_datetime_last_error() -> String;
-    fn hew_datetime_year(epoch_ms: i64) -> i32;
-    fn hew_datetime_month(epoch_ms: i64) -> i32;
-    fn hew_datetime_day(epoch_ms: i64) -> i32;
-    fn hew_datetime_hour(epoch_ms: i64) -> i32;
-    fn hew_datetime_minute(epoch_ms: i64) -> i32;
-    fn hew_datetime_second(epoch_ms: i64) -> i32;
-    fn hew_datetime_weekday(epoch_ms: i64) -> i32;
+    fn hew_datetime_year(epoch_ms: i64) -> int;
+    fn hew_datetime_month(epoch_ms: i64) -> int;
+    fn hew_datetime_day(epoch_ms: i64) -> int;
+    fn hew_datetime_hour(epoch_ms: i64) -> int;
+    fn hew_datetime_minute(epoch_ms: i64) -> int;
+    fn hew_datetime_second(epoch_ms: i64) -> int;
+    fn hew_datetime_weekday(epoch_ms: i64) -> int;
 }

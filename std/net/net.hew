@@ -163,12 +163,12 @@ trait ConnectionMethods {
     /// Set the read timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_read_timeout(conn: Connection, ms: i32) -> i32;
+    fn set_read_timeout(conn: Connection, ms: int) -> i32;
 
     /// Set the write timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_write_timeout(conn: Connection, ms: i32) -> i32;
+    fn set_write_timeout(conn: Connection, ms: int) -> i32;
 }
 
 impl ConnectionMethods for Connection {
@@ -183,9 +183,9 @@ impl ConnectionMethods for Connection {
     /// Close the connection and release resources.
     fn close(conn: Connection) -> i32 { unsafe { hew_tcp_close(conn) } }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(conn: Connection, ms: i32) -> i32 { unsafe { hew_tcp_set_read_timeout(conn, ms) } }
+    fn set_read_timeout(conn: Connection, ms: int) -> i32 { unsafe { hew_tcp_set_read_timeout(conn, ms as i32) } }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(conn: Connection, ms: i32) -> i32 { unsafe { hew_tcp_set_write_timeout(conn, ms) } }
+    fn set_write_timeout(conn: Connection, ms: int) -> i32 { unsafe { hew_tcp_set_write_timeout(conn, ms as i32) } }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -267,22 +267,22 @@ pub fn try_connect(addr: String) -> Result<Connection, NetError> {
 /// Connect to a TCP server with a timeout.
 ///
 /// `timeout_sec` and `timeout_usec` specify the deadline.
-pub fn connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection {
+pub fn connect_timeout(addr: String, timeout_sec: int, timeout_usec: int) -> Connection {
     let colon = addr.find(":");
     var host = addr;
-    var port: i32 = 0;
+    var port: int = 0;
     if colon >= 0 {
         if colon == 0 {
             host = "127.0.0.1";
         } else {
             host = addr.slice(0, colon);
         }
-        port = string.to_int(addr.slice(colon + 1, addr.len())) as i32;
+        port = string.to_int(addr.slice(colon + 1, addr.len()));
     }
-    let millis_per_second: i32 = 1000;
-    let micros_per_millisecond: i32 = 1000;
+    let millis_per_second: int = 1000;
+    let micros_per_millisecond: int = 1000;
     let timeout_ms = timeout_sec * millis_per_second + (timeout_usec / micros_per_millisecond);
-    unsafe { hew_tcp_connect_timeout(host, port, timeout_ms) }
+    unsafe { hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32) }
 }
 
 /// Broadcast a message to all connections except the sender.

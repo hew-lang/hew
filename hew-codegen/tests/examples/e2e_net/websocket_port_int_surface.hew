@@ -1,0 +1,11 @@
+import std::net::websocket;
+
+fn _prove_websocket_port_int_surface() {
+    let server: websocket.Server = websocket.listen("127.0.0.1:0");
+    let port: int = server.port();
+    println(port);
+}
+
+fn main() {
+    println("ok");
+}

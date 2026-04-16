@@ -104,3 +104,22 @@ fn directory_module_demo_can_be_checked_built_and_run() {
         );
     }
 }
+
+#[test]
+fn net_parameter_surface_fixture_checks_cleanly() {
+    let source = repo_root().join("hew-types/tests/fixtures/net_parameter_surfaces_typecheck.hew");
+    let source_arg = source.to_str().expect("source path should be valid UTF-8");
+
+    let output = Command::new(hew_binary())
+        .args(["check", source_arg])
+        .current_dir(repo_root())
+        .output()
+        .expect("run hew check");
+
+    assert!(
+        output.status.success(),
+        "hew check {} failed\n{}",
+        source.display(),
+        describe_output(&output),
+    );
+}

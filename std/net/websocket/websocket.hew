@@ -113,7 +113,7 @@ trait ServerMethods {
     fn accept(server: Server) -> Conn;
 
     /// Get the port the server is listening on.
-    fn port(server: Server) -> i32;
+    fn port(server: Server) -> int;
 
     /// Close the server and stop listening.
     fn close(server: Server);
@@ -121,7 +121,7 @@ trait ServerMethods {
 
 impl ServerMethods for Server {
     fn accept(server: Server) -> Conn { unsafe { hew_ws_server_accept(server) } }
-    fn port(server: Server) -> i32 { unsafe { hew_ws_server_port(server) } }
+    fn port(server: Server) -> int { unsafe { hew_ws_server_port(server) as int } }
     fn close(server: Server) { unsafe { hew_ws_server_close(server) }; }
 }
 

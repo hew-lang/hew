@@ -12,6 +12,7 @@
 //! fn main() {
 //!     let s = string.from_int(42);        // "42"
 //!     let n = string.to_int("42");        // 42
+//!     let f = string.to_float("3.14");    // 3.14
 //!     let nl = string.from_char(10);      // "\n"
 //!     let stars = string.repeat("*", 3);  // "***"
 //!     let padded = string.pad_left("7", 3, "0");  // "007"
@@ -94,12 +95,221 @@ pub fn to_int(s: String) -> i32 {
     (if negative { 0 - result } else { result }) as i32
 }
 
+/// Parse a string as a float. Returns `0.0` if parsing fails.
+///
+/// The parser accepts:
+/// - an optional leading `+` or `-`
+/// - digits with an optional decimal point
+/// - an optional scientific-notation exponent (`e` or `E`)
+///
+/// The entire string must be a valid float literal; partial parses fail.
+///
+/// # Examples
+///
+/// ```
+/// let pi = string.to_float("3.14");   // 3.14
+/// let n = string.to_float("-2e3");    // -2000.0
+/// let z = string.to_float("3.14x");   // 0.0
+/// ```
+pub fn to_float(s: String) -> f64 {
+    match try_to_float(s) {
+        Ok(value) => value,
+        Err(_) => 0.0,
+    }
+}
+
+/// Parse a string as a float, returning a structured error on failure.
+pub fn try_to_float(s: String) -> Result<f64, String> {
+    if is_valid_float_literal(s) {
+        Ok(parse_valid_float_literal(s))
+    } else {
+        Err("string.try_to_float: invalid float literal")
+    }
+}
+
+fn is_valid_float_literal(s: String) -> bool {
+    let slen = s.len() as i32;
+    if slen == 0 {
+        return false;
+    }
+
+    let start = float_parse_start(s, slen);
+    if start < 0 {
+        return false;
+    }
+
+    let exponent_index = find_exponent_index(s, start, slen);
+    if exponent_index < (-1 as i32) {
+        return false;
+    }
+
+    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
+    if !is_valid_float_significand(s, start, significand_end) {
+        return false;
+    }
+
+    if exponent_index >= 0 {
+        return is_valid_float_exponent(s, exponent_index + (1 as i32), slen);
+    }
+
+    true
+}
+
+fn float_parse_start(s: String, slen: i32) -> i32 {
+    var start = 0 as i32;
+    if s.slice(0, 1) == "-" || s.slice(0, 1) == "+" {
+        start = 1 as i32;
+    }
+    if start >= slen {
+        return -1 as i32;
+    }
+    start
+}
+
+fn parse_valid_float_literal(s: String) -> f64 {
+    let slen = s.len() as i32;
+    let start = float_parse_start(s, slen);
+    let negative = s.slice(0, 1) == "-";
+    let exponent_index = find_exponent_index(s, start, slen);
+    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
+    var value = parse_float_significand(s, start, significand_end);
+    if exponent_index >= 0 {
+        let exponent = parse_float_exponent(s, exponent_index + (1 as i32), slen);
+        value = apply_float_exponent(value, exponent);
+    }
+    if negative {
+        0.0 - value
+    } else {
+        value
+    }
+}
+
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
 fn digit_value(ch: String) -> i32 {
     match ch {
         "0" => 0 as i32, "1" => 1 as i32, "2" => 2 as i32, "3" => 3 as i32, "4" => 4 as i32,
         "5" => 5 as i32, "6" => 6 as i32, "7" => 7 as i32, "8" => 8 as i32, "9" => 9 as i32,
         _ => -1 as i32,
+    }
+}
+
+fn find_exponent_index(s: String, start: i32, end: i32) -> i32 {
+    var exponent_index = -1 as i32;
+    for i in start..end {
+        let ch = s.slice(i, i + 1);
+        if ch == "e" || ch == "E" {
+            if exponent_index >= 0 {
+                return -2 as i32;
+            }
+            exponent_index = i;
+        }
+    }
+    exponent_index
+}
+
+fn is_valid_float_significand(s: String, start: i32, end: i32) -> bool {
+    if start >= end {
+        return false;
+    }
+
+    var saw_digit = false;
+    var saw_decimal = false;
+    for i in start..end {
+        let ch = s.slice(i, i + 1);
+        if ch == "." {
+            if saw_decimal {
+                return false;
+            }
+            saw_decimal = true;
+        } else {
+            if digit_value(ch) < 0 {
+                return false;
+            }
+            saw_digit = true;
+        }
+    }
+    saw_digit
+}
+
+fn is_valid_float_exponent(s: String, start: i32, end: i32) -> bool {
+    if start >= end {
+        return false;
+    }
+
+    var index = start;
+    let first = s.slice(start, start + 1);
+    if first == "-" || first == "+" {
+        index = start + (1 as i32);
+    }
+    if index >= end {
+        return false;
+    }
+    for i in index..end {
+        if digit_value(s.slice(i, i + 1)) < 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_float_significand(s: String, start: i32, end: i32) -> f64 {
+    var whole = 0.0;
+    var fraction = 0.0;
+    var fraction_scale = 1.0;
+    var saw_decimal = false;
+
+    for i in start..end {
+        let ch = s.slice(i, i + 1);
+        if ch == "." {
+            saw_decimal = true;
+            continue;
+        }
+
+        let digit = digit_to_float(digit_value(ch));
+        if saw_decimal {
+            fraction = fraction * 10.0 + digit;
+            fraction_scale = fraction_scale * 10.0;
+        } else {
+            whole = whole * 10.0 + digit;
+        }
+    }
+
+    whole + fraction / fraction_scale
+}
+
+fn parse_float_exponent(s: String, start: i32, end: i32) -> i32 {
+    var index = start;
+    var negative = false;
+    if s.slice(start, start + 1) == "-" {
+        negative = true;
+        index = start + (1 as i32);
+    } else if s.slice(start, start + 1) == "+" {
+        index = start + (1 as i32);
+    }
+
+    var exponent = 0 as i32;
+    for i in index..end {
+        exponent = exponent * (10 as i32) + digit_value(s.slice(i, i + 1));
+    }
+
+    if negative { (0 as i32) - exponent } else { exponent }
+}
+
+fn apply_float_exponent(value: f64, exponent: i32) -> f64 {
+    var scale = 1.0;
+    var remaining = if exponent < 0 { (0 as i32) - exponent } else { exponent };
+    while remaining > (0 as i32) {
+        scale = scale * 10.0;
+        remaining = remaining - (1 as i32);
+    }
+    if exponent < 0 { value / scale } else { value * scale }
+}
+
+fn digit_to_float(digit: i32) -> f64 {
+    match digit {
+        0 => 0.0, 1 => 1.0, 2 => 2.0, 3 => 3.0, 4 => 4.0,
+        5 => 5.0, 6 => 6.0, 7 => 7.0, 8 => 8.0, 9 => 9.0,
+        _ => 0.0,
     }
 }
 

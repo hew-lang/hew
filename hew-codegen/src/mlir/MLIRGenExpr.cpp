@@ -4613,11 +4613,11 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       }
       return mlir::math::PowFOp::create(builder, location, arg, arg2).getResult();
     }
-    // math.max(a, b), math.min(a, b)
-    if (methodName == "max") {
+    // math.max(a, b), math.min(a, b), math.max_f(a, b), math.min_f(a, b)
+    if (methodName == "max" || methodName == "max_f") {
       if (mc.args.size() < 2) {
         ++errorCount_;
-        emitError(location) << "math.max requires 2 arguments";
+        emitError(location) << "math." << methodName << " requires 2 arguments";
         return nullptr;
       }
       auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
@@ -4630,10 +4630,10 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       }
       return mlir::arith::MaximumFOp::create(builder, location, arg, arg2).getResult();
     }
-    if (methodName == "min") {
+    if (methodName == "min" || methodName == "min_f") {
       if (mc.args.size() < 2) {
         ++errorCount_;
-        emitError(location) << "math.min requires 2 arguments";
+        emitError(location) << "math." << methodName << " requires 2 arguments";
         return nullptr;
       }
       auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
@@ -4703,6 +4703,31 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       // clamp = max(lo, min(x, hi))
       auto minXHi = mlir::arith::MinSIOp::create(builder, location, arg, hi);
       return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
+    }
+
+    // math.clamp_f(x, lo, hi) — clamp x to [lo, hi] in f64
+    if (methodName == "clamp_f") {
+      if (mc.args.size() < 3) {
+        ++errorCount_;
+        emitError(location) << "math.clamp_f requires 3 arguments";
+        return nullptr;
+      }
+      auto lo = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      auto hi = generateExpression(ast::callArgExpr(mc.args[2]).value);
+      if (!lo || !hi)
+        return nullptr;
+      if (lo.getType() != f64Type) {
+        lo = coerceType(lo, f64Type, location);
+        if (!lo)
+          return nullptr;
+      }
+      if (hi.getType() != f64Type) {
+        hi = coerceType(hi, f64Type, location);
+        if (!hi)
+          return nullptr;
+      }
+      auto minXHi = mlir::arith::MinimumFOp::create(builder, location, arg, hi);
+      return mlir::arith::MaximumFOp::create(builder, location, lo, minXHi).getResult();
     }
 
     ++errorCount_;

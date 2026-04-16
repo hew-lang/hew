@@ -82,6 +82,27 @@ pub fn abs_f(x: f64) -> f64 {
     if x < 0.0 { -x } else { x }
 }
 
+/// Return the smaller of two floats.
+pub fn min_f(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+/// Return the larger of two floats.
+pub fn max_f(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+/// Clamp `x` to the range [`lo`, `hi`].
+pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo {
+        return lo;
+    }
+    if x > hi {
+        return hi;
+    }
+    x
+}
+
 /// Return the square root of a float.
 pub fn sqrt(x: f64) -> f64 {
     // Codegen maps to mlir::math::SqrtOp

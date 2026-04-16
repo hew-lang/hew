@@ -7676,6 +7676,12 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   if (std::holds_alternative<ast::ExprIdentifier>(astExpr.kind))
     return {};
 
+  // Yield transfers ownership out of the current scope. Treating the yielded
+  // value as a local temporary would re-register it for scope cleanup and
+  // double-drop it when the generator resumes.
+  if (std::holds_alternative<ast::ExprYield>(astExpr.kind))
+    return {};
+
   // Non-string literals (int, float, bool, char) don't heap-allocate.
   // String literals DO heap-allocate (strdup from cstr) and need drops.
   if (auto *lit = std::get_if<ast::ExprLiteral>(&astExpr.kind)) {

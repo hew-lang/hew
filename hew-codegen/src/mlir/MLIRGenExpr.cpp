@@ -1800,7 +1800,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     // Let-bound generic lambda (let r = <T>(...) => ...) path.
     auto lamIt = genericLambdas.find(calleeName);
     if (lamIt != genericLambdas.end()) {
-      auto specializedFunc = specializeGenericLambda(calleeName, typeArgNames);
+      std::vector<CapturedVarInfo> capturedVars;
+      collectLambdaCapturedVars(*lamIt->second, capturedVars, location);
+      auto specializedFunc = specializeGenericLambda(calleeName, typeArgNames, capturedVars);
       if (!specializedFunc)
         return nullptr;
       llvm::SmallVector<mlir::Value, 4> args;
@@ -1810,6 +1812,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           return nullptr;
         args.push_back(val);
       }
+      for (const auto &captured : capturedVars)
+        args.push_back(captured.value);
       auto funcType = specializedFunc.getFunctionType();
       for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
         auto expectedType = funcType.getInput(i);
@@ -6091,6 +6095,18 @@ void MLIRGen::collectFreeVarsInBlock(const ast::Block &block, const std::set<std
     collectFreeVarsInStmt(s->value, localBound, freeVars);
   if (block.trailing_expr)
     collectFreeVarsInExpr(block.trailing_expr->value, localBound, freeVars);
+}
+
+void MLIRGen::collectLambdaCapturedVars(const ast::ExprLambda &lam,
+                                        std::vector<CapturedVarInfo> &capturedVars,
+                                        mlir::Location location) {
+  std::set<std::string> bound;
+  for (const auto &param : lam.params)
+    bound.insert(param.name);
+
+  std::set<std::string> freeVars;
+  collectFreeVarsInExpr(lam.body->value, bound, freeVars);
+  gatherCapturedVars(freeVars, capturedVars, location);
 }
 
 void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,

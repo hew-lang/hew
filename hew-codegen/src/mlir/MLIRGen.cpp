@@ -6159,13 +6159,12 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
 
 /// Specialise a let-bound generic lambda for concrete type arguments.
 ///
-/// Unlike regular lambda lowering, there is no env/closure wrapper: generic
-/// lambdas in slice-1 are capture-free.  We emit a plain `func::FuncOp` with
-/// the lambda's parameters concretized through `typeParamSubstitutions`, then
-/// generate the body as a normal expression.  The FuncOp can be called
-/// directly from the call site with `func::CallOp`.
+/// Unlike regular lambda lowering, there is no env/closure wrapper. The call
+/// site materializes captured outer values and passes them as trailing
+/// arguments after the user-visible lambda parameters.
 mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
-                                                    const std::vector<std::string> &typeArgs) {
+                                                    const std::vector<std::string> &typeArgs,
+                                                    const std::vector<CapturedVarInfo> &capturedVars) {
   auto mangled = "__glambda_" + varName + "_" + mangleGenericName("", typeArgs).substr(1);
   // mangleGenericName("", args) returns "_arg1_arg2…" so strip leading "_".
   // Re-derive more simply:
@@ -6224,6 +6223,8 @@ mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
     }
     paramTypes.push_back(t);
   }
+  for (const auto &captured : capturedVars)
+    paramTypes.push_back(captured.value.getType());
 
   // Resolve optional return type annotation.
   mlir::Type retType = nullptr;
@@ -6258,6 +6259,19 @@ mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
     auto alloca = createHoistedAlloca(storageType, paramVal.getType());
     mlir::memref::StoreOp::create(builder, location, paramVal, alloca);
     mutableVars.insert(paramName, alloca);
+  }
+
+  for (size_t i = 0; i < capturedVars.size(); ++i) {
+    auto capturedName = intern(capturedVars[i].name);
+    auto capturedArg = entryBlock.getArgument(lam->params.size() + i);
+    if (capturedVars[i].isMutable) {
+      auto capturedAlloca = createHoistedAlloca(capturedArg.getType(), capturedArg.getType());
+      mlir::memref::StoreOp::create(builder, location, capturedArg, capturedAlloca);
+      mutableVars.insert(capturedName, capturedAlloca);
+      heapCellValueTypes[capturedAlloca] = capturedVars[i].valueType;
+      continue;
+    }
+    declareVariable(capturedVars[i].name, capturedArg);
   }
 
   // Generate body.

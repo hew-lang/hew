@@ -145,6 +145,40 @@ fn generic_lambda_multi_instantiation_var_bound_int_and_string() {
 }
 
 #[test]
+fn generic_lambda_multi_instantiation_with_captures() {
+    let source = r"
+        fn main() {
+            let offset: int = 10;
+            let flag: bool = false;
+            let attach = <T>(x: T) -> (T, int, bool) => (x, offset, flag);
+            let a = attach(42);
+            let b = attach(true);
+        }
+    ";
+
+    let (program, output) = parse_and_check(source);
+    let call_spans = main_call_spans(&program);
+    assert_eq!(
+        call_spans.len(),
+        2,
+        "expected two generic lambda call sites"
+    );
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(&call_spans[0])),
+        Some(&vec![Ty::I64])
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(&call_spans[1])),
+        Some(&vec![Ty::Bool])
+    );
+}
+
+#[test]
 fn generic_lambda_multi_instantiation_explicit_types() {
     let source = r#"
         fn main() {

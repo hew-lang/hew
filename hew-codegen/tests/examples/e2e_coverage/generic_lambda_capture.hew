@@ -1,0 +1,15 @@
+fn main() {
+    let offset: int = 10;
+    let flag: bool = false;
+    let attach = <T>(x: T) -> (T, int, bool) => (x, offset, flag);
+
+    let (first_value, first_offset, first_flag) = attach(5);
+    let (second_value, second_offset, second_flag) = attach(true);
+
+    println(first_value);
+    println(first_offset);
+    println(first_flag);
+    println(second_value);
+    println(second_offset);
+    println(second_flag);
+}

@@ -751,7 +751,7 @@ mod tests {
             .iter()
             .find(|((ty, method), _, _, _)| ty == "net.Listener" && method == "close")
             .expect("net.Listener.close should be extracted");
-        assert_eq!(close.1, "hew_tcp_close");
+        assert_eq!(close.1, "hew_tcp_listener_close");
         assert_eq!(close.2, Vec::<Ty>::new());
         assert_eq!(close.3, Ty::I32);
 

@@ -558,7 +558,7 @@ mod tests {
         let listener_close = reg
             .resolve_handle_method_sig("net.Listener", "close")
             .expect("net.Listener.close should resolve");
-        assert_eq!(listener_close.0, "hew_tcp_close");
+        assert_eq!(listener_close.0, "hew_tcp_listener_close");
         assert_eq!(listener_close.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(listener_close.2, crate::ty::Ty::I32);
 

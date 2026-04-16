@@ -1411,6 +1411,7 @@ add_wasm_file_test(wire_yaml_naming           e2e_wire             wire_yaml_nam
 add_wasm_file_test(wire_yaml_naming_full      e2e_wire             wire_yaml_naming_full)
 add_wasm_file_test(wire_yaml_scalars          e2e_wire             wire_yaml_scalars)
 add_wasm_file_test(wire_yaml_roundtrip        e2e_wire             wire_yaml_roundtrip)
+add_wasm_file_test(wire_alias_yaml_roundtrip  e2e_wire             wire_alias_yaml_roundtrip)
 add_wasm_file_test(wire_nested_struct_yaml    e2e_wire             wire_nested_struct_yaml)
 add_wasm_file_test(wire_yaml_naming_roundtrip e2e_wire             wire_yaml_naming_roundtrip)
 add_wasm_file_test(wire_enum_payload_serial_roundtrip e2e_wire      wire_enum_payload_serial_roundtrip)

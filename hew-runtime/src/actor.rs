@@ -504,12 +504,32 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).
-pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
+pub(crate) fn with_live_actor<R>(
+    actor: *mut HewActor,
+    f: impl FnOnce(&HewActor) -> R,
+) -> Option<R> {
     let guard = LIVE_ACTORS.lock_or_recover();
-    if let Some(map) = guard.as_ref() {
-        return map.values().any(|ptr| ptr.0 == actor);
+    if guard
+        .as_ref()
+        .is_some_and(|map| map.values().any(|ptr| ptr.0 == actor))
+    {
+        // SAFETY: `actor` is still tracked in LIVE_ACTORS, and concurrent
+        // frees must remove it from that map before reclaiming the allocation.
+        return Some(f(unsafe { &*actor }));
     }
-    false
+    None
+}
+
+/// Check whether an actor pointer is still live (tracked and not yet freed).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "supervisor and actor tests rely on the liveness probe"
+    )
+)]
+pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
+    with_live_actor(actor, |_| ()).is_some()
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown

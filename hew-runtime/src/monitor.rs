@@ -8,6 +8,8 @@ use crate::util::RwLockExt;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::{Arc, Barrier, Mutex};
 use std::sync::{LazyLock, RwLock};
 
 use crate::actor::HewActor;
@@ -160,56 +162,100 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
         let monitoring_actor = monitoring_actor_addr as *mut HewActor;
 
-        // Guard: skip actors that have already been freed.
-        if !crate::actor::is_actor_live(monitoring_actor) {
-            continue;
-        }
+        crate::actor::with_live_actor(monitoring_actor, |monitoring_actor_ref| {
+            let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
 
-        // SAFETY: monitoring_actor is live (checked above).
-        let monitoring_actor_ref = unsafe { &*monitoring_actor };
-        let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+            if !mailbox.is_null() {
+                // Prepare DOWN message data: { monitored_actor_id: u64, ref_id: u64, reason: i32 }
+                let down_data = DownMessage {
+                    monitored_actor_id: actor_id,
+                    ref_id: monitor.ref_id,
+                    reason,
+                };
 
-        if !mailbox.is_null() {
-            // Prepare DOWN message data: { monitored_actor_id: u64, ref_id: u64, reason: i32 }
-            let down_data = DownMessage {
-                monitored_actor_id: actor_id,
-                ref_id: monitor.ref_id,
-                reason,
-            };
+                let data_ptr = (&raw const down_data).cast::<c_void>();
+                let data_size = std::mem::size_of::<DownMessage>();
 
-            let data_ptr = (&raw const down_data).cast::<c_void>();
-            let data_size = std::mem::size_of::<DownMessage>();
+                // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
+                unsafe {
+                    mailbox::hew_mailbox_send_sys(
+                        mailbox,
+                        SYS_MSG_DOWN,
+                        data_ptr.cast_mut(),
+                        data_size,
+                    );
+                }
 
-            // SAFETY: mailbox is valid for the actor's lifetime, down_data is valid.
-            unsafe {
-                mailbox::hew_mailbox_send_sys(
-                    mailbox,
-                    SYS_MSG_DOWN,
-                    data_ptr.cast_mut(),
-                    data_size,
-                );
+                // Wake the monitoring actor so it processes the DOWN message.
+                if monitoring_actor_ref
+                    .actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    monitoring_actor_ref
+                        .idle_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    monitoring_actor_ref
+                        .hibernating
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    crate::scheduler::sched_enqueue(monitoring_actor);
+                }
             }
 
-            // Wake the monitoring actor so it processes the DOWN message.
-            if monitoring_actor_ref
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                monitoring_actor_ref
-                    .idle_count
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                monitoring_actor_ref
-                    .hibernating
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                crate::scheduler::sched_enqueue(monitoring_actor);
-            }
-        }
+            #[cfg(test)]
+            run_notify_monitors_hook();
+        });
+    }
+}
+
+#[cfg(test)]
+type NotifyMonitorsHook = Option<(Arc<Barrier>, Arc<Barrier>)>;
+
+#[cfg(test)]
+static NOTIFY_MONITORS_HOOK: LazyLock<Mutex<NotifyMonitorsHook>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn run_notify_monitors_hook() {
+    let hook = {
+        let guard = NOTIFY_MONITORS_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.clone()
+    };
+
+    if let Some((entered, release)) = hook {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+struct NotifyMonitorsHookGuard;
+
+#[cfg(test)]
+impl NotifyMonitorsHookGuard {
+    fn install(entered: Arc<Barrier>, release: Arc<Barrier>) -> Self {
+        let mut guard = NOTIFY_MONITORS_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = Some((entered, release));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for NotifyMonitorsHookGuard {
+    fn drop(&mut self) {
+        let mut guard = NOTIFY_MONITORS_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = None;
     }
 }
 
@@ -295,6 +341,15 @@ pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr};
+    use std::time::Duration;
+
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
@@ -511,5 +566,78 @@ mod tests {
         let ptr = (&raw const actor).cast_mut();
         remove_all_monitors_for_actor(40_300, ptr);
         assert!(!has_monitors_for_actor(40_300, ptr));
+    }
+
+    #[test]
+    fn notify_monitors_keeps_actor_live_through_sys_send() {
+        let _guard = crate::runtime_test_guard();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let _hook = NotifyMonitorsHookGuard::install(Arc::clone(&entered), Arc::clone(&release));
+
+        // SAFETY: spawned actors are owned by this test and freed before return.
+        unsafe {
+            let watcher =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            let target =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!watcher.is_null());
+            assert!(!target.is_null());
+
+            (*watcher).actor_state.store(
+                HewActorState::Runnable as i32,
+                std::sync::atomic::Ordering::Release,
+            );
+
+            let ref_id = hew_actor_monitor(watcher, target);
+            assert_ne!(ref_id, 0);
+
+            let target_id = (*target).id;
+            let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77));
+            entered.wait();
+
+            (*watcher).actor_state.store(
+                HewActorState::Idle as i32,
+                std::sync::atomic::Ordering::Release,
+            );
+
+            let free_started = Arc::new(AtomicBool::new(false));
+            let free_done = Arc::new(AtomicBool::new(false));
+            let watcher_addr = watcher as usize;
+            let free_started_thread = Arc::clone(&free_started);
+            let free_done_thread = Arc::clone(&free_done);
+            let free_handle = std::thread::spawn(move || {
+                free_started_thread.store(true, std::sync::atomic::Ordering::Release);
+                let rc = crate::actor::hew_actor_free(watcher_addr as *mut HewActor);
+                assert_eq!(rc, 0);
+                free_done_thread.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            while !free_started.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
+            let payload = &*((*node).data.cast::<DownMessage>());
+            assert_eq!(payload.monitored_actor_id, target_id);
+            assert_eq!(payload.ref_id, ref_id);
+            assert_eq!(payload.reason, 77);
+            mailbox::hew_msg_node_free(node);
+
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                !free_done.load(std::sync::atomic::Ordering::Acquire),
+                "hew_actor_free must wait until notify_monitors_on_death releases LIVE_ACTORS"
+            );
+
+            release.wait();
+            notify.join().unwrap();
+            free_handle.join().unwrap();
+
+            assert_eq!(crate::actor::hew_actor_free(target), 0);
+        }
     }
 }

@@ -1,0 +1,40 @@
+// Test: YAML round-trip for wire alias primitive families.
+// Proves alias encode/decode for float, bool, unsigned aliases, and duration.
+#[wire]
+struct AliasBundle {
+    val: float @1;
+    flag: bool @2;
+    b: byte @3;
+    ch: char @4;
+    u: uint @5;
+    ns: duration @6;
+}
+
+fn print_roundtrip(bundle: AliasBundle) {
+    let yaml1 = bundle.to_yaml();
+    print(yaml1);
+
+    let bundle2 = AliasBundle.from_yaml(yaml1);
+    let yaml2 = bundle2.to_yaml();
+    print(yaml2);
+}
+
+fn main() {
+    print_roundtrip(AliasBundle {
+        val: 1.5,
+        flag: true,
+        b: 255,
+        ch: 'A',
+        u: 300,
+        ns: 5s,
+    });
+
+    print_roundtrip(AliasBundle {
+        val: 0.0,
+        flag: false,
+        b: 0,
+        ch: '\0',
+        u: 0,
+        ns: 0ns,
+    });
+}

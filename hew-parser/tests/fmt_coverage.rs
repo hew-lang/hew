@@ -1280,6 +1280,28 @@ fn fmt_type_alias_roundtrip() {
 }
 
 #[test]
+fn fmt_function_type_roundtrip() {
+    exact_roundtrip("fn apply(f: fn(i32) -> bool) -> bool {\n    f(1)\n}\n");
+}
+
+#[test]
+fn fmt_trait_object_type_roundtrip() {
+    exact_roundtrip("type Showable = dyn (Display + Debug);\n");
+}
+
+#[test]
+fn fmt_trait_associated_type_roundtrip() {
+    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self::Item;\n}\n");
+}
+
+#[test]
+fn fmt_impl_associated_type_binding_roundtrip() {
+    exact_roundtrip(
+        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(c: Vec<i32>) -> i32 {\n        c[0]\n    }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_wire_declarations_roundtrip() {
     exact_roundtrip(
         "#[wire]\nstruct Message {\n    id: i32 @1,\n}\n\nwire enum Command {\n    Start;\n    Stop;\n}\n",

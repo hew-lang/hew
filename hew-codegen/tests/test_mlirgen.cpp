@@ -893,6 +893,18 @@ static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast
   return program.expr_types.size() != oldSize;
 }
 
+static void appendExprTypeEntry(hew::ast::Program &program, const hew::ast::Span &span,
+                                llvm::StringRef typeName) {
+  hew::ast::TypeExpr typeExpr;
+  typeExpr.kind = hew::ast::TypeNamed{typeName.str(), std::nullopt};
+  program.expr_types.push_back({span.start, span.end, {std::move(typeExpr), span}});
+}
+
+static bool hasTrueUnsignedAttr(mlir::Operation *op) {
+  return op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+         op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
+}
+
 static bool replaceStreamElementExprTypeForSpan(hew::ast::Program &program,
                                                 const hew::ast::Span &span,
                                                 llvm::StringRef elementTypeName) {
@@ -1061,6 +1073,26 @@ static std::optional<hew::ast::Span> findMethodCallSpanInStmt(const hew::ast::St
   return std::nullopt;
 }
 
+static std::optional<hew::ast::Span> findMethodArgSpanInStmt(const hew::ast::Stmt &stmt,
+                                                             const std::string &methodName,
+                                                             size_t argIndex) {
+  auto argSpanForExpr =
+      [&](const hew::ast::Spanned<hew::ast::Expr> &expr) -> std::optional<hew::ast::Span> {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&expr.value.kind);
+    if (!methodCall || methodCall->method != methodName || argIndex >= methodCall->args.size())
+      return std::nullopt;
+    return hew::ast::callArgExpr(methodCall->args[argIndex]).span;
+  };
+
+  if (auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt.kind))
+    return retStmt->value ? argSpanForExpr(*retStmt->value) : std::nullopt;
+
+  if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt.kind))
+    return argSpanForExpr(exprStmt->expr);
+
+  return std::nullopt;
+}
+
 static std::optional<hew::ast::Span> findFunctionMethodReceiverSpan(const hew::ast::FnDecl &fn,
                                                                     const std::string &methodName) {
   for (const auto &stmt : fn.body.stmts)
@@ -1086,6 +1118,22 @@ static std::optional<hew::ast::Span> findFunctionMethodCallSpan(const hew::ast::
     auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&fn.body.trailing_expr->value.kind);
     if (methodCall && methodCall->method == methodName)
       return fn.body.trailing_expr->span;
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<hew::ast::Span> findFunctionMethodArgSpan(const hew::ast::FnDecl &fn,
+                                                               const std::string &methodName,
+                                                               size_t argIndex) {
+  for (const auto &stmt : fn.body.stmts)
+    if (auto span = findMethodArgSpanInStmt(stmt->value, methodName, argIndex))
+      return span;
+
+  if (fn.body.trailing_expr) {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&fn.body.trailing_expr->value.kind);
+    if (methodCall && methodCall->method == methodName && argIndex < methodCall->args.size())
+      return hew::ast::callArgExpr(methodCall->args[argIndex]).span;
   }
 
   return std::nullopt;
@@ -1132,10 +1180,50 @@ static std::optional<hew::ast::Span> findFunctionCallArgSpan(const hew::ast::FnD
   return std::nullopt;
 }
 
+static bool rewriteLogCallToUnsignedFirstArg(hew::ast::FnDecl &fn, llvm::StringRef directCallee,
+                                             llvm::StringRef methodName) {
+  auto rewriteExpr = [&](hew::ast::Spanned<hew::ast::Expr> &expr) {
+    auto takeNamedValueArg = [](auto &args) -> bool {
+      if (args.size() < 2)
+        return false;
+      auto *namedArg = std::get_if<hew::ast::CallArgNamed>(&args[1]);
+      if (!namedArg || !namedArg->value)
+        return false;
+      hew::ast::CallArgPositional posArg;
+      posArg.expr = std::move(namedArg->value);
+      args.clear();
+      args.push_back(std::move(posArg));
+      return true;
+    };
+
+    if (auto *call = std::get_if<hew::ast::ExprCall>(&expr.value.kind)) {
+      auto *callee = call->function
+                         ? std::get_if<hew::ast::ExprIdentifier>(&call->function->value.kind)
+                         : nullptr;
+      return callee && callee->name == directCallee && takeNamedValueArg(call->args);
+    }
+
+    if (auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&expr.value.kind))
+      return methodCall->method == methodName && takeNamedValueArg(methodCall->args);
+
+    return false;
+  };
+
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+        exprStmt && rewriteExpr(exprStmt->expr)) {
+      return true;
+    }
+  }
+
+  return fn.body.trailing_expr && rewriteExpr(*fn.body.trailing_expr);
+}
+
 static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   using namespace hew::ast;
 
   uint64_t nextSpan = 900000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1161,7 +1249,9 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1202,6 +1292,8 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1209,6 +1301,7 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
   using namespace hew::ast;
 
   uint64_t nextSpan = 910000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1234,7 +1327,9 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1272,6 +1367,8 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1285,6 +1382,7 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
   using namespace hew::ast;
 
   uint64_t nextSpan = 920000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1315,7 +1413,9 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1372,6 +1472,8 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1386,6 +1488,7 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
   using namespace hew::ast;
 
   uint64_t nextSpan = 900000001000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1430,7 +1533,9 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(value)});
+    auto arg = mkInt(value);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1509,6 +1614,8 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -4853,6 +4960,403 @@ fn main() -> u16 {
 
   if (stderrText.find("module verification failed") != std::string::npos) {
     FAIL("unexpected downstream verifier failure for missing call argument metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: string interpolation keeps unsigned formatting hints fail-closed
+// ============================================================================
+static void test_u8_string_interpolation_uses_unsigned_format() {
+  TEST(u8_string_interpolation_uses_unsigned_format);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> string {
+    let value: u8 = 255;
+    f"{value}"
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  int toStringCount = 0;
+  int unsignedCount = 0;
+  module.walk([&](hew::ToStringOp op) {
+    ++toStringCount;
+    if (hasTrueUnsignedAttr(op.getOperation()))
+      ++unsignedCount;
+  });
+
+  if (toStringCount != 1 || unsignedCount != 1) {
+    FAIL("expected string interpolation ToStringOp to carry is_unsigned");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_string_interpolation_missing_expr_type_fails_closed() {
+  TEST(string_interpolation_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> string {
+    let value: u8 = 255;
+    f"{value}"
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn || !fn->body.trailing_expr) {
+    FAIL("main trailing interpolation not found");
+    return;
+  }
+
+  auto *interp = std::get_if<hew::ast::ExprInterpolatedString>(&fn->body.trailing_expr->value.kind);
+  if (!interp || interp->parts.empty()) {
+    FAIL("expected trailing interpolated string expression");
+    return;
+  }
+
+  auto *exprPart = std::get_if<hew::ast::StringPartExpr>(&interp->parts[0]);
+  if (!exprPart || !exprPart->expr || !eraseExprTypeEntryForSpan(program, exprPart->expr->span)) {
+    FAIL("failed to remove expr_types entry for interpolated expression");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when interpolation expr type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for string interpolation signedness") ==
+      std::string::npos) {
+    FAIL("expected string interpolation fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for interpolation missing type");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_println_unsigned_sets_is_unsigned_attr() {
+  TEST(println_unsigned_sets_is_unsigned_attr);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() -> int {
+    let value: u8 = 255;
+    println(value);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  int printCount = 0;
+  int unsignedCount = 0;
+  module.walk([&](hew::PrintOp op) {
+    ++printCount;
+    if (hasTrueUnsignedAttr(op.getOperation()))
+      ++unsignedCount;
+  });
+
+  if (printCount != 1 || unsignedCount != 1) {
+    FAIL("expected println to carry is_unsigned on hew.print");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_println_missing_expr_type_fails_closed() {
+  TEST(println_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_print(value: u8) {
+    println(value);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_print");
+  if (!fn) {
+    FAIL("broken_print function not found");
+    return;
+  }
+
+  auto argSpan = findFunctionCallArgSpan(*fn, "println", 0);
+  if (!argSpan || !eraseExprTypeEntryForSpan(program, *argSpan)) {
+    FAIL("failed to remove expr_types entry for println argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when println argument type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for print/println argument signedness") ==
+      std::string::npos) {
+    FAIL("expected println fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for println missing type");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_log_first_arg_unsigned_sets_is_unsigned_attr() {
+  TEST(log_first_arg_unsigned_sets_is_unsigned_attr);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::misc::log;
+
+fn main() -> int {
+    let value: u8 = 255;
+    log.info("ready", value: value);
+    0
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn || !rewriteLogCallToUnsignedFirstArg(*fn, "hew_log_info", "info")) {
+    FAIL("failed to rewrite log call for unsigned first-arg test");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, program);
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  int toStringCount = 0;
+  int unsignedCount = 0;
+  module.walk([&](hew::ToStringOp op) {
+    ++toStringCount;
+    if (hasTrueUnsignedAttr(op.getOperation()))
+      ++unsignedCount;
+  });
+
+  if (toStringCount != 1 || unsignedCount != 1) {
+    FAIL("expected log first-arg ToStringOp to carry is_unsigned");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_log_first_arg_missing_expr_type_fails_closed() {
+  TEST(log_first_arg_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::misc::log;
+
+fn broken_log() {
+    let value: u8 = 255;
+    log.info("ready", value: value);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_log");
+  if (!fn) {
+    FAIL("broken_log function not found");
+    return;
+  }
+
+  if (!rewriteLogCallToUnsignedFirstArg(*fn, "hew_log_info", "info")) {
+    FAIL("failed to rewrite log call for missing-metadata first-arg test");
+    return;
+  }
+
+  auto argSpan = findFunctionCallArgSpan(*fn, "hew_log_info", 0);
+  if (!argSpan)
+    argSpan = findFunctionMethodArgSpan(*fn, "info", 0);
+  if (!argSpan || !eraseExprTypeEntryForSpan(program, *argSpan)) {
+    FAIL("failed to remove expr_types entry for log first argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when log first argument type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for log/trace message signedness") ==
+      std::string::npos) {
+    FAIL("expected log first-arg fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for log first argument missing type");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_log_named_arg_unsigned_sets_is_unsigned_attr() {
+  TEST(log_named_arg_unsigned_sets_is_unsigned_attr);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+import std::misc::log;
+
+fn main() -> int {
+    let value: u8 = 255;
+    log.info("ready", value: value);
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  int toStringCount = 0;
+  int unsignedCount = 0;
+  module.walk([&](hew::ToStringOp op) {
+    ++toStringCount;
+    if (hasTrueUnsignedAttr(op.getOperation()))
+      ++unsignedCount;
+  });
+
+  if (toStringCount != 1 || unsignedCount != 1) {
+    FAIL("expected log named-arg ToStringOp to carry is_unsigned");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_log_named_arg_missing_expr_type_fails_closed() {
+  TEST(log_named_arg_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::misc::log;
+
+fn broken_log() {
+    let value: u8 = 255;
+    log.info("ready", value: value);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_log");
+  if (!fn) {
+    FAIL("broken_log function not found");
+    return;
+  }
+
+  auto argSpan = findFunctionCallArgSpan(*fn, "hew_log_info", 1);
+  if (!argSpan)
+    argSpan = findFunctionMethodArgSpan(*fn, "info", 1);
+  if (!argSpan || !eraseExprTypeEntryForSpan(program, *argSpan)) {
+    FAIL("failed to remove expr_types entry for log named argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when log named argument type is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for log/trace named argument signedness") ==
+      std::string::npos) {
+    FAIL("expected log named-arg fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for log named argument missing type");
     return;
   }
 
@@ -11741,6 +12245,14 @@ int main() {
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
   test_unsigned_call_arg_widening_uses_zero_extension();
   test_unsigned_call_arg_missing_expr_type_fails_closed();
+  test_u8_string_interpolation_uses_unsigned_format();
+  test_string_interpolation_missing_expr_type_fails_closed();
+  test_println_unsigned_sets_is_unsigned_attr();
+  test_println_missing_expr_type_fails_closed();
+  test_log_first_arg_unsigned_sets_is_unsigned_attr();
+  test_log_first_arg_missing_expr_type_fails_closed();
+  test_log_named_arg_unsigned_sets_is_unsigned_attr();
+  test_log_named_arg_missing_expr_type_fails_closed();
   test_println_int_missing_expr_type_fails_closed();
   test_int_to_string_missing_expr_type_fails_closed();
   test_scope_await_inline_launch_uses_resolved_task_type();

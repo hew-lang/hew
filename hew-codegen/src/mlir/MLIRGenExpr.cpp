@@ -897,10 +897,13 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
           // Already a string — use directly
           partValues.push_back(val);
         } else if (valType.isIntOrFloat() || valType.isInteger(1)) {
+          auto *typeExpr = requireResolvedTypeOf(exprPart->expr->span,
+                                                 "string interpolation signedness", location);
+          if (!typeExpr)
+            return nullptr;
           auto str = hew::ToStringOp::create(builder, location, strRefType, val);
-          if (auto *typeExpr = resolvedTypeOf(exprPart->expr->span))
-            if (isUnsignedTypeExpr(*typeExpr))
-              str->setAttr("is_unsigned", builder.getBoolAttr(true));
+          if (isUnsignedTypeExpr(*typeExpr))
+            str->setAttr("is_unsigned", builder.getBoolAttr(true));
           partValues.push_back(str);
           ownedTemps.push_back(str); // heap-allocated — we own this
         } else {
@@ -2758,11 +2761,15 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   // are dropped at scope exit instead of requiring ad-hoc cleanup.
   materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
 
+  auto *argType = requireResolvedTypeOf(ast::callArgExpr(call.args[0]).span,
+                                        "print/println argument signedness", location);
+  if (!argType)
+    return nullptr;
+
   auto printOp = hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
   // Propagate unsigned type info so the lowering uses unsigned print routines.
-  if (auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[0]).span))
-    if (isUnsignedTypeExpr(*argType))
-      printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+  if (isUnsignedTypeExpr(*argType))
+    printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
 
   return nullptr; // print returns void
 }
@@ -3315,6 +3322,23 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
   auto i32Type = builder.getI32Type();
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto strRefType = hew::StringRefType::get(&context);
+  const ast::TypeExpr *messageTypeExpr = nullptr;
+  if (!args.empty()) {
+    messageTypeExpr = requireResolvedTypeOf(ast::callArgExpr(args[0]).span,
+                                            "log/trace message signedness", location);
+    if (!messageTypeExpr)
+      return nullptr;
+  }
+
+  llvm::SmallVector<const ast::TypeExpr *, 4> namedArgTypes(args.size(), nullptr);
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (ast::callArgName(args[i]).empty())
+      continue;
+    namedArgTypes[i] = requireResolvedTypeOf(ast::callArgExpr(args[i]).span,
+                                             "log/trace named argument signedness", location);
+    if (!namedArgTypes[i])
+      return nullptr;
+  }
 
   // 1. Call hew_log_get_level() to read the current filter level.
   auto getLevelFuncType = mlir::FunctionType::get(&context, {}, {i32Type});
@@ -3346,9 +3370,8 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       if (!mlir::isa<hew::StringRefType>(msgStr.getType()) &&
           !mlir::isa<mlir::LLVM::LLVMPointerType>(msgStr.getType())) {
         auto toStr = hew::ToStringOp::create(b, loc, strRefType, msgStr);
-        if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
-          if (isUnsignedTypeExpr(*argType))
-            toStr->setAttr("is_unsigned", b.getBoolAttr(true));
+        if (isUnsignedTypeExpr(*messageTypeExpr))
+          toStr->setAttr("is_unsigned", b.getBoolAttr(true));
         msgStr = toStr;
         ownedTemps.push_back(toStr);
       }
@@ -3413,9 +3436,8 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
         valStr = val;
       } else {
         auto toStr = hew::ToStringOp::create(b, loc, strRefType, val);
-        if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[i]).span))
-          if (isUnsignedTypeExpr(*argType))
-            toStr->setAttr("is_unsigned", b.getBoolAttr(true));
+        if (isUnsignedTypeExpr(*namedArgTypes[i]))
+          toStr->setAttr("is_unsigned", b.getBoolAttr(true));
         valStr = toStr;
         ownedTemps.push_back(toStr);
       }

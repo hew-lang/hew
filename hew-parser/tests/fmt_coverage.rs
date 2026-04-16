@@ -1201,6 +1201,25 @@ fn fmt_scope_cancel_roundtrip() {
 }
 
 #[test]
+fn fmt_scope_launch_non_default_binding() {
+    exact_roundtrip(
+        "fn main() {\n    scope |handle| {\n        let task = handle.launch {\n            1\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_spawn_non_default_binding() {
+    exact_roundtrip(
+        "fn main() {\n    scope |handle| {\n        handle.spawn {\n            println(1);\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_cancel_non_default_binding() {
+    exact_roundtrip("fn main() {\n    scope |handle| {\n        handle.cancel();\n    };\n}\n");
+}
+
+#[test]
 fn fmt_cooperate_roundtrip() {
     exact_roundtrip("fn main() {\n    cooperate;\n}\n");
 }

@@ -678,6 +678,32 @@ fn inferred_type_diagnostic(
     }
 }
 
+fn non_root_module_item_sources(
+    program: &Program,
+) -> Vec<(hew_parser::ast::Span, Option<PathBuf>)> {
+    let Some(module_graph) = &program.module_graph else {
+        return Vec::new();
+    };
+
+    let mut item_sources = Vec::new();
+    for mod_id in &module_graph.topo_order {
+        if *mod_id == module_graph.root {
+            continue;
+        }
+        let Some(module) = module_graph.modules.get(mod_id) else {
+            continue;
+        };
+        let source_path = module.source_paths.first().cloned();
+        item_sources.extend(
+            module
+                .items
+                .iter()
+                .map(|(_, span)| (span.clone(), source_path.clone())),
+        );
+    }
+    item_sources
+}
+
 #[expect(
     clippy::type_complexity,
     reason = "threads serializer side tables together with collected diagnostics"
@@ -701,7 +727,8 @@ fn enrich_program_ast_with_diagnostics(
             .get(&graph.root)
             .map(|module| module.items.len())
     });
-    let imported_item_sources = flatten_import_items(program);
+    let mut imported_item_sources = flatten_import_items(program);
+    imported_item_sources.extend(non_root_module_item_sources(program));
     let mut diagnostics = Vec::new();
 
     let (expr_type_map, method_call_receiver_kinds) = if let Some(tco) = tco {
@@ -739,7 +766,30 @@ fn enrich_program_ast_with_diagnostics(
             }
             for (id, module) in &mut module_graph.modules {
                 if *id != module_graph.root {
-                    hew_serialize::normalize_items_types(&mut module.items, module_registry);
+                    let module_diagnostics =
+                        hew_serialize::enrich_items(&mut module.items, tco, module_registry)
+                            .map_err(|e| {
+                                FrontendFailure::message_only(format!(
+                                    "Error: cannot enrich inferred types: {e}"
+                                ))
+                            })?;
+
+                    for diagnostic in collect_new_inferred_type_diagnostics(
+                        module_diagnostics.diagnostics(),
+                        input,
+                        &imported_item_sources,
+                        &mut seen_inferred_type_diagnostics,
+                    ) {
+                        let fatal = inferred_type_serialization_diagnostic_is_fatal(diagnostic);
+                        fatal_inferred_type_diagnostic |= fatal;
+                        diagnostics.push(inferred_type_diagnostic(
+                            source,
+                            input,
+                            &imported_item_sources,
+                            diagnostic,
+                            fatal,
+                        ));
+                    }
                 }
             }
         }
@@ -1733,7 +1783,9 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 mod tests {
     use super::{
         check_file, check_program, compile_file, enrich_program_ast, load_dependencies,
-        load_lockfile, load_package_name, parse_source, FrontendDiagnosticKind, FrontendOptions,
+        load_lockfile, load_package_name, parse_source, project_context_for_program,
+        resolve_imports_internal, typecheck_program_with_diagnostics, FrontendDiagnosticKind,
+        FrontendOptions,
     };
     use hew_parser::ast::{Item, Stmt};
     use hew_serialize::TypeExprConversionKind;
@@ -2135,6 +2187,158 @@ mod tests {
             )),
             "expected fatal ErrorSentinel diagnostic, got: {:?}",
             err.diagnostics
+        );
+    }
+
+    #[test]
+    fn enrich_program_ast_populates_non_root_module_binding_types() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root_input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\";\nfn main() {}\n",
+        );
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "fn helper() -> i32 { let value = 1; value }\n",
+        );
+
+        let source = fs::read_to_string(&root_input).expect("read root source");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut program = parse_source(&source, &root_input).expect("source should parse");
+        let project =
+            project_context_for_program(&source, &options).expect("project context should load");
+        let mut resolve_diagnostics = Vec::new();
+
+        resolve_imports_internal(
+            &mut program,
+            &source,
+            &root_input,
+            &project,
+            &options,
+            &mut resolve_diagnostics,
+        )
+        .expect("imports should resolve");
+
+        let (typecheck, _) =
+            typecheck_program_with_diagnostics(&program, &source, &root_input, &options)
+                .expect("typecheck should succeed");
+
+        enrich_program_ast(
+            &mut program,
+            typecheck.tco.as_ref(),
+            &typecheck.module_registry,
+            &source,
+            &root_input,
+        )
+        .expect("enrichment should succeed");
+
+        let module_graph = program
+            .module_graph
+            .as_ref()
+            .expect("resolved program should have module graph");
+        let helper_module = module_graph
+            .modules
+            .iter()
+            .find_map(|(id, module)| (*id != module_graph.root).then_some(module))
+            .expect("expected non-root helper module");
+
+        let helper_function = helper_module
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(function) if function.name == "helper" => Some(function),
+                _ => None,
+            })
+            .expect("expected helper function in non-root module");
+
+        let inferred_binding = match &helper_function.body.stmts[0].0 {
+            Stmt::Let { ty, .. } => ty,
+            other => panic!("expected helper body to start with let binding, got {other:?}"),
+        };
+        assert!(
+            inferred_binding.is_some(),
+            "non-root module let binding should be enriched with stmt.ty"
+        );
+    }
+
+    #[test]
+    fn enrich_program_ast_skips_non_root_module_string_binding_types() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root_input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\";\nfn main() {}\n",
+        );
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "fn helper() -> String { let value = \"ok\"; value }\n",
+        );
+
+        let source = fs::read_to_string(&root_input).expect("read root source");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut program = parse_source(&source, &root_input).expect("source should parse");
+        let project =
+            project_context_for_program(&source, &options).expect("project context should load");
+        let mut resolve_diagnostics = Vec::new();
+
+        resolve_imports_internal(
+            &mut program,
+            &source,
+            &root_input,
+            &project,
+            &options,
+            &mut resolve_diagnostics,
+        )
+        .expect("imports should resolve");
+
+        let (typecheck, _) =
+            typecheck_program_with_diagnostics(&program, &source, &root_input, &options)
+                .expect("typecheck should succeed");
+
+        enrich_program_ast(
+            &mut program,
+            typecheck.tco.as_ref(),
+            &typecheck.module_registry,
+            &source,
+            &root_input,
+        )
+        .expect("enrichment should succeed");
+
+        let module_graph = program
+            .module_graph
+            .as_ref()
+            .expect("resolved program should have module graph");
+        let helper_module = module_graph
+            .modules
+            .iter()
+            .find_map(|(id, module)| (*id != module_graph.root).then_some(module))
+            .expect("expected non-root helper module");
+
+        let helper_function = helper_module
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(function) if function.name == "helper" => Some(function),
+                _ => None,
+            })
+            .expect("expected helper function in non-root module");
+
+        let inferred_binding = match &helper_function.body.stmts[0].0 {
+            Stmt::Let { ty, .. } => ty,
+            other => panic!("expected helper body to start with let binding, got {other:?}"),
+        };
+        assert!(
+            inferred_binding.is_none(),
+            "ownership-sensitive non-root module let binding should keep stmt.ty unset"
         );
     }
 

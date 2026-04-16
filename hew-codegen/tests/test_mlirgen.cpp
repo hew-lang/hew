@@ -3561,6 +3561,116 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: array-repeat expressions lower using their resolved Vec element type.
+// ============================================================================
+static void test_array_repeat_u8_lowers_with_resolved_vec_type() {
+  TEST(array_repeat_u8_lowers_with_resolved_vec_type);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn repeat_u8(value: u8) -> Vec<u8> {
+    [value; 3]
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for u8 array-repeat lowering");
+    return;
+  }
+
+  auto repeatFn = lookupFuncBySuffix(module, "repeat_u8");
+  if (!repeatFn) {
+    FAIL("repeat_u8 function not found for array-repeat lowering test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int vecNewCount = 0;
+  bool sawVecU8 = false;
+  int vecPushCount = 0;
+  bool sawPushU8 = false;
+  repeatFn.walk([&](hew::VecNewOp op) {
+    vecNewCount++;
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(op.getType()))
+      sawVecU8 |= vecType.getElementType().isInteger(8);
+  });
+  repeatFn.walk([&](hew::VecPushOp op) {
+    vecPushCount++;
+    sawPushU8 |= op.getValue().getType().isInteger(8);
+  });
+
+  if (vecNewCount != 1 || !sawVecU8) {
+    FAIL("expected array-repeat to materialize exactly one Vec<u8>");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (vecPushCount != 1 || !sawPushU8) {
+    FAIL("expected array-repeat push operand to keep the resolved u8 element type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: array-repeat expressions fail closed without expr_types metadata.
+// ============================================================================
+static void test_array_repeat_missing_expr_type_fails_closed() {
+  TEST(array_repeat_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn repeat_u8(value: u8) -> Vec<u8> {
+    [value; 3]
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run array-repeat negative test");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "repeat_u8");
+  if (!fn || !fn->body.trailing_expr) {
+    FAIL("repeat_u8 trailing array-repeat expression not found");
+    return;
+  }
+
+  if (!std::holds_alternative<hew::ast::ExprArrayRepeat>(fn->body.trailing_expr->value.kind)) {
+    FAIL("expected repeat_u8 trailing expression to be an array-repeat");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, fn->body.trailing_expr->span)) {
+    FAIL("failed to remove array-repeat expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for array-repeat without expr_types metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for array repeat element type annotation") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for array-repeat");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: nested Vec::new fails closed instead of capturing outer array hint
 // ============================================================================
 static void test_nested_vec_new_does_not_capture_outer_array_hint() {
@@ -10196,6 +10306,83 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: named-type method dispatch reports missing receiver expr_types metadata
+// before falling back to the opaque non-struct/enum diagnostic.
+// ============================================================================
+static void test_named_type_method_dispatch_missing_expr_type_fails_closed() {
+  TEST(named_type_method_dispatch_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+enum Mode {
+    Idle;
+    Busy;
+}
+
+impl Mode {
+    fn is_idle(m: Mode) -> bool {
+        match m {
+            Idle => true,
+            Busy => false,
+        }
+    }
+}
+
+fn use_mode(m: Mode) -> bool {
+    return m.is_idle();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run named-type method-dispatch negative test");
+    return;
+  }
+
+  auto *useMode = findFunctionDecl(program, "use_mode");
+  if (!useMode) {
+    FAIL("failed to find use_mode function for named-type method-dispatch negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*useMode, "is_idle");
+  auto methodCallSpan = findFunctionMethodCallSpan(*useMode, "is_idle");
+  if (!receiverSpan || !methodCallSpan) {
+    FAIL("failed to find named-type method-dispatch spans");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove named-type method receiver expr_types entry");
+    return;
+  }
+  if (!eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove named-type method receiver-kind entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for named-type method dispatch without receiver metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for named-type method call receiver") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for named-type method dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: generic handle-backed impl dispatch requires receiver-kind metadata.
 //
 // Before this fix, json.Value method calls bypassed the authority table and
@@ -12222,6 +12409,8 @@ int main() {
   test_if_stmt_branch_temporaries_drop();
   test_collection_builtin_hint_does_not_leak_to_sibling_literals();
   test_declared_collection_hints_lower_array_and_empty_hashmap_literals();
+  test_array_repeat_u8_lowers_with_resolved_vec_type();
+  test_array_repeat_missing_expr_type_fails_closed();
   test_nested_vec_new_does_not_capture_outer_array_hint();
   test_direct_constructor_type_hints_lower_builtins();
   test_nested_none_does_not_inherit_outer_constructor_hints();
@@ -12319,6 +12508,7 @@ int main() {
   test_trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_pruned_receiver_kind_fails_closed();
+  test_named_type_method_dispatch_missing_expr_type_fails_closed();
   test_generic_handle_impl_dispatch_requires_receiver_kind();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();

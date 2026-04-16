@@ -5509,7 +5509,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     structuralTypeName = structType.getName().str();
   } else if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiverType)) {
     structuralTypeName = handleTy.getHandleKind().str();
-  } else if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+  } else {
+    auto *typeExpr =
+        requireResolvedTypeOf(mc.receiver->span, "named-type method call receiver", location);
+    if (!typeExpr)
+      return nullptr;
+
     auto candidate = typeExprToTypeName(*typeExpr, resolveAliasExpr);
     if (!candidate.empty() && (structTypes.count(candidate) || enumTypes.count(candidate)))
       structuralTypeName = candidate;
@@ -5707,22 +5712,23 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
 
   mlir::Type elementType = valueVal.getType();
   hew::VecType vecType = nullptr;
-  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
-    auto resolvedMlirType = convertType(*resolvedType);
-    if (auto resolvedVec = mlir::dyn_cast<hew::VecType>(resolvedMlirType)) {
-      vecType = resolvedVec;
-      elementType = resolvedVec.getElementType();
-      valueVal = coerceType(valueVal, elementType, location);
-      if (!valueVal)
-        return nullptr;
-    } else {
-      ++errorCount_;
-      emitError(location) << "array repeat expression must produce a Vec";
+  auto *resolvedType =
+      requireResolvedTypeOf(exprSpan, "array repeat element type annotation", location);
+  if (!resolvedType)
+    return nullptr;
+
+  auto resolvedMlirType = convertType(*resolvedType);
+  if (auto resolvedVec = mlir::dyn_cast<hew::VecType>(resolvedMlirType)) {
+    vecType = resolvedVec;
+    elementType = resolvedVec.getElementType();
+    valueVal = coerceType(valueVal, elementType, location);
+    if (!valueVal)
       return nullptr;
-    }
+  } else {
+    ++errorCount_;
+    emitError(location) << "array repeat expression must produce a Vec";
+    return nullptr;
   }
-  if (!vecType)
-    vecType = hew::VecType::get(&context, elementType);
 
   auto vecValue = hew::VecNewOp::create(builder, location, vecType).getResult();
 

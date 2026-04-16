@@ -1875,33 +1875,54 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statemen
     return nullptr;
   }
 
-  auto hasUnsignedBlockResult = [&](const ast::Block &block) {
-    if (!mlir::isa<mlir::IntegerType>(resultType))
-      return false;
-
-    auto isUnsignedExprResult = [&](const ast::Expr &expr) {
-      if (auto *typeExpr = resolvedTypeOf(expr.span))
-        return isUnsignedTypeExpr(*typeExpr);
-      return false;
-    };
-
+  auto blockResultExpr = [&](const ast::Block &block) -> const ast::Expr * {
     if (block.trailing_expr)
-      return isUnsignedExprResult(block.trailing_expr->value);
+      return &block.trailing_expr->value;
 
     if (block.stmts.empty())
-      return false;
+      return nullptr;
 
     if (auto *exprStmt = std::get_if<ast::StmtExpression>(&block.stmts.back()->value.kind))
-      return isUnsignedExprResult(exprStmt->expr.value);
+      return &exprStmt->expr.value;
 
-    return false;
+    return nullptr;
   };
+
+  auto computeUnsignedBlockResult = [&](const ast::Block &block, llvm::StringRef context,
+                                        bool &isUnsigned) -> bool {
+    isUnsigned = false;
+    auto dstIntTy = mlir::dyn_cast<mlir::IntegerType>(resultType);
+    auto *expr = blockResultExpr(block);
+    if (!dstIntTy || !expr)
+      return true;
+
+    auto *typeExpr = requireResolvedTypeOf(expr->span, context, location);
+    if (!typeExpr)
+      return false;
+
+    auto srcIntTy = mlir::dyn_cast<mlir::IntegerType>(convertType(*typeExpr, location));
+    if (!srcIntTy || srcIntTy.getWidth() >= dstIntTy.getWidth())
+      return true;
+
+    isUnsigned = isUnsignedTypeExpr(*typeExpr);
+    return true;
+  };
+
+  bool thenIsUnsigned = false;
+  if (!computeUnsignedBlockResult(stmt.then_block, "if-expression branch result signedness",
+                                  thenIsUnsigned))
+    return nullptr;
+  bool elseIsUnsigned = false;
+  const auto &elseBlock = *stmt.else_block;
+  if (elseBlock.block &&
+      !computeUnsignedBlockResult(*elseBlock.block, "if-expression branch result signedness",
+                                  elseIsUnsigned))
+    return nullptr;
 
   auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
   mlir::Value thenVal = generateBlock(stmt.then_block);
-  bool thenIsUnsigned = hasUnsignedBlockResult(stmt.then_block);
   auto *thenBlock = builder.getInsertionBlock();
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
@@ -1917,14 +1938,12 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt, bool statemen
 
   builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
   mlir::Value elseVal = nullptr;
-  const auto &elseBlock = *stmt.else_block;
   if (elseBlock.is_if && elseBlock.if_stmt) {
     if (auto *innerIf = std::get_if<ast::StmtIf>(&elseBlock.if_stmt->value.kind))
       elseVal = generateIfStmtAsExpr(*innerIf);
   } else if (elseBlock.block) {
     elseVal = generateBlock(*elseBlock.block);
   }
-  bool elseIsUnsigned = elseBlock.block && hasUnsignedBlockResult(*elseBlock.block);
   auto *elseBlk = builder.getInsertionBlock();
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {

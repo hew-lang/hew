@@ -38,6 +38,8 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
+static bool isZeroLiteralValue(mlir::Value value);
+
 #define TEST(name)                                                                                 \
   do {                                                                                             \
     tests_run++;                                                                                   \
@@ -76,6 +78,37 @@ static mlir::func::FuncOp lookupFuncBySuffix(mlir::ModuleOp module, llvm::String
   module.walk([&](mlir::func::FuncOp f) {
     if (f.getName().ends_with(suffix))
       found = f;
+  });
+  return found;
+}
+
+static int countFuncsByPrefix(mlir::ModuleOp module, llvm::StringRef prefix) {
+  int count = 0;
+  module.walk([&](mlir::func::FuncOp f) {
+    if (f.getName().starts_with(prefix))
+      count++;
+  });
+  return count;
+}
+
+static bool hasRcNewWithNullDropOperand(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](mlir::Operation *nested) {
+    if (found || nested->getName().getStringRef() != "hew.rc.new" || nested->getNumOperands() < 3)
+      return;
+    auto dropOperand = nested->getOperand(2);
+    found = isZeroLiteralValue(dropOperand) || dropOperand.getDefiningOp<mlir::LLVM::ZeroOp>();
+  });
+  return found;
+}
+
+static bool hasRcNewWithNonNullDropOperand(mlir::Operation *op) {
+  bool found = false;
+  op->walk([&](mlir::Operation *nested) {
+    if (found || nested->getName().getStringRef() != "hew.rc.new" || nested->getNumOperands() < 3)
+      return;
+    auto dropOperand = nested->getOperand(2);
+    found = !isZeroLiteralValue(dropOperand) && !dropOperand.getDefiningOp<mlir::LLVM::ZeroOp>();
   });
   return found;
 }
@@ -5015,6 +5048,117 @@ fn broken_unsigned_cmp() -> bool {
   PASS();
 }
 
+static void test_unsigned_if_stmt_widening_uses_zero_extension() {
+  TEST(unsigned_if_stmt_widening_uses_zero_extension);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main(flag: bool) -> u16 {
+    let then_value: u8 = 255;
+    let else_value: u8 = 7;
+    if flag { then_value } else { else_value }
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for unsigned if-expression test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool foundUnsignedCast = false;
+  bool foundSignedCast = false;
+  mainFn.walk([&](hew::CastOp cast) {
+    auto *castOp = cast.getOperation();
+    if (castOp->getNumOperands() != 1)
+      return;
+
+    auto srcType = mlir::dyn_cast<mlir::IntegerType>(castOp->getOperand(0).getType());
+    auto dstType = mlir::dyn_cast<mlir::IntegerType>(cast.getResult().getType());
+    if (!srcType || !dstType || srcType.getWidth() != 8 || dstType.getWidth() != 16)
+      return;
+
+    foundUnsignedCast |= hasTrueUnsignedAttr(castOp);
+    foundSignedCast |= !hasTrueUnsignedAttr(castOp);
+  });
+
+  if (!foundUnsignedCast || foundSignedCast) {
+    FAIL("expected unsigned if-expression widening to carry is_unsigned on hew.cast");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_unsigned_if_stmt_missing_expr_type_fails_closed() {
+  TEST(unsigned_if_stmt_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main(flag: bool) -> u16 {
+    let then_value: u8 = 255;
+    let else_value: u8 = 7;
+    if flag { then_value } else { else_value }
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || mainFn->body.stmts.empty()) {
+    FAIL("main function not found for unsigned if-expression negative test");
+    return;
+  }
+
+  auto *ifStmt = std::get_if<hew::ast::StmtIf>(&mainFn->body.stmts.back()->value.kind);
+  if (!ifStmt || !ifStmt->then_block.trailing_expr) {
+    FAIL("expected trailing statement-form if-expression");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, ifStmt->then_block.trailing_expr->span)) {
+    FAIL("failed to remove expr_types entry for widened if-expression branch");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when if-expression branch metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for if-expression branch result signedness") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for if-expression branch widening");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for missing if-expression metadata");
+    return;
+  }
+
+  PASS();
+}
+
 static void test_unsigned_call_arg_widening_uses_zero_extension() {
   TEST(unsigned_call_arg_widening_uses_zero_extension);
 
@@ -9909,6 +10053,313 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: Rc::new(user struct with Drop) materializes a non-null drop trampoline.
+// ============================================================================
+
+static void test_rc_new_user_drop_struct_uses_drop_trampoline() {
+  TEST(rc_new_user_drop_struct_uses_drop_trampoline);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Wrapper {
+    name: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+fn build() -> Wrapper {
+    Wrapper { name: "hi" }
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run Rc::new user-drop struct test");
+    return;
+  }
+
+  auto *buildFnAst = findFunctionDecl(program, "build");
+  if (!buildFnAst || !buildFnAst->body.trailing_expr) {
+    FAIL("build function not found for Rc::new user-drop struct test");
+    return;
+  }
+
+  using namespace hew::ast;
+  auto mkNamedType = [](llvm::StringRef name,
+                        std::optional<std::vector<Spanned<TypeExpr>>> typeArgs,
+                        Span span) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::move(typeArgs)};
+    return {std::move(ty), span};
+  };
+
+  auto argExpr = std::move(buildFnAst->body.trailing_expr);
+  auto callSpan = argExpr->span;
+  Span calleeSpan{callSpan.start + 1000, callSpan.end + 1000};
+  Expr calleeExpr;
+  calleeExpr.kind = ExprIdentifier{"Rc::new"};
+  calleeExpr.span = calleeSpan;
+
+  ExprCall rcNewCall;
+  rcNewCall.function =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(calleeExpr), calleeSpan});
+  rcNewCall.type_args = std::nullopt;
+  rcNewCall.args.push_back(CallArgPositional{std::move(argExpr)});
+  rcNewCall.is_tail_call = false;
+
+  Expr callExpr;
+  callExpr.kind = std::move(rcNewCall);
+  callExpr.span = callSpan;
+  buildFnAst->body.trailing_expr =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(callExpr), callSpan});
+  eraseExprTypeEntryForSpan(program, callSpan);
+  appendExprTypeEntry(program, callSpan, "Wrapper");
+
+  auto returnTypeSpan = buildFnAst->return_type->span;
+  auto wrapperArg = mkNamedType("Wrapper", std::nullopt, returnTypeSpan);
+  std::vector<Spanned<TypeExpr>> rcTypeArgs;
+  rcTypeArgs.push_back(std::move(wrapperArg));
+  buildFnAst->return_type = mkNamedType(
+      "Rc", std::optional<std::vector<Spanned<TypeExpr>>>(std::move(rcTypeArgs)), returnTypeSpan);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, program);
+  if (!module) {
+    FAIL("MLIR generation failed for Rc::new user-drop struct test");
+    return;
+  }
+
+  auto buildFn = lookupFuncBySuffix(module, "build");
+  if (!buildFn) {
+    FAIL("build function not found in lowered Rc::new user-drop struct test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (!hasRcNewWithNonNullDropOperand(buildFn) || hasRcNewWithNullDropOperand(buildFn)) {
+    FAIL("Rc::new(user Drop struct) should not lower with a null drop operand");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countFuncsByPrefix(module, "__rc_inner_drop_") == 0) {
+    FAIL("Rc::new(user Drop struct) should emit an inner drop trampoline");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Rc::new fails closed when missing expr_types metadata leaves user-drop
+// payload drop resolution ambiguous.
+// ============================================================================
+
+static void test_rc_new_missing_expr_type_fails_closed() {
+  TEST(rc_new_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Wrapper {
+    name: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+extern "C" {
+    fn make_wrapper() -> Wrapper;
+}
+
+fn build() -> Wrapper {
+    unsafe { make_wrapper() }
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run Rc::new negative test");
+    return;
+  }
+
+  auto *buildFn = findFunctionDecl(program, "build");
+  if (!buildFn) {
+    FAIL("failed to find build function for Rc::new negative test");
+    return;
+  }
+
+  if (!buildFn->body.trailing_expr) {
+    FAIL("build function missing trailing expression for Rc::new negative test");
+    return;
+  }
+
+  using namespace hew::ast;
+  auto mkNamedType = [](llvm::StringRef name,
+                        std::optional<std::vector<Spanned<TypeExpr>>> typeArgs,
+                        Span span) -> Spanned<TypeExpr> {
+    TypeExpr ty;
+    ty.kind = TypeNamed{name.str(), std::move(typeArgs)};
+    return {std::move(ty), span};
+  };
+
+  std::unique_ptr<Spanned<Expr>> argExpr;
+  if (auto *unsafeExpr = std::get_if<ExprUnsafe>(&buildFn->body.trailing_expr->value.kind);
+      unsafeExpr && unsafeExpr->block.trailing_expr) {
+    argExpr = std::move(unsafeExpr->block.trailing_expr);
+  } else {
+    argExpr = std::move(buildFn->body.trailing_expr);
+  }
+  auto argSpan = argExpr->span;
+  Span calleeSpan{argSpan.start + 2000, argSpan.end + 2000};
+  Expr calleeExpr;
+  calleeExpr.kind = ExprIdentifier{"Rc::new"};
+  calleeExpr.span = calleeSpan;
+
+  ExprCall rcNewCall;
+  rcNewCall.function =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(calleeExpr), calleeSpan});
+  rcNewCall.type_args = std::nullopt;
+  rcNewCall.args.push_back(CallArgPositional{std::move(argExpr)});
+  rcNewCall.is_tail_call = false;
+
+  Expr callExpr;
+  callExpr.kind = std::move(rcNewCall);
+  callExpr.span = argSpan;
+  buildFn->body.trailing_expr =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(callExpr), argSpan});
+
+  auto returnTypeSpan = buildFn->return_type->span;
+  auto wrapperArg = mkNamedType("Wrapper", std::nullopt, returnTypeSpan);
+  std::vector<Spanned<TypeExpr>> rcTypeArgs;
+  rcTypeArgs.push_back(std::move(wrapperArg));
+  buildFn->return_type = mkNamedType(
+      "Rc", std::optional<std::vector<Spanned<TypeExpr>>>(std::move(rcTypeArgs)), returnTypeSpan);
+
+  if (!eraseExprTypeEntryForSpan(program, argSpan)) {
+    FAIL("failed to remove Rc::new payload expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail when Rc::new payload metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for Rc::new inner drop resolution") ==
+      std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for Rc::new inner drop resolution");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: missing expr_types on method-call temporaries still recovers user-drop
+// materialization from the identified MLIR struct type.
+// ============================================================================
+
+static void test_method_call_temporary_user_drop_recovers_without_expr_type() {
+  TEST(method_call_temporary_user_drop_recovers_without_expr_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+type Wrapper {
+    name: String;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.name);
+    }
+}
+
+type Factory {
+    id: i64;
+}
+
+impl Factory {
+    fn make(f: Factory) -> Wrapper {
+        Wrapper { name: "hi" }
+    }
+}
+
+fn consume(f: Factory) -> i64 {
+    f.make();
+    0
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run temporary user-drop recovery test");
+    return;
+  }
+
+  auto *consumeFnAst = findFunctionDecl(program, "consume");
+  if (!consumeFnAst) {
+    FAIL("consume function not found for temporary user-drop recovery test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*consumeFnAst, "make");
+  if (!methodCallSpan || !eraseExprTypeEntryForSpan(program, *methodCallSpan)) {
+    FAIL("failed to remove method-call expr_types entry for temporary user-drop recovery test");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected temporary user-drop recovery to keep MLIR generation green");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for temporary user-drop recovery");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto consumeFn = lookupFuncBySuffix(module, "consume");
+  if (!consumeFn) {
+    FAIL("consume function not found in lowered module");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countUserDropOps(consumeFn) == 0) {
+    FAIL("method-call temporary returning a user-drop struct should still materialize a drop");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Rc method calls stay green with resolved receiver metadata.
 // ============================================================================
 
@@ -13070,6 +13521,8 @@ int main() {
   test_option_result_match_expr_missing_result_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
+  test_unsigned_if_stmt_widening_uses_zero_extension();
+  test_unsigned_if_stmt_missing_expr_type_fails_closed();
   test_unsigned_call_arg_widening_uses_zero_extension();
   test_unsigned_call_arg_missing_expr_type_fails_closed();
   test_u8_string_interpolation_uses_unsigned_format();
@@ -13137,6 +13590,9 @@ int main() {
   test_handle_alias_call_receiver_is_recognized();
   test_duration_method_dispatch_uses_resolved_type();
   test_duration_method_dispatch_requires_resolved_type();
+  test_rc_new_user_drop_struct_uses_drop_trampoline();
+  test_rc_new_missing_expr_type_fails_closed();
+  test_method_call_temporary_user_drop_recovers_without_expr_type();
   test_rc_method_dispatch_uses_resolved_type();
   test_rc_method_dispatch_requires_resolved_type();
   test_handle_dispatch_uses_receiver_kind_metadata();

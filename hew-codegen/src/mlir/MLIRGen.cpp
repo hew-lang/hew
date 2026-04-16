@@ -2252,13 +2252,16 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       emitError(location) << "Rc::new requires exactly one argument";
       return nullptr;
     }
-    auto val = generateExpression(ast::callArgExpr(args[0]).value);
+    const auto &argExpr = ast::callArgExpr(args[0]).value;
+    const auto &argSpan = ast::callArgExpr(args[0]).span;
+    auto val = generateExpression(argExpr);
     if (!val)
       return nullptr;
 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     auto szType = sizeType(); // platform-correct: i64 native, i32 WASM32
     auto valType = val.getType();
+    auto storageType = toLLVMStorageType(valType);
 
     // Resolve drop function for T.  Prefer the AST annotation (covers all
     // named types registered in dropFuncForType); fall back to MLIR type
@@ -2267,10 +2270,16 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     mlir::Value dropFnPtr;
     {
       std::string dropFuncName;
-      if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
-        dropFuncName = dropFuncForType(*argType);
+      auto *resolvedArgType = resolvedTypeOf(argSpan);
+      if (!resolvedArgType && (std::holds_alternative<ast::ExprCall>(argExpr.kind) ||
+                               std::holds_alternative<ast::ExprMethodCall>(argExpr.kind))) {
+        if (!requireResolvedTypeOf(argSpan, "Rc::new inner drop resolution", location))
+          return nullptr;
+      }
+      if (resolvedArgType)
+        dropFuncName = dropFuncForType(*resolvedArgType);
       if (dropFuncName.empty())
-        dropFuncName = dropFuncForMLIRType(valType, /*includeStructTypes=*/false);
+        dropFuncName = dropFuncForMLIRType(valType, /*includeStructTypes=*/true);
       if (!dropFuncName.empty()) {
         auto dropFnType = builder.getFunctionType({ptrType}, {});
         getOrCreateExternFunc(dropFuncName, dropFnType);
@@ -2289,7 +2298,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
           auto &entry = *trampoline.addEntryBlock();
           builder.setInsertionPointToStart(&entry);
           auto innerVal =
-              mlir::LLVM::LoadOp::create(builder, location, ptrType, entry.getArgument(0));
+              mlir::LLVM::LoadOp::create(builder, location, storageType, entry.getArgument(0));
           mlir::func::CallOp::create(builder, location, dropFuncName, mlir::TypeRange{},
                                      mlir::ValueRange{innerVal});
           mlir::func::ReturnOp::create(builder, location);
@@ -2307,7 +2316,6 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     // Compute sizeof(T) at MLIR level using hew.sizeof.  Use the LLVM
     // storage type so that SizeOfOp receives a lowerable type (e.g.
     // !llvm.ptr instead of !hew.string_ref).
-    auto storageType = toLLVMStorageType(valType);
     auto size = hew::SizeOfOp::create(builder, location, szType, mlir::TypeAttr::get(storageType));
 
     // Allocate Rc with null data — runtime skips memcpy, leaves data region
@@ -7728,6 +7736,15 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
       }
       return {dropFunc, isUser};
     }
+  }
+
+  if (auto dropFunc = dropFuncForMLIRType(valType, /*includeStructTypes=*/true);
+      !dropFunc.empty()) {
+    bool isUser = false;
+    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(valType);
+        structTy && structTy.isIdentified())
+      isUser = userDropFuncs.count(structTy.getName().str()) > 0;
+    return {dropFunc, isUser};
   }
 
   // For StringRefType without a resolved type, use the isTemporaryString

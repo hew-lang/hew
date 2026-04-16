@@ -520,6 +520,25 @@ pub(crate) fn with_live_actor<R>(
     None
 }
 
+/// Check whether an actor ID still maps to the expected live actor pointer.
+pub(crate) fn with_live_actor_by_id<R>(
+    actor_id: u64,
+    expected: *mut HewActor,
+    f: impl FnOnce(&HewActor) -> R,
+) -> Option<R> {
+    let guard = LIVE_ACTORS.lock_or_recover();
+    if guard
+        .as_ref()
+        .and_then(|map| map.get(&actor_id))
+        .is_some_and(|ptr| ptr.0 == expected)
+    {
+        // SAFETY: `expected` is still tracked under `actor_id` in LIVE_ACTORS,
+        // and concurrent frees must remove that exact entry before reclaiming.
+        return Some(f(unsafe { &*expected }));
+    }
+    None
+}
+
 /// Check whether an actor pointer is still live (tracked and not yet freed).
 #[cfg_attr(
     not(test),
@@ -3379,6 +3398,38 @@ mod tests {
     }
 
     #[test]
+    fn with_live_actor_by_id_requires_matching_id_and_pointer() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let other = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        assert!(!other.is_null());
+
+        // SAFETY: both actors remain live until teardown below.
+        let actor_id = unsafe { (*actor).id };
+        // SAFETY: `other` remains live until teardown below.
+        let other_id = unsafe { (*other).id };
+
+        assert_eq!(
+            with_live_actor_by_id(actor_id, actor, |actor_ref| actor_ref.id),
+            Some(actor_id)
+        );
+        assert_eq!(with_live_actor_by_id(other_id, actor, |_| ()), None);
+        assert_eq!(with_live_actor_by_id(actor_id, other, |_| ()), None);
+
+        // SAFETY: both actors are quiescent after close and fully owned by this test.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+            hew_actor_close(other);
+            assert_eq!(hew_actor_free(other), 0);
+        }
+    }
+
+    #[test]
     fn ask_with_channel_send_failure_returns_error() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Spawning with null state and a valid dispatch function.
@@ -3453,7 +3504,9 @@ mod tests {
                     recovered,
                     "manual fallback reply should still resolve self-stop asks as null"
                 );
-                panic!("native hew_actor_ask should resolve null after self-stop without manual cleanup");
+                panic!(
+                    "native hew_actor_ask should resolve null after self-stop without manual cleanup"
+                );
             }
             Err(err) => panic!("native ask waiter thread disconnected unexpectedly: {err:?}"),
         };

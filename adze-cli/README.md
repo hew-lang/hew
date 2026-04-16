@@ -39,19 +39,44 @@ adze install
 
 ### Dependency Management
 
-- `adze add <PACKAGE> [--version <VER>]` — Add a dependency
+- `adze add <PACKAGE> [--version <VER>] [--registry <NAME>]` — Add a dependency
+  - `--registry`, `-r` — Use a named registry from config
 - `adze remove <PACKAGE>` — Remove a dependency
-- `adze install [--locked]` — Install all dependencies
+- `adze install [--locked] [--registry <NAME>]` — Install all dependencies
+  - `--registry`, `-r` — Use a named registry from config
 - `adze update [PACKAGE]` — Update dependency versions
 - `adze outdated` — Show outdated dependencies
 
+### Authentication
+
+- `adze login` — Log in to the registry via GitHub
+- `adze logout` — Log out from the registry
+- `adze key generate` — Generate a new Ed25519 signing keypair
+- `adze key list` — List registered signing keys
+- `adze key info <FINGERPRINT>` — Look up a signing key by fingerprint
+
 ### Registry
 
-- `adze publish` — Publish package to the registry
+- `adze publish [--registry <NAME>]` — Publish package to the registry
+  - `--registry`, `-r` — Use a named registry from config
 - `adze list` — List installed packages
-- `adze search <QUERY>` — Search for packages
-- `adze info <PACKAGE>` — Show package details
+- `adze search <QUERY> [--category <CATEGORY>] [--page <N>] [--per-page <N>] [--registry <NAME>]` — Search for packages
+  - `--registry`, `-r` — Use a named registry from config
+- `adze info <PACKAGE> [--registry <NAME>]` — Show package details
+  - `--registry`, `-r` — Use a named registry from config
 - `adze tree` — Show dependency tree
+- `adze namespace register <PREFIX>` — Register a custom namespace prefix
+- `adze namespace info <PREFIX>` — Show info about a namespace
+- `adze yank <VERSION> [--reason <TEXT>] [--undo]` — Yank a published version or undo a yank
+- `adze registry-key` — Show the registry's public signing key
+- `adze deprecate [PACKAGE] [--message <TEXT>] [--successor <PACKAGE>] [--undo]` — Deprecate a package or undo deprecation
+- `adze index sync` — Sync the local package index from the registry
+- `adze index resolve <PACKAGE> [--version <VER>]` — Resolve a package version from the local index
+- `adze index list <PACKAGE>` — List all versions of a package in the local index
+
+### Developer Tools
+
+- `adze completions <bash|zsh|fish|powershell>` — Generate shell completion scripts
 
 ## Manifest Format (hew.toml)
 

@@ -80,8 +80,8 @@ use tower_lsp::lsp_types::{
 use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp::lsp_types::{
     InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, ParameterInformation, ParameterLabel, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    InlayHintServerCapabilities, InlayHintTooltip, ParameterInformation, ParameterLabel,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
 };
 use tower_lsp::lsp_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
@@ -108,6 +108,7 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::ASYNC,       // bit 2
 ];
 const RUN_TEST_COMMAND: &str = "hew.runTest";
+const REMOVE_UNUSED_IMPORTS_KIND: &str = "source.removeUnusedImports";
 
 fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
     TOKEN_MODIFIERS
@@ -211,7 +212,11 @@ fn build_server_capabilities() -> ServerCapabilities {
         }),
         code_action_provider: Some(tower_lsp::lsp_types::CodeActionProviderCapability::Options(
             tower_lsp::lsp_types::CodeActionOptions {
-                code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                code_action_kinds: Some(vec![
+                    CodeActionKind::QUICKFIX,
+                    CodeActionKind::SOURCE,
+                    CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND),
+                ]),
                 ..Default::default()
             },
         )),
@@ -287,6 +292,156 @@ fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf
             workspace_root.display().to_string(),
         ],
     )
+}
+
+fn remove_unused_imports_kind() -> CodeActionKind {
+    CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND)
+}
+
+fn code_action_kind_matches_filter(
+    kind: &CodeActionKind,
+    requested_kinds: Option<&[CodeActionKind]>,
+) -> bool {
+    let Some(requested_kinds) = requested_kinds else {
+        return true;
+    };
+    requested_kinds.iter().any(|requested| {
+        kind.as_str() == requested.as_str()
+            || (kind.as_str().starts_with(requested.as_str())
+                && kind.as_str().as_bytes().get(requested.as_str().len()) == Some(&b'.'))
+    })
+}
+
+fn lsp_inlay_hint_from_analysis(
+    source: &str,
+    line_offsets: &[usize],
+    hint: hew_analysis::InlayHint,
+) -> InlayHint {
+    let (line, col) = offset_to_line_col(source, line_offsets, hint.offset);
+    let tooltip = hint.label.clone();
+    InlayHint {
+        position: Position::new(
+            u32::try_from(line).expect("line offsets fit in u32"),
+            u32::try_from(col).expect("column offsets fit in u32"),
+        ),
+        label: InlayHintLabel::String(hint.label),
+        kind: Some(match hint.kind {
+            hew_analysis::InlayHintKind::Type => InlayHintKind::TYPE,
+            hew_analysis::InlayHintKind::Parameter => InlayHintKind::PARAMETER,
+        }),
+        text_edits: None,
+        tooltip: Some(InlayHintTooltip::String(tooltip)),
+        padding_left: if hint.padding_left { Some(true) } else { None },
+        padding_right: None,
+        data: None,
+    }
+}
+
+fn lsp_signature_help_from_analysis(result: hew_analysis::SignatureHelpResult) -> SignatureHelp {
+    let active_parameter = result.active_parameter;
+    let active_signature = result.active_signature;
+    let signatures = result
+        .signatures
+        .into_iter()
+        .map(|sig| {
+            let params = sig
+                .parameters
+                .into_iter()
+                .map(|p| ParameterInformation {
+                    label: ParameterLabel::LabelOffsets([p.label_start, p.label_end]),
+                    documentation: None,
+                })
+                .collect();
+            SignatureInformation {
+                label: sig.label,
+                documentation: None,
+                parameters: Some(params),
+                active_parameter,
+            }
+        })
+        .collect();
+    SignatureHelp {
+        signatures,
+        active_signature,
+        active_parameter,
+    }
+}
+
+fn lsp_code_actions_for_diagnostic(
+    uri: &Url,
+    doc: &DocumentState,
+    diag: &Diagnostic,
+    requested_kinds: Option<&[CodeActionKind]>,
+) -> Vec<CodeActionOrCommand> {
+    let kind = diag
+        .data
+        .as_ref()
+        .and_then(|d| d.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+    let suggestions = diag
+        .data
+        .as_ref()
+        .and_then(|d| d.get("suggestions"))
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
+    let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
+    let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
+    let info = hew_analysis::code_actions::DiagnosticInfo {
+        kind: kind.clone(),
+        message: diag.message.clone(),
+        span: hew_analysis::OffsetSpan { start, end },
+        suggestions,
+    };
+    let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
+    let mut lsp_actions = Vec::new();
+
+    for action in actions {
+        let text_edits: Vec<TextEdit> = action
+            .edits
+            .iter()
+            .map(|e| TextEdit {
+                range: offset_range_to_lsp(
+                    &doc.source,
+                    &doc.line_offsets,
+                    e.span.start,
+                    e.span.end,
+                ),
+                new_text: e.new_text.clone(),
+            })
+            .collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), text_edits);
+        let edit = WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        };
+
+        if code_action_kind_matches_filter(&CodeActionKind::QUICKFIX, requested_kinds) {
+            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: action.title.clone(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(edit.clone()),
+                ..Default::default()
+            }));
+        }
+
+        if kind.as_deref() == Some("UnusedImport")
+            && action.title == "Remove unused import"
+            && code_action_kind_matches_filter(&remove_unused_imports_kind(), requested_kinds)
+        {
+            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: action.title,
+                kind: Some(remove_unused_imports_kind()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(edit),
+                ..Default::default()
+            }));
+        }
+    }
+
+    lsp_actions
 }
 
 // ── Server ───────────────────────────────────────────────────────────
@@ -858,10 +1013,6 @@ impl LanguageServer for HewLanguageServer {
         Ok(non_empty(symbols))
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "line/col values in source files will not exceed u32"
-    )]
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let Some(doc) = self.documents.get(uri) else {
@@ -874,22 +1025,7 @@ impl LanguageServer for HewLanguageServer {
             hew_analysis::inlay_hints::build_inlay_hints(&doc.source, &doc.parse_result, tc);
         let lsp_hints: Vec<InlayHint> = analysis_hints
             .into_iter()
-            .map(|h| {
-                let (line, col) = offset_to_line_col(&doc.source, &doc.line_offsets, h.offset);
-                InlayHint {
-                    position: Position::new(line as u32, col as u32),
-                    label: InlayHintLabel::String(h.label),
-                    kind: Some(match h.kind {
-                        hew_analysis::InlayHintKind::Type => InlayHintKind::TYPE,
-                        hew_analysis::InlayHintKind::Parameter => InlayHintKind::PARAMETER,
-                    }),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: if h.padding_left { Some(true) } else { None },
-                    padding_right: None,
-                    data: None,
-                }
-            })
+            .map(|hint| lsp_inlay_hint_from_analysis(&doc.source, &doc.line_offsets, hint))
             .collect();
         Ok(non_empty(lsp_hints))
     }
@@ -909,31 +1045,7 @@ impl LanguageServer for HewLanguageServer {
         else {
             return Ok(None);
         };
-        let signatures: Vec<SignatureInformation> = result
-            .signatures
-            .into_iter()
-            .map(|sig| {
-                let params = sig
-                    .parameters
-                    .into_iter()
-                    .map(|p| ParameterInformation {
-                        label: ParameterLabel::LabelOffsets([p.label_start, p.label_end]),
-                        documentation: None,
-                    })
-                    .collect();
-                SignatureInformation {
-                    label: sig.label,
-                    documentation: None,
-                    parameters: Some(params),
-                    active_parameter: result.active_parameter,
-                }
-            })
-            .collect();
-        Ok(Some(SignatureHelp {
-            signatures,
-            active_signature: result.active_signature,
-            active_parameter: None,
-        }))
+        Ok(Some(lsp_signature_help_from_analysis(result)))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -944,54 +1056,12 @@ impl LanguageServer for HewLanguageServer {
 
         let mut lsp_actions = Vec::new();
         for diag in &params.context.diagnostics {
-            let kind = diag
-                .data
-                .as_ref()
-                .and_then(|d| d.get("kind"))
-                .and_then(serde_json::Value::as_str)
-                .map(String::from);
-            let suggestions = diag
-                .data
-                .as_ref()
-                .and_then(|d| d.get("suggestions"))
-                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-                .unwrap_or_default();
-            let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
-            let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
-            let info = hew_analysis::code_actions::DiagnosticInfo {
-                kind,
-                message: diag.message.clone(),
-                span: hew_analysis::OffsetSpan { start, end },
-                suggestions,
-            };
-            let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
-            for action in actions {
-                let text_edits: Vec<TextEdit> = action
-                    .edits
-                    .iter()
-                    .map(|e| TextEdit {
-                        range: offset_range_to_lsp(
-                            &doc.source,
-                            &doc.line_offsets,
-                            e.span.start,
-                            e.span.end,
-                        ),
-                        new_text: e.new_text.clone(),
-                    })
-                    .collect();
-                let mut changes = HashMap::new();
-                changes.insert(uri.clone(), text_edits);
-                lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: action.title,
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![diag.clone()]),
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(changes),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }));
-            }
+            lsp_actions.extend(lsp_code_actions_for_diagnostic(
+                uri,
+                &doc,
+                diag,
+                params.context.only.as_deref(),
+            ));
         }
         Ok(non_empty(lsp_actions))
     }
@@ -2403,6 +2473,20 @@ impl Worker {
         );
     }
 
+    #[test]
+    fn code_action_capabilities_advertise_remove_unused_imports_kind() {
+        let capabilities = build_server_capabilities();
+        let kinds = match capabilities.code_action_provider {
+            Some(tower_lsp::lsp_types::CodeActionProviderCapability::Options(options)) => options
+                .code_action_kinds
+                .expect("code action kinds should be advertised"),
+            _ => panic!("expected code action options"),
+        };
+        assert!(kinds.contains(&CodeActionKind::QUICKFIX));
+        assert!(kinds.contains(&CodeActionKind::SOURCE));
+        assert!(kinds.contains(&remove_unused_imports_kind()));
+    }
+
     // ── Workspace symbol tests ──────────────────────────────────────
 
     #[test]
@@ -2627,6 +2711,32 @@ machine Traffic {
             .iter()
             .find(|d| d.source.as_deref() == Some("hew-types"));
         assert!(type_diag.is_some(), "expected a type-checker diagnostic");
+        assert_eq!(type_diag.unwrap().tags, None);
+    }
+
+    #[test]
+    fn diagnostics_tag_unused_warnings_as_unnecessary() {
+        let source = "fn main() -> i32 { let unused = 42; 0 }";
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let diag = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output))
+            .into_iter()
+            .find(|diag| {
+                diag.data
+                    .as_ref()
+                    .and_then(|data| data.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("UnusedVariable")
+            })
+            .expect("expected unused variable diagnostic");
+
+        assert_eq!(
+            diag.tags,
+            Some(vec![tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY])
+        );
     }
 
     #[test]
@@ -2959,6 +3069,14 @@ machine Traffic {
             !hints.is_empty(),
             "expected inlay hints for let binding with inferred type"
         );
+
+        let lsp_hint =
+            lsp_inlay_hint_from_analysis(source, &compute_line_offsets(source), hints[0].clone());
+        match lsp_hint.tooltip {
+            Some(InlayHintTooltip::String(value)) => assert_eq!(value, hints[0].label),
+            Some(_) => panic!("expected string tooltip"),
+            None => panic!("expected tooltip"),
+        }
     }
 
     // ── Signature help tests ────────────────────────────────────────
@@ -2992,6 +3110,9 @@ machine Traffic {
             "signature label should mention function name, got: {}",
             sh.signatures[0].label
         );
+        let lsp_help = lsp_signature_help_from_analysis(sh.clone());
+        assert_eq!(lsp_help.active_parameter, sh.active_parameter);
+        assert_eq!(lsp_help.signatures[0].active_parameter, sh.active_parameter);
     }
 
     #[test]
@@ -3150,6 +3271,90 @@ machine Traffic {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add missing match arms");
         assert!(actions[0].edits[0].new_text.contains("Blue => {},"));
+    }
+
+    #[test]
+    fn code_actions_include_remove_unused_imports_source_action() {
+        let source = "import foo::bar;\nfn main() -> i32 { 0 }\n";
+        let doc = make_doc(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let import_end = source.find('\n').unwrap();
+        let diag = Diagnostic {
+            range: offset_range_to_lsp(source, &doc.line_offsets, 0, import_end),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("hew-types".to_string()),
+            message: "Unused import `foo::bar`".to_string(),
+            data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
+            ..Default::default()
+        };
+
+        let actions = lsp_code_actions_for_diagnostic(&uri, &doc, &diag, None);
+        let source_action = actions
+            .iter()
+            .find_map(|action| match action {
+                CodeActionOrCommand::CodeAction(action)
+                    if action.kind.as_ref() == Some(&remove_unused_imports_kind()) =>
+                {
+                    Some(action)
+                }
+                _ => None,
+            })
+            .expect("expected source.removeUnusedImports action");
+
+        let edit = source_action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(&uri))
+            .and_then(|edits| edits.first())
+            .expect("expected source action text edit");
+        let start = position_to_offset(source, &doc.line_offsets, edit.range.start);
+        let end = position_to_offset(source, &doc.line_offsets, edit.range.end);
+        let updated = format!("{}{}{}", &source[..start], edit.new_text, &source[end..]);
+
+        assert_eq!(source_action.title, "Remove unused import");
+        assert_eq!(updated, "\nfn main() -> i32 { 0 }\n");
+    }
+
+    #[test]
+    fn code_actions_honor_kind_filters_for_remove_unused_imports() {
+        let source = "import foo::bar;\nfn main() -> i32 { 0 }\n";
+        let doc = make_doc(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let diag = Diagnostic {
+            range: offset_range_to_lsp(source, &doc.line_offsets, 0, source.find('\n').unwrap()),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("hew-types".to_string()),
+            message: "Unused import `foo::bar`".to_string(),
+            data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
+            ..Default::default()
+        };
+
+        let source_only = lsp_code_actions_for_diagnostic(
+            &uri,
+            &doc,
+            &diag,
+            Some(&[remove_unused_imports_kind()]),
+        );
+        assert!(
+            source_only.iter().all(|action| matches!(
+                action,
+                CodeActionOrCommand::CodeAction(action)
+                    if action.kind.as_ref() == Some(&remove_unused_imports_kind())
+            )),
+            "source-only requests should only return source.removeUnusedImports actions"
+        );
+
+        let quickfix_only =
+            lsp_code_actions_for_diagnostic(&uri, &doc, &diag, Some(&[CodeActionKind::QUICKFIX]));
+        assert!(
+            quickfix_only.iter().all(|action| matches!(
+                action,
+                CodeActionOrCommand::CodeAction(action)
+                    if action.kind.as_ref() == Some(&CodeActionKind::QUICKFIX)
+            )),
+            "quickfix-only requests should exclude source.removeUnusedImports actions"
+        );
     }
 
     // ── has_test_attribute tests ─────────────────────────────────────

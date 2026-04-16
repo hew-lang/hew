@@ -8,7 +8,7 @@ use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::build_module_search_paths;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Url,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, Url,
 };
 
 use super::{DiagnosticMap, DiagnosticSource, DocumentState};
@@ -650,6 +650,7 @@ pub(super) fn build_diagnostics_by_uri(
                 Diagnostic {
                     range: super::span_to_range(target_source, target_line_offsets, &diag.span),
                     severity: Some(severity_to_lsp(diag.severity)),
+                    tags: unnecessary_diagnostic_tags(&diag.kind),
                     source: Some("hew-types".to_string()),
                     message,
                     related_information,
@@ -681,4 +682,15 @@ pub(super) fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> s
         "kind": kind.as_kind_str(),
         "suggestions": suggestions,
     })
+}
+
+fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag>> {
+    match kind {
+        TypeErrorKind::UnusedVariable
+        | TypeErrorKind::UnusedMut
+        | TypeErrorKind::UnusedImport
+        | TypeErrorKind::DeadCode
+        | TypeErrorKind::UnreachableCode => Some(vec![DiagnosticTag::UNNECESSARY]),
+        _ => None,
+    }
 }

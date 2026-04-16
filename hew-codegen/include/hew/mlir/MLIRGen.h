@@ -855,6 +855,9 @@ private:
     bool isMutable = false;
     mlir::Type valueType;
   };
+  void collectLambdaCapturedVars(const ast::ExprLambda &lam,
+                                 std::vector<CapturedVarInfo> &capturedVars,
+                                 mlir::Location location);
   void gatherCapturedVars(const std::set<std::string> &freeVars,
                           std::vector<CapturedVarInfo> &capturedVars, mlir::Location location);
   /// Generate a per-closure env drop function that calls hew_rc_drop on each
@@ -1217,7 +1220,8 @@ private:
   // Specialize a let-bound generic lambda for the given concrete type args and
   // return a concrete FuncOp that can be called directly (no env pointer).
   mlir::func::FuncOp specializeGenericLambda(const std::string &varName,
-                                             const std::vector<std::string> &typeArgs);
+                                             const std::vector<std::string> &typeArgs,
+                                             const std::vector<CapturedVarInfo> &capturedVars);
   // Resolve a TypeExpr to a flat mangled name for generic substitutions.
   // Recursively handles nested generics: Pair<int> → "Pair_int".
   // Also triggers convertType to ensure nested generic structs are specialized.

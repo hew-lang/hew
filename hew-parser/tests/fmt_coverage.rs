@@ -157,13 +157,31 @@ fn fmt_if_expression() {
 
 #[test]
 fn fmt_if_let() {
-    let src = r"fn main() {
-    if let Some(x) = maybe {
-        println(x);
-    }
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("if let Some(x) = maybe"), "output: {out}");
+    exact_roundtrip("fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    }\n}\n");
+}
+
+#[test]
+fn fmt_if_let_else_body_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    } else {\n        println(0);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_if_let_struct_pattern_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    if let Point { x, y } = p {\n        println(x);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_if_let_tuple_pattern_roundtrip() {
+    exact_roundtrip("fn main() {\n    if let (a, b) = pair {\n        println(a);\n    }\n}\n");
+}
+
+#[test]
+fn fmt_if_let_or_pattern_roundtrip() {
+    exact_roundtrip("fn main() {\n    if let A | B = val {\n        work();\n    }\n}\n");
 }
 
 // -----------------------------------------------------------------------
@@ -206,6 +224,34 @@ fn fmt_while_loop() {
 }";
     let out = roundtrip(src);
     assert!(out.contains("while x > 0 {"), "output: {out}");
+}
+
+#[test]
+fn fmt_while_let_struct_pattern_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    while let Point { x, y } = next_point() {\n        work(x);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_while_let_tuple_pattern_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    while let (k, v) = iter.next() {\n        use_pair(k, v);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_expr_if_let_as_value_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let x = if let Some(v) = opt {\n        v\n    } else {\n        0\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_expr_if_let_as_trailing_roundtrip() {
+    exact_roundtrip(
+        "fn foo() -> int {\n    if let Some(x) = maybe {\n        x\n    } else {\n        0\n    }\n}\n",
+    );
 }
 
 // -----------------------------------------------------------------------

@@ -4510,6 +4510,156 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
     );
 }
 
+#[test]
+fn method_level_type_params_freshen_per_named_method_call() {
+    let source = r"
+        type Holder { value: int }
+
+        impl Holder {
+            fn pick<T>(h: Holder, value: T) -> T {
+                value
+            }
+        }
+
+        fn main() {
+            let h = Holder { value: 1 };
+            let n = h.pick(42);
+            let flag = h.pick(true);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.len(),
+        2,
+        "expected one entry per method call"
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::I64]),
+        "expected one call to infer T=int, got {:?}",
+        output.call_type_args
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::Bool]),
+        "expected one call to infer T=bool, got {:?}",
+        output.call_type_args
+    );
+}
+
+#[test]
+fn generic_impl_method_level_type_params_freshen_per_call() {
+    let source = r"
+        type Box<T> { value: T }
+
+        impl<T> Box<T> {
+            fn transform<U>(b: Box<T>, f: fn(T) -> U) -> Box<U> {
+                Box { value: f(b.value) }
+            }
+        }
+
+        fn double(x: int) -> int { x * 2 }
+        fn is_even(x: int) -> bool { x % 2 == 0 }
+
+        fn main() {
+            let b = Box { value: 42 };
+            let doubled = b.transform(double);
+            let even = b.transform(is_even);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.len(),
+        2,
+        "expected one entry per method call"
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::I64]),
+        "expected one call to infer U=int, got {:?}",
+        output.call_type_args
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::Bool]),
+        "expected one call to infer U=bool, got {:?}",
+        output.call_type_args
+    );
+}
+
+#[test]
+fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
+    let source = r"
+        enum Maybe<T> { Some(T); None; }
+        type Holder {}
+
+        impl Holder {
+            fn wrap<T>(h: Holder, value: Maybe<T>) -> Maybe<T> {
+                value
+            }
+        }
+
+        fn main() {
+            let h = Holder {};
+            let unresolved = h.wrap(None);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for unresolved method-level type param, got {:?}",
+        output.errors
+    );
+}
+
 /// Regression: a generic lambda passed as a function *argument* (not
 /// directly bound to `let`) must not leak its `TypeVar` pairs into the
 /// scratch field and then be picked up by the *next* unrelated let-binding.

@@ -1,0 +1,17 @@
+type Box<T> { value: T }
+
+impl<T> Box<T> {
+    fn project<U>(b: Box<T>, f: fn(T) -> U) -> U {
+        f(b.value)
+    }
+}
+
+fn double(x: int) -> int { x * 2 }
+
+fn is_even(x: int) -> bool { x % 2 == 0 }
+
+fn main() {
+    let b = Box { value: 42 };
+    println(b.project(double));
+    println(b.project(is_even));
+}

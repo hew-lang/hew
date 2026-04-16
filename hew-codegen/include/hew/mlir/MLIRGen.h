@@ -1232,9 +1232,13 @@ private:
   // Populated during generic struct specialization in convertType.
   std::unordered_map<std::string, std::pair<std::string, std::vector<std::string>>>
       structTypeOrigin;
+  std::optional<std::vector<std::string>>
+  inferGenericImplMethodTypeArgs(const ast::FnDecl &method, const ast::ExprMethodCall &call,
+                                 const ast::Span &exprSpan);
   // Specialize a generic impl method for the given concrete type args.
   mlir::func::FuncOp specializeGenericImplMethod(const std::string &baseTypeName,
-                                                 const std::vector<std::string> &typeArgs,
+                                                 const std::vector<std::string> &implTypeArgs,
+                                                 const std::vector<std::string> &methodTypeArgs,
                                                  const std::string &methodName);
 };
 

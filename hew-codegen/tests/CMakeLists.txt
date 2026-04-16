@@ -1145,6 +1145,7 @@ add_wasm_file_test(struct_field_set     e2e_coverage struct_field_set)
 # Native test is auto-discovered; only the WASM variant needs explicit registration.
 add_wasm_file_test(generic_lambda_slice1  e2e_coverage generic_lambda_slice1)
 add_wasm_file_test(generic_lambda_multi_instantiation e2e_coverage generic_lambda_multi_instantiation)
+add_wasm_file_test(generic_lambda_var_bound e2e_coverage generic_lambda_var_bound)
 
 # Example programs (non-actor subset)
 add_wasm_file_test(ex_fibonacci         e2e_examples fibonacci)

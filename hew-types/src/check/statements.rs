@@ -381,6 +381,7 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
                     val_ty.materialize_literal_defaults()
                 } else {
@@ -421,6 +422,11 @@ impl Checker {
                 self.check_shadowing(name, span);
                 self.env
                     .define_with_span(name.clone(), val_ty, true, span.clone());
+                if value_is_direct_generic_lambda {
+                    if let Some(sig) = generic_sig {
+                        self.lambda_poly_sig_map.insert(SpanKey::from(span), sig);
+                    }
+                }
             }
             Stmt::Assign { target, op, value } => {
                 // Purity check: pure functions cannot assign to actor fields

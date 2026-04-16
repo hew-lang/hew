@@ -904,6 +904,18 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   auto location = currentLoc;
   auto varNameStr = stmt.name;
+
+  // ── Generic lambda deferred registration ─────────────────────────────────
+  // Match the let-bound path: direct generic lambdas are specialized on demand
+  // by call sites rather than materialized as a monomorphic runtime closure.
+  if (stmt.value) {
+    if (auto *lam = std::get_if<ast::ExprLambda>(&stmt.value->value.kind)) {
+      if (lam->type_params.has_value() && !lam->type_params->empty()) {
+        genericLambdas[varNameStr] = lam;
+        return;
+      }
+    }
+  }
   // Set the declared type so constructors can emit correctly typed results.
   // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is
   // valid here. Use convertType (not convertTypeOrError) to allow NoneType.

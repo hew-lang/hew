@@ -993,6 +993,7 @@ add_wasm_test(enum_match_stmt test_enum_match_stmt.hew "3\n10\n")
 add_wasm_test(enum_payload test_enum_payload.hew "42\n-1\n")
 add_wasm_test(enum_payload_match test_enum_payload_match.hew "100\n-1\n10\n")
 add_wasm_test(enum_wildcard test_enum_wildcard.hew "75\n16\n0\n")
+add_wasm_test(match_fn_call test_match_fn_call.hew "10\n0\n200\n301\n404\n")
 add_wasm_test(const test_const.hew "100\n42\n200\n3.14159\n")
 add_wasm_test(type_alias test_type_alias.hew "30\n")
 add_wasm_test(vec_basic test_vec_basic.hew "3\n10\n20\n30\n60\n")
@@ -1114,6 +1115,7 @@ add_wasm_file_test(tuple_destruct       e2e_tuples tuple_destruct)
 add_wasm_file_test(error_return_codes   e2e_error_handling error_return_codes)
 add_wasm_file_test(result_pattern       e2e_error_handling result_pattern)
 add_wasm_file_test(option_pattern       e2e_error_handling option_pattern)
+add_wasm_file_test(result_inline_match  e2e_error_handling result_inline_match)
 add_wasm_file_test(enum_error_chain     e2e_error_handling enum_error_chain)
 add_wasm_file_test(try_operator         e2e_try_operator try_operator)
 
@@ -1336,6 +1338,7 @@ add_wasm_file_test(large_vec                  e2e_memory           large_vec_lif
 add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)
 add_wasm_file_test(deep_recursion             e2e_memory           deep_recursion)
 add_wasm_file_test(actor_str_owner            e2e_memory           actor_field_string_ownership)
+add_wasm_file_test(vec_get_borrowed_string    e2e_memory           vec_get_borrowed_string)
 add_wasm_file_test(rc_basic                   e2e_memory           rc_basic)
 add_wasm_file_test(rc_scope_drop              e2e_memory           rc_scope_drop)
 add_wasm_file_test(rc_rebind                  e2e_memory           rc_rebind)
@@ -1345,6 +1348,7 @@ add_wasm_file_test(rc_pass_to_fn              e2e_memory           rc_pass_to_fn
 
 # Temp materialization
 add_wasm_file_test(borrowed_string_return     e2e_temp_materialization borrowed_string_return)
+add_wasm_file_test(temp_fstring_drop          e2e_temp_materialization temp_fstring_drop)
 
 # Types
 add_wasm_file_test(type_coverage              e2e_types            type_coverage)

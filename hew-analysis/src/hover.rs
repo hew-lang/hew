@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem, TypeExpr};
+use hew_parser::ast::{
+    Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem, TypeExpr,
+};
+use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
 use hew_types::{Ty, TypeCheckOutput, VariantDef};
@@ -54,6 +57,12 @@ pub fn hover(
         {
             return Some(result);
         }
+
+        if let Some(result) =
+            hover_binding_at_offset(parse_result, type_output, word, *word_span, offset)
+        {
+            return Some(result);
+        }
     }
 
     // Fall back to narrowest expression type that covers this offset.
@@ -98,7 +107,7 @@ pub fn hover(
 }
 
 fn hover_param_at_offset(
-    parse_result: &hew_parser::ParseResult,
+    parse_result: &ParseResult,
     fn_sigs: &HashMap<String, FnSig>,
     word: &str,
     word_span: OffsetSpan,
@@ -110,6 +119,355 @@ fn hover_param_at_offset(
         }
     }
     None
+}
+
+fn hover_binding_at_offset(
+    parse_result: &ParseResult,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    for (item, _) in &parse_result.program.items {
+        if let Some(result) = hover_binding_in_item(item, type_output, word, word_span, offset) {
+            return Some(result);
+        }
+    }
+    None
+}
+
+fn hover_binding_in_item(
+    item: &Item,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    match item {
+        Item::Function(function) => {
+            hover_binding_in_block(&function.body, type_output, word, word_span, offset)
+        }
+        Item::Actor(actor) => {
+            if let Some(init) = &actor.init {
+                if let Some(result) =
+                    hover_binding_in_block(&init.body, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            if let Some(term) = &actor.terminate {
+                if let Some(result) =
+                    hover_binding_in_block(&term.body, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            for recv in &actor.receive_fns {
+                if let Some(result) =
+                    hover_binding_in_block(&recv.body, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            for method in &actor.methods {
+                if let Some(result) =
+                    hover_binding_in_block(&method.body, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        Item::TypeDecl(type_decl) => {
+            for body_item in &type_decl.body {
+                if let TypeBodyItem::Method(method) = body_item {
+                    if let Some(result) =
+                        hover_binding_in_block(&method.body, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                if let Some(result) =
+                    hover_binding_in_block(&method.body, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &trait_decl.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(body) = &method.body {
+                        if let Some(result) =
+                            hover_binding_in_block(body, type_output, word, word_span, offset)
+                        {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn hover_binding_in_block(
+    block: &Block,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    for (stmt, stmt_span) in &block.stmts {
+        if let Some(result) =
+            hover_binding_in_stmt(stmt, stmt_span, type_output, word, word_span, offset)
+        {
+            return Some(result);
+        }
+    }
+    None
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "explicit statement traversal keeps hover binding scope checks readable"
+)]
+fn hover_binding_in_stmt(
+    stmt: &Stmt,
+    stmt_span: &Span,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    match stmt {
+        Stmt::Let { pattern, ty, value } => {
+            find_binding_name(pattern, word, offset)?;
+            let ty_text = if let Some((type_expr, _)) = ty {
+                format_type_expr_hover(type_expr)
+            } else {
+                let (_, value_span) = value.as_ref()?;
+                let span_key = SpanKey {
+                    start: value_span.start,
+                    end: value_span.end,
+                };
+                type_output
+                    .expr_types
+                    .get(&span_key)?
+                    .user_facing()
+                    .to_string()
+            };
+            Some(HoverResult {
+                contents: format!("```hew\n{word}: {ty_text}\n```"),
+                span: Some(word_span),
+            })
+        }
+        Stmt::Var { name, ty, value } => {
+            if !is_var_name_span(
+                stmt_span,
+                word,
+                word_span,
+                offset,
+                name,
+                ty.as_ref(),
+                value.as_ref(),
+            ) {
+                return None;
+            }
+            let ty_text = if let Some((type_expr, _)) = ty {
+                format_type_expr_hover(type_expr)
+            } else {
+                let (_, value_span) = value.as_ref()?;
+                let span_key = SpanKey {
+                    start: value_span.start,
+                    end: value_span.end,
+                };
+                type_output
+                    .expr_types
+                    .get(&span_key)?
+                    .user_facing()
+                    .to_string()
+            };
+            Some(HoverResult {
+                contents: format!("```hew\n{word}: {ty_text}\n```"),
+                span: Some(word_span),
+            })
+        }
+        Stmt::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            if let Some(result) =
+                hover_binding_in_block(then_block, type_output, word, word_span, offset)
+            {
+                return Some(result);
+            }
+            let Some(else_block) = else_block else {
+                return None;
+            };
+            if let Some(if_stmt) = &else_block.if_stmt {
+                if let Some(result) = hover_binding_in_stmt(
+                    &if_stmt.0,
+                    &if_stmt.1,
+                    type_output,
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            else_block.block.as_ref().and_then(|block| {
+                hover_binding_in_block(block, type_output, word, word_span, offset)
+            })
+        }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => {
+            if let Some(result) = hover_binding_in_block(body, type_output, word, word_span, offset)
+            {
+                return Some(result);
+            }
+            else_body.as_ref().and_then(|block| {
+                hover_binding_in_block(block, type_output, word, word_span, offset)
+            })
+        }
+        Stmt::For { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. } => {
+            hover_binding_in_block(body, type_output, word, word_span, offset)
+        }
+        _ => None,
+    }
+}
+
+fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Option<()> {
+    if !span_contains_offset(&pattern.1, offset) {
+        return None;
+    }
+    match &pattern.0 {
+        Pattern::Identifier(name) => (name == word).then_some(()),
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+            .iter()
+            .find_map(|pattern| find_binding_name(pattern, word, offset)),
+        Pattern::Struct { fields, .. } => fields.iter().find_map(|field| {
+            field
+                .pattern
+                .as_ref()
+                .and_then(|pattern| find_binding_name(pattern, word, offset))
+        }),
+        Pattern::Or(left, right) => {
+            find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => None,
+    }
+}
+
+fn is_var_name_span(
+    stmt_span: &Span,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+    name: &str,
+    ty: Option<&(TypeExpr, Span)>,
+    value: Option<&(hew_parser::ast::Expr, Span)>,
+) -> bool {
+    if name != word || !span_contains_offset(stmt_span, offset) {
+        return false;
+    }
+    let name_boundary = ty
+        .as_ref()
+        .map(|(_, span)| span.start)
+        .or_else(|| value.as_ref().map(|(_, span)| span.start))
+        .unwrap_or(stmt_span.end);
+    word_span.start >= stmt_span.start && word_span.end <= name_boundary
+}
+
+fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
+    match type_expr {
+        TypeExpr::Named { name, type_args } => {
+            let base =
+                Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());
+            if let Some(type_args) = type_args {
+                let args = type_args
+                    .iter()
+                    .map(|(arg, _)| format_type_expr_hover(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{base}<{args}>")
+            } else {
+                base
+            }
+        }
+        TypeExpr::Result { ok, err } => format!(
+            "Result<{}, {}>",
+            format_type_expr_hover(&ok.0),
+            format_type_expr_hover(&err.0)
+        ),
+        TypeExpr::Option(inner) => format!("Option<{}>", format_type_expr_hover(&inner.0)),
+        TypeExpr::Tuple(elements) => format!(
+            "({})",
+            elements
+                .iter()
+                .map(|(element, _)| format_type_expr_hover(element))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TypeExpr::Array { element, size } => {
+            format!("[{}; {size}]", format_type_expr_hover(&element.0))
+        }
+        TypeExpr::Slice(element) => format!("[{}]", format_type_expr_hover(&element.0)),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => format!(
+            "fn({}) -> {}",
+            params
+                .iter()
+                .map(|(param, _)| format_type_expr_hover(param))
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_type_expr_hover(&return_type.0)
+        ),
+        TypeExpr::Pointer {
+            is_mutable,
+            pointee,
+        } => {
+            let mutability = if *is_mutable { "mut " } else { "" };
+            format!("*{mutability}{}", format_type_expr_hover(&pointee.0))
+        }
+        TypeExpr::TraitObject(bounds) => bounds
+            .iter()
+            .map(format_trait_bound_hover)
+            .collect::<Vec<_>>()
+            .join(" + "),
+        TypeExpr::Infer => "_".to_string(),
+    }
+}
+
+fn format_trait_bound_hover(bound: &TraitBound) -> String {
+    if let Some(type_args) = &bound.type_args {
+        format!(
+            "{}<{}>",
+            bound.name,
+            type_args
+                .iter()
+                .map(|(arg, _)| format_type_expr_hover(arg))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        bound.name.clone()
+    }
 }
 
 fn hover_param_in_item(
@@ -727,5 +1085,101 @@ mod tests {
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
         assert!(result.contents.contains("count: int"));
         assert!(!result.contents.contains("i64"));
+    }
+
+    #[test]
+    fn hover_shows_unannotated_let_binding_type() {
+        let source = "fn compute() -> int { 42 }\nfn main() {\n    let count = compute();\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("count").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\ncount: int\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "count".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_annotated_var_binding_type() {
+        let source = "fn main() {\n    var total: int = 0;\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("total").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\ntotal: int\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "total".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_nested_let_binding_inside_if_body() {
+        let source = "fn yes() -> bool { true }\nfn main() {\n    if true {\n        let flag = yes();\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("flag").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\nflag: bool\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "flag".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_binding_does_not_fire_on_binding_use_in_expr() {
+        let source = "fn main() {\n    let count = 42;\n    count + 1\n}";
+        let pr = hew_parser::parse(source);
+        let let_offset = source.find("count").unwrap();
+        let use_offset = source.rfind("count").unwrap();
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey {
+                start: use_offset,
+                end: use_offset + "count".len(),
+            },
+            Ty::I32,
+        );
+        let tc = TypeCheckOutput {
+            expr_types,
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+        };
+
+        let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
+        assert_eq!(result.contents, "```hew\ncount: i32\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: use_offset,
+                end: use_offset + "count".len()
+            })
+        );
+        assert_ne!(result.span.unwrap().start, let_offset);
     }
 }

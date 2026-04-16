@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use dashmap::DashMap;
-use hew_analysis::definition::{find_local_binding_definition, find_param_definition};
+use hew_analysis::definition::{
+    find_field_definition, find_local_binding_definition, find_param_definition,
+};
 #[cfg(test)]
 use hew_analysis::references::count_all_references;
 #[cfg(test)]
@@ -530,6 +532,13 @@ impl LanguageServer for HewLanguageServer {
         if let Some(range) =
             find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
         {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range,
+            })));
+        }
+
+        if let Some(range) = resolve_field_definition(doc.value(), offset) {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range,
@@ -1047,6 +1056,17 @@ fn resolve_local_or_param_definition(
 ) -> Option<Range> {
     let span = find_local_binding_definition(&doc.source, &doc.parse_result, word, offset)
         .or_else(|| find_param_definition(&doc.parse_result, word, offset))?;
+    Some(offset_range_to_lsp(
+        &doc.source,
+        &doc.line_offsets,
+        span.start,
+        span.end,
+    ))
+}
+
+fn resolve_field_definition(doc: &DocumentState, offset: usize) -> Option<Range> {
+    let type_output = doc.type_output.as_ref()?;
+    let span = find_field_definition(&doc.source, &doc.parse_result, type_output, offset)?;
     Some(offset_range_to_lsp(
         &doc.source,
         &doc.line_offsets,
@@ -1769,6 +1789,31 @@ impl Worker {
             &doc.line_offsets,
             expected_start,
             expected_start + "result".len(),
+        );
+        assert_eq!(range, expected);
+    }
+
+    #[test]
+    fn goto_def_resolves_struct_field_access_fallback() {
+        let source =
+            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+        let doc = make_typed_doc(source);
+        let offset = source.rfind("p.x").unwrap() + 2;
+        let word = word_at_offset(source, offset).unwrap();
+
+        assert_eq!(word, "p.x");
+        assert!(
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
+        );
+
+        let range =
+            resolve_field_definition(&doc, offset).expect("should resolve field definition");
+        let expected_start = source.find("x: i32").unwrap();
+        let expected = offset_range_to_lsp(
+            source,
+            &doc.line_offsets,
+            expected_start,
+            expected_start + "x".len(),
         );
         assert_eq!(range, expected);
     }
@@ -3158,6 +3203,20 @@ machine Traffic {
             line_offsets: lo,
             parse_result,
             type_output: None,
+            diagnostics_by_uri: HashMap::new(),
+        }
+    }
+
+    fn make_typed_doc(source: &str) -> DocumentState {
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        DocumentState {
+            source: source.to_string(),
+            line_offsets: lo,
+            parse_result,
+            type_output: Some(type_output),
             diagnostics_by_uri: HashMap::new(),
         }
     }

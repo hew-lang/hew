@@ -61,12 +61,12 @@ fn ty_contains_error(ty: &Ty) -> bool {
     ty.contains_error()
 }
 
-fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
+fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
     match ty {
         Ty::Named { name, args } => {
             let normalized_args: Vec<Ty> = args
                 .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
+                .map(normalize_synthetic_channel_handle_type)
                 .collect();
             if matches!(
                 builtin_named_type(name.as_str()),
@@ -80,20 +80,20 @@ fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
         Ty::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
+                .map(normalize_synthetic_channel_handle_type)
                 .collect(),
         ),
         Ty::Array(elem, size) => Ty::Array(
-            Box::new(normalize_synthetic_channel_handle_expr_type(elem)),
+            Box::new(normalize_synthetic_channel_handle_type(elem)),
             *size,
         ),
-        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_expr_type(elem))),
+        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_type(elem))),
         Ty::Function { params, ret } => Ty::Function {
             params: params
                 .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
+                .map(normalize_synthetic_channel_handle_type)
                 .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
         },
         Ty::Closure {
             params,
@@ -102,12 +102,12 @@ fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
         } => Ty::Closure {
             params: params
                 .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
+                .map(normalize_synthetic_channel_handle_type)
                 .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_expr_type(ret)),
+            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
             captures: captures
                 .iter()
-                .map(normalize_synthetic_channel_handle_expr_type)
+                .map(normalize_synthetic_channel_handle_type)
                 .collect(),
         },
         Ty::Pointer {
@@ -115,22 +115,36 @@ fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
             pointee,
         } => Ty::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(normalize_synthetic_channel_handle_expr_type(pointee)),
+            pointee: Box::new(normalize_synthetic_channel_handle_type(pointee)),
         },
         _ => ty.clone(),
     }
 }
 
+fn normalized_variant_def_has_inference_var(variant: &VariantDef) -> bool {
+    match variant {
+        VariantDef::Unit => false,
+        VariantDef::Tuple(fields) => fields
+            .iter()
+            .map(normalize_synthetic_channel_handle_type)
+            .any(|field| field.has_inference_var()),
+        VariantDef::Struct(fields) => fields
+            .iter()
+            .map(|(_, field)| normalize_synthetic_channel_handle_type(field))
+            .any(|field| field.has_inference_var()),
+    }
+}
+
 fn fn_sig_has_inference_var(sig: &FnSig) -> bool {
-    sig.params.iter().any(Ty::has_inference_var) || sig.return_type.has_inference_var()
+    sig.params
+        .iter()
+        .map(normalize_synthetic_channel_handle_type)
+        .any(|param| param.has_inference_var())
+        || normalize_synthetic_channel_handle_type(&sig.return_type).has_inference_var()
 }
 
 fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
-    match variant {
-        VariantDef::Unit => false,
-        VariantDef::Tuple(fields) => fields.iter().any(Ty::has_inference_var),
-        VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| ty.has_inference_var()),
-    }
+    normalized_variant_def_has_inference_var(variant)
 }
 
 fn variant_def_contains_error_type(variant: &VariantDef) -> bool {
@@ -150,7 +164,11 @@ fn type_def_shape_contains_error_type(type_def: &TypeDef) -> bool {
 }
 
 fn type_def_shape_has_inference_var(type_def: &TypeDef) -> bool {
-    type_def.fields.values().any(Ty::has_inference_var)
+    type_def
+        .fields
+        .values()
+        .map(normalize_synthetic_channel_handle_type)
+        .any(|field| field.has_inference_var())
         || type_def
             .variants
             .values()
@@ -289,7 +307,7 @@ impl Checker {
                 continue;
             }
             if !unresolved.is_subset(covered_inference_vars) {
-                let normalized = normalize_synthetic_channel_handle_expr_type(ty);
+                let normalized = normalize_synthetic_channel_handle_type(ty);
                 if normalized != *ty {
                     let mut normalized_unresolved = HashSet::new();
                     collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
@@ -931,8 +949,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_checker_output_contract_prunes_fn_sigs_with_untracked_ty_var() {
+    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_ty_vars() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let normalized_param_var = TypeVar::fresh();
+        let normalized_return_var = TypeVar::fresh();
         let leaked_param_var = TypeVar::fresh();
         let leaked_return_var = TypeVar::fresh();
 
@@ -946,12 +966,31 @@ mod tests {
                 },
             ),
             (
-                "leaked_param_fn".to_string(),
+                "normalized_param_fn".to_string(),
                 FnSig {
                     params: vec![Ty::normalize_named(
                         "Sender".to_string(),
-                        vec![Ty::Var(leaked_param_var)],
+                        vec![Ty::Var(normalized_param_var)],
                     )],
+                    return_type: Ty::Unit,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "normalized_return_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::I32],
+                    return_type: Ty::normalize_named(
+                        "Receiver".to_string(),
+                        vec![Ty::Var(normalized_return_var)],
+                    ),
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "leaked_param_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::Tuple(vec![Ty::Var(leaked_param_var)])],
                     return_type: Ty::Unit,
                     ..FnSig::default()
                 },
@@ -960,10 +999,7 @@ mod tests {
                 "leaked_return_fn".to_string(),
                 FnSig {
                     params: vec![Ty::I32],
-                    return_type: Ty::normalize_named(
-                        "Receiver".to_string(),
-                        vec![Ty::Var(leaked_return_var)],
-                    ),
+                    return_type: Ty::option(Ty::Var(leaked_return_var)),
                     ..FnSig::default()
                 },
             ),
@@ -983,19 +1019,34 @@ mod tests {
             fn_sigs.contains_key("good_fn"),
             "clean signature must survive the contract check"
         );
+        assert!(matches!(
+            &fn_sigs["normalized_param_fn"].params[0],
+            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        ));
+        assert!(matches!(
+            fn_sigs["normalized_return_fn"].return_type,
+            Ty::Named { ref name, ref args } if name == "Receiver" && args.len() == 1
+        ));
         assert!(
             !fn_sigs.contains_key("leaked_param_fn"),
-            "signature with an untracked Ty::Var in params must be pruned"
+            "signature with a real untracked Ty::Var in params must be pruned"
         );
         assert!(
             !fn_sigs.contains_key("leaked_return_fn"),
-            "signature with an untracked Ty::Var in return type must be pruned"
+            "signature with a real untracked Ty::Var in return type must be pruned"
         );
     }
 
     #[test]
-    fn validate_checker_output_contract_prunes_type_defs_with_untracked_ty_var() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercise channel handle fields, variants, and methods in one focused regression"
+    )]
+    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_type_defs() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let normalized_field_var = TypeVar::fresh();
+        let normalized_variant_var = TypeVar::fresh();
+        let normalized_method_var = TypeVar::fresh();
         let leaked_field_var = TypeVar::fresh();
         let leaked_variant_var = TypeVar::fresh();
 
@@ -1014,14 +1065,49 @@ mod tests {
                 },
             ),
             (
+                "NormalizedHandles".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "NormalizedHandles".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([(
+                        "tx".to_string(),
+                        Ty::normalize_named(
+                            "Sender".to_string(),
+                            vec![Ty::Var(normalized_field_var)],
+                        ),
+                    )]),
+                    variants: HashMap::from([(
+                        "Recv".to_string(),
+                        VariantDef::Tuple(vec![Ty::normalize_named(
+                            "Receiver".to_string(),
+                            vec![Ty::Var(normalized_variant_var)],
+                        )]),
+                    )]),
+                    methods: HashMap::from([(
+                        "close".to_string(),
+                        FnSig {
+                            params: vec![Ty::normalize_named(
+                                "Sender".to_string(),
+                                vec![Ty::Var(normalized_method_var)],
+                            )],
+                            return_type: Ty::Unit,
+                            ..FnSig::default()
+                        },
+                    )]),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+            (
                 "LeakedField".to_string(),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "LeakedField".to_string(),
                     type_params: vec![],
                     fields: HashMap::from([(
-                        "tx".to_string(),
-                        Ty::normalize_named("Sender".to_string(), vec![Ty::Var(leaked_field_var)]),
+                        "value".to_string(),
+                        Ty::Tuple(vec![Ty::Var(leaked_field_var)]),
                     )]),
                     variants: HashMap::new(),
                     methods: HashMap::new(),
@@ -1038,10 +1124,7 @@ mod tests {
                     fields: HashMap::new(),
                     variants: HashMap::from([(
                         "Recv".to_string(),
-                        VariantDef::Tuple(vec![Ty::normalize_named(
-                            "Receiver".to_string(),
-                            vec![Ty::Var(leaked_variant_var)],
-                        )]),
+                        VariantDef::Tuple(vec![Ty::Var(leaked_variant_var)]),
                     )]),
                     methods: HashMap::new(),
                     doc_comment: None,
@@ -1065,12 +1148,29 @@ mod tests {
             "concrete type definitions must survive the contract check"
         );
         assert!(
+            type_defs.contains_key("NormalizedHandles"),
+            "synthetic bare channel handles must survive the output contract"
+        );
+        assert!(matches!(
+            &type_defs["NormalizedHandles"].fields["tx"],
+            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        ));
+        assert!(matches!(
+            &type_defs["NormalizedHandles"].variants["Recv"],
+            VariantDef::Tuple(fields)
+                if matches!(fields.as_slice(), [Ty::Named { name, args }] if name == "Receiver" && args.len() == 1)
+        ));
+        assert!(matches!(
+            &type_defs["NormalizedHandles"].methods["close"].params[0],
+            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+        ));
+        assert!(
             !type_defs.contains_key("LeakedField"),
-            "type definitions with untracked Ty::Var fields must be pruned"
+            "type definitions with real untracked Ty::Var fields must be pruned"
         );
         assert!(
             !type_defs.contains_key("LeakedVariant"),
-            "type definitions with untracked Ty::Var variants must be pruned"
+            "type definitions with real untracked Ty::Var variants must be pruned"
         );
     }
 

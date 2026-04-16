@@ -42,6 +42,8 @@ struct MonitorShard {
     monitors: HashMap<u64, Vec<MonitorEntry>>,
     /// Maps `ref_id` -> (`monitored_actor_id`, `monitoring_actor`) for demonitor.
     ref_to_monitor: HashMap<u64, (u64, usize)>,
+    /// Tracks actors whose terminal monitor sweep has already completed.
+    terminal_reasons: HashMap<u64, i32>,
 }
 
 /// Global sharded monitor table.
@@ -51,6 +53,7 @@ static MONITOR_TABLE: LazyLock<[RwLock<MonitorShard>; MONITOR_SHARDS]> = LazyLoc
         RwLock::new(MonitorShard {
             monitors: HashMap::new(),
             ref_to_monitor: HashMap::new(),
+            terminal_reasons: HashMap::new(),
         })
     })
 });
@@ -64,6 +67,75 @@ fn get_shard_index(actor_id: u64) -> usize {
     {
         (actor_id as usize) % MONITOR_SHARDS
     }
+}
+
+fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
+    if actor_state == HewActorState::Stopped as i32 || actor_state == HewActorState::Crashed as i32
+    {
+        Some(actor_state)
+    } else {
+        None
+    }
+}
+
+fn send_down_notification(monitor: &MonitorEntry, monitored_actor_id: u64, reason: i32) {
+    let monitoring_actor_addr = monitor.monitoring_actor;
+    if monitoring_actor_addr == 0 {
+        return;
+    }
+
+    let monitoring_actor = monitoring_actor_addr as *mut HewActor;
+
+    crate::actor::with_live_actor_by_id(
+        monitor.monitoring_actor_id,
+        monitoring_actor,
+        |monitoring_actor_ref| {
+            let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+
+            if !mailbox.is_null() {
+                let down_data = DownMessage {
+                    monitored_actor_id,
+                    ref_id: monitor.ref_id,
+                    reason,
+                };
+
+                let data_ptr = (&raw const down_data).cast::<c_void>();
+                let data_size = std::mem::size_of::<DownMessage>();
+
+                // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
+                unsafe {
+                    mailbox::hew_mailbox_send_sys(
+                        mailbox,
+                        SYS_MSG_DOWN,
+                        data_ptr.cast_mut(),
+                        data_size,
+                    );
+                }
+
+                if monitoring_actor_ref
+                    .actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    monitoring_actor_ref
+                        .idle_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    monitoring_actor_ref
+                        .hibernating
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    crate::scheduler::sched_enqueue(monitoring_actor);
+                }
+            }
+
+            #[cfg(test)]
+            run_notify_monitors_hook();
+        },
+    );
 }
 
 /// Create a monitor: watcher monitors target.
@@ -95,17 +167,32 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
-    shard
-        .monitors
-        .entry(target_id)
-        .or_default()
-        .push(monitor_entry);
+    let terminal_reason = {
+        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
+        if let Some(&reason) = shard.terminal_reasons.get(&target_id) {
+            Some(reason)
+        } else if let Some(reason) =
+            terminal_monitor_reason(target_ref.actor_state.load(Ordering::Acquire))
+        {
+            Some(reason)
+        } else {
+            shard
+                .monitors
+                .entry(target_id)
+                .or_default()
+                .push(monitor_entry.clone());
 
-    // Add to ref lookup: ref_id -> (target_id, watcher)
-    shard
-        .ref_to_monitor
-        .insert(ref_id, (target_id, watcher as usize));
+            // Add to ref lookup: ref_id -> (target_id, watcher)
+            shard
+                .ref_to_monitor
+                .insert(ref_id, (target_id, watcher as usize));
+            None
+        }
+    };
+
+    if let Some(reason) = terminal_reason {
+        send_down_notification(&monitor_entry, target_id, reason);
+    }
 
     ref_id
 }
@@ -147,6 +234,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     let monitors = {
         let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
+        shard.terminal_reasons.insert(actor_id, reason);
 
         // Also remove from ref_to_monitor mapping
         for monitor in &monitors {
@@ -158,65 +246,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
     // Send DOWN messages to all monitoring actors.
     for monitor in monitors {
-        let monitoring_actor_addr = monitor.monitoring_actor;
-        if monitoring_actor_addr == 0 {
-            continue;
-        }
-
-        let monitoring_actor = monitoring_actor_addr as *mut HewActor;
-
-        crate::actor::with_live_actor_by_id(
-            monitor.monitoring_actor_id,
-            monitoring_actor,
-            |monitoring_actor_ref| {
-                let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-
-                if !mailbox.is_null() {
-                    // Prepare DOWN message data: { monitored_actor_id: u64, ref_id: u64, reason: i32 }
-                    let down_data = DownMessage {
-                        monitored_actor_id: actor_id,
-                        ref_id: monitor.ref_id,
-                        reason,
-                    };
-
-                    let data_ptr = (&raw const down_data).cast::<c_void>();
-                    let data_size = std::mem::size_of::<DownMessage>();
-
-                    // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
-                    unsafe {
-                        mailbox::hew_mailbox_send_sys(
-                            mailbox,
-                            SYS_MSG_DOWN,
-                            data_ptr.cast_mut(),
-                            data_size,
-                        );
-                    }
-
-                    // Wake the monitoring actor so it processes the DOWN message.
-                    if monitoring_actor_ref
-                        .actor_state
-                        .compare_exchange(
-                            HewActorState::Idle as i32,
-                            HewActorState::Runnable as i32,
-                            std::sync::atomic::Ordering::AcqRel,
-                            std::sync::atomic::Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
-                        monitoring_actor_ref
-                            .idle_count
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        monitoring_actor_ref
-                            .hibernating
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        crate::scheduler::sched_enqueue(monitoring_actor);
-                    }
-                }
-
-                #[cfg(test)]
-                run_notify_monitors_hook();
-            },
-        );
+        send_down_notification(&monitor, actor_id, reason);
     }
 }
 
@@ -278,6 +308,7 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewA
     let own_shard = get_shard_index(actor_id);
     {
         let mut shard = MONITOR_TABLE[own_shard].write_or_recover();
+        shard.terminal_reasons.remove(&actor_id);
         if let Some(monitors) = shard.monitors.remove(&actor_id) {
             for m in &monitors {
                 shard.ref_to_monitor.remove(&m.ref_id);

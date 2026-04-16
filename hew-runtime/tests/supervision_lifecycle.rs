@@ -606,6 +606,68 @@ fn demonitor_before_crash_suppresses_down() {
     }
 }
 
+/// Monitoring an already-crashed actor resolves immediately with the usual DOWN payload.
+#[test]
+fn late_monitor_after_crash_delivers_immediate_down() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    MONITOR_DISPATCH_SIGNAL.reset();
+
+    unsafe {
+        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
+        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+        assert!(!watcher.is_null());
+        assert!(!target.is_null());
+
+        let target_id = (*target).id;
+        hew_fault_inject_crash(target_id, 1);
+        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+
+        assert!(
+            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
+            "target should enter Crashed state before late monitor registration"
+        );
+
+        let ref_id = hew_actor_monitor(watcher, target);
+        assert_ne!(ref_id, 0, "late monitor should still return a ref_id");
+
+        let down_messages = MONITOR_DISPATCH_SIGNAL
+            .wait_for_down_count(1, Duration::from_secs(5))
+            .expect("late monitor should receive an immediate DOWN notification");
+        let down = down_messages
+            .last()
+            .copied()
+            .expect("DOWN notification should be recorded");
+        assert_eq!(
+            down,
+            DownMessageView {
+                monitored_actor_id: target_id,
+                ref_id,
+                reason: HewActorState::Crashed as i32,
+            },
+            "late monitor should reuse the existing DOWN payload shape"
+        );
+
+        hew_actor_demonitor(ref_id);
+        hew_actor_send(watcher, 77, std::ptr::null_mut(), 0);
+        assert!(
+            MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(2, Duration::from_secs(5)),
+            "watcher should process the immediate DOWN and probe message"
+        );
+        let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
+        assert_eq!(
+            dispatch_state.down_messages.len(),
+            1,
+            "late monitor should not leave behind a second pending DOWN"
+        );
+
+        hew_deterministic_reset();
+    }
+}
+
 /// Crash forensics: crash reports contain meaningful metadata.
 #[test]
 fn crash_report_has_metadata() {
